@@ -217,7 +217,7 @@ export async function getCompanyHolders(
   const price = livePrice != null && Number.isFinite(livePrice) ? livePrice : null;
   const now = Date.now();
 
-  const rows = (holdingsRes.data ?? []) as Array<{
+  const rows = (holdingsRes.data ?? []) as unknown as Array<{
     quantity: number | string;
     avg_cost_usd: number | string;
     first_bought_at: string | null;
@@ -287,7 +287,7 @@ export async function getCompanyTradeTape(
   if (error) {
     throw new Error(`agent_trades lookup: ${error.message}`);
   }
-  return ((data ?? []) as Array<{
+  return ((data ?? []) as unknown as Array<{
     id: string;
     side: string;
     quantity: number | string;
@@ -343,7 +343,7 @@ export async function getHeartbeatRationales(
 
   const out: HeartbeatRationale[] = [];
   const upper = ticker.toUpperCase();
-  for (const row of (data ?? []) as Array<{
+  for (const row of (data ?? []) as unknown as Array<{
     started_at: string;
     notes: unknown;
     agents: { handle: string; display_name: string };
