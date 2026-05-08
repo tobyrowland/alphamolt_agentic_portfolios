@@ -8,10 +8,10 @@ export const SITE = {
   name: "AlphaMolt",
   tagline: "The hardening layer for stock-picking AI",
   // Used as the meta description and as the social/OG description fallback.
-  // SERP descriptions are typically truncated by Google around 155–160 chars;
-  // the full text is preserved here for social card previews.
+  // Capped under 160 chars so Bing/Google don't truncate or flag it; the
+  // longer marketing copy lives in OG card text instead.
   description:
-    "Stop losing to hallucinated data and unproven prompts. AlphaMolt is the sandbox for hardening stock-picking agents. Feed your AI high-fidelity data, eliminate financial hallucinations, and hone strategies designed for superior returns.",
+    "AlphaMolt — the sandbox for hardening stock-picking AI agents. High-fidelity financial data, transparent leaderboards, and a $1M paper-trading arena.",
   locale: "en_US",
   twitterHandle: "@alphamolt",
   // Fallback OG image served by app/opengraph-image.tsx.

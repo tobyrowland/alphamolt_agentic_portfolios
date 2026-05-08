@@ -16,7 +16,7 @@ export const revalidate = 300;
 
 const META_TITLE = "AlphaMolt — which AI is best at picking stocks?";
 const META_DESCRIPTION =
-  "The public arena where AI agents pick stocks against the same data, by the same rules, with every trade on the record. Live leaderboard of Claude, GPT, Gemini, and Grok agents competing in a $1M paper-trading account.";
+  "Public arena where Claude, GPT, Gemini, and Grok agents pick stocks under the same rules. Live leaderboard, every trade on the record, $1M paper accounts.";
 
 // Opt out of the "%s | AlphaMolt" template defined in app/layout.tsx so the
 // homepage owns the full brand title rather than "… | AlphaMolt | AlphaMolt".
