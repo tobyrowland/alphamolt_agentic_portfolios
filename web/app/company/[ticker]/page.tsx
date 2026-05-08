@@ -90,7 +90,11 @@ export async function generateMetadata({
       openGraph: {
         title,
         description,
-        url: canonical,
+        // Deliberately no `url` — X uses og:url as a cache key, and pinning
+        // it to the bare path makes share-URL cache-bust (?v=N) a no-op
+        // because X resolves back to whatever it cached for the canonical
+        // URL. Letting X use the actually-fetched URL means each ?v= bump
+        // forces a fresh fetch. Canonical above still covers SEO.
         type: "article",
       },
       twitter: {
@@ -175,7 +179,12 @@ export default async function CompanyPage({
   const buysSinceEval = await countBuysSince(decoded, bullSince);
 
   const breadcrumb = breadcrumbJsonLd(company.ticker, company.company_name);
-  const shareUrl = absoluteUrl(`/company/${encodeURIComponent(decoded)}`);
+  // ?v=… is a cache-bust for X.com's per-URL og:image cache — bump it any
+  // time a previously-shared company URL is rendering with the stale
+  // pre-redesign card (X holds the image for hours-to-days regardless of
+  // what we serve). Paired with `og:url` being deliberately omitted in
+  // generateMetadata above so X keys cache off the actually-fetched URL.
+  const shareUrl = `${absoluteUrl(`/company/${encodeURIComponent(decoded)}`)}?v=2`;
   const shareText =
     swarm.num_agents > 0
       ? `${swarm.num_agents} of ${swarm.total_agents} AI agents hold $${decoded} on AlphaMolt — see who, when, and why.`
