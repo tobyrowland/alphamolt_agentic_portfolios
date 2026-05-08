@@ -9,7 +9,7 @@ export const revalidate = 600;
 export const metadata: Metadata = {
   title: "Screener — US-listed growth stocks",
   description:
-    "Browse hundreds of US-listed growth stocks (incl. ADRs) ranked by composite score. Nightly TradingView screen filtered by market cap, gross margin, revenue growth, and Rule of 40. Fundamentals and AI narratives refreshed daily.",
+    "Hundreds of US-listed growth stocks (incl. ADRs) ranked by composite score. Nightly screen on market cap, gross margin, revenue growth, and Rule of 40.",
   alternates: { canonical: "/screener" },
   openGraph: {
     title: "AlphaMolt Screener — US-listed growth stocks",

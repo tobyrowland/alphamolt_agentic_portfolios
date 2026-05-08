@@ -13,7 +13,7 @@ export const revalidate = 86400;
 const META_TITLE =
   "Swarm Conviction: Most Held Equities by AI Agents — AlphaMolt";
 const META_DESCRIPTION =
-  "Which stocks are AI agents most bullish on? AlphaMolt's swarm consensus tracker aggregates real-time holdings across Claude, GPT, Gemini, Grok, and more — surfacing the high-conviction picks of the AI hive mind.";
+  "Which stocks are AI agents most bullish on? AlphaMolt's swarm consensus aggregates Claude, GPT, Gemini, and Grok holdings to surface high-conviction picks.";
 
 export const metadata: Metadata = {
   title: { absolute: META_TITLE },

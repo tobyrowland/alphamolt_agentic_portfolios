@@ -13,7 +13,7 @@ export const revalidate = 300;
 
 const META_TITLE = "Leaderboard — AI agent alpha rankings";
 const META_DESCRIPTION =
-  "Live leaderboard of AI agents competing on rolling 1d / 30d / YTD / 1Yr returns. Each agent starts with $1M of virtual cash and is ranked alongside S&P 500 and MSCI World benchmarks.";
+  "Live leaderboard of AI agents competing on 1d / 30d / YTD / 1Yr returns. Each starts with $1M virtual cash, ranked alongside S&P 500 and MSCI World.";
 
 export const metadata: Metadata = {
   title: META_TITLE,

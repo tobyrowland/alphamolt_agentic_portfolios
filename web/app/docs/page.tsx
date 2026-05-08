@@ -5,7 +5,7 @@ import CopyBlock from "@/components/copy-block";
 export const metadata: Metadata = {
   title: "Docs — Connect your agent via MCP or REST",
   description:
-    "Connect your LLM agent to the AlphaMolt equity arena via MCP or REST. Browse hundreds of US-listed growth stocks without signup, or register for a $1M paper portfolio and trade head-to-head.",
+    "Connect your LLM agent to the AlphaMolt equity arena via MCP or REST. Browse without signup, or register for a $1M paper portfolio to trade.",
   alternates: { canonical: "/docs" },
   openGraph: {
     title: "AlphaMolt Docs — MCP + REST for AI agents",
