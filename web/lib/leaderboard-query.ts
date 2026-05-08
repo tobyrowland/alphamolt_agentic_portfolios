@@ -61,30 +61,39 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
   if (agentErr) console.error("Failed to fetch agent leaderboard:", agentErr);
   const rawAgents = (agentData ?? []) as unknown as RawAgentRow[];
 
-  // 2. Trade counts per agent, bucketed into the same four windows.
-  const tradesByHandle = await fetchTradeBuckets(supabase, rawAgents);
+  // 2. Trade counts + inception dates per agent.
+  const [tradesByHandle, inceptionByHandle] = await Promise.all([
+    fetchTradeBuckets(supabase, rawAgents),
+    fetchInceptionDates(supabase, rawAgents),
+  ]);
 
-  const agentRows: LeaderboardAgentRow[] = rawAgents.map((r) => ({
-    kind: "agent",
-    handle: r.handle,
-    display_name: r.display_name,
-    is_house_agent: r.is_house_agent,
-    snapshot_date: r.snapshot_date,
-    cash_usd: Number(r.cash_usd),
-    holdings_value_usd: Number(r.holdings_value_usd),
-    total_value_usd: Number(r.total_value_usd),
-    pnl_usd: Number(r.pnl_usd),
-    returns: {
-      "1d": toNum(r.pnl_pct_1d),
-      "30d": toNum(r.pnl_pct_30d),
-      ytd: toNum(r.pnl_pct_ytd),
-      "1yr": toNum(r.pnl_pct_1yr),
-    },
-    sharpe: toNum(r.sharpe),
-    sharpe_n_returns: toNum(r.sharpe_n_returns) ?? 0,
-    trades: tradesByHandle.get(r.handle) ?? emptyBuckets(),
-    num_positions: r.num_positions,
-  }));
+  const agentRows: LeaderboardAgentRow[] = rawAgents.map((r) => {
+    const inception = inceptionByHandle.get(r.handle) ?? null;
+    return {
+      kind: "agent",
+      handle: r.handle,
+      display_name: r.display_name,
+      is_house_agent: r.is_house_agent,
+      snapshot_date: r.snapshot_date,
+      cash_usd: Number(r.cash_usd),
+      holdings_value_usd: Number(r.holdings_value_usd),
+      total_value_usd: Number(r.total_value_usd),
+      pnl_usd: Number(r.pnl_usd),
+      returns: applyInceptionFloors(
+        {
+          "1d": toNum(r.pnl_pct_1d),
+          "30d": toNum(r.pnl_pct_30d),
+          ytd: toNum(r.pnl_pct_ytd),
+          "1yr": toNum(r.pnl_pct_1yr),
+        },
+        inception,
+      ),
+      sharpe: toNum(r.sharpe),
+      sharpe_n_returns: toNum(r.sharpe_n_returns) ?? 0,
+      trades: tradesByHandle.get(r.handle) ?? emptyBuckets(),
+      num_positions: r.num_positions,
+    };
+  });
 
   // 3. Benchmark rows — synthesised from benchmarks + benchmark_prices.
   interface RawBenchmarkRow {
@@ -253,6 +262,67 @@ async function fetchTradeBuckets(
     if (ts >= yearStartMs) bucket.ytd += 1;
     if (ts >= yearAgoMs) bucket["1yr"] += 1;
   }
+  return out;
+}
+
+async function fetchInceptionDates(
+  supabase: ReturnType<typeof getSupabase>,
+  rawAgents: { handle: string }[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (rawAgents.length === 0) return out;
+
+  const { data: idRows, error: idErr } = await supabase
+    .from("agents")
+    .select("id, handle")
+    .in(
+      "handle",
+      rawAgents.map((a) => a.handle),
+    );
+  if (idErr || !idRows) {
+    if (idErr) console.error("Failed to resolve agent ids:", idErr);
+    return out;
+  }
+  const idToHandle = new Map<string, string>();
+  for (const row of idRows as { id: string; handle: string }[]) {
+    idToHandle.set(row.id, row.handle);
+  }
+
+  const { data: acctRows, error: acctErr } = await supabase
+    .from("agent_accounts")
+    .select("agent_id, inception_date")
+    .in("agent_id", Array.from(idToHandle.keys()));
+  if (acctErr || !acctRows) {
+    if (acctErr) console.error("Failed to fetch agent_accounts:", acctErr);
+    return out;
+  }
+  for (const r of acctRows as {
+    agent_id: string;
+    inception_date: string | null;
+  }[]) {
+    const handle = idToHandle.get(r.agent_id);
+    if (handle && r.inception_date) out.set(handle, r.inception_date);
+  }
+  return out;
+}
+
+// Null out window returns for agents whose inception is inside the
+// window — a 14-day-old agent's "30d" cell should read "calculating",
+// not its 14-day return rebadged. Mirrors the SQL view's NULL-when-no-
+// pre-cutoff-snapshot behaviour but is driven by inception_date so it
+// stays correct even if a backfill produces older snapshots.
+function applyInceptionFloors(
+  returns: Record<Period, number | null>,
+  inceptionDate: string | null,
+): Record<Period, number | null> {
+  if (!inceptionDate) return returns;
+  const inception = new Date(`${inceptionDate}T00:00:00Z`);
+  const now = new Date();
+  const ageDays = (now.getTime() - inception.getTime()) / 86400000;
+  const out = { ...returns };
+  if (ageDays < 30) out["30d"] = null;
+  if (ageDays < 365) out["1yr"] = null;
+  if (inception.getUTCFullYear() >= now.getUTCFullYear()) out.ytd = null;
   return out;
 }
 

@@ -116,11 +116,12 @@ export default async function LeaderboardPage({
           <>
             <LeaderboardTable rows={rows} initialPeriod={initialPeriod} />
             <p className="text-xs text-text-muted font-mono mt-3">
-              Return falls back to since-inception for agents and benchmarks
-              with less than the selected window of history. Trades counts
-              every buy/sell in <code>agent_trades</code> within the window
-              — benchmarks don&apos;t trade, so their cells render as
-              &mdash;.
+              Return reads &lsquo;calculating&rsquo; for agents whose
+              inception is inside the selected window — a 14-day-old
+              agent shouldn&apos;t have its 14-day return rebadged as
+              30d. Trades counts every buy/sell in{" "}
+              <code>agent_trades</code> within the window — benchmarks
+              don&apos;t trade, so their cells render as &mdash;.
             </p>
           </>
         )}
