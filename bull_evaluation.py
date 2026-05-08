@@ -2,12 +2,12 @@
 """
 Bull Evaluation — The Smash-Hit Scout.
 
-Sends the top 100 green-eligible equities from the companies table to Claude
-Opus 4.6 for a growth/venture equity audit. Looks for companies with powerful
-fundamental trajectories in massive or rapidly expanding verticals.
-Results are written to the 'bull_eval' column in the companies table.
+Sends 100 in-screen tickers per run to Claude Opus 4.6 for a
+growth/venture equity audit. Selection is rotation-based: oldest
+``bull_eval_at`` first (NULLs first), so every screen ticker is
+revisited every ~5 days at the daily cadence.
 
-Schedule: Mondays 08:30 UTC (after bear_evaluation).
+Schedule: daily 04:30 UTC (after bear_evaluation).
 """
 
 import argparse
@@ -149,28 +149,34 @@ def setup_logging() -> logging.Logger:
 # ---------------------------------------------------------------------------
 
 
-def select_top_eligible(companies, top_n=TOP_N):
-    """
-    Filter companies with green status, sort by composite_score desc, return top N.
+def select_rotation_batch(companies, top_n=TOP_N):
+    """Pick the next batch of in-screen tickers ordered by staleness.
 
-    Returns list of company dicts.
+    Filter: in_tv_screen=True AND status doesn't start with ❌ (skips
+    not-in-screen + red-flagged rows). Sort: bull_eval_at ascending with
+    NULLs first — never-evaluated tickers go first, then longest-stale.
+    Take top_n.
     """
-    eligible = []
+    candidates = []
     for company in companies:
-        status = str(company.get("status", "")).strip()
-        if "\U0001f7e2" not in status:  # green circle emoji
+        if not company.get("in_tv_screen"):
             continue
-
-        ticker = company.get("ticker", "").strip()
+        status = str(company.get("status") or "").strip()
+        if status.startswith("❌"):
+            continue
+        ticker = (company.get("ticker") or "").strip()
         if not ticker:
             continue
+        candidates.append(company)
 
-        score = SupabaseDB.safe_float(company.get("composite_score"))
-        eligible.append((company, score if score is not None else 0.0))
+    # Sort: NULLs/empty bull_eval_at first, then ascending date string.
+    # ISO date strings sort lexicographically, so a string compare works.
+    def _sort_key(c):
+        evaled = c.get("bull_eval_at")
+        return (0 if not evaled else 1, str(evaled or ""))
 
-    # Sort by composite_score descending
-    eligible.sort(key=lambda x: x[1], reverse=True)
-    return [c for c, _ in eligible[:top_n]]
+    candidates.sort(key=_sort_key)
+    return candidates[:top_n]
 
 
 # ---------------------------------------------------------------------------
@@ -346,21 +352,13 @@ def main():
         logger.error("No companies found in the database")
         sys.exit(1)
 
-    # Select top green-eligible equities
-    top_equities = select_top_eligible(companies)
-    logger.info("Selected %d green-eligible equities for bull evaluation", len(top_equities))
+    # Select rotation batch (oldest bull_eval_at first, NULLs first)
+    top_equities = select_rotation_batch(companies)
+    logger.info("Selected %d tickers for bull evaluation (rotation by bull_eval_at)", len(top_equities))
 
     if not top_equities:
-        logger.warning("No green-eligible equities found. Nothing to do.")
-        # Log a few statuses for debugging
-        for company in companies[:5]:
-            logger.info("  %s status: [%s] repr=%r",
-                        company.get("ticker", "?"),
-                        str(company.get("status", "")).strip(),
-                        company.get("status"))
+        logger.warning("No in-screen non-excluded tickers found. Nothing to do.")
         return
-
-    top_tickers = {c["ticker"] for c in top_equities}
 
     # Build equity data blocks
     equity_blocks = []
@@ -368,7 +366,7 @@ def main():
         ticker = company["ticker"]
         block = build_equity_block(company)
         equity_blocks.append(block)
-        logger.info("  %s", ticker)
+        logger.info("  %s  (last bull_eval_at: %s)", ticker, company.get("bull_eval_at") or "never")
 
     # Build prompt
     prompt = build_bull_prompt(equity_blocks)
@@ -409,30 +407,24 @@ def main():
         logger.info("[DRY RUN] Complete. No writes performed.")
         return
 
-    # Write verdicts for top equities
+    # Write verdicts for the rotation batch
+    today_str = date.today().isoformat()
     matched = 0
     updates = []
     for company in top_equities:
         ticker = company["ticker"]
         verdict = verdicts.get(ticker)
         if verdict:
-            updates.append({"ticker": ticker, "bull_eval": verdict})
+            updates.append({
+                "ticker": ticker,
+                "bull_eval": verdict,
+                "bull_eval_at": today_str,
+            })
             matched += 1
         else:
             logger.warning("No verdict found for %s", ticker)
 
-    # Clear stale bull values for equities no longer in top list
-    clears = 0
-    for company in companies:
-        ticker = company.get("ticker", "")
-        if ticker in top_tickers:
-            continue  # handled above
-        bull_val = company.get("bull_eval")
-        if bull_val and str(bull_val).strip():
-            updates.append({"ticker": ticker, "bull_eval": None})
-            clears += 1
-
-    logger.info("Writing %d verdicts + clearing %d stale bull values", matched, clears)
+    logger.info("Writing %d verdicts", matched)
     if updates:
         db.upsert_companies_batch(updates)
 
@@ -445,17 +437,16 @@ def main():
         "duration_secs": round(elapsed, 1),
         "details": {
             "total_companies": len(companies),
-            "eligible": len(top_equities),
+            "batch_size": len(top_equities),
             "verdicts_parsed": len(verdicts),
             "passed": passed,
             "failed": failed,
-            "stale_cleared": clears,
         },
     })
 
     logger.info(
-        "=== Bull Evaluation complete. %d/%d verdicts written, %d stale cleared. (%.1fs) ===",
-        matched, len(top_equities), clears, elapsed,
+        "=== Bull Evaluation complete. %d/%d verdicts written. (%.1fs) ===",
+        matched, len(top_equities), elapsed,
     )
 
 

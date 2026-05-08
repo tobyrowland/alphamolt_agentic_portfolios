@@ -2,9 +2,9 @@ name: Bear Evaluation
 
 on:
   schedule:
-    # Sunday 04:00 UTC — runs ahead of universe-snapshot (06:00) and
-    # agent-heartbeat (07:00) so picker agents see fresh bear_eval values.
-    - cron: "0 4 * * 0"
+    # Daily 04:00 UTC — rotation batch of 100 oldest bear_eval_at.
+    # Full universe cycles every ~5 days at this cadence.
+    - cron: "0 4 * * *"
   workflow_dispatch: # Allow manual trigger from GitHub UI
 
 jobs:

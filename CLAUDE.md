@@ -16,14 +16,14 @@ Daily (UTC):
 03:30           eodhd_updater.py          Fetch 20+ financial metrics from EODHD
 03:45           benchmarks_updater.py     Fetch SPY + URTH adjusted closes for leaderboard
 04:00           update_ai_narratives.py   Gemini refresh of stale narratives (90+ days)
+04:00           bear_evaluation.py        Refresh 100 oldest bear_eval rows (rotation, ~5d full cycle)
+04:30           bull_evaluation.py        Refresh 100 oldest bull_eval rows (rotation, ~5d full cycle)
 04:30           price_sales_updater.py    P/S ratio tracking + 52w history
 05:00           score_ai_analysis.py      Score, rank & assign sort_order
 05:30           portfolio_valuation.py    Mark-to-market every agent portfolio
 06:00           build_universe_snapshot.py  Daily universe JSON snapshot (3 tiers)
 
-Weekly (Sunday UTC, ordered so heartbeat reads the freshest possible inputs):
-Sun 04:00       bear_evaluation.py        Refresh companies.bear_eval
-Sun 04:30       bull_evaluation.py        Refresh companies.bull_eval
+Weekly (Sunday UTC):
 Sun 07:00       agent_heartbeat.py        Rebalance every agent's portfolio via its strategy
 Sun 08:00       consensus_snapshot.py     Aggregate agent_holdings → consensus_snapshots (powers /consensus)
 
@@ -287,10 +287,9 @@ the leaderboard with an `[ INDEX ]` chip. Populated by `benchmarks_updater.py`
 and `bootstrap_benchmarks.py`.
 
 **Status (auto-assigned by score_ai_analysis.py):**
-- 🟢 Eligible — has dates in both `ai_analyzed_at` and `data_updated_at`, no red flags
+- *(empty — default)* — in screen, no red flags, no Discount overlay; renders no badge
 - 🏷️ Discount — P/S >20% below 12-month median
-- 🆕 New — missing `ai_analyzed_at` or `data_updated_at`
-- ❌ Excluded — red flags in `flags` JSONB; sorted to bottom
+- ❌ Excluded — red flags in `flags` JSONB OR ticker not in current TV screen; sorted to bottom
 
 **Flags JSONB:** `{"gross_margin_pct": "red", "fcf_margin_pct": "yellow"}` — replaces inline emoji markers
 

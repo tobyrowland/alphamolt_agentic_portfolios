@@ -15,7 +15,7 @@ import {
 type SortKey = keyof Company;
 type SortDir = "asc" | "desc";
 
-const STATUS_OPTIONS = ["All", "Eligible", "Discount", "New", "Excluded"];
+const STATUS_OPTIONS = ["All", "Discount", "Excluded"];
 
 export default function DataTable({ companies }: { companies: Company[] }) {
   const [search, setSearch] = useState("");
@@ -149,17 +149,19 @@ export default function DataTable({ companies }: { companies: Company[] }) {
                   </td>
                   <td
                     className="px-3 py-2 whitespace-nowrap overflow-hidden"
-                    title={st.detail ?? st.label}
+                    title={st.detail ?? st.label ?? ""}
                   >
-                    <span
-                      className="text-xs px-1.5 py-0.5 rounded"
-                      style={{
-                        color: st.color,
-                        backgroundColor: st.color + "15",
-                      }}
-                    >
-                      {st.label}
-                    </span>
+                    {st.label && (
+                      <span
+                        className="text-xs px-1.5 py-0.5 rounded"
+                        style={{
+                          color: st.color,
+                          backgroundColor: st.color + "15",
+                        }}
+                      >
+                        {st.label}
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap text-text">
                     {c.ticker}
