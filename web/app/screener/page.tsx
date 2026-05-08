@@ -22,17 +22,29 @@ export const metadata: Metadata = {
 
 async function getCompanies(): Promise<Company[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("companies")
-    .select(SCREENER_COLUMNS)
-    .order("sort_order", { ascending: true, nullsFirst: false });
+  const [companiesRes, psRes] = await Promise.all([
+    supabase
+      .from("companies")
+      .select(SCREENER_COLUMNS)
+      .order("sort_order", { ascending: true, nullsFirst: false }),
+    supabase.from("price_sales").select("ticker, median_12m"),
+  ]);
 
-  if (error) {
-    console.error("Failed to fetch companies:", error);
+  if (companiesRes.error) {
+    console.error("Failed to fetch companies:", companiesRes.error);
     return [];
   }
+  if (psRes.error) {
+    console.error("Failed to fetch price_sales:", psRes.error);
+  }
 
-  return (data ?? []) as unknown as Company[];
+  const psMap = new Map<string, number | null>(
+    ((psRes.data ?? []) as Array<{ ticker: string; median_12m: number | null }>)
+      .map((r) => [r.ticker, r.median_12m]),
+  );
+
+  const rows = (companiesRes.data ?? []) as unknown as Company[];
+  return rows.map((c) => ({ ...c, ps_median_12m: psMap.get(c.ticker) ?? null }));
 }
 
 export default async function ScreenerPage() {

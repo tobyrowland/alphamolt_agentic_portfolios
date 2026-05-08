@@ -96,22 +96,26 @@ export default function DataTable({ companies }: { companies: Company[] }) {
 
       {/* Table */}
       <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full text-sm font-mono table-fixed min-w-[1200px]">
+        <table className="w-full text-sm font-mono table-fixed min-w-[1650px]">
           <colgroup>
-            <col className="w-[50px]" />
-            <col className="w-[90px]" />
-            <col className="w-[90px]" />
-            <col className="w-[220px]" />
-            <col className="w-[70px]" />
-            <col className="w-[160px]" />
-            <col className="w-[120px]" />
-            <col className="w-[90px]" />
-            <col className="w-[70px]" />
-            <col className="w-[85px]" />
-            <col className="w-[70px]" />
-            <col className="w-[70px]" />
-            <col className="w-[70px]" />
-            <col className="w-[70px]" />
+            <col className="w-[50px]" />   {/* # */}
+            <col className="w-[90px]" />   {/* Status */}
+            <col className="w-[90px]" />   {/* Ticker */}
+            <col className="w-[220px]" />  {/* Company */}
+            <col className="w-[70px]" />   {/* Score */}
+            <col className="w-[160px]" />  {/* Sector */}
+            <col className="w-[120px]" />  {/* Country */}
+            <col className="w-[90px]" />   {/* Price */}
+            <col className="w-[70px]" />   {/* P/S */}
+            <col className="w-[80px]" />   {/* P/S Med */}
+            <col className="w-[85px]" />   {/* Rev Gr% */}
+            <col className="w-[70px]" />   {/* GM% */}
+            <col className="w-[75px]" />   {/* FCF M% */}
+            <col className="w-[70px]" />   {/* R40 */}
+            <col className="w-[90px]" />   {/* 52w vs SPY */}
+            <col className="w-[70px]" />   {/* Rating */}
+            <col className="w-[70px]" />   {/* Bear */}
+            <col className="w-[70px]" />   {/* Bull */}
           </colgroup>
           <thead>
             <tr className="border-b border-border bg-bg-card">
@@ -124,8 +128,12 @@ export default function DataTable({ companies }: { companies: Company[] }) {
               <Th onClick={() => handleSort("country")} active={sortKey === "country"} dir={sortDir} tooltip="Country of incorporation / primary listing.">Country</Th>
               <Th onClick={() => handleSort("price")} active={sortKey === "price"} dir={sortDir} tooltip="Latest TradingView close price (USD for US listings; native currency otherwise).">Price</Th>
               <Th onClick={() => handleSort("ps_now")} active={sortKey === "ps_now"} dir={sortDir} tooltip="Trailing-twelve-month price-to-sales ratio.">P/S</Th>
+              <Th onClick={() => handleSort("ps_median_12m")} active={sortKey === "ps_median_12m"} dir={sortDir} tooltip="12-month median P/S — anchor for 'is this expensive?'. The Discount badge fires when current P/S is >20% below this.">P/S Med</Th>
               <Th onClick={() => handleSort("rev_growth_ttm_pct")} active={sortKey === "rev_growth_ttm_pct"} dir={sortDir} tooltip="TTM revenue growth — year-over-year percent change.">Rev Gr%</Th>
               <Th onClick={() => handleSort("gross_margin_pct")} active={sortKey === "gross_margin_pct"} dir={sortDir} tooltip="Gross margin (TTM). Screen requires >25%.">GM%</Th>
+              <Th onClick={() => handleSort("fcf_margin_pct")} active={sortKey === "fcf_margin_pct"} dir={sortDir} tooltip="Free cash flow margin (TTM). Positive means the business funds itself from operations.">FCF M%</Th>
+              <Th onClick={() => handleSort("rule_of_40")} active={sortKey === "rule_of_40"} dir={sortDir} tooltip="Rule of 40: revenue growth + operating margin. Above 40 is the canonical SaaS/growth quality bar.">R40</Th>
+              <Th onClick={() => handleSort("perf_52w_vs_spy")} active={sortKey === "perf_52w_vs_spy"} dir={sortDir} tooltip="52-week relative performance vs S&P 500. Capped at +40% in the score (blow-off-top guard); below -50% disqualifies (falling-knife guard).">52w vs SPY</Th>
               <Th onClick={() => handleSort("rating")} active={sortKey === "rating"} dir={sortDir} tooltip="TradingView technical/analyst rating. 1.0 = strong buy, 5.0 = strong sell. Score multiplier tapers from 1.21 and disqualifies above 1.6.">Rating</Th>
               <Th onClick={() => handleSort("bear_eval")} active={sortKey === "bear_eval"} dir={sortDir} tooltip="Forensic fundamental-health audit by Gemini 2.5 Flash. ✅ pass / ❌ fail. Hover a row's badge for the rationale. Refreshed daily on a ~5-day rotation.">Bear</Th>
               <Th onClick={() => handleSort("bull_eval")} active={sortKey === "bull_eval"} dir={sortDir} tooltip="Growth/venture equity audit by Claude Opus 4.6 — looks for 'smash hits' in expanding verticals. ✅ pass / ❌ fail. Hover a row's badge for the rationale. Refreshed daily on a ~5-day rotation.">Bull</Th>
@@ -168,7 +176,7 @@ export default function DataTable({ companies }: { companies: Company[] }) {
                   </td>
                   <td
                     className="px-3 py-2 truncate"
-                    title={c.company_name || ""}
+                    title={c.short_outlook || c.company_name || ""}
                   >
                     <Link
                       href={`/company/${c.ticker}`}
@@ -198,6 +206,9 @@ export default function DataTable({ companies }: { companies: Company[] }) {
                   <td className="px-3 py-2 text-right whitespace-nowrap">
                     {formatNumber(c.ps_now, { decimals: 1 })}
                   </td>
+                  <td className="px-3 py-2 text-right text-text-dim whitespace-nowrap">
+                    {formatNumber(c.ps_median_12m, { decimals: 1 })}
+                  </td>
                   <td className="px-3 py-2 text-right whitespace-nowrap">
                     <span
                       className={
@@ -218,6 +229,43 @@ export default function DataTable({ companies }: { companies: Company[] }) {
                       }
                     >
                       {formatPct(c.gross_margin_pct)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <span
+                      className={
+                        (c.fcf_margin_pct ?? 0) > 0
+                          ? "text-green"
+                          : "text-text-dim"
+                      }
+                    >
+                      {formatPct(c.fcf_margin_pct)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <span
+                      className={
+                        (c.rule_of_40 ?? 0) >= 40
+                          ? "text-green"
+                          : "text-text-dim"
+                      }
+                    >
+                      {formatNumber(c.rule_of_40, { decimals: 1 })}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <span
+                      className={
+                        (c.perf_52w_vs_spy ?? 0) >= 0
+                          ? "text-green"
+                          : "text-text-dim"
+                      }
+                    >
+                      {formatPct(
+                        c.perf_52w_vs_spy != null
+                          ? c.perf_52w_vs_spy * 100
+                          : null,
+                      )}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-right text-text-dim whitespace-nowrap">

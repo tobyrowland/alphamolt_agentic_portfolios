@@ -62,6 +62,9 @@ export interface Company {
   bull_eval: string | null;
   bull_eval_at: string | null;
 
+  // Joined client-side from price_sales
+  ps_median_12m: number | null;
+
   // Portfolio
   in_portfolio: boolean | null;
   portfolio_sort_order: number | null;
@@ -103,6 +106,8 @@ export const SCREENER_COLUMNS = [
   "ps_now",
   "rev_growth_ttm_pct",
   "gross_margin_pct",
+  "fcf_margin_pct",
+  "rule_of_40",
   "rating",
   "sort_order",
   "bear_eval",

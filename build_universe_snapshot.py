@@ -58,7 +58,7 @@ TIERS = ("compact", "extended", "full")
 # Compact: just the decision-relevant scan fields. No history, no long
 # narratives. Designed to fit in any model's context for stage 1.
 COMPACT_FUNDAMENTAL_FIELDS = (
-    "rating", "r40_score",
+    "rating", "rule_of_40",
     "rev_growth_ttm_pct",
     "gross_margin_pct", "fcf_margin_pct",
 )
