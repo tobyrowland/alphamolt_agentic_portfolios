@@ -56,9 +56,13 @@ and score_ai_analysis.py to avoid duplicating the screening code.
 ## Scripts
 
 ### nightly_screen.py (03:00 UTC daily)
-TradingView screener over the US-listed universe (NYSE/NASDAQ/AMEX, incl. ADRs).
-Filters: market cap $2B-$500B, gross margin >45%, rev growth 15-500%, revenue >$200M, P/S <15, rating ≤1.8.
+TradingView screener over the US-listed universe (NYSE/NASDAQ/AMEX/NYSEARCA/
+BATS/ARCA, incl. ADRs that primary-list on a US exchange).
+Filters: market cap $2B-$500B, gross margin >25%, rev growth 10-500%, revenue >$100M, P/S <15, rating ≤2.5.
 Excludes: China, Hong Kong, Taiwan, Real Estate, REIT, Non-Energy Minerals, Finance, Utilities.
+Also drops rows whose `exchange` is not in `US_EXCHANGES` (OTC pink-sheet
+ADRs and primary foreign listings that TV's `america` market sometimes
+returns) — keeps Capcom/UCB/EssilorLuxottica from appearing as 2-3 dupes.
 Adds any new tickers to the `companies` table. Backfills country/sector for existing tickers.
 
 ### eodhd_updater.py (03:30 UTC daily)

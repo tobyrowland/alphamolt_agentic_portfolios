@@ -31,13 +31,20 @@ EXCLUDED_SECTORS = {
     "Non-Energy Minerals", "Finance", "Utilities",
 }
 
-# Markets to screen. TradingView's "america" market covers NYSE/NASDAQ/
-# AMEX — the same set as agent_strategies.US_EXCHANGES — and includes
-# ADRs (foreign companies whose shares trade on US exchanges in USD).
-# Non-US markets are excluded because PortfolioManager treats every
+# Markets to screen. TradingView's "america" market nominally covers
+# NYSE/NASDAQ/AMEX but in practice also returns OTC pink-sheet ADRs and
+# some primary foreign listings. We post-filter on `exchange ∈
+# US_EXCHANGES` so only NYSE/NASDAQ/AMEX (incl. NYSEARCA/BATS/ARCA)
+# names — and US-listed ADRs of foreign companies — survive. Non-US
+# markets are excluded because PortfolioManager treats every
 # companies.price as USD; until we add FX, agents can only safely trade
 # US-listed names.
 MARKETS = ["america"]
+
+# US exchange codes accepted by the screener — same set as
+# agent_strategies.US_EXCHANGES (kept inline rather than imported to
+# keep tv_screen.py importable without the strategies module).
+US_EXCHANGES = {"NYSE", "NASDAQ", "AMEX", "NYSEARCA", "BATS", "ARCA"}
 
 
 def clean_ticker(raw_name: str) -> str:
@@ -85,11 +92,11 @@ def _screen_markets(markets: list[str], spy_perf_y: float, logger) -> list[dict]
             .select(*TV_SELECT_FIELDS)
             .where(
                 col("market_cap_basic").between(2_000_000_000, 500_000_000_000),
-                col("gross_profit_margin_fy") > 45,
-                col("total_revenue_yoy_growth_ttm").between(15, 500),
-                col("total_revenue_ttm") > 200_000_000,
+                col("gross_profit_margin_fy") > 25,
+                col("total_revenue_yoy_growth_ttm").between(10, 500),
+                col("total_revenue_ttm") > 100_000_000,
                 col("price_revenue_ttm") < 15,
-                col("recommendation_mark") <= 1.8,
+                col("recommendation_mark") <= 2.5,
                 col("sector").not_in(["Finance", "Utilities", "Non-Energy Minerals"]),
             )
             .limit(5000)
@@ -104,6 +111,7 @@ def _screen_markets(markets: list[str], spy_perf_y: float, logger) -> list[dict]
     logger.info("Unique sectors in results (%d): %s", len(unique_sectors), sorted(unique_sectors))
 
     equities = []
+    dropped_exchange_count = 0
     for _, row in df.iterrows():
         raw_name = str(row.get("name", ""))
         ticker = clean_ticker(raw_name)
@@ -112,13 +120,16 @@ def _screen_markets(markets: list[str], spy_perf_y: float, logger) -> list[dict]
 
         country = str(row.get("country", ""))
         sector = str(row.get("sector", ""))
+        exchange = str(row.get("exchange", "")).strip().upper()
 
         if country in EXCLUDED_COUNTRIES:
             continue
         if sector in EXCLUDED_SECTORS:
             continue
+        if exchange not in US_EXCHANGES:
+            dropped_exchange_count += 1
+            continue
 
-        exchange = str(row.get("exchange", ""))
         company_name = str(row.get("description", ""))
         price = row.get("close")
 
@@ -149,6 +160,12 @@ def _screen_markets(markets: list[str], spy_perf_y: float, logger) -> list[dict]
             "perf_52w_vs_spy": perf_52w_vs_spy,
             "rating": rating,
         })
+
+    if dropped_exchange_count:
+        logger.info(
+            "Dropped %d non-US-exchange rows (OTC pinks, foreign primaries)",
+            dropped_exchange_count,
+        )
 
     return equities
 
