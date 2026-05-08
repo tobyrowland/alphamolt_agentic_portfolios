@@ -115,20 +115,20 @@ export default function DataTable({ companies }: { companies: Company[] }) {
           </colgroup>
           <thead>
             <tr className="border-b border-border bg-bg-card">
-              <Th onClick={() => handleSort("sort_order")} active={sortKey === "sort_order"} dir={sortDir}>#</Th>
-              <Th onClick={() => handleSort("status")} active={sortKey === "status"} dir={sortDir}>Status</Th>
-              <Th onClick={() => handleSort("ticker")} active={sortKey === "ticker"} dir={sortDir}>Ticker</Th>
-              <Th onClick={() => handleSort("company_name")} active={sortKey === "company_name"} dir={sortDir}>Company</Th>
-              <Th onClick={() => handleSort("composite_score")} active={sortKey === "composite_score"} dir={sortDir}>Score</Th>
-              <Th onClick={() => handleSort("sector")} active={sortKey === "sector"} dir={sortDir}>Sector</Th>
-              <Th onClick={() => handleSort("country")} active={sortKey === "country"} dir={sortDir}>Country</Th>
-              <Th onClick={() => handleSort("price")} active={sortKey === "price"} dir={sortDir}>Price</Th>
-              <Th onClick={() => handleSort("ps_now")} active={sortKey === "ps_now"} dir={sortDir}>P/S</Th>
-              <Th onClick={() => handleSort("rev_growth_ttm_pct")} active={sortKey === "rev_growth_ttm_pct"} dir={sortDir}>Rev Gr%</Th>
-              <Th onClick={() => handleSort("gross_margin_pct")} active={sortKey === "gross_margin_pct"} dir={sortDir}>GM%</Th>
-              <Th onClick={() => handleSort("rating")} active={sortKey === "rating"} dir={sortDir}>Rating</Th>
-              <Th onClick={() => handleSort("bear_eval")} active={sortKey === "bear_eval"} dir={sortDir}>Bear</Th>
-              <Th onClick={() => handleSort("bull_eval")} active={sortKey === "bull_eval"} dir={sortDir}>Bull</Th>
+              <Th onClick={() => handleSort("sort_order")} active={sortKey === "sort_order"} dir={sortDir} tooltip="Composite rank (1 = best). Recomputed daily.">#</Th>
+              <Th onClick={() => handleSort("status")} active={sortKey === "status"} dir={sortDir} tooltip="Discount: P/S >20% below 12-month median. Excluded: red flags or out of TV screen. Otherwise: default-eligible (no badge).">Status</Th>
+              <Th onClick={() => handleSort("ticker")} active={sortKey === "ticker"} dir={sortDir} tooltip="Exchange ticker. Click the row for the company detail page.">Ticker</Th>
+              <Th onClick={() => handleSort("company_name")} active={sortKey === "company_name"} dir={sortDir} tooltip="Company name.">Company</Th>
+              <Th onClick={() => handleSort("composite_score")} active={sortKey === "composite_score"} dir={sortDir} tooltip="Composite score (0-100). Weights: Rule of 40 ×47%, P/S inverted ×29%, 52w perf vs SPY ×24%. Penalised by red/yellow flags and weak analyst rating.">Score</Th>
+              <Th onClick={() => handleSort("sector")} active={sortKey === "sector"} dir={sortDir} tooltip="TradingView sector classification.">Sector</Th>
+              <Th onClick={() => handleSort("country")} active={sortKey === "country"} dir={sortDir} tooltip="Country of incorporation / primary listing.">Country</Th>
+              <Th onClick={() => handleSort("price")} active={sortKey === "price"} dir={sortDir} tooltip="Latest TradingView close price (USD for US listings; native currency otherwise).">Price</Th>
+              <Th onClick={() => handleSort("ps_now")} active={sortKey === "ps_now"} dir={sortDir} tooltip="Trailing-twelve-month price-to-sales ratio.">P/S</Th>
+              <Th onClick={() => handleSort("rev_growth_ttm_pct")} active={sortKey === "rev_growth_ttm_pct"} dir={sortDir} tooltip="TTM revenue growth — year-over-year percent change.">Rev Gr%</Th>
+              <Th onClick={() => handleSort("gross_margin_pct")} active={sortKey === "gross_margin_pct"} dir={sortDir} tooltip="Gross margin (TTM). Screen requires >25%.">GM%</Th>
+              <Th onClick={() => handleSort("rating")} active={sortKey === "rating"} dir={sortDir} tooltip="TradingView technical/analyst rating. 1.0 = strong buy, 5.0 = strong sell. Score multiplier tapers from 1.21 and disqualifies above 1.6.">Rating</Th>
+              <Th onClick={() => handleSort("bear_eval")} active={sortKey === "bear_eval"} dir={sortDir} tooltip="Forensic fundamental-health audit by Gemini 2.5 Flash. ✅ pass / ❌ fail. Hover a row's badge for the rationale. Refreshed daily on a ~5-day rotation.">Bear</Th>
+              <Th onClick={() => handleSort("bull_eval")} active={sortKey === "bull_eval"} dir={sortDir} tooltip="Growth/venture equity audit by Claude Opus 4.6 — looks for 'smash hits' in expanding verticals. ✅ pass / ❌ fail. Hover a row's badge for the rationale. Refreshed daily on a ~5-day rotation.">Bull</Th>
             </tr>
           </thead>
           <tbody>
@@ -260,15 +260,18 @@ function Th({
   onClick,
   active,
   dir,
+  tooltip,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   active: boolean;
   dir: SortDir;
+  tooltip?: string;
 }) {
   return (
     <th
       onClick={onClick}
+      title={tooltip}
       className="px-3 py-2.5 text-left text-xs uppercase tracking-wider text-text-dim cursor-pointer hover:text-text select-none whitespace-nowrap"
     >
       <span className={active ? "text-green" : ""}>
