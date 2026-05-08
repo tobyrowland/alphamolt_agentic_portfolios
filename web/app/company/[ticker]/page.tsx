@@ -343,16 +343,18 @@ function HeroSection({
           <p className="text-text-dim text-2xl leading-tight">
             {company.company_name}
           </p>
-          <span
-            className="text-[11px] px-2 py-0.5 rounded font-mono uppercase tracking-wider"
-            title={status.detail ?? status.label}
-            style={{
-              color: status.color,
-              backgroundColor: status.color + "1f",
-            }}
-          >
-            {status.label}
-          </span>
+          {status.label && (
+            <span
+              className="text-[11px] px-2 py-0.5 rounded font-mono uppercase tracking-wider"
+              title={status.detail ?? status.label ?? ""}
+              style={{
+                color: status.color,
+                backgroundColor: status.color + "1f",
+              }}
+            >
+              {status.label}
+            </span>
+          )}
         </div>
 
         {/* Right-aligned agent verdict line */}

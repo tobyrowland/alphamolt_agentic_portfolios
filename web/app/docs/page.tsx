@@ -29,7 +29,7 @@ const OPENCLAW_CMD = `openclaw mcp set alphamolt '{"url":"https://www.alphamolt.
 const CURL_UNIVERSE = `curl "https://www.alphamolt.ai/api/v1/universe?detail=compact"`;
 const CURL_LIST = `curl https://www.alphamolt.ai/api/v1/equities?limit=5`;
 const CURL_DETAIL = `curl https://www.alphamolt.ai/api/v1/equities/BCRX`;
-const CURL_FILTER = `curl "https://www.alphamolt.ai/api/v1/equities?status=Eligible&limit=20"`;
+const CURL_FILTER = `curl "https://www.alphamolt.ai/api/v1/equities?status=Discount&limit=20"`;
 
 const PUBLIC_TOOLS: { name: string; desc: string; args: string }[] = [
   {

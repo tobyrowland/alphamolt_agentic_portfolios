@@ -31,10 +31,12 @@ load_dotenv()
 
 NULL_VALUE = "—"
 
-# Status priority for sorting (lower = higher priority)
+# Status priority for sorting (lower = higher priority).
+# Default-eligible rows have an empty status string and are treated the same
+# as 🏷️ Discount; ❌ Excluded falls to the bottom.
 STATUS_PRIORITY = {
-    "🏷️": 1, "🟢 Eligible": 1, "🟢": 1,
-    "🆕 New": 2, "🆕": 2,
+    "": 1,
+    "🏷️": 1,
     "❌": 3,
 }
 
@@ -94,39 +96,37 @@ def _status_base(status_str):
     """Extract the emoji prefix from a status string."""
     if not status_str:
         return ""
-    for emoji in ("🏷️", "🟢", "🆕", "❌"):
+    for emoji in ("🏷️", "❌"):
         if status_str.startswith(emoji):
             return emoji
     return status_str
 
 
 def compute_status(entry, ps_data, screened_tickers):
-    """Determine status for a single ticker."""
+    """Determine status for a single ticker.
+
+    Default state is empty string (rendered as no badge by the UI).
+    Only exception states get a non-empty status: ❌ Excluded for
+    out-of-screen / red-flagged rows, 🏷️ Discount for cheap P/S.
+    """
     ticker = entry["ticker"]
     red_flags = entry.get("_red_flags", [])
-    has_ai = bool(entry.get("ai_analyzed_at"))
-    has_eodhd = bool(entry.get("data_updated_at"))
+
+    if ticker not in screened_tickers:
+        return "❌ Not in current screen"
 
     if red_flags:
         flag_names = ", ".join(red_flags[:3])
         return f"❌ {flag_names}"
 
-    sector = entry.get("sector", "")
-    net_margin = entry.get("net_margin_pct")
-    if isinstance(net_margin, (int, float)):
-        if sector == "Health Technology" and net_margin < 0:
-            return "❌ Unprofitable Health Tech"
+    ps_row = ps_data.get(ticker, {})
+    ps_now = ps_row.get("ps_now")
+    median = ps_row.get("12m_median") if isinstance(ps_row.get("12m_median"), (int, float)) else None
+    if ps_now is not None and median is not None and median > 0 and ps_now / median < 0.80:
+        pct = round((1 - ps_now / median) * 100)
+        return f"🏷️ -{pct}% vs. 52w p/s"
 
-    if has_ai and has_eodhd:
-        ps_row = ps_data.get(ticker, {})
-        ps_now = ps_row.get("ps_now")
-        median = ps_row.get("12m_median") if isinstance(ps_row.get("12m_median"), (int, float)) else None
-        if ps_now is not None and median is not None and median > 0 and ps_now / median < 0.80:
-            pct = round((1 - ps_now / median) * 100)
-            return f"🏷️ -{pct}% vs. 52w p/s"
-        return "🟢 Eligible"
-
-    return "🆕 New"
+    return ""
 
 
 def _rating_multiplier(rating):

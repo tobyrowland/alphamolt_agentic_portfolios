@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Bear Evaluation — Fundamental Sentinel for Top Equities.
+Bear Evaluation — Fundamental Sentinel.
 
-Sends the top 100 green-eligible equities from the companies table to
-Gemini 2.5 Flash for a forensic fundamental health audit. Each equity
-receives a pass or fail verdict based on operational integrity and
-financial trajectory. Results are written to the `bear_eval` column
-in the companies table via Supabase.
+Sends 100 in-screen tickers per run to Gemini 2.5 Flash for a forensic
+fundamental health audit. Selection is rotation-based: oldest
+``bear_eval_at`` first (NULLs first), so every screen ticker is
+revisited every ~5 days at the daily cadence.
 
-Schedule: Mondays 08:00 UTC.
+Schedule: daily 04:00 UTC.
 """
 
 import argparse
@@ -147,28 +146,32 @@ def setup_logging() -> logging.Logger:
 # ---------------------------------------------------------------------------
 
 
-def select_top_eligible(companies: list[dict], top_n: int = TOP_N) -> list[dict]:
-    """
-    Filter companies with green status, sort by composite_score desc, return top N.
+def select_rotation_batch(companies: list[dict], top_n: int = TOP_N) -> list[dict]:
+    """Pick the next batch of in-screen tickers ordered by staleness.
 
-    Returns list of company dicts.
+    Filter: in_tv_screen=True AND status doesn't start with ❌ (skips
+    not-in-screen + red-flagged rows). Sort: bear_eval_at ascending with
+    NULLs first — never-evaluated tickers go first, then longest-stale.
+    Take top_n.
     """
-    eligible = []
+    candidates = []
     for company in companies:
-        status = (company.get("status") or "").strip()
-        if "\U0001f7e2" not in status:  # green circle emoji
+        if not company.get("in_tv_screen"):
             continue
-
+        status = str(company.get("status") or "").strip()
+        if status.startswith("❌"):
+            continue
         ticker = (company.get("ticker") or "").strip()
         if not ticker:
             continue
+        candidates.append(company)
 
-        score = SupabaseDB.safe_float(company.get("composite_score"))
-        eligible.append((company, score if score is not None else 0.0))
+    def _sort_key(c):
+        evaled = c.get("bear_eval_at")
+        return (0 if not evaled else 1, str(evaled or ""))
 
-    # Sort by composite_score descending
-    eligible.sort(key=lambda x: x[1], reverse=True)
-    return [company for company, _ in eligible[:top_n]]
+    candidates.sort(key=_sort_key)
+    return candidates[:top_n]
 
 
 # ---------------------------------------------------------------------------
@@ -350,19 +353,13 @@ def main():
         logger.error("No companies found in database")
         sys.exit(1)
 
-    # Select top green-eligible equities
-    top_equities = select_top_eligible(all_companies)
-    logger.info("Selected %d green-eligible equities for bear evaluation", len(top_equities))
+    # Select rotation batch (oldest bear_eval_at first, NULLs first)
+    top_equities = select_rotation_batch(all_companies)
+    logger.info("Selected %d tickers for bear evaluation (rotation by bear_eval_at)", len(top_equities))
 
     if not top_equities:
-        logger.warning("No green-eligible equities found. Nothing to do.")
-        # Log some sample statuses for debugging
-        for company in all_companies[:5]:
-            logger.info("  %s status: [%s]", company.get("ticker", "?"),
-                        company.get("status", ""))
+        logger.warning("No in-screen non-excluded tickers found. Nothing to do.")
         return
-
-    top_tickers = {(c.get("ticker") or "").strip() for c in top_equities}
 
     # Build equity data blocks
     equity_blocks = []
@@ -426,27 +423,12 @@ def main():
         else:
             logger.warning("No verdict found for %s", ticker)
 
-    # Clear stale bear values for equities no longer in top list
-    clears = 0
-    for company in all_companies:
-        ticker = (company.get("ticker") or "").strip()
-        if ticker in top_tickers:
-            continue  # handled above
-        # Check if bear_eval column has a value
-        bear_val = (company.get("bear_eval") or "").strip()
-        if bear_val:
-            db.upsert_company(ticker, {
-                "bear_eval": None,
-                "bear_eval_at": None,
-            })
-            clears += 1
-
-    logger.info("Writing %d verdicts + clearing %d stale bear values", matched, clears)
+    logger.info("Writing %d verdicts", matched)
 
     elapsed = time.time() - start_time
     logger.info(
-        "=== Bear Evaluation complete. %d/%d verdicts written, %d stale cleared. (%.1fs) ===",
-        matched, len(top_equities), clears, elapsed,
+        "=== Bear Evaluation complete. %d/%d verdicts written. (%.1fs) ===",
+        matched, len(top_equities), elapsed,
     )
 
 

@@ -115,7 +115,7 @@ function buildServer(agent: Agent | null): McpServer {
           .string()
           .optional()
           .describe(
-            "Filter by screener status (substring, case-insensitive). Examples: 'Eligible', 'Discount', 'New', 'Excluded'.",
+            "Filter by screener status (substring, case-insensitive). Examples: 'Discount', 'Excluded'. Default-eligible rows have empty status.",
           ),
         sector: z.string().optional().describe("Exact sector match."),
         country: z.string().optional().describe("Exact country match."),

@@ -85,7 +85,7 @@ export const OPENAPI_SPEC = {
             required: false,
             schema: { type: "string" },
             description:
-              "Filter by screener status (case-insensitive substring match). Examples: 'Eligible', 'Discount', 'New', 'Excluded'.",
+              "Filter by screener status (case-insensitive substring match). Examples: 'Discount', 'Excluded'. Default-eligible rows have empty status.",
           },
           {
             name: "sector",
