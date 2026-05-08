@@ -107,6 +107,12 @@ def compute_status(entry, ps_data, screened_tickers):
     has_ai = bool(entry.get("ai_analyzed_at"))
     has_eodhd = bool(entry.get("data_updated_at"))
 
+    # Rows that no longer appear in the live TV screen are excluded
+    # outright — covers historical/foreign tickers that can't be
+    # deleted because of FK references from agent_holdings/agent_trades.
+    if ticker not in screened_tickers:
+        return "❌ Not in current screen"
+
     if red_flags:
         flag_names = ", ".join(red_flags[:3])
         return f"❌ {flag_names}"
