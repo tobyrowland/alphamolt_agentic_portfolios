@@ -7,7 +7,6 @@ import {
   formatPct,
   formatPrice,
   formatNumber,
-  parseStatus,
   parseEval,
   extractEvalRationale,
 } from "@/lib/constants";
@@ -15,11 +14,8 @@ import {
 type SortKey = keyof Company;
 type SortDir = "asc" | "desc";
 
-const STATUS_OPTIONS = ["All", "Discount", "Excluded"];
-
 export default function DataTable({ companies }: { companies: Company[] }) {
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("All");
   const [sortKey, setSortKey] = useState<SortKey>("sort_order");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
@@ -46,10 +42,6 @@ export default function DataTable({ companies }: { companies: Company[] }) {
       );
     }
 
-    if (statusFilter !== "All") {
-      rows = rows.filter((c) => c.status?.includes(statusFilter));
-    }
-
     return [...rows].sort((a, b) => {
       const av = a[sortKey];
       const bv = b[sortKey];
@@ -59,11 +51,11 @@ export default function DataTable({ companies }: { companies: Company[] }) {
       const cmp = av < bv ? -1 : av > bv ? 1 : 0;
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [companies, search, statusFilter, sortKey, sortDir]);
+  }, [companies, search, sortKey, sortDir]);
 
   return (
     <div>
-      {/* Filters */}
+      {/* Search */}
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <input
           type="text"
@@ -72,21 +64,6 @@ export default function DataTable({ companies }: { companies: Company[] }) {
           onChange={(e) => setSearch(e.target.value)}
           className="flex-1 bg-bg-card border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
         />
-        <div className="flex gap-1">
-          {STATUS_OPTIONS.map((s) => (
-            <button
-              key={s}
-              onClick={() => setStatusFilter(s)}
-              className={`px-3 py-2 text-xs font-mono rounded transition-colors ${
-                statusFilter === s
-                  ? "bg-green/10 text-green border border-green/30"
-                  : "text-text-dim border border-border hover:border-border-light"
-              }`}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* Count */}
@@ -96,10 +73,9 @@ export default function DataTable({ companies }: { companies: Company[] }) {
 
       {/* Table */}
       <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full text-sm font-mono table-fixed min-w-[1650px]">
+        <table className="w-full text-sm font-mono table-fixed min-w-[1560px]">
           <colgroup>
             <col className="w-[50px]" />   {/* # */}
-            <col className="w-[90px]" />   {/* Status */}
             <col className="w-[90px]" />   {/* Ticker */}
             <col className="w-[220px]" />  {/* Company */}
             <col className="w-[70px]" />   {/* Score */}
@@ -120,7 +96,6 @@ export default function DataTable({ companies }: { companies: Company[] }) {
           <thead>
             <tr className="border-b border-border bg-bg-card">
               <Th onClick={() => handleSort("sort_order")} active={sortKey === "sort_order"} dir={sortDir} tooltip="Composite rank (1 = best). Recomputed daily.">#</Th>
-              <Th onClick={() => handleSort("status")} active={sortKey === "status"} dir={sortDir} tooltip="Discount: P/S >20% below 12-month median. Excluded: red flags or out of TV screen. Otherwise: default-eligible (no badge).">Status</Th>
               <Th onClick={() => handleSort("ticker")} active={sortKey === "ticker"} dir={sortDir} tooltip="Exchange ticker. Click the row for the company detail page.">Ticker</Th>
               <Th onClick={() => handleSort("company_name")} active={sortKey === "company_name"} dir={sortDir} tooltip="Company name.">Company</Th>
               <Th onClick={() => handleSort("composite_score")} active={sortKey === "composite_score"} dir={sortDir} tooltip="Composite score (0-100). Weights: Rule of 40 ×47%, P/S inverted ×29%, 52w perf vs SPY ×24%. Penalised by red/yellow flags and weak analyst rating.">Score</Th>
@@ -141,7 +116,6 @@ export default function DataTable({ companies }: { companies: Company[] }) {
           </thead>
           <tbody>
             {filtered.map((c) => {
-              const st = parseStatus(c.status);
               const bear = parseEval(c.bear_eval);
               const bull = parseEval(c.bull_eval);
               const bearRationale = extractEvalRationale(c.bear_eval);
@@ -154,22 +128,6 @@ export default function DataTable({ companies }: { companies: Company[] }) {
                 >
                   <td className="px-3 py-2 text-text-muted text-right whitespace-nowrap">
                     {c.sort_order ?? "--"}
-                  </td>
-                  <td
-                    className="px-3 py-2 whitespace-nowrap overflow-hidden"
-                    title={st.detail ?? st.label ?? ""}
-                  >
-                    {st.label && (
-                      <span
-                        className="text-xs px-1.5 py-0.5 rounded"
-                        style={{
-                          color: st.color,
-                          backgroundColor: st.color + "15",
-                        }}
-                      >
-                        {st.label}
-                      </span>
-                    )}
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap text-text">
                     {c.ticker}
