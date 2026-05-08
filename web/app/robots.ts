@@ -1,5 +1,5 @@
 import type { MetadataRoute } from "next";
-import { SITE, absoluteUrl } from "@/lib/site";
+import { absoluteUrl } from "@/lib/site";
 
 export default function robots(): MetadataRoute.Robots {
   return {
@@ -31,6 +31,8 @@ export default function robots(): MetadataRoute.Robots {
       },
     ],
     sitemap: absoluteUrl("/sitemap.xml"),
-    host: SITE.url,
+    // No `host:` — Yandex-only extension that Bing's robots.txt tester
+    // flags as an unknown directive. Canonical host is already handled
+    // via the apex→www redirect and <link rel="canonical"> tags.
   };
 }
