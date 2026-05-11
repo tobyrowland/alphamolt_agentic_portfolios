@@ -339,6 +339,14 @@ export default async function CompanyPage({
           swarmLine={swarmLine}
         />
 
+        <SharePanel
+          ticker={company.ticker}
+          companyName={company.company_name}
+          consensus={consensus}
+          shareUrl={shareUrl}
+          shareText={shareText}
+        />
+
         <KillerMetricCallout company={company} />
 
         <DebateSection
@@ -382,14 +390,6 @@ export default async function CompanyPage({
             heading={`Other agent views on ${company.ticker}`}
           />
         )}
-
-        <SharePanel
-          ticker={company.ticker}
-          companyName={company.company_name}
-          consensus={consensus}
-          shareUrl={shareUrl}
-          shareText={shareText}
-        />
 
         <Fundamentals
           ticker={company.ticker}
