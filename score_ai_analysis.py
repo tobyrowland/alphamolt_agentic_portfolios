@@ -92,6 +92,24 @@ def parse_rating_numeric(rating_str):
     return None
 
 
+def parse_eval_pass(eval_str):
+    """Return True if the eval verdict is a Green Tick, False for a Red X.
+
+    Cells are written by bull_evaluation.py / bear_evaluation.py as
+    "✅ (rationale)" or "❌ rationale" (Unicode U+2705 / U+274C).
+    Empty / unrecognised cells return None — treated by the scoring
+    function as "no signal" (multiplier=1.0), not "fail".
+    """
+    if not eval_str:
+        return None
+    s = str(eval_str).strip()
+    if s.startswith("✅"):
+        return True
+    if s.startswith("❌"):
+        return False
+    return None
+
+
 def _status_base(status_str):
     """Extract the emoji prefix from a status string."""
     if not status_str:
@@ -121,7 +139,10 @@ def compute_status(entry, ps_data, screened_tickers):
 
     ps_row = ps_data.get(ticker, {})
     ps_now = ps_row.get("ps_now")
-    median = ps_row.get("12m_median") if isinstance(ps_row.get("12m_median"), (int, float)) else None
+    # Column is `median_12m` in price_sales (not `12m_median` — that earlier
+    # spelling silently suppressed every Discount badge because the lookup
+    # always returned None).
+    median = ps_row.get("median_12m") if isinstance(ps_row.get("median_12m"), (int, float)) else None
     if ps_now is not None and median is not None and median > 0 and ps_now / median < 0.80:
         pct = round((1 - ps_now / median) * 100)
         return f"🏷️ -{pct}% vs. 52w p/s"
@@ -160,13 +181,45 @@ def _collar_perf(perf):
     return min(perf, 0.4)
 
 
+def _ai_multiplier(bull_pass, bear_pass):
+    """4-way AI verdict multiplier (bull × bear treated as one 2-bit signal).
+
+    bull=PASS bear=PASS  → 1.30  (dual-positive — real opportunity)
+    bull=FAIL bear=PASS  → 1.00  (sound but no edge — default for screen)
+    bull=PASS bear=FAIL  → 0.70  (good story, red flags)
+    bull=FAIL bear=FAIL  → 0.40  (avoid)
+    either eval missing  → 1.00  (no penalty for stale / unevaluated rows)
+    """
+    if bull_pass is None or bear_pass is None:
+        return 1.0
+    if bull_pass and bear_pass:
+        return 1.30
+    if bull_pass and not bear_pass:
+        return 0.70
+    if not bull_pass and bear_pass:
+        return 1.00
+    return 0.40
+
+
 def compute_composite_score(row_data, all_rows):
     """Calculate composite score using percentile-based weighting.
 
-    Base score (0–100) from three factors, then multiplied by a rating gate.
-    Performance is collared: < -0.5 disqualifies, > 0.4 capped.
-    Percentile ranking uses the collared values so scaling is linear
-    within the -0.5 to 0.4 band.
+    Base score (0–90) is the weighted sum of three percentile factors:
+
+      Quality  (45) = 0.60·pct(R40) + 0.25·pct(FCF_margin) + 0.15·pct(GM)
+      Value    (25) = inverse pct of P/S ÷ 12-mo P/S median
+                      (relative to own history beats absolute cross-sector P/S)
+      Momentum (20) = pct of perf_52w_vs_spy, collared at [-0.5, +0.4]
+
+    Then multiplied by two independent gates:
+
+      AI verdict (bull × bear)  → 0.40 to 1.30
+      Rating multiplier         → 0.01 to 1.00
+
+    Performance < -0.5 still hard-disqualifies (returns 0). Yellow-flag
+    and outlook penalties are applied OUTSIDE this function (see the
+    main loop) so they stack with the AI multiplier rather than baking
+    into it.
     """
     def pct(values, v, invert=False):
         if v is None or not values:
@@ -179,19 +232,27 @@ def compute_composite_score(row_data, all_rows):
     if row_data.get("_perf_f") is not None and collared_perf is None:
         return 0
 
-    all_ps = [r["_ps_now_f"] for r in all_rows if r.get("_ps_now_f") is not None]
     all_r40 = [r["_r40_f"] for r in all_rows if r.get("_r40_f") is not None]
-    # Collar all perf values so percentile ranking scales within the band
+    all_fcf = [r["_fcf_f"] for r in all_rows if r.get("_fcf_f") is not None]
+    all_gm = [r["_gm_f"] for r in all_rows if r.get("_gm_f") is not None]
+    all_ps_ratio = [r["_ps_ratio_f"] for r in all_rows if r.get("_ps_ratio_f") is not None]
     all_perf = [_collar_perf(r["_perf_f"]) for r in all_rows
                 if r.get("_perf_f") is not None and _collar_perf(r["_perf_f"]) is not None]
 
-    base = (
-        pct(all_r40, row_data.get("_r40_f")) * 47
-        + pct(all_ps, row_data.get("_ps_now_f"), invert=True) * 29
-        + pct(all_perf, collared_perf) * 24
+    quality = (
+        pct(all_r40, row_data.get("_r40_f")) * 0.60
+        + pct(all_fcf, row_data.get("_fcf_f")) * 0.25
+        + pct(all_gm, row_data.get("_gm_f")) * 0.15
     )
+    value = pct(all_ps_ratio, row_data.get("_ps_ratio_f"), invert=True)
+    momentum = pct(all_perf, collared_perf)
 
-    return base * _rating_multiplier(row_data.get("_rating_f"))
+    base = quality * 45 + value * 25 + momentum * 20  # 0–90
+
+    ai_mult = _ai_multiplier(row_data.get("_bull_pass"), row_data.get("_bear_pass"))
+    rating_mult = _rating_multiplier(row_data.get("_rating_f"))
+
+    return base * ai_mult * rating_mult
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +385,38 @@ def main():
             entry["_rating_f"] = rating_raw
         else:
             entry["_rating_f"] = parse_rating_numeric(rating_raw)
+
+        # Quality sub-factors (FCF margin and gross margin layer on top of
+        # R40, which only captures revenue growth + operating margin).
+        gm_raw = entry.get("gross_margin_pct")
+        entry["_gm_f"] = (
+            float(gm_raw) if isinstance(gm_raw, (int, float)) else db.safe_float(gm_raw)
+        )
+        fcf_raw = entry.get("fcf_margin_pct")
+        entry["_fcf_f"] = (
+            float(fcf_raw) if isinstance(fcf_raw, (int, float)) else db.safe_float(fcf_raw)
+        )
+
+        # Value factor: P/S today ÷ trailing-12mo P/S median. Comparing a
+        # name to its own history beats an absolute P/S percentile across
+        # sectors (a 5× P/S means very different things for a SaaS name
+        # vs an industrial). Falls back to None when the median is
+        # missing/zero — the percentile helper then treats it as p=0.5.
+        ps_median = ps.get("median_12m")
+        if (
+            isinstance(ps_median, (int, float))
+            and ps_median > 0
+            and entry["ps_now"] is not None
+        ):
+            entry["_ps_ratio_f"] = entry["ps_now"] / ps_median
+        else:
+            entry["_ps_ratio_f"] = None
+
+        # AI verdicts — bull_eval / bear_eval start with ✅ or ❌. Missing
+        # or unrecognised cells stay None and short-circuit the AI
+        # multiplier to 1.0.
+        entry["_bull_pass"] = parse_eval_pass(entry.get("bull_eval"))
+        entry["_bear_pass"] = parse_eval_pass(entry.get("bear_eval"))
 
         entries.append(entry)
 
