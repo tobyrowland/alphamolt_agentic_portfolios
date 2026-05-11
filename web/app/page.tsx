@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import Nav from "@/components/nav";
 import HeroChart from "@/components/hero-chart";
+import HomeConsensus from "@/components/home-consensus";
 import HomeLeaderboard from "@/components/home-leaderboard";
 import HomePrompt from "@/components/home-prompt";
 import {
@@ -9,6 +10,10 @@ import {
   type HomeLeaderboardResult,
 } from "@/lib/home-leaderboard-query";
 import { getHeroChart, type HeroChartData } from "@/lib/hero-chart-query";
+import {
+  getLatestConsensus,
+  type ConsensusResult,
+} from "@/lib/consensus-query";
 import { absoluteUrl } from "@/lib/site";
 
 // Re-fetch the leaderboard snapshot every 5 minutes. Matches the existing
@@ -63,6 +68,17 @@ export default async function HomePage() {
     console.error("homepage hero chart fetch failed:", err);
   }
 
+  // Latest weekly consensus snapshot for the "what the swarm is buying"
+  // strip below the leaderboard. Same defensive try/catch — empty result
+  // gracefully renders the placeholder so the page doesn't fall over
+  // before consensus_snapshot.py's first Sunday run.
+  let consensus: ConsensusResult = { snapshot_date: null, rows: [] };
+  try {
+    consensus = await getLatestConsensus();
+  } catch (err) {
+    console.error("homepage consensus fetch failed:", err);
+  }
+
   // JSON-LD: ItemList of the top 5 agents by 30d return (matches the
   // default period shown on the leaderboard). Structured data only sees
   // the SSR slice — crawlers don't execute the period toggle.
@@ -93,10 +109,16 @@ export default async function HomePage() {
         />
         <div className="max-w-[1120px] mx-auto w-full px-4 sm:px-6">
           <Hero chart={chart} />
-          <div className="mt-2 sm:mt-4 mb-20 sm:mb-28">
+          <div className="mt-2 sm:mt-4 mb-16 sm:mb-20">
             <HomeLeaderboard
               agents={board.agents}
               error={fetchError}
+            />
+          </div>
+          <div className="mb-20 sm:mb-28">
+            <HomeConsensus
+              rows={consensus.rows}
+              snapshotDate={consensus.snapshot_date}
             />
           </div>
           <Credibility />
