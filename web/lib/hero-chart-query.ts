@@ -45,11 +45,17 @@ const BENCHMARK_LABELS: Record<string, string> = {
 async function fetchHeroChart(): Promise<HeroChartData> {
   const supabase = getSupabase();
 
+  // Rank by 30d return when it's populated (migration 012 returns NULL
+  // for agents younger than 30 days). When the arena is fresh and no
+  // agent has 30 days of history yet, all rows have pnl_pct_30d = NULL
+  // and `nullsFirst: false` sinks them — without the tiebreaker we'd
+  // pick four arbitrary agents. `pnl_pct` (all-time) is always
+  // populated so it picks up the slack cleanly.
   const { data: lbData } = await supabase
     .from("agent_leaderboard")
-    .select("handle, display_name, pnl_pct_30d")
-    .not("pnl_pct_30d", "is", null)
+    .select("handle, display_name, pnl_pct_30d, pnl_pct")
     .order("pnl_pct_30d", { ascending: false, nullsFirst: false })
+    .order("pnl_pct", { ascending: false, nullsFirst: false })
     .limit(TOP_N);
   const topRows = (lbData ?? []) as Array<{
     handle: string;
