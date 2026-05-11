@@ -17,29 +17,40 @@ import Nav from "@/components/nav";
 import PsChart from "@/components/ps-chart";
 import ShareRow from "@/components/share-row";
 import {
+  buildAgentPovs,
+  buildCompanyConsensus,
   countBuysSince,
   getCompanyHolders,
   getCompanySwarmSnapshot,
   getCompanyTradeTape,
   getHeartbeatRationales,
-  type CompanyHolder,
+  type AgentPov,
+  type AgentStance,
+  type CompanyConsensus,
   type CompanySwarmSnapshot,
   type CompanyTrade,
-  type HeartbeatRationale,
 } from "@/lib/company-agents-query";
 
 export const revalidate = 600;
 
+// ---------------------------------------------------------------------------
+// Data
+// ---------------------------------------------------------------------------
+
 async function getData(ticker: string) {
   const supabase = getSupabase();
+  // Trade limit bumped from 25 → 500 so the POV derivation can find each
+  // agent's latest action (including agents that exited months ago).
+  // 500 is well above any plausible per-ticker total; we slice down to
+  // ~8 for the visible "Recent AI Agent Trades" panel near the bottom.
   const [companyRes, psRes, swarm, holders, trades, rationales] =
     await Promise.all([
       supabase.from("companies").select("*").eq("ticker", ticker).single(),
       supabase.from("price_sales").select("*").eq("ticker", ticker).single(),
       getCompanySwarmSnapshot(ticker),
       getCompanyHolders(ticker),
-      getCompanyTradeTape(ticker, 25),
-      getHeartbeatRationales(ticker, 4),
+      getCompanyTradeTape(ticker, 500),
+      getHeartbeatRationales(ticker, 10),
     ]);
 
   return {
@@ -52,9 +63,10 @@ async function getData(ticker: string) {
   };
 }
 
-// SEO metadata. Locked title format pairs with the new opengraph-image so
-// X / Bluesky / Slack previews share a consistent "Agent Verdict & Trade
-// Journal" framing.
+// ---------------------------------------------------------------------------
+// Metadata
+// ---------------------------------------------------------------------------
+
 export async function generateMetadata({
   params,
 }: {
@@ -67,7 +79,7 @@ export async function generateMetadata({
     const supabase = getSupabase();
     const { data } = await supabase
       .from("companies")
-      .select("ticker, company_name, sector, country, description, short_outlook")
+      .select("ticker, company_name, sector, country")
       .eq("ticker", ticker)
       .single();
 
@@ -79,8 +91,13 @@ export async function generateMetadata({
     }
 
     const name = (data.company_name as string | null) ?? ticker;
-    const description = `AI agent verdict on ${name} (${ticker}): who holds it, what they paid, and the live trade tape with per-pick rationales.`;
-    const title = `AlphaMolt — ${ticker} Agent Verdict & Trade Journal`;
+    // SEO framing: lead with the ticker + "Stock AI Analysis" so the
+    // result is clickable for queries like "ARGX stock AI analysis"
+    // rather than competing head-on with Google Finance / Yahoo on
+    // raw quote intent. " | AlphaMolt" is appended by the layout
+    // template, so we don't repeat the brand here.
+    const title = `${ticker} Stock AI Analysis: What Agents Think About ${name}`;
+    const description = `What ${name} (${ticker}) looks like to AI agents — live consensus, holdings, bull/bear rationales, and recent paper-traded moves.`;
     const canonical = `/company/${encodeURIComponent(ticker)}`;
 
     return {
@@ -88,19 +105,19 @@ export async function generateMetadata({
       description,
       alternates: { canonical },
       openGraph: {
-        title,
-        description,
+        title: `${ticker}: What AI Agents Think`,
+        description: `Live AI consensus, agent holdings and bull/bear views on ${name}.`,
         // Deliberately no `url` — X uses og:url as a cache key, and pinning
         // it to the bare path makes share-URL cache-bust (?v=N) a no-op
         // because X resolves back to whatever it cached for the canonical
         // URL. Letting X use the actually-fetched URL means each ?v= bump
-        // forces a fresh fetch. Canonical above still covers SEO.
+        // forces a fresh fetch.
         type: "article",
       },
       twitter: {
         card: "summary_large_image",
-        title,
-        description,
+        title: `${ticker}: What AI Agents Think`,
+        description: `Live AI consensus, agent holdings and bull/bear views on ${name}.`,
       },
     };
   } catch (err) {
@@ -109,34 +126,41 @@ export async function generateMetadata({
   }
 }
 
-// Breadcrumb JSON-LD helper.
-function breadcrumbJsonLd(ticker: string, name: string | null) {
+function breadcrumbJsonLd(
+  ticker: string,
+  name: string | null,
+  sector: string | null,
+) {
   const display = name ?? ticker;
+  const items: Array<{ name: string; item: string }> = [
+    { name: "Home", item: absoluteUrl("/") },
+    { name: "Screener", item: absoluteUrl("/screener") },
+  ];
+  if (sector) {
+    items.push({
+      name: sector,
+      item: absoluteUrl(`/screener?sector=${encodeURIComponent(sector)}`),
+    });
+  }
+  items.push({
+    name: `${display} (${ticker})`,
+    item: absoluteUrl(`/company/${encodeURIComponent(ticker)}`),
+  });
   return {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
-    itemListElement: [
-      {
-        "@type": "ListItem",
-        position: 1,
-        name: "Home",
-        item: absoluteUrl("/"),
-      },
-      {
-        "@type": "ListItem",
-        position: 2,
-        name: "Screener",
-        item: absoluteUrl("/screener"),
-      },
-      {
-        "@type": "ListItem",
-        position: 3,
-        name: `${display} (${ticker})`,
-        item: absoluteUrl(`/company/${encodeURIComponent(ticker)}`),
-      },
-    ],
+    itemListElement: items.map((it, i) => ({
+      "@type": "ListItem",
+      position: i + 1,
+      name: it.name,
+      item: it.item,
+    })),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 export default async function CompanyPage({
   params,
@@ -151,10 +175,25 @@ export default async function CompanyPage({
   if (!company) notFound();
 
   const status = parseStatus(company.status);
-  const bear = parseEval(company.bear_eval);
   const bull = parseEval(company.bull_eval);
-  const bearRationale = extractEvalRationale(company.bear_eval);
+  const bear = parseEval(company.bear_eval);
   const bullRationale = extractEvalRationale(company.bull_eval);
+  const bearRationale = extractEvalRationale(company.bear_eval);
+
+  // Derived view-models — pure functions on the data we already fetched
+  // above, so no extra DB roundtrips.
+  const consensus = buildCompanyConsensus(
+    swarm.num_agents,
+    swarm.total_agents,
+    trades,
+    holders,
+  );
+  const povs = buildAgentPovs(
+    holders,
+    trades,
+    rationales,
+    swarm.current_price ?? company.price ?? null,
+  );
 
   // Defensive: flags may be a dict OR a stringified JSON string (legacy data)
   let flags: Record<string, string> = {};
@@ -178,17 +217,22 @@ export default async function CompanyPage({
     new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const buysSinceEval = await countBuysSince(decoded, bullSince);
 
-  const breadcrumb = breadcrumbJsonLd(company.ticker, company.company_name);
-  // ?v=… is a cache-bust for X.com's per-URL og:image cache — bump it any
-  // time a previously-shared company URL is rendering with the stale
-  // pre-redesign card (X holds the image for hours-to-days regardless of
-  // what we serve). Paired with `og:url` being deliberately omitted in
-  // generateMetadata above so X keys cache off the actually-fetched URL.
-  const shareUrl = `${absoluteUrl(`/company/${encodeURIComponent(decoded)}`)}?v=2`;
+  const breadcrumb = breadcrumbJsonLd(
+    company.ticker,
+    company.company_name,
+    company.sector,
+  );
+
+  // ?v=… is a cache-bust for X.com's per-URL og:image cache — bump when
+  // the OG design changes. Paired with og:url being omitted in the
+  // generateMetadata above.
+  const shareUrl = `${absoluteUrl(`/company/${encodeURIComponent(decoded)}`)}?v=3`;
   const shareText =
-    swarm.num_agents > 0
-      ? `${swarm.num_agents} of ${swarm.total_agents} AI agents hold $${decoded} on AlphaMolt — see who, when, and why.`
-      : `AlphaMolt's agent verdict on $${decoded} — fundamentals, AI narrative, and the live trade tape.`;
+    consensus.verdict === "bullish"
+      ? `AI agents are bullish on $${decoded} — see who holds it, what they paid, and why on AlphaMolt.`
+      : consensus.verdict === "bearish"
+        ? `AI agents have walked away from $${decoded} — see the bear case and recent exits on AlphaMolt.`
+        : `AlphaMolt's AI agents are split on $${decoded} — see who's holding and who sold.`;
 
   return (
     <>
@@ -198,84 +242,66 @@ export default async function CompanyPage({
       />
       <Nav />
       <main className="flex-1 max-w-[1200px] mx-auto w-full px-4 py-6">
-        {/* Back link */}
-        <Link
-          href="/screener"
-          className="text-xs font-mono text-text-muted hover:text-green mb-4 inline-block"
-        >
-          &larr; Back to Screener
-        </Link>
+        <Breadcrumbs
+          ticker={company.ticker}
+          sector={company.sector}
+        />
 
-        {/* 1. Hero — Agent Verdict */}
         <HeroSection
           company={company}
           status={status}
           swarm={swarm}
+          consensus={consensus}
         />
 
-        {/* 2. Holders Strip */}
-        <HoldersStrip holders={holders} />
+        <ConsensusBriefSection
+          ticker={company.ticker}
+          companyName={company.company_name}
+          consensus={consensus}
+          numAgents={swarm.num_agents}
+          totalAgents={swarm.total_agents}
+          bullRationale={bullRationale}
+          bearRationale={bearRationale}
+        />
 
-        {/* 3. Trade Tape */}
-        <TradeTape trades={trades} />
+        {povs.length > 0 && (
+          <AgentPovGrid povs={povs} ticker={company.ticker} />
+        )}
 
-        {/* 4. House Bull vs Bear */}
+        <Fundamentals
+          ticker={company.ticker}
+          company={company}
+          priceSales={priceSales}
+          flags={flags}
+        />
+
         <HouseBullBear
+          ticker={company.ticker}
           bullColor={bull.color}
           bullLabel={bull.label}
-          bullRationale={bullRationale}
+          bullText={company.full_outlook || bullRationale}
           bearColor={bear.color}
           bearLabel={bear.label}
-          bearRationale={bearRationale}
+          bearText={company.key_risks || bearRationale}
           buysSinceEval={buysSinceEval}
           totalAgents={swarm.total_agents}
         />
 
-        {/* 5. Live LLM rationales — only when data exists */}
-        {rationales.length > 0 && <LiveRationales rationales={rationales} />}
+        {priceSales && <PsHistorySection priceSales={priceSales} />}
 
-        {/* 6. AI Outlook (collapsed) */}
         <AiOutlook company={company} />
 
-        {/* 7. By the Numbers + Show all metrics */}
-        <ByTheNumbers company={company} priceSales={priceSales} flags={flags} />
+        <RecentTradesPanel
+          ticker={company.ticker}
+          trades={trades.slice(0, 8)}
+          totalTrades={trades.length}
+        />
 
-        {/* 8. P/S History Chart */}
-        {priceSales && (
-          <section className="mt-6">
-            <SectionHeader>P/S History</SectionHeader>
-            <div className="glass-card rounded-lg p-4">
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-4">
-                <Metric
-                  label="Current"
-                  value={formatNumber(priceSales.ps_now, { decimals: 1 })}
-                />
-                <Metric
-                  label="52w High"
-                  value={formatNumber(priceSales.high_52w, { decimals: 1 })}
-                />
-                <Metric
-                  label="52w Low"
-                  value={formatNumber(priceSales.low_52w, { decimals: 1 })}
-                />
-                <Metric
-                  label="12m Median"
-                  value={formatNumber(priceSales.median_12m, { decimals: 1 })}
-                />
-                <Metric
-                  label="ATH"
-                  value={formatNumber(priceSales.ath, { decimals: 1 })}
-                />
-              </div>
-              {priceSales.history_json &&
-                priceSales.history_json.length > 0 && (
-                  <PsChart data={priceSales.history_json} />
-                )}
-            </div>
-          </section>
-        )}
+        <SeoBlock
+          ticker={company.ticker}
+          companyName={company.company_name}
+        />
 
-        {/* 9. Footer — data freshness + share */}
         <footer className="mt-10 pt-4 border-t border-border/40 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs font-mono text-text-muted">
           <div>
             <span className="mr-3">
@@ -305,473 +331,434 @@ export default async function CompanyPage({
 }
 
 // ---------------------------------------------------------------------------
-// Sections
+// Breadcrumbs
+// ---------------------------------------------------------------------------
+
+function Breadcrumbs({
+  ticker,
+  sector,
+}: {
+  ticker: string;
+  sector: string | null;
+}) {
+  return (
+    <nav
+      aria-label="Breadcrumb"
+      className="text-xs font-mono text-text-muted mb-4 flex flex-wrap items-center gap-1.5"
+    >
+      <Link href="/screener" className="hover:text-green">
+        Screener
+      </Link>
+      {sector && (
+        <>
+          <span aria-hidden>›</span>
+          <Link
+            href={`/screener?sector=${encodeURIComponent(sector)}`}
+            className="hover:text-green"
+          >
+            {sector}
+          </Link>
+        </>
+      )}
+      <span aria-hidden>›</span>
+      <span className="text-text-dim">{ticker}</span>
+    </nav>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Hero / Stock Snapshot
 // ---------------------------------------------------------------------------
 
 function HeroSection({
   company,
   status,
   swarm,
+  consensus,
 }: {
   company: Company;
   status: ReturnType<typeof parseStatus>;
   swarm: CompanySwarmSnapshot;
+  consensus: CompanyConsensus;
 }) {
-  const hasAgents = swarm.num_agents > 0;
   const pnlColor =
     swarm.swarm_pnl_pct == null
       ? COLORS.textMuted
       : swarm.swarm_pnl_pct >= 0
-      ? "var(--tw-color-green, #00FF41)"
-      : "#FF3333";
+        ? "#00FF41"
+        : "#FF3333";
 
   return (
     <section
-      className="rounded-xl p-6 mb-6 relative overflow-hidden"
+      className="rounded-xl p-5 sm:p-6 mb-6 relative overflow-hidden"
       style={{
         background:
-          "linear-gradient(140deg, rgba(0,255,65,0.08) 0%, rgba(0,40,20,0.18) 30%, rgba(10,10,10,0.9) 100%)",
+          "linear-gradient(140deg, rgba(0,255,65,0.06) 0%, rgba(0,40,20,0.15) 30%, rgba(10,10,10,0.9) 100%)",
         border: "1px solid rgba(0,255,65,0.18)",
       }}
     >
-      <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
-        {/* Ticker + name */}
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-          <h1 className="font-mono text-5xl font-bold text-green leading-none">
-            {company.ticker}
-          </h1>
-          <p className="text-text-dim text-2xl leading-tight">
-            {company.company_name}
-          </p>
-          {status.label && (
-            <span
-              className="text-[11px] px-2 py-0.5 rounded font-mono uppercase tracking-wider"
-              title={status.detail ?? status.label ?? ""}
-              style={{
-                color: status.color,
-                backgroundColor: status.color + "1f",
-              }}
-            >
-              {status.label}
-            </span>
-          )}
-        </div>
-
-        {/* Right-aligned agent verdict line */}
-        <div className="flex flex-col items-start lg:items-end font-mono">
-          {hasAgents ? (
-            <p className="text-xl text-text">
-              <span className="font-bold text-green">{swarm.num_agents}</span>
-              <span className="text-text-muted"> / </span>
-              <span className="font-bold">{swarm.total_agents}</span>{" "}
-              <span className="text-text-dim">agents hold this</span>
-              {swarm.earliest_held_since && (
-                <span className="text-text-muted">
-                  {" "}
-                  · since {swarm.earliest_held_since}
-                </span>
-              )}
-            </p>
-          ) : (
-            <p className="text-xl text-text-dim">No agents hold this yet</p>
-          )}
-          {hasAgents && (
-            <p className="text-xs text-text-muted mt-1">
-              swarm avg entry{" "}
-              <span className="text-text-dim">
-                {formatPrice(swarm.swarm_avg_entry)}
-              </span>{" "}
-              · current{" "}
-              <span className="text-text-dim">
-                {formatPrice(swarm.current_price ?? company.price)}
-              </span>
-              {swarm.swarm_pnl_pct != null && (
-                <>
-                  {" "}
-                  · swarm P&amp;L{" "}
-                  <span style={{ color: pnlColor }} className="font-bold">
-                    {swarm.swarm_pnl_pct >= 0 ? "+" : ""}
-                    {swarm.swarm_pnl_pct.toFixed(1)}%
-                  </span>
-                </>
-              )}
-            </p>
-          )}
-        </div>
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <h1 className="font-mono text-4xl sm:text-5xl font-bold text-green leading-none">
+          {company.ticker}
+        </h1>
+        <p className="text-text-dim text-xl sm:text-2xl leading-tight">
+          {company.company_name}
+        </p>
+        {status.label && (
+          <span
+            className="text-[11px] px-2 py-0.5 rounded font-mono uppercase tracking-wider"
+            title={status.detail ?? status.label ?? ""}
+            style={{
+              color: status.color,
+              backgroundColor: status.color + "1f",
+            }}
+          >
+            {status.label}
+          </span>
+        )}
       </div>
-
-      {/* Subline: exchange · country · sector */}
-      <p className="text-text-muted text-xs mt-3 font-mono">
+      <p className="text-text-muted text-xs mt-1.5 mb-5 font-mono">
         {company.exchange} · {company.country} · {company.sector}
       </p>
+
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 sm:gap-6">
+        <HeroStat
+          label="Current price"
+          value={formatPrice(company.price)}
+          accent="text"
+        />
+        <HeroStat
+          label="AI consensus"
+          value={renderConsensusPill(consensus.verdict)}
+          accent="muted"
+        />
+        <HeroStat
+          label="Agents holding"
+          value={`${swarm.num_agents} / ${swarm.total_agents}`}
+          accent="text"
+        />
+        <HeroStat
+          label="Swarm P&L"
+          value={formatSignedPct(swarm.swarm_pnl_pct)}
+          accentColor={pnlColor}
+        />
+        <HeroStat
+          label="Rank"
+          value={company.sort_order != null ? `#${company.sort_order}` : "—"}
+          accent="text"
+        />
+      </div>
     </section>
   );
 }
 
-function HoldersStrip({ holders }: { holders: CompanyHolder[] }) {
-  if (holders.length === 0) {
-    return (
-      <section className="mb-6">
-        <SectionHeader>Holders</SectionHeader>
-        <div className="glass-card rounded-lg p-4 text-sm text-text-muted">
-          No agents currently hold this.
-        </div>
-      </section>
-    );
-  }
+function HeroStat({
+  label,
+  value,
+  accent,
+  accentColor,
+}: {
+  label: string;
+  value: React.ReactNode;
+  accent?: "text" | "muted";
+  accentColor?: string;
+}) {
+  const cls =
+    accent === "muted"
+      ? "text-text-dim"
+      : "text-text";
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wider text-text-muted font-mono mb-1">
+        {label}
+      </p>
+      <p
+        className={`font-mono text-base sm:text-lg font-bold ${cls}`}
+        style={accentColor ? { color: accentColor } : undefined}
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
 
-  const visible = holders.slice(0, 6);
-  const overflow = holders.length - visible.length;
+function renderConsensusPill(
+  verdict: CompanyConsensus["verdict"],
+): React.ReactNode {
+  const label =
+    verdict === "bullish" ? "Bullish" : verdict === "bearish" ? "Bearish" : "Mixed";
+  const color =
+    verdict === "bullish" ? "#00FF41" : verdict === "bearish" ? "#FF3333" : "#FFD700";
+  return (
+    <span
+      className="inline-flex items-center text-xs font-bold tracking-wider uppercase px-2 py-0.5 rounded"
+      style={{
+        color,
+        backgroundColor: color + "1f",
+        border: `1px solid ${color}40`,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
 
+// ---------------------------------------------------------------------------
+// AI Consensus Brief
+// ---------------------------------------------------------------------------
+
+function ConsensusBriefSection({
+  ticker,
+  companyName,
+  consensus,
+  numAgents,
+  totalAgents,
+  bullRationale,
+  bearRationale,
+}: {
+  ticker: string;
+  companyName: string | null;
+  consensus: CompanyConsensus;
+  numAgents: number;
+  totalAgents: number;
+  bullRationale: string | null;
+  bearRationale: string | null;
+}) {
+  const verdictLabel =
+    consensus.verdict === "bullish"
+      ? "Bullish"
+      : consensus.verdict === "bearish"
+        ? "Bearish"
+        : "Mixed";
+  const verdictColor =
+    consensus.verdict === "bullish"
+      ? "#00FF41"
+      : consensus.verdict === "bearish"
+        ? "#FF3333"
+        : "#FFD700";
+  const name = companyName ?? ticker;
+
+  // Above-fold SEO intro. Composes naturally even when bull/bear
+  // rationales are missing — empty fragments just disappear.
   return (
     <section className="mb-6">
-      <SectionHeader>Holders</SectionHeader>
-      <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
-        {visible.map((h) => (
-          <HolderCard key={h.handle} holder={h} />
-        ))}
-        {overflow > 0 && (
-          <div
-            className="shrink-0 self-stretch min-w-[90px] flex items-center justify-center rounded-lg border border-border/60 text-text-muted text-xs font-mono"
-            style={{ background: "rgba(255,255,255,0.02)" }}
-          >
-            +{overflow} more
-          </div>
-        )}
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
+        {ticker} AI Consensus
+      </h2>
+      <div className="glass-card rounded-lg p-4 sm:p-5">
+        <p className="text-sm sm:text-base text-text-dim leading-relaxed">
+          {ticker} stock is currently rated{" "}
+          <span className="font-bold" style={{ color: verdictColor }}>
+            {verdictLabel}
+          </span>{" "}
+          by AlphaMolt&rsquo;s AI agent swarm. {numAgents} of {totalAgents}{" "}
+          agents hold {name}
+          {bullRationale && (
+            <>
+              , with the bull case focused on {lowerSentence(bullRationale)}
+            </>
+          )}
+          .
+          {bearRationale && (
+            <>
+              {" "}The main bear case is {lowerSentence(bearRationale)}.
+            </>
+          )}
+        </p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+        <BriefCard
+          title="Bull case"
+          tone="green"
+          body={bullRationale || "No bull case yet — eval pending."}
+        />
+        <BriefCard
+          title="Bear case"
+          tone="red"
+          body={bearRationale || "No bear case flagged."}
+        />
+        <BriefCard
+          title="What changed"
+          tone="cyan"
+          body={consensus.what_changed || "No agent activity in the last 14 days."}
+        />
       </div>
     </section>
   );
 }
 
-function HolderCard({ holder }: { holder: CompanyHolder }) {
-  const positive = holder.pnl_pct != null && holder.pnl_pct >= 0;
-  const pnlBg = positive ? "rgba(0,255,65,0.10)" : "rgba(255,51,51,0.10)";
-  const pnlColor = positive ? "#00FF41" : "#FF3333";
+function BriefCard({
+  title,
+  tone,
+  body,
+}: {
+  title: string;
+  tone: "green" | "red" | "cyan";
+  body: string;
+}) {
+  const color =
+    tone === "green" ? "#00FF41" : tone === "red" ? "#FF3333" : "#00F2FF";
+  return (
+    <div
+      className="rounded-lg p-4 border"
+      style={{
+        background: `linear-gradient(180deg, ${color}0d 0%, transparent 100%)`,
+        borderColor: color + "30",
+      }}
+    >
+      <p
+        className="text-[10px] uppercase tracking-wider font-mono font-bold mb-2"
+        style={{ color }}
+      >
+        {title}
+      </p>
+      <p className="text-sm text-text-dim leading-relaxed">{body}</p>
+    </div>
+  );
+}
 
+// ---------------------------------------------------------------------------
+// What AI Agents Think
+// ---------------------------------------------------------------------------
+
+function AgentPovGrid({
+  povs,
+  ticker,
+}: {
+  povs: AgentPov[];
+  ticker: string;
+}) {
+  return (
+    <section className="mb-6">
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
+        What AI Agents Think About {ticker}
+      </h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {povs.map((p) => (
+          <AgentPovCard key={p.handle} pov={p} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AgentPovCard({ pov }: { pov: AgentPov }) {
   return (
     <Link
-      href={`/u/${holder.handle}`}
-      className="shrink-0 w-[200px] glass-card rounded-lg p-3 hover:border-green/40 border border-border/60 transition-colors"
+      href={`/u/${pov.handle}`}
+      className="block rounded-lg border border-border/60 p-4 hover:border-border-light hover:bg-bg-hover/30 transition-colors"
     >
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-sm font-bold text-text truncate flex-1">
-          {holder.display_name}
-        </span>
-        {holder.is_house_agent && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-text-muted/15 text-text-muted font-mono uppercase tracking-wider">
-            House
-          </span>
-        )}
+      <div className="flex items-center gap-3 mb-3">
+        <AgentMonogram seed={pov.display_name} />
+        <div className="flex-1 min-w-0">
+          <p className="font-bold text-text truncate">{pov.display_name}</p>
+          <p className="text-xs text-text-muted font-mono truncate">
+            @{pov.handle}
+          </p>
+        </div>
+        <StancePill stance={pov.stance} />
       </div>
-      <div className="flex items-baseline gap-2 text-xs font-mono text-text-dim">
-        <span>{formatNumber(holder.quantity, { decimals: 0 })} qty</span>
-        <span className="text-text-muted">·</span>
-        <span>${holder.avg_cost_usd.toFixed(2)}</span>
-      </div>
-      <div className="flex items-center justify-between mt-2">
-        {holder.pnl_pct != null ? (
-          <span
-            className="text-xs font-mono font-bold px-1.5 py-0.5 rounded"
-            style={{ background: pnlBg, color: pnlColor }}
-          >
-            {positive ? "+" : ""}
-            {holder.pnl_pct.toFixed(1)}%
+      <div className="grid grid-cols-2 gap-2 text-xs font-mono mb-2">
+        <div>
+          <span className="text-text-muted">Position </span>
+          <span className="text-text-dim">
+            {pov.position_qty > 0
+              ? `${pov.position_qty.toLocaleString("en-US")} sh`
+              : "—"}
           </span>
-        ) : (
-          <span className="text-xs text-text-muted">—</span>
-        )}
-        {holder.days_held != null && (
-          <span className="text-xs font-mono text-text-muted">
-            {holder.days_held}d
-          </span>
-        )}
+        </div>
+        <div>
+          <span className="text-text-muted">Avg entry </span>
+          <span className="text-text-dim">{formatPrice(pov.avg_entry)}</span>
+        </div>
       </div>
+      <p className="text-xs font-mono text-text-muted mb-2">
+        {pov.latest_action_label}
+      </p>
+      {pov.rationale && (
+        <p className="text-sm text-text-dim italic leading-relaxed line-clamp-3">
+          &ldquo;{pov.rationale}&rdquo;
+        </p>
+      )}
     </Link>
   );
 }
 
-function TradeTape({ trades }: { trades: CompanyTrade[] }) {
-  if (trades.length === 0) {
-    return (
-      <section className="mb-6">
-        <SectionHeader>Trade Tape — agent journal</SectionHeader>
-        <div className="glass-card rounded-lg p-4 text-sm text-text-muted">
-          No trades recorded yet.
-        </div>
-      </section>
-    );
-  }
-
+// Monogram-style avatar: initial letter on a tinted disk. No brand
+// logos — every agent (including user-registered ones) gets the same
+// treatment so we're not implicitly endorsing model providers.
+function AgentMonogram({ seed }: { seed: string }) {
+  const initial = (seed?.[0] ?? "?").toUpperCase();
   return (
-    <section className="mb-6">
-      <SectionHeader>Trade Tape — agent journal</SectionHeader>
-      <div className="glass-card rounded-lg overflow-hidden">
-        <ul className="divide-y divide-border/40">
-          {trades.map((t) => (
-            <TradeRow key={t.id} trade={t} />
-          ))}
-        </ul>
-      </div>
-    </section>
-  );
-}
-
-function TradeRow({ trade }: { trade: CompanyTrade }) {
-  const isBuy = trade.side === "buy";
-  const stripeColor = isBuy ? "#00FF41" : "#FF3333";
-  const sideLabel = isBuy ? "BOUGHT" : "SOLD";
-  const ago = formatRelative(trade.executed_at);
-
-  return (
-    <li
-      className="pl-3 pr-4 py-3 flex flex-col gap-1"
-      style={{ borderLeft: `3px solid ${stripeColor}` }}
+    <span
+      aria-hidden
+      className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full text-sm font-bold text-text-dim font-mono"
+      style={{
+        background:
+          "linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02))",
+        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08)",
+      }}
     >
-      <div className="flex flex-wrap items-baseline gap-2 text-sm font-mono">
-        <Link
-          href={`/u/${trade.handle}`}
-          className="text-text font-bold hover:text-green"
-        >
-          [{trade.display_name}]
-        </Link>
-        <span className="font-bold" style={{ color: stripeColor }}>
-          {sideLabel}
-        </span>
-        <span className="text-text-dim">
-          {formatNumber(trade.quantity, { decimals: 0 })} @ $
-          {trade.price_usd.toFixed(2)}
-        </span>
-        <span className="text-text-muted text-xs">· {ago}</span>
-      </div>
-      {trade.note && (
-        <p className="text-xs text-text-muted italic pl-1 leading-relaxed">
-          {trade.note}
-        </p>
-      )}
-    </li>
+      {initial}
+    </span>
   );
 }
 
-function HouseBullBear({
-  bullColor,
-  bullLabel,
-  bullRationale,
-  bearColor,
-  bearLabel,
-  bearRationale,
-  buysSinceEval,
-  totalAgents,
-}: {
-  bullColor: string;
-  bullLabel: string;
-  bullRationale: string | null;
-  bearColor: string;
-  bearLabel: string;
-  bearRationale: string | null;
-  buysSinceEval: number;
-  totalAgents: number;
-}) {
+function StancePill({ stance }: { stance: AgentStance }) {
+  const label =
+    stance === "bullish"
+      ? "Bullish"
+      : stance === "bearish"
+        ? "Bearish"
+        : "Neutral";
+  const color =
+    stance === "bullish"
+      ? "#00FF41"
+      : stance === "bearish"
+        ? "#FF3333"
+        : "#FFD700";
   return (
-    <section className="mb-6">
-      <SectionHeader>House Bull vs Bear</SectionHeader>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div
-          className="rounded-lg p-4 border"
-          style={{
-            background: "rgba(0,255,65,0.04)",
-            borderColor: "rgba(0,255,65,0.18)",
-          }}
-        >
-          <div className="flex items-baseline gap-2 mb-2">
-            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">
-              Smash-Hit Scout (Bull)
-            </span>
-            <span
-              className="font-mono text-sm font-bold"
-              style={{ color: bullColor }}
-            >
-              {bullLabel}
-            </span>
-          </div>
-          {bullRationale ? (
-            <p className="text-sm text-text-dim leading-relaxed">
-              {bullRationale}
-            </p>
-          ) : (
-            <p className="text-xs text-text-muted italic">Not yet evaluated</p>
-          )}
-        </div>
-        <div
-          className="rounded-lg p-4 border"
-          style={{
-            background: "rgba(255,51,51,0.04)",
-            borderColor: "rgba(255,51,51,0.18)",
-          }}
-        >
-          <div className="flex items-baseline gap-2 mb-2">
-            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">
-              Fundamental Sentinel (Bear)
-            </span>
-            <span
-              className="font-mono text-sm font-bold"
-              style={{ color: bearColor }}
-            >
-              {bearLabel}
-            </span>
-          </div>
-          {bearRationale ? (
-            <p className="text-sm text-text-dim leading-relaxed">
-              {bearRationale}
-            </p>
-          ) : (
-            <p className="text-xs text-text-muted italic">Not yet evaluated</p>
-          )}
-        </div>
-      </div>
-      {totalAgents > 0 && (
-        <p className="text-xs text-text-muted mt-3 font-mono">
-          {buysSinceEval > 0
-            ? `Bulls won this week — ${buysSinceEval} ${
-                buysSinceEval === 1 ? "agent" : "agents"
-              } bought after last Sunday's eval.`
-            : `No buys recorded since the last Sunday eval.`}
-        </p>
-      )}
-    </section>
+    <span
+      className="text-[10px] uppercase tracking-wider font-bold rounded px-2 py-0.5"
+      style={{
+        color,
+        backgroundColor: color + "1f",
+        border: `1px solid ${color}40`,
+      }}
+    >
+      {label}
+    </span>
   );
 }
 
-function LiveRationales({
-  rationales,
-}: {
-  rationales: HeartbeatRationale[];
-}) {
-  return (
-    <section className="mb-6">
-      <SectionHeader>Live LLM rationales</SectionHeader>
-      <div className="glass-card rounded-lg p-4 space-y-3">
-        {rationales.map((r, i) => (
-          <div
-            key={`${r.handle}-${r.started_at}-${i}`}
-            className="flex flex-col gap-1"
-          >
-            <p className="text-sm text-text-dim italic leading-relaxed">
-              &ldquo;{r.rationale}&rdquo;
-            </p>
-            <p className="text-xs font-mono text-text-muted text-right">
-              — {r.model_label}
-            </p>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
+// ---------------------------------------------------------------------------
+// Fundamentals (compact 8-stat row + expandable detail)
+// ---------------------------------------------------------------------------
 
-function AiOutlook({ company }: { company: Company }) {
-  const hasMore =
-    !!(
-      company.full_outlook ||
-      company.key_risks ||
-      company.fundamentals_snapshot ||
-      company.event_impact
-    );
-
-  return (
-    <section className="mb-6">
-      <SectionHeader>AI Outlook</SectionHeader>
-      <div className="glass-card rounded-lg p-4">
-        {company.short_outlook ? (
-          <p className="text-sm text-text leading-relaxed">
-            {company.short_outlook}
-          </p>
-        ) : (
-          <p className="text-sm text-text-muted italic">
-            No outlook recorded yet.
-          </p>
-        )}
-        {hasMore && (
-          <details className="mt-3 group">
-            <summary className="text-xs font-mono text-text-muted hover:text-green cursor-pointer select-none">
-              <span className="group-open:hidden">Show full narrative ▼</span>
-              <span className="hidden group-open:inline">
-                Hide full narrative ▲
-              </span>
-            </summary>
-            <div className="mt-3 space-y-3 pt-3 border-t border-border/40">
-              {company.full_outlook && (
-                <div>
-                  <p className="text-xs text-text-muted mb-1">Full Outlook</p>
-                  <p className="text-sm text-text-dim leading-relaxed whitespace-pre-wrap">
-                    {company.full_outlook}
-                  </p>
-                </div>
-              )}
-              {company.key_risks && (
-                <div>
-                  <p className="text-xs text-text-muted mb-1">Key Risks</p>
-                  <p className="text-sm text-orange leading-relaxed">
-                    {company.key_risks}
-                  </p>
-                </div>
-              )}
-              {company.fundamentals_snapshot && (
-                <div>
-                  <p className="text-xs text-text-muted mb-1">
-                    Fundamentals Snapshot
-                  </p>
-                  <p className="text-sm text-text-dim leading-relaxed">
-                    {company.fundamentals_snapshot}
-                  </p>
-                </div>
-              )}
-              {company.event_impact && (
-                <div>
-                  <p className="text-xs text-text-muted mb-1">Event Impact</p>
-                  <p className="text-sm text-text-dim leading-relaxed">
-                    {company.event_impact}
-                  </p>
-                </div>
-              )}
-            </div>
-          </details>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function ByTheNumbers({
+function Fundamentals({
+  ticker,
   company,
   priceSales,
   flags,
 }: {
+  ticker: string;
   company: Company;
   priceSales: PriceSales | null;
   flags: Record<string, string>;
 }) {
-  // Score arrow mirrors the up/down indicator in the mockup. We don't
-  // have a delta, so we just use score >=50 as "up" / else "down" — a
-  // visual flourish, not a metric.
   const score = company.composite_score;
-  const scoreArrow =
-    score == null ? "" : score >= 50 ? "▲" : "▼";
+  const scoreArrow = score == null ? "" : score >= 50 ? "▲" : "▼";
   const scoreColor =
-    score == null
-      ? COLORS.textMuted
-      : score >= 50
-      ? "#00FF41"
-      : "#FFD700";
+    score == null ? COLORS.textMuted : score >= 50 ? "#00FF41" : "#FFD700";
 
   return (
     <section className="mb-6">
-      <SectionHeader>By the Numbers</SectionHeader>
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
+        {ticker} Fundamentals
+      </h2>
       <div className="glass-card rounded-lg p-4">
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4">
-          <CompactStat
-            label="Price"
-            value={formatPrice(company.price)}
-          />
+          <CompactStat label="Price" value={formatPrice(company.price)} />
           <CompactStat
             label="P/S"
             value={formatNumber(company.ps_now, { decimals: 2 })}
@@ -983,16 +970,335 @@ function ByTheNumbers({
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// House Bull vs Bear
 // ---------------------------------------------------------------------------
 
-function SectionHeader({ children }: { children: React.ReactNode }) {
+function HouseBullBear({
+  ticker,
+  bullColor,
+  bullLabel,
+  bullText,
+  bearColor,
+  bearLabel,
+  bearText,
+  buysSinceEval,
+  totalAgents,
+}: {
+  ticker: string;
+  bullColor: string;
+  bullLabel: string;
+  bullText: string | null;
+  bearColor: string;
+  bearLabel: string;
+  bearText: string | null;
+  buysSinceEval: number;
+  totalAgents: number;
+}) {
   return (
-    <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-      {children}
-    </h2>
+    <section className="mb-6">
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
+        {ticker} Bull Case and Bear Case
+      </h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div
+          className="rounded-lg p-4 border"
+          style={{
+            background: "rgba(0,255,65,0.04)",
+            borderColor: "rgba(0,255,65,0.18)",
+          }}
+        >
+          <div className="flex items-baseline gap-2 mb-2">
+            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">
+              House bull case
+            </span>
+            <span
+              className="font-mono text-sm font-bold"
+              style={{ color: bullColor }}
+            >
+              {bullLabel}
+            </span>
+          </div>
+          {bullText ? (
+            <p className="text-sm text-text-dim leading-relaxed">{bullText}</p>
+          ) : (
+            <p className="text-xs text-text-muted italic">Not yet evaluated</p>
+          )}
+        </div>
+        <div
+          className="rounded-lg p-4 border"
+          style={{
+            background: "rgba(255,51,51,0.04)",
+            borderColor: "rgba(255,51,51,0.18)",
+          }}
+        >
+          <div className="flex items-baseline gap-2 mb-2">
+            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">
+              House bear case
+            </span>
+            <span
+              className="font-mono text-sm font-bold"
+              style={{ color: bearColor }}
+            >
+              {bearLabel}
+            </span>
+          </div>
+          {bearText ? (
+            <p className="text-sm text-text-dim leading-relaxed">{bearText}</p>
+          ) : (
+            <p className="text-xs text-text-muted italic">Not yet evaluated</p>
+          )}
+        </div>
+      </div>
+      {totalAgents > 0 && (
+        <p className="text-xs text-text-muted mt-3 font-mono">
+          {buysSinceEval > 0
+            ? `Bulls won this week — ${buysSinceEval} ${
+                buysSinceEval === 1 ? "agent" : "agents"
+              } bought after the last Sunday eval.`
+            : `No buys recorded since the last Sunday eval.`}
+        </p>
+      )}
+    </section>
   );
 }
+
+// ---------------------------------------------------------------------------
+// P/S History
+// ---------------------------------------------------------------------------
+
+function PsHistorySection({ priceSales }: { priceSales: PriceSales }) {
+  return (
+    <section className="mt-6 mb-6">
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
+        P/S History
+      </h2>
+      <div className="glass-card rounded-lg p-4">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-4">
+          <Metric
+            label="Current"
+            value={formatNumber(priceSales.ps_now, { decimals: 1 })}
+          />
+          <Metric
+            label="52w High"
+            value={formatNumber(priceSales.high_52w, { decimals: 1 })}
+          />
+          <Metric
+            label="52w Low"
+            value={formatNumber(priceSales.low_52w, { decimals: 1 })}
+          />
+          <Metric
+            label="12m Median"
+            value={formatNumber(priceSales.median_12m, { decimals: 1 })}
+          />
+          <Metric
+            label="ATH"
+            value={formatNumber(priceSales.ath, { decimals: 1 })}
+          />
+        </div>
+        {priceSales.history_json && priceSales.history_json.length > 0 && (
+          <PsChart data={priceSales.history_json} />
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AI Outlook (collapsed by default)
+// ---------------------------------------------------------------------------
+
+function AiOutlook({ company }: { company: Company }) {
+  const hasMore =
+    !!(
+      company.full_outlook ||
+      company.key_risks ||
+      company.fundamentals_snapshot ||
+      company.event_impact
+    );
+
+  return (
+    <section className="mb-6">
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
+        AI outlook
+      </h2>
+      <div className="glass-card rounded-lg p-4">
+        {company.short_outlook ? (
+          <p className="text-sm text-text leading-relaxed">
+            {company.short_outlook}
+          </p>
+        ) : (
+          <p className="text-sm text-text-muted italic">
+            No outlook recorded yet.
+          </p>
+        )}
+        {hasMore && (
+          <details className="mt-3 group">
+            <summary className="text-xs font-mono text-text-muted hover:text-green cursor-pointer select-none">
+              <span className="group-open:hidden">Show full narrative ▼</span>
+              <span className="hidden group-open:inline">
+                Hide full narrative ▲
+              </span>
+            </summary>
+            <div className="mt-3 space-y-3 pt-3 border-t border-border/40">
+              {company.full_outlook && (
+                <div>
+                  <p className="text-xs text-text-muted mb-1">Full outlook</p>
+                  <p className="text-sm text-text-dim leading-relaxed whitespace-pre-wrap">
+                    {company.full_outlook}
+                  </p>
+                </div>
+              )}
+              {company.key_risks && (
+                <div>
+                  <p className="text-xs text-text-muted mb-1">Key risks</p>
+                  <p className="text-sm text-orange leading-relaxed">
+                    {company.key_risks}
+                  </p>
+                </div>
+              )}
+              {company.fundamentals_snapshot && (
+                <div>
+                  <p className="text-xs text-text-muted mb-1">
+                    Fundamentals snapshot
+                  </p>
+                  <p className="text-sm text-text-dim leading-relaxed">
+                    {company.fundamentals_snapshot}
+                  </p>
+                </div>
+              )}
+              {company.event_impact && (
+                <div>
+                  <p className="text-xs text-text-muted mb-1">Event impact</p>
+                  <p className="text-sm text-text-dim leading-relaxed">
+                    {company.event_impact}
+                  </p>
+                </div>
+              )}
+            </div>
+          </details>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Recent AI Agent Trades (renamed from Trade Tape)
+// ---------------------------------------------------------------------------
+
+function RecentTradesPanel({
+  ticker,
+  trades,
+  totalTrades,
+}: {
+  ticker: string;
+  trades: CompanyTrade[];
+  totalTrades: number;
+}) {
+  if (trades.length === 0) {
+    return (
+      <section className="mb-6">
+        <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
+          Recent AI Agent Trades in {ticker}
+        </h2>
+        <div className="glass-card rounded-lg p-4 text-sm text-text-muted">
+          No trades recorded yet.
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="mb-6">
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
+        Recent AI Agent Trades in {ticker}
+      </h2>
+      <div className="glass-card rounded-lg overflow-hidden">
+        <ul className="divide-y divide-border/40">
+          {trades.map((t) => (
+            <TradeRow key={t.id} trade={t} />
+          ))}
+        </ul>
+        {totalTrades > trades.length && (
+          <p className="px-4 py-3 text-xs font-mono text-text-muted border-t border-border/40">
+            Showing the {trades.length} most recent of {totalTrades.toLocaleString("en-US")} trades on this ticker.
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function TradeRow({ trade }: { trade: CompanyTrade }) {
+  const isBuy = trade.side === "buy";
+  const stripeColor = isBuy ? "#00FF41" : "#FF3333";
+  const sideLabel = isBuy ? "BOUGHT" : "SOLD";
+  const ago = formatRelative(trade.executed_at);
+
+  return (
+    <li
+      className="pl-3 pr-4 py-3 flex flex-col gap-1"
+      style={{ borderLeft: `3px solid ${stripeColor}` }}
+    >
+      <div className="flex flex-wrap items-baseline gap-2 text-sm font-mono">
+        <Link
+          href={`/u/${trade.handle}`}
+          className="text-text font-bold hover:text-green"
+        >
+          [{trade.display_name}]
+        </Link>
+        <span className="font-bold" style={{ color: stripeColor }}>
+          {sideLabel}
+        </span>
+        <span className="text-text-dim">
+          {formatNumber(trade.quantity, { decimals: 0 })} @ $
+          {trade.price_usd.toFixed(2)}
+        </span>
+        <span className="text-text-muted text-xs">· {ago}</span>
+      </div>
+      {trade.note && (
+        <p className="text-xs text-text-muted italic pl-1 leading-relaxed">
+          {trade.note}
+        </p>
+      )}
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SEO content block + disclaimer
+// ---------------------------------------------------------------------------
+
+function SeoBlock({
+  ticker,
+  companyName,
+}: {
+  ticker: string;
+  companyName: string | null;
+}) {
+  const name = companyName ?? ticker;
+  return (
+    <section className="mt-12 pt-8 border-t border-border/40">
+      <h2 className="text-base sm:text-lg font-bold tracking-tight text-text mb-3">
+        About {ticker} Stock AI Analysis
+      </h2>
+      <p className="text-sm text-text-muted leading-relaxed max-w-prose">
+        This page tracks AI agent analysis for {ticker} stock, including current
+        price, AI consensus, agent holdings, valuation signals, bull and bear
+        rationales, and recent paper-traded buy/sell decisions. AlphaMolt
+        agents paper-trade the same screened stock universe and journal every
+        trade so users can compare how different AI models evaluate {name}.
+      </p>
+      <p className="text-xs text-text-muted mt-3 italic">
+        AlphaMolt is for paper trading and research only. Not financial advice.
+      </p>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
 
 function Card({
   title,
@@ -1060,4 +1366,19 @@ function formatRelative(iso: string): string {
   if (hours >= 1) return `${hours}h ago`;
   const mins = Math.max(0, Math.floor(diffMs / (1000 * 60)));
   return `${mins}m ago`;
+}
+
+function formatSignedPct(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(1)}%`;
+}
+
+// Lowercase the first letter of a sentence so it reads naturally when
+// embedded mid-paragraph ("with the bull case focused on strong revenue
+// growth..." rather than "...focused on Strong revenue growth..."). No-op
+// for sentences that already start lowercase.
+function lowerSentence(s: string): string {
+  if (!s) return s;
+  return s[0].toLowerCase() + s.slice(1);
 }

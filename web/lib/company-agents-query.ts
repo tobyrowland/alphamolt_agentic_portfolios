@@ -68,6 +68,44 @@ export interface HeartbeatRationale {
   started_at: string;
 }
 
+export type AgentStance = "bullish" | "bearish" | "neutral";
+
+/**
+ * One row per agent that has ever interacted with this ticker. Combines
+ * current holding state with their last trade action so the page can
+ * render an editorial-feeling POV card per agent (stance pill, position,
+ * latest action, rationale).
+ *
+ * Stance derivation — kept simple so the rule is auditable:
+ *   - holds AND latest_side == sell  → "neutral"  (trimmed but still in)
+ *   - holds                          → "bullish"  (still in, last buy)
+ *   - exited (no holding)            → "bearish"  (sold out)
+ */
+export interface AgentPov {
+  handle: string;
+  display_name: string;
+  is_house_agent: boolean;
+  stance: AgentStance;
+  position_qty: number;
+  avg_entry: number | null;
+  current_pnl_pct: number | null;
+  latest_action_label: string; // "Bought 2d ago" / "Trimmed 5d ago" / "Sold 1d ago"
+  latest_action_at: string | null;
+  rationale: string | null;
+}
+
+export interface CompanyConsensus {
+  // Page-level verdict. Derivation rule (intentionally crude so it stays
+  // auditable):
+  //   - holders == 0                          → "bearish"
+  //   - holders / total >= 0.5                → "bullish"
+  //   - otherwise                              → "mixed"
+  verdict: "bullish" | "bearish" | "mixed";
+  // Plain-English "what changed in the last ~14 days" sentence. Empty
+  // string when no trades happened recently — caller renders nothing.
+  what_changed: string;
+}
+
 /**
  * Latest weekly consensus row + live overlays from agent_holdings so the
  * hero is accurate even mid-week before the next snapshot.
@@ -414,4 +452,194 @@ export async function countBuysSince(
     return 0;
   }
   return count ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// Derivation helpers — pure functions on already-fetched page data so the
+// /company/[ticker] page can compose AI Consensus + per-agent POV cards
+// without any extra DB roundtrips.
+// ---------------------------------------------------------------------------
+
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
+/**
+ * Build one AgentPov per agent that currently holds OR has ever traded
+ * this ticker. Caller must pass:
+ *   - holders: full current state (from getCompanyHolders)
+ *   - trades:  trade history broad enough to include the latest-per-agent
+ *              for both current holders AND exiters (page bumps the limit)
+ *   - rationales: latest heartbeat rationales (one per holder is enough)
+ *   - currentPrice: companies.price, for the live P&L badge
+ */
+export function buildAgentPovs(
+  holders: CompanyHolder[],
+  trades: CompanyTrade[],
+  rationales: HeartbeatRationale[],
+  currentPrice: number | null,
+): AgentPov[] {
+  // Latest trade per agent — trades are already reverse-chrono so the
+  // first occurrence wins.
+  const latestByHandle = new Map<string, CompanyTrade>();
+  for (const t of trades) {
+    if (!latestByHandle.has(t.handle)) latestByHandle.set(t.handle, t);
+  }
+
+  const rationaleByHandle = new Map<string, HeartbeatRationale>();
+  for (const r of rationales) {
+    if (!rationaleByHandle.has(r.handle)) rationaleByHandle.set(r.handle, r);
+  }
+
+  const holderByHandle = new Map<string, CompanyHolder>();
+  for (const h of holders) holderByHandle.set(h.handle, h);
+
+  // Union of handles: every current holder + every historical trader.
+  const handles = new Set<string>([
+    ...holders.map((h) => h.handle),
+    ...trades.map((t) => t.handle),
+  ]);
+
+  const povs: AgentPov[] = [];
+  for (const handle of handles) {
+    const holder = holderByHandle.get(handle);
+    const latest = latestByHandle.get(handle);
+    if (!holder && !latest) continue;
+
+    const display_name = holder?.display_name ?? latest?.display_name ?? handle;
+    const is_house_agent = holder?.is_house_agent ?? false;
+
+    const holds = !!holder && holder.quantity > 0;
+    const stance: AgentStance = holds
+      ? latest?.side === "sell"
+        ? "neutral"
+        : "bullish"
+      : "bearish";
+
+    const position_qty = holds ? holder!.quantity : 0;
+    const avg_entry = holds ? holder!.avg_cost_usd : null;
+    const current_pnl_pct =
+      holds && currentPrice != null && holder!.avg_cost_usd > 0
+        ? ((currentPrice - holder!.avg_cost_usd) / holder!.avg_cost_usd) * 100
+        : null;
+
+    // Action label. "Trimmed" only makes sense when the agent still
+    // holds after a sell — otherwise a sell is a full exit.
+    let latest_action_label = "Holding";
+    let latest_action_at: string | null = null;
+    if (latest) {
+      const verb = latest.side === "sell" ? (holds ? "Trimmed" : "Sold") : "Bought";
+      latest_action_label = `${verb} ${formatRelativeShort(latest.executed_at)}`;
+      latest_action_at = latest.executed_at;
+    }
+
+    // Prefer the heartbeat rationale when present (richer prose).
+    // Fall back to the trade note (one-liner the strategy attached
+    // to the buy/sell). Either may be null.
+    const rationale =
+      rationaleByHandle.get(handle)?.rationale ??
+      latest?.note ??
+      null;
+
+    povs.push({
+      handle,
+      display_name,
+      is_house_agent,
+      stance,
+      position_qty,
+      avg_entry,
+      current_pnl_pct,
+      latest_action_label,
+      latest_action_at,
+      rationale,
+    });
+  }
+
+  // Sort: bullish first, then neutral, then bearish; within each tier
+  // descending by position size so the biggest current bet on each side
+  // surfaces first.
+  const stanceRank: Record<AgentStance, number> = {
+    bullish: 0,
+    neutral: 1,
+    bearish: 2,
+  };
+  povs.sort((a, b) => {
+    const dr = stanceRank[a.stance] - stanceRank[b.stance];
+    if (dr !== 0) return dr;
+    return b.position_qty - a.position_qty;
+  });
+  return povs;
+}
+
+/**
+ * Page-level swarm verdict + a "what changed in the last 14 days"
+ * one-sentence summary. Stays compact because it lives in the hero
+ * area where vertical real estate is precious.
+ */
+export function buildCompanyConsensus(
+  numAgents: number,
+  totalAgents: number,
+  trades: CompanyTrade[],
+  holders: CompanyHolder[],
+): CompanyConsensus {
+  const verdict: CompanyConsensus["verdict"] =
+    numAgents === 0
+      ? "bearish"
+      : totalAgents > 0 && numAgents / totalAgents >= 0.5
+        ? "bullish"
+        : "mixed";
+
+  const cutoff = Date.now() - 14 * MS_PER_DAY;
+  const holderHandles = new Set(holders.map((h) => h.handle));
+  const seenByHandle = new Set<string>();
+  const bought: string[] = [];
+  const trimmed: string[] = [];
+  const exited: string[] = [];
+
+  // Walk reverse-chrono and bucket the first action per agent in the
+  // window. "Trimmed" iff they still hold after the sell; "exited"
+  // otherwise. "Bought" covers both new positions and add-ons.
+  for (const t of trades) {
+    if (new Date(t.executed_at).getTime() < cutoff) break;
+    if (seenByHandle.has(t.handle)) continue;
+    seenByHandle.add(t.handle);
+    if (t.side === "buy") {
+      bought.push(t.display_name);
+    } else if (holderHandles.has(t.handle)) {
+      trimmed.push(t.display_name);
+    } else {
+      exited.push(t.display_name);
+    }
+  }
+
+  const parts: string[] = [];
+  if (bought.length) parts.push(`${joinNames(bought)} added`);
+  if (trimmed.length) parts.push(`${joinNames(trimmed)} trimmed`);
+  if (exited.length) parts.push(`${joinNames(exited)} exited`);
+  const what_changed = parts.length
+    ? `${capitalise(parts.join(", "))} in the last 14 days.`
+    : "";
+
+  return { verdict, what_changed };
+}
+
+function joinNames(names: string[]): string {
+  if (names.length === 0) return "";
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+function capitalise(s: string): string {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
+}
+
+function formatRelativeShort(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const diffMs = Date.now() - t;
+  const days = Math.floor(diffMs / MS_PER_DAY);
+  if (days >= 1) return `${days}d ago`;
+  const hours = Math.floor(diffMs / (1000 * 60 * 60));
+  if (hours >= 1) return `${hours}h ago`;
+  const mins = Math.max(0, Math.floor(diffMs / (1000 * 60)));
+  return `${mins}m ago`;
 }
