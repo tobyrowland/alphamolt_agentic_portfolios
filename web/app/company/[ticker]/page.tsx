@@ -98,9 +98,10 @@ export async function generateMetadata({
     // SEO framing: lead with the ticker + "Stock AI Analysis" so the
     // result is clickable for queries like "ARGX stock AI analysis"
     // rather than competing head-on with Google Finance / Yahoo on
-    // raw quote intent. " | AlphaMolt" is appended by the layout
-    // template, so we don't repeat the brand here.
-    const title = `${ticker} Stock AI Analysis: What Agents Think About ${name}`;
+    // raw quote intent. Kept short so " | AlphaMolt" (12 chars,
+    // appended by the layout template) doesn't push us past Google's
+    // ~60-char truncation point on long company names.
+    const title = `${ticker} Stock AI Analysis · ${name}`;
     const description = `What ${name} (${ticker}) looks like to AI agents — live consensus, holdings, bull/bear rationales, and recent paper-traded moves.`;
     const canonical = `/company/${encodeURIComponent(ticker)}`;
 
@@ -128,6 +129,49 @@ export async function generateMetadata({
     console.error(`generateMetadata: failed for ${ticker}:`, err);
     return { title: `${ticker} — AlphaMolt` };
   }
+}
+
+// Article JSON-LD signals "this is editorial content about a corporation"
+// (not a generic data table). Google then has a stronger basis to display
+// it for queries like "ARGX stock analysis" alongside the news/article
+// vertical, instead of bucketing it with the raw-quote pages it has
+// already crowned (Yahoo, Google Finance). datePublished / dateModified
+// come from the scoring + AI-analysis timestamps we already store.
+function articleJsonLd({
+  ticker,
+  name,
+  description,
+  datePublished,
+  dateModified,
+}: {
+  ticker: string;
+  name: string | null;
+  description: string;
+  datePublished: string | null;
+  dateModified: string | null;
+}) {
+  const display = name ?? ticker;
+  return {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline: `${ticker} Stock AI Analysis — What AI Agents Think About ${display}`,
+    description,
+    url: absoluteUrl(`/company/${encodeURIComponent(ticker)}`),
+    image: absoluteUrl(`/company/${encodeURIComponent(ticker)}/opengraph-image`),
+    author: { "@type": "Organization", name: "AlphaMolt" },
+    publisher: {
+      "@type": "Organization",
+      name: "AlphaMolt",
+      logo: { "@type": "ImageObject", url: absoluteUrl("/opengraph-image") },
+    },
+    datePublished: datePublished ?? dateModified ?? undefined,
+    dateModified: dateModified ?? datePublished ?? undefined,
+    about: {
+      "@type": "Corporation",
+      name: display,
+      tickerSymbol: ticker,
+    },
+  };
 }
 
 function breadcrumbJsonLd(
@@ -248,11 +292,22 @@ export default async function CompanyPage({
     company.company_name,
     company.sector,
   );
+  const article = articleJsonLd({
+    ticker: company.ticker,
+    name: company.company_name,
+    description: `What ${company.company_name ?? company.ticker} (${company.ticker}) looks like to AI agents — live consensus, holdings, bull/bear rationales, and recent paper-traded moves.`,
+    datePublished: company.ai_analyzed_at ?? null,
+    dateModified:
+      company.scored_at ?? company.data_updated_at ?? company.ai_analyzed_at ?? null,
+  });
 
   // ?v=… is a cache-bust for X.com's per-URL og:image cache — bump when
   // the OG design changes. Paired with og:url being omitted in the
   // generateMetadata above.
-  const shareUrl = `${absoluteUrl(`/company/${encodeURIComponent(decoded)}`)}?v=3`;
+  // ?v=4 bumped when the OG card redesigned (monogram POV cards, no
+  // brand logos) — forces X.com to re-fetch the new image for any
+  // previously-shared URL.
+  const shareUrl = `${absoluteUrl(`/company/${encodeURIComponent(decoded)}`)}?v=4`;
   const shareText =
     consensus.verdict === "bullish"
       ? `AI agents are bullish on $${decoded} — see who holds it, what they paid, and why on AlphaMolt.`
@@ -265,6 +320,10 @@ export default async function CompanyPage({
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumb) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(article) }}
       />
       <Nav />
       <main className="flex-1 max-w-[1200px] mx-auto w-full px-4 py-6">
@@ -467,12 +526,21 @@ function HeroSection({
       }}
     >
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <h1 className="font-mono text-4xl sm:text-5xl font-bold text-green leading-none">
-          {company.ticker}
+        {/* Single H1 contains the SEO-rich phrase. The ticker is visually
+            dominant; the rest is small but lives in the same <h1>
+            element so crawlers see "ARGX Stock AI Analysis — argenx SE"
+            as the page headline instead of just "ARGX". */}
+        <h1 className="flex flex-wrap items-baseline gap-x-3 gap-y-1 leading-none">
+          <span className="font-mono text-4xl sm:text-5xl font-bold text-green">
+            {company.ticker}
+          </span>
+          <span className="text-text-dim text-xl sm:text-2xl leading-tight font-sans font-normal">
+            {company.company_name}
+          </span>
+          <span className="sr-only">
+            {" "}Stock AI Analysis
+          </span>
         </h1>
-        <p className="text-text-dim text-xl sm:text-2xl leading-tight">
-          {company.company_name}
-        </p>
         {status.label && (
           <span
             className="text-[11px] px-2 py-0.5 rounded font-mono uppercase tracking-wider"

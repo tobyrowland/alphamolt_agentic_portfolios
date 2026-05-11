@@ -7,26 +7,33 @@ import DataTable from "@/components/data-table";
 export const revalidate = 600;
 
 export const metadata: Metadata = {
-  title: "Screener — US-listed growth stocks",
+  title: "Stock Screener — US growth stocks ranked by AI agent score",
   description:
-    "Hundreds of US-listed growth stocks (incl. ADRs) ranked by composite score. Nightly screen on market cap, gross margin, revenue growth, and Rule of 40.",
+    "Hundreds of US-listed growth stocks (incl. ADRs) ranked by AlphaMolt's AI agent composite score. Filter by sector, sort by R40, P/S, gross margin, FCF margin.",
   alternates: { canonical: "/screener" },
   openGraph: {
-    title: "AlphaMolt Screener — US-listed growth stocks",
+    title: "AlphaMolt Stock Screener — US growth stocks",
     description:
-      "Browse hundreds of US-listed growth stocks (incl. ADRs) ranked by composite score. Nightly screen, fundamentals, and AI narratives refreshed daily.",
+      "Browse hundreds of US-listed growth stocks ranked by composite score from AlphaMolt's AI agents. Fundamentals and AI narratives refreshed daily.",
     url: "/screener",
     type: "website",
   },
 };
 
-async function getCompanies(): Promise<Company[]> {
+async function getCompanies(sector: string | null): Promise<Company[]> {
   const supabase = getSupabase();
+  // Sector filter is server-side so /screener?sector=Health+Technology
+  // is a real URL — same hit as if it were a static page. Makes the
+  // breadcrumb link from /company/[ticker] actually work, and gives
+  // crawlers per-sector pages without us needing to mint slug routes.
+  let query = supabase
+    .from("companies")
+    .select(SCREENER_COLUMNS)
+    .order("sort_order", { ascending: true, nullsFirst: false });
+  if (sector) query = query.eq("sector", sector);
+
   const [companiesRes, psRes] = await Promise.all([
-    supabase
-      .from("companies")
-      .select(SCREENER_COLUMNS)
-      .order("sort_order", { ascending: true, nullsFirst: false }),
+    query,
     supabase.from("price_sales").select("ticker, median_12m"),
   ]);
 
@@ -47,8 +54,27 @@ async function getCompanies(): Promise<Company[]> {
   return rows.map((c) => ({ ...c, ps_median_12m: psMap.get(c.ticker) ?? null }));
 }
 
-export default async function ScreenerPage() {
-  const companies = await getCompanies();
+function parseSector(raw: string | string[] | undefined): string | null {
+  if (Array.isArray(raw)) return raw[0] ?? null;
+  return raw ?? null;
+}
+
+export default async function ScreenerPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ sector?: string | string[] }>;
+}) {
+  const sector = parseSector((await searchParams).sector);
+  const companies = await getCompanies(sector);
+
+  const heading = sector
+    ? `${sector} Stock Screener`
+    : "Stock Screener";
+  const sub = sector
+    ? `${companies.length} ${sector} ${
+        companies.length === 1 ? "equity" : "equities"
+      } ranked by AI agent composite score`
+    : `${companies.length} US-listed equities (incl. ADRs) ranked by AI agent composite score`;
 
   return (
     <>
@@ -56,11 +82,9 @@ export default async function ScreenerPage() {
       <main className="flex-1 max-w-[1600px] mx-auto w-full px-4 py-6">
         <div className="mb-6">
           <h1 className="font-mono text-xl font-bold text-text mb-1">
-            Screener
+            {heading}
           </h1>
-          <p className="text-sm text-text-muted font-mono">
-            {companies.length} US-listed equities tracked (incl. ADRs)
-          </p>
+          <p className="text-sm text-text-muted font-mono">{sub}</p>
         </div>
         <DataTable companies={companies} />
       </main>

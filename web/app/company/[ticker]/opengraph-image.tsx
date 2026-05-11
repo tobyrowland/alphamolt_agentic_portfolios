@@ -1,25 +1,31 @@
 /**
  * Dynamic OG card for /company/[ticker]. Renders the agent verdict +
- * top-3 holders + a single trade-tape line per the locked mockup.
+ * top 3 POVs (2 bullish + 1 bearish where available) per the locked
+ * mockup — with monogram avatars instead of brand logos so the card
+ * doesn't read as an endorsement.
  *
  * Falls back to a clean empty-state card when:
- *   - the ticker isn't in the companies table (treats it as 404 → returns
- *     a generic "AlphaMolt" card to avoid breaking link previews)
- *   - the ticker has no agent holders yet (right column hidden, hero
- *     shows "No AI agents hold this yet")
+ *   - the ticker isn't in the companies table → returns a generic
+ *     AlphaMolt card to avoid breaking link previews
+ *   - the ticker has no agent rationales yet → right column shows
+ *     "No agent rationales recorded yet."
  */
 
 import { ImageResponse } from "next/og";
 import { getSupabase } from "@/lib/supabase";
 import {
+  buildAgentPovs,
+  buildCompanyConsensus,
+  getCompanyHolders,
   getCompanySwarmSnapshot,
   getCompanyTradeTape,
-  type CompanyTrade,
+  getHeartbeatRationales,
 } from "@/lib/company-agents-query";
 import {
   OG_ALT,
   OG_SIZE,
   renderCompanyOg,
+  type OgPov,
 } from "@/lib/company-og";
 
 export const runtime = "nodejs";
@@ -28,7 +34,7 @@ export const alt = OG_ALT;
 export const size = OG_SIZE;
 export const contentType = "image/png";
 
-const TRADE_TAPE_MAX_CHARS = 90;
+const RATIONALE_MAX_CHARS = 90;
 
 export default async function Image({
   params,
@@ -38,54 +44,104 @@ export default async function Image({
   const { ticker: rawTicker } = await params;
   const ticker = decodeURIComponent(rawTicker).toUpperCase();
 
-  let company_name: string | null = null;
-  let snapshot: Awaited<
-    ReturnType<typeof getCompanySwarmSnapshot>
-  > | null = null;
-  let latestTrade: CompanyTrade | null = null;
+  let company: {
+    company_name: string | null;
+    exchange: string | null;
+    country: string | null;
+    sector: string | null;
+    price: number | null;
+    sort_order: number | null;
+  } | null = null;
+  let snapshot: Awaited<ReturnType<typeof getCompanySwarmSnapshot>> | null =
+    null;
+  let holders: Awaited<ReturnType<typeof getCompanyHolders>> = [];
+  let trades: Awaited<ReturnType<typeof getCompanyTradeTape>> = [];
+  let rationales: Awaited<ReturnType<typeof getHeartbeatRationales>> = [];
+  let totalScreened: number | null = null;
 
   try {
     const supabase = getSupabase();
-    const [companyRes, snap, trades] = await Promise.all([
+    const [companyRes, snap, hldrs, trds, rats, countRes] = await Promise.all([
       supabase
         .from("companies")
-        .select("company_name")
+        .select("company_name, exchange, country, sector, price, sort_order")
         .eq("ticker", ticker)
         .maybeSingle(),
       getCompanySwarmSnapshot(ticker),
-      getCompanyTradeTape(ticker, 1),
+      getCompanyHolders(ticker),
+      // Wide window so the POV derivation can find each agent's latest
+      // action even for stocks with thousands of historical trades.
+      getCompanyTradeTape(ticker, 200),
+      getHeartbeatRationales(ticker, 12),
+      // Total screened-universe count → "Rank #N of M+" label.
+      supabase
+        .from("companies")
+        .select("ticker", { count: "exact", head: true })
+        .eq("in_tv_screen", true),
     ]);
-    company_name =
-      (companyRes.data as { company_name: string | null } | null)
-        ?.company_name ?? null;
+    company =
+      (companyRes.data as typeof company | null) ?? null;
     snapshot = snap;
-    latestTrade = trades[0] ?? null;
+    holders = hldrs;
+    trades = trds;
+    rationales = rats;
+    totalScreened = countRes.count ?? null;
   } catch (err) {
     // Don't break social previews on a Supabase blip — fall through to
     // an empty card.
     console.error(`og /company/${ticker} fetch failed:`, err);
   }
 
-  const numAgents = snapshot?.num_agents ?? 0;
-  const totalAgents = snapshot?.total_agents ?? 0;
-  const pctAgents = snapshot?.pct_agents ?? 0;
-  const swarmPnlPct = snapshot?.swarm_pnl_pct ?? null;
-  const snapshotDate = snapshot?.snapshot_date ?? null;
-  const topHolders = snapshot?.top_holders ?? [];
+  const consensus = buildCompanyConsensus(
+    snapshot?.num_agents ?? 0,
+    snapshot?.total_agents ?? 0,
+    trades,
+    holders,
+  );
+  const allPovs = buildAgentPovs(
+    holders,
+    trades,
+    rationales,
+    snapshot?.current_price ?? company?.price ?? null,
+  );
+
+  // Pick the three voices that tell the most interesting story:
+  // top 2 bullish + 1 bearish (or counterpoint), where each one has a
+  // non-empty rationale. We only show agents with something to say —
+  // skip "Bought 12d ago" with no quote.
+  const withRationale = allPovs.filter(
+    (p) => p.rationale && p.rationale.trim().length > 0,
+  );
+  const bulls = withRationale.filter((p) => p.stance === "bullish");
+  const bears = withRationale.filter((p) => p.stance === "bearish");
+  const neutrals = withRationale.filter((p) => p.stance === "neutral");
+  const picked = [
+    bulls[0],
+    bulls[1] ?? neutrals[0],
+    bears[0] ?? neutrals[bulls[1] ? 1 : 0],
+  ].filter((p): p is NonNullable<typeof p> => !!p);
+
+  const povs: OgPov[] = picked.map((p) => ({
+    display_name: p.display_name,
+    stance: p.stance,
+    rationale: truncate(p.rationale ?? "", RATIONALE_MAX_CHARS),
+  }));
 
   return new ImageResponse(
     renderCompanyOg({
       ticker,
-      company_name,
-      num_agents: numAgents,
-      total_agents: totalAgents,
-      pct_agents: pctAgents,
-      swarm_pnl_pct: swarmPnlPct,
-      snapshot_date: snapshotDate,
-      top_holders: topHolders,
-      latest_trade_text: latestTrade
-        ? formatTradeTapeLine(latestTrade)
-        : null,
+      company_name: company?.company_name ?? null,
+      exchange: company?.exchange ?? null,
+      country: company?.country ?? null,
+      sector: company?.sector ?? null,
+      price: company?.price ?? null,
+      rank: company?.sort_order ?? null,
+      total_screened: totalScreened,
+      num_agents: snapshot?.num_agents ?? 0,
+      total_agents: snapshot?.total_agents ?? 0,
+      swarm_pnl_pct: snapshot?.swarm_pnl_pct ?? null,
+      verdict: consensus.verdict,
+      povs,
     }),
     {
       ...size,
@@ -97,11 +153,7 @@ export default async function Image({
   );
 }
 
-function formatTradeTapeLine(t: CompanyTrade): string {
-  const head = `@${t.handle} ${t.side === "buy" ? "bought" : "sold"} ${t.quantity} @ $${t.price_usd.toFixed(2)}`;
-  if (!t.note) return head;
-  const tail = ` — "${t.note}"`;
-  const line = `${head}${tail}`;
-  if (line.length <= TRADE_TAPE_MAX_CHARS) return line;
-  return `${line.slice(0, TRADE_TAPE_MAX_CHARS - 1)}…`;
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
 }
