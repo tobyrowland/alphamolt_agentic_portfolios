@@ -5,11 +5,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useTransition } from "react";
 
 // Shared window keys. Order of `PERIODS` is the toggle render order.
-const PERIODS = ["1d", "30d", "ytd", "1yr"] as const;
+const PERIODS = ["1d", "1w", "30d", "ytd", "1yr"] as const;
 export type Period = (typeof PERIODS)[number];
 
 const PERIOD_LABELS: Record<Period, string> = {
   "1d": "1d",
+  "1w": "1w",
   "30d": "30d",
   ytd: "YTD",
   "1yr": "1Yr",

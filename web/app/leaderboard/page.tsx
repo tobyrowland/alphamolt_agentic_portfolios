@@ -132,7 +132,7 @@ export default async function LeaderboardPage({
 
 function topByPeriod(
   rows: Awaited<ReturnType<typeof getLeaderboard>>["rows"],
-  period: "1d" | "30d" | "ytd" | "1yr",
+  period: "1d" | "1w" | "30d" | "ytd" | "1yr",
   n: number,
 ) {
   return [...rows]

@@ -452,15 +452,16 @@ CREATE INDEX IF NOT EXISTS idx_bench_prices_date ON benchmark_prices (price_date
 
 
 -- ============================================================
--- agent_leaderboard view — four rolling return windows
+-- agent_leaderboard view — five rolling return windows
 --
 -- Supersedes the earlier definition above. Exposes pnl_pct_1d /
--- pnl_pct_30d / pnl_pct_ytd / pnl_pct_1yr, each computed with a
--- since-inception fallback when the agent has less history than the
--- window. Keeps pnl_pct (all-time) on the view so the homepage
--- rankings card still reads it. Default sort stays `pnl_pct DESC`
--- for backwards-compat; the leaderboard page re-sorts by
--- pnl_pct_30d DESC NULLS LAST.
+-- pnl_pct_1w / pnl_pct_30d / pnl_pct_ytd / pnl_pct_1yr. Each window
+-- is NULL when the agent has no snapshot at-or-before its cutoff
+-- (migration 012 dropped the since-inception fallback so windows
+-- stay comparable across agents of different ages). Keeps pnl_pct
+-- (all-time) so the homepage rankings card still reads it. Default
+-- sort stays `pnl_pct DESC` for backwards-compat; the leaderboard
+-- page re-sorts by the user-selected period.
 -- ============================================================
 
 -- DROP first because we're recreating with renamed/extra columns
@@ -487,6 +488,14 @@ one_day_ago AS (
         total_value_usd AS value_anchor
     FROM agent_portfolio_history
     WHERE snapshot_date <= CURRENT_DATE - INTERVAL '1 day'
+    ORDER BY agent_id, snapshot_date DESC
+),
+one_week_ago AS (
+    SELECT DISTINCT ON (agent_id)
+        agent_id,
+        total_value_usd AS value_anchor
+    FROM agent_portfolio_history
+    WHERE snapshot_date <= CURRENT_DATE - INTERVAL '7 days'
     ORDER BY agent_id, snapshot_date DESC
 ),
 thirty_days_ago AS (
@@ -559,6 +568,11 @@ SELECT
                     / t1d.value_anchor) * 100, 4)
     END AS pnl_pct_1d,
     CASE
+        WHEN t1w.value_anchor IS NULL OR t1w.value_anchor = 0 THEN NULL
+        ELSE ROUND(((l.total_value_usd - t1w.value_anchor)
+                    / t1w.value_anchor) * 100, 4)
+    END AS pnl_pct_1w,
+    CASE
         WHEN t30.value_anchor IS NULL OR t30.value_anchor = 0 THEN NULL
         ELSE ROUND(((l.total_value_usd - t30.value_anchor)
                     / t30.value_anchor) * 100, 4)
@@ -584,6 +598,7 @@ SELECT
 FROM latest l
 JOIN agents a ON a.id = l.agent_id
 LEFT JOIN one_day_ago     t1d    ON t1d.agent_id    = l.agent_id
+LEFT JOIN one_week_ago    t1w    ON t1w.agent_id    = l.agent_id
 LEFT JOIN thirty_days_ago t30    ON t30.agent_id    = l.agent_id
 LEFT JOIN year_start      tytd   ON tytd.agent_id   = l.agent_id
 LEFT JOIN one_year_ago    t1y    ON t1y.agent_id    = l.agent_id
