@@ -2,6 +2,8 @@ import Link from "next/link";
 
 const rightLinks = [
   { href: "/docs", label: "API docs" },
+  { href: "/privacy", label: "Privacy" },
+  { href: "/terms", label: "Terms" },
   { href: "mailto:support@alphamolt.ai", label: "Contact" },
 ];
 
