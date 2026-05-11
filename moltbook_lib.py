@@ -35,7 +35,11 @@ FEED_SUBMOLTS = frozenset({
 })
 
 DRAFT_MODEL = "claude-haiku-4-5"
-MATH_MODEL = "claude-sonnet-4-6"
+# Sonnet 4-6 was bailing on the heavily-obfuscated challenges ("lOoBxqst",
+# "MoL tInG", "umm errr { lxq }") — racking up "no parseable answer" failures.
+# Opus 4-7 with extended thinking decodes the ransom-note framing reliably.
+MATH_MODEL = "claude-opus-4-7"
+MATH_THINKING_BUDGET = 2000
 
 # Cached system prompt — persona + platform context. Stable across runs so
 # Anthropic prompt caching gives us near-free re-reads.
@@ -202,10 +206,24 @@ class MoltbookClient:
             body["parent_id"] = parent_id
         return self._post(f"/posts/{post_id}/comments", body)
 
-    def verify(self, verification_code: str, answer: str) -> dict | None:
-        return self._post(
-            "/verify", {"verification_code": verification_code, "answer": answer}
+    def verify(self, verification_code: str, answer: str) -> dict:
+        # Doesn't go through _post: we want the error body in the return value
+        # so create_post_and_verify can surface it in the GitHub issue. Without
+        # this, every failure shows as ': None' (see #743 — Moltbook rejected
+        # '30.00' for a problem whose answer was 30, but we had no visibility).
+        r = self.session.post(
+            f"{API_ROOT}/verify",
+            json={"verification_code": verification_code, "answer": answer},
+            timeout=TIMEOUT,
         )
+        try:
+            payload = r.json()
+        except ValueError:
+            payload = {"raw_text": r.text[:300]}
+        if r.status_code >= 400:
+            log.error("POST /verify -> %s: %s", r.status_code, r.text[:300])
+            return {"success": False, "status": r.status_code, **payload}
+        return payload
 
     # Engagement endpoints (proactive growth)
     def feed(
@@ -711,27 +729,29 @@ _SOLVER_VOTES = 3
 def _single_math_solve(client: Any, challenge_text: str, attempt: int) -> str | None:
     resp = client.messages.create(
         model=MATH_MODEL,
-        max_tokens=2000,
+        max_tokens=2000 + MATH_THINKING_BUDGET,
+        thinking={"type": "enabled", "budget_tokens": MATH_THINKING_BUDGET},
         messages=[
             {
                 "role": "user",
                 "content": (
                     "You are solving a math verification challenge. The text "
                     "below is deliberately noisy (ransom-note case, punctuation, "
-                    "whimsical framing). Extract the actual math problem, solve "
-                    "it carefully, and output the final numeric answer.\n\n"
+                    "whimsical framing, garbage tokens like '{ lxq }' or "
+                    "'lOoBxqst'). Ignore the noise, extract the math problem, "
+                    "solve it carefully, and output the final numeric answer.\n\n"
                     "IMPORTANT RULES:\n"
                     "- Read the noisy text and extract the clean math problem "
-                    "first. Number words like 'twenty-five' mean 25.\n"
+                    "first. Number words like 'twenty-five' mean 25, 'nootons' "
+                    "means newtons, etc.\n"
                     "- Solve step by step. Do not skip steps.\n"
                     "- Re-read the problem once you have an answer and verify "
                     "each arithmetic step before committing.\n"
-                    "- The answer MUST be a number to exactly 2 decimal places "
-                    "(e.g. 37.00, 525.00, 18.50).\n"
                     "- End your response with a line that reads exactly:\n"
                     "  ANSWER: <number>\n"
-                    "- The number on the ANSWER line must be just digits and a "
-                    "decimal point — no units, no currency, no commas.\n\n"
+                    "- If the answer is a whole number, write it without "
+                    "decimals (e.g. 30 not 30.00). If fractional, include "
+                    "decimals (e.g. 18.5). No units, no currency, no commas.\n\n"
                     f"CHALLENGE:\n{challenge_text}\n\n"
                     "Reason through it step by step, then output the ANSWER line."
                 ),
@@ -749,13 +769,26 @@ def _single_math_solve(client: Any, challenge_text: str, attempt: int) -> str | 
 
     answer_line = re.search(r"ANSWER:\s*(-?\d+(?:\.\d+)?)", raw)
     if answer_line:
-        return f"{float(answer_line.group(1)):.2f}"
+        return _format_answer(answer_line.group(1))
 
     matches = re.findall(r"-?\d+(?:\.\d+)?", raw)
     if matches:
-        return f"{float(matches[-1]):.2f}"
+        return _format_answer(matches[-1])
 
     return None
+
+
+def _format_answer(raw: str) -> str:
+    """Normalise a numeric string for Moltbook's /verify endpoint.
+
+    Moltbook rejected legitimate answers like '30.00' (HTTP 4xx, see #743):
+    it appears to expect integer-format strings when the math is integer.
+    Strip trailing zeros so integers render as '30', fractionals as '18.5'.
+    """
+    value = float(raw)
+    if value == int(value):
+        return str(int(value))
+    return f"{value:g}"
 
 
 def solve_math_challenge(challenge_text: str) -> str:
