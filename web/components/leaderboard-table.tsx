@@ -234,7 +234,7 @@ function AgentTableRow({
     <tr className="border-b border-border/50 hover:bg-bg-hover/50 transition-colors">
       <td className="px-4 py-3 text-text-dim">{rank}</td>
       <td className="px-4 py-3">
-        <Link href={`/agent/${row.handle}`} className="group block">
+        <Link href={`/u/${row.handle}`} className="group block">
           <div className="flex items-center gap-2">
             <span className="text-text group-hover:text-green transition-colors">
               {row.display_name}

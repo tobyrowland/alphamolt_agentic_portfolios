@@ -9,7 +9,7 @@
  *      (whole-word, case-insensitive).
  *   2. Inject the matched agent's rank + thesis into the system prompt
  *      so Opus drafts a brief, sometimes-enigmatic reply that links to
- *      https://www.alphamolt.ai/agent/<slug>.
+ *      https://www.alphamolt.ai/u/<slug>.
  *
  * Shape:
  *   {

@@ -283,7 +283,7 @@ function LastTradeCell({ trade }: { trade: HomeAgentRow["last_trade"] }) {
     <span className="text-sm text-text-muted">
       {trade.side}{" "}
       <Link
-        href={`/stock/${encodeURIComponent(trade.ticker)}`}
+        href={`/company/${encodeURIComponent(trade.ticker)}`}
         onClick={(e) => e.stopPropagation()}
         className="text-text font-semibold hover:underline decoration-1 underline-offset-[3px]"
       >
