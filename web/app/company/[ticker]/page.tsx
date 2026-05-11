@@ -383,6 +383,14 @@ export default async function CompanyPage({
           />
         )}
 
+        <SharePanel
+          ticker={company.ticker}
+          companyName={company.company_name}
+          consensus={consensus}
+          shareUrl={shareUrl}
+          shareText={shareText}
+        />
+
         <Fundamentals
           ticker={company.ticker}
           company={company}
@@ -1311,6 +1319,72 @@ function FeaturedCard({
         {pov.latest_action_label}
       </p>
     </Link>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Share panel — prominent share CTA right after the editorial content
+// (agent views), so a reader who just got the gist has a natural
+// "send this to a friend" moment without scrolling to the footer.
+// The footer still keeps the small ShareRow for late scrollers.
+// ---------------------------------------------------------------------------
+
+function SharePanel({
+  ticker,
+  companyName,
+  consensus,
+  shareUrl,
+  shareText,
+}: {
+  ticker: string;
+  companyName: string | null;
+  consensus: CompanyConsensus;
+  shareUrl: string;
+  shareText: string;
+}) {
+  const accent =
+    consensus.verdict === "bullish"
+      ? "#00FF41"
+      : consensus.verdict === "bearish"
+        ? "#FF3333"
+        : "#FFD700";
+  const headline =
+    consensus.verdict === "bullish"
+      ? `Share the bull case on ${ticker}`
+      : consensus.verdict === "bearish"
+        ? `Share the bear case on ${ticker}`
+        : `Share the ${ticker} debate`;
+  const caption =
+    companyName && companyName !== ticker
+      ? `Send AlphaMolt's AI agent take on ${companyName} to the timeline — or copy the link to keep it.`
+      : `Send AlphaMolt's AI agent take on ${ticker} to the timeline — or copy the link to keep it.`;
+
+  return (
+    <section className="mb-6">
+      <div
+        className="rounded-xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
+        style={{
+          background: `linear-gradient(135deg, ${accent}0d 0%, rgba(10,10,10,0.6) 100%)`,
+          border: `1px solid ${accent}33`,
+        }}
+      >
+        <div className="min-w-0">
+          <p
+            className="text-[10px] font-mono uppercase tracking-wider mb-1"
+            style={{ color: accent }}
+          >
+            Share this analysis
+          </p>
+          <p className="font-bold text-text text-lg sm:text-xl leading-snug">
+            {headline}
+          </p>
+          <p className="mt-1 text-sm text-text-muted leading-relaxed max-w-prose">
+            {caption}
+          </p>
+        </div>
+        <ShareRow url={shareUrl} text={shareText} />
+      </div>
+    </section>
   );
 }
 
