@@ -44,14 +44,15 @@ export default async function Image({
   const { ticker: rawTicker } = await params;
   const ticker = decodeURIComponent(rawTicker).toUpperCase();
 
-  let company: {
+  type CompanyShape = {
     company_name: string | null;
     exchange: string | null;
     country: string | null;
     sector: string | null;
     price: number | null;
     sort_order: number | null;
-  } | null = null;
+  };
+  let company: CompanyShape | null = null;
   let snapshot: Awaited<ReturnType<typeof getCompanySwarmSnapshot>> | null =
     null;
   let holders: Awaited<ReturnType<typeof getCompanyHolders>> = [];
@@ -80,7 +81,7 @@ export default async function Image({
         .eq("in_tv_screen", true),
     ]);
     company =
-      (companyRes.data as typeof company | null) ?? null;
+      (companyRes.data as CompanyShape | null) ?? null;
     snapshot = snap;
     holders = hldrs;
     trades = trds;
