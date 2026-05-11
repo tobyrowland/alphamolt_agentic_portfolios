@@ -643,3 +643,137 @@ function formatRelativeShort(iso: string): string {
   const mins = Math.max(0, Math.floor(diffMs / (1000 * 60)));
   return `${mins}m ago`;
 }
+
+// ---------------------------------------------------------------------------
+// Editorial helpers — derive a "swarm view" sentence + bucket agents by
+// stance so the page reads like a research note, not a dashboard dump.
+// ---------------------------------------------------------------------------
+
+export interface SwarmViewLine {
+  // Full sentence rendered in the hero, e.g.
+  // "Bullish, but valuation risk is rising."
+  headline: string;
+  // Short verdict word for share-text and screen-reader summary.
+  verdict_word: "Bullish" | "Bearish" | "Mixed";
+}
+
+/**
+ * Compose the page's headline take. Output is intentionally a single
+ * sentence — the hero already shows the metrics; the sentence is for
+ * "so what?" framing.
+ *
+ * Picks the strongest opposing signal as the "but" clause:
+ *   - Bullish overall + bear FAIL          → "Bullish, but bears flag {risk}"
+ *   - Bullish + P/S > 1.2× 12-mo median   → "Bullish, but valuation is stretched vs its 12-mo median"
+ *   - Bullish + recent exit                → "Bullish, with {agent} as the notable exception"
+ *   - Bullish + no caveat                  → "Bullish — agent conviction is strong"
+ *   - Bearish + bull PASS                  → "Bearish, though the bull case still cites {edge}"
+ *   - Bearish + no rebuttal                → "Bearish — agents have walked away"
+ *   - Mixed + both rationales              → "Split: bulls cite {bull}, bears cite {bear}"
+ *   - Mixed + only bull or bear            → "Split — opinion divided on {whichever side has data}"
+ *   - Mixed + no rationales                → "Split — no clear thesis"
+ */
+export function buildSwarmViewLine({
+  verdict,
+  bullPass,
+  bearPass,
+  bullRationale,
+  bearRationale,
+  psNow,
+  psMedian,
+  recentExitName,
+}: {
+  verdict: CompanyConsensus["verdict"];
+  bullPass: boolean | null;
+  bearPass: boolean | null;
+  bullRationale: string | null;
+  bearRationale: string | null;
+  psNow: number | null;
+  psMedian: number | null;
+  recentExitName: string | null;
+}): SwarmViewLine {
+  const valuationStretched =
+    psNow != null && psMedian != null && psMedian > 0 && psNow / psMedian > 1.2;
+
+  if (verdict === "bullish") {
+    let headline: string;
+    if (bearPass === false && bearRationale) {
+      headline = `Bullish, but bears flag ${lowerFirstClause(bearRationale)}.`;
+    } else if (valuationStretched) {
+      headline = "Bullish, but valuation is stretched vs its 12-month median.";
+    } else if (recentExitName) {
+      headline = `Bullish, with ${recentExitName} as the notable exception.`;
+    } else {
+      headline = "Bullish — agent conviction is strong.";
+    }
+    return { headline, verdict_word: "Bullish" };
+  }
+
+  if (verdict === "bearish") {
+    let headline: string;
+    if (bullPass === true && bullRationale) {
+      headline = `Bearish, though the bull case still cites ${lowerFirstClause(bullRationale)}.`;
+    } else {
+      headline = "Bearish — agents have walked away.";
+    }
+    return { headline, verdict_word: "Bearish" };
+  }
+
+  // mixed
+  let headline: string;
+  if (bullRationale && bearRationale) {
+    headline = `Split: bulls cite ${lowerFirstClause(bullRationale)}, bears cite ${lowerFirstClause(bearRationale)}.`;
+  } else if (bullRationale) {
+    headline = `Split — bulls still see ${lowerFirstClause(bullRationale)}.`;
+  } else if (bearRationale) {
+    headline = `Split — bears flag ${lowerFirstClause(bearRationale)}.`;
+  } else {
+    headline = "Split — no clear thesis yet.";
+  }
+  return { headline, verdict_word: "Mixed" };
+}
+
+/**
+ * Bucket POVs into bull/cautious/bearish lists for the "Agent split"
+ * compact block. Pure regrouping of the input array — no sorting beyond
+ * what buildAgentPovs already did.
+ */
+export function bucketAgentsByStance(
+  povs: AgentPov[],
+): { bullish: AgentPov[]; neutral: AgentPov[]; bearish: AgentPov[] } {
+  const out = { bullish: [] as AgentPov[], neutral: [] as AgentPov[], bearish: [] as AgentPov[] };
+  for (const p of povs) {
+    if (p.stance === "bullish") out.bullish.push(p);
+    else if (p.stance === "bearish") out.bearish.push(p);
+    else out.neutral.push(p);
+  }
+  return out;
+}
+
+/**
+ * Find the most-recent exiter (bearish stance with a sell timestamp)
+ * for the optional "with X as the notable exception" hero line. Falls
+ * back to null when nobody exited recently.
+ */
+export function mostRecentExiter(povs: AgentPov[]): string | null {
+  let best: { name: string; ts: number } | null = null;
+  for (const p of povs) {
+    if (p.stance !== "bearish" || !p.latest_action_at) continue;
+    const ts = new Date(p.latest_action_at).getTime();
+    if (!Number.isFinite(ts)) continue;
+    if (Date.now() - ts > 30 * MS_PER_DAY) continue; // stale exits don't qualify
+    if (!best || ts > best.ts) best = { name: p.display_name, ts };
+  }
+  return best?.name ?? null;
+}
+
+/**
+ * Lowercase the first letter and trim trailing punctuation so a stored
+ * rationale ("Strong revenue growth and expanding TAM.") embeds cleanly
+ * mid-sentence ("...bulls cite strong revenue growth and expanding TAM,").
+ */
+function lowerFirstClause(s: string): string {
+  const trimmed = s.trim().replace(/[.;!?]+$/, "");
+  if (!trimmed) return "";
+  return trimmed[0].toLowerCase() + trimmed.slice(1);
+}

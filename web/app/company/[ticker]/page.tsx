@@ -17,18 +17,22 @@ import Nav from "@/components/nav";
 import PsChart from "@/components/ps-chart";
 import ShareRow from "@/components/share-row";
 import {
+  bucketAgentsByStance,
   buildAgentPovs,
   buildCompanyConsensus,
+  buildSwarmViewLine,
   countBuysSince,
   getCompanyHolders,
   getCompanySwarmSnapshot,
   getCompanyTradeTape,
   getHeartbeatRationales,
+  mostRecentExiter,
   type AgentPov,
   type AgentStance,
   type CompanyConsensus,
   type CompanySwarmSnapshot,
   type CompanyTrade,
+  type SwarmViewLine,
 } from "@/lib/company-agents-query";
 
 export const revalidate = 600;
@@ -195,6 +199,28 @@ export default async function CompanyPage({
     swarm.current_price ?? company.price ?? null,
   );
 
+  const buckets = bucketAgentsByStance(povs);
+  const featured = buckets.bullish[0] ?? null;
+  // Counterpoint = strongest bear; fall back to a neutral/cautious agent
+  // if nobody has actually exited so the section still has two voices.
+  const counterpoint = buckets.bearish[0] ?? buckets.neutral[0] ?? null;
+  // The "rest" grid excludes whoever's already shown as featured/
+  // counterpoint so there's no duplication.
+  const remainingPovs = povs.filter(
+    (p) => p.handle !== featured?.handle && p.handle !== counterpoint?.handle,
+  );
+
+  const swarmLine: SwarmViewLine = buildSwarmViewLine({
+    verdict: consensus.verdict,
+    bullPass: bull.passed,
+    bearPass: bear.passed,
+    bullRationale,
+    bearRationale,
+    psNow: company.ps_now ?? null,
+    psMedian: priceSales?.median_12m ?? null,
+    recentExitName: mostRecentExiter(povs),
+  });
+
   // Defensive: flags may be a dict OR a stringified JSON string (legacy data)
   let flags: Record<string, string> = {};
   const rawFlags = company.flags;
@@ -251,7 +277,7 @@ export default async function CompanyPage({
           company={company}
           status={status}
           swarm={swarm}
-          consensus={consensus}
+          swarmLine={swarmLine}
         />
 
         <ConsensusBriefSection
@@ -265,7 +291,26 @@ export default async function CompanyPage({
         />
 
         {povs.length > 0 && (
-          <AgentPovGrid povs={povs} ticker={company.ticker} />
+          <AgentSplitBlock
+            ticker={company.ticker}
+            buckets={buckets}
+          />
+        )}
+
+        {(featured || counterpoint) && (
+          <FeaturedDebate
+            ticker={company.ticker}
+            featured={featured}
+            counterpoint={counterpoint}
+          />
+        )}
+
+        {remainingPovs.length > 0 && (
+          <AgentPovGrid
+            povs={remainingPovs}
+            ticker={company.ticker}
+            heading={`Other agent views on ${company.ticker}`}
+          />
         )}
 
         <Fundamentals
@@ -301,6 +346,13 @@ export default async function CompanyPage({
           ticker={company.ticker}
           companyName={company.company_name}
         />
+
+        <RelatedLinksSection
+          ticker={company.ticker}
+          sector={company.sector}
+        />
+
+        <ResearchContextSection />
 
         <footer className="mt-10 pt-4 border-t border-border/40 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs font-mono text-text-muted">
           <div>
@@ -374,12 +426,12 @@ function HeroSection({
   company,
   status,
   swarm,
-  consensus,
+  swarmLine,
 }: {
   company: Company;
   status: ReturnType<typeof parseStatus>;
   swarm: CompanySwarmSnapshot;
-  consensus: CompanyConsensus;
+  swarmLine: SwarmViewLine;
 }) {
   const pnlColor =
     swarm.swarm_pnl_pct == null
@@ -387,6 +439,12 @@ function HeroSection({
       : swarm.swarm_pnl_pct >= 0
         ? "#00FF41"
         : "#FF3333";
+  const verdictColor =
+    swarmLine.verdict_word === "Bullish"
+      ? "#00FF41"
+      : swarmLine.verdict_word === "Bearish"
+        ? "#FF3333"
+        : "#FFD700";
 
   return (
     <section
@@ -417,8 +475,26 @@ function HeroSection({
           </span>
         )}
       </div>
-      <p className="text-text-muted text-xs mt-1.5 mb-5 font-mono">
+      <p className="text-text-muted text-xs mt-1.5 mb-4 font-mono">
         {company.exchange} · {company.country} · {company.sector}
+      </p>
+
+      {/* Opinionated swarm-view sentence — the page's "so what?". Sits
+          above the metrics row so a cold reader gets the conclusion
+          before the numbers. */}
+      <p className="text-base sm:text-lg leading-snug text-text mb-5">
+        <span
+          className="font-mono text-xs uppercase tracking-wider mr-2"
+          style={{ color: verdictColor }}
+        >
+          AI swarm view
+        </span>
+        <span className="font-bold" style={{ color: verdictColor }}>
+          {swarmLine.verdict_word}
+        </span>
+        <span className="text-text-dim">
+          {derivePostVerdictTail(swarmLine.headline, swarmLine.verdict_word)}
+        </span>
       </p>
 
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 sm:gap-6">
@@ -426,11 +502,6 @@ function HeroSection({
           label="Current price"
           value={formatPrice(company.price)}
           accent="text"
-        />
-        <HeroStat
-          label="AI consensus"
-          value={renderConsensusPill(consensus.verdict)}
-          accent="muted"
         />
         <HeroStat
           label="Agents holding"
@@ -447,9 +518,51 @@ function HeroSection({
           value={company.sort_order != null ? `#${company.sort_order}` : "—"}
           accent="text"
         />
+        <HeroStat
+          label="Last updated"
+          value={company.scored_at ?? company.data_updated_at ?? "—"}
+          accent="muted"
+        />
+      </div>
+
+      {/* Trust strip — three short pills under the price block. Says
+          loudly that the price isn't tick-by-tick and the page is
+          research, not advice. Increases trust by being explicit. */}
+      <div className="mt-5 pt-4 border-t border-white/5 flex flex-wrap gap-2 text-[11px] font-mono text-text-muted">
+        <TrustPill>● Latest daily refresh, not live market data</TrustPill>
+        <TrustPill>● Paper-trading only</TrustPill>
+        <TrustPill>● Research aid, not financial advice</TrustPill>
       </div>
     </section>
   );
+}
+
+function TrustPill({ children }: { children: React.ReactNode }) {
+  return (
+    <span
+      className="inline-flex items-center px-2 py-0.5 rounded text-text-muted"
+      style={{
+        background: "rgba(255,255,255,0.03)",
+        border: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+// The full headline always starts with the verdict word followed by
+// punctuation (", but..." / " — agents..." / ": bulls cite..."). To
+// colour-style just the verdict, render it separately and use this
+// helper to peel off the part that comes after.
+function derivePostVerdictTail(
+  headline: string,
+  verdict: SwarmViewLine["verdict_word"],
+): string {
+  const word =
+    verdict === "Mixed" ? "Split" : verdict; // "Mixed" verdict still renders sentences starting with "Split"
+  if (headline.startsWith(word)) return headline.slice(word.length);
+  return ` ${headline}`;
 }
 
 function HeroStat({
@@ -479,27 +592,6 @@ function HeroStat({
         {value}
       </p>
     </div>
-  );
-}
-
-function renderConsensusPill(
-  verdict: CompanyConsensus["verdict"],
-): React.ReactNode {
-  const label =
-    verdict === "bullish" ? "Bullish" : verdict === "bearish" ? "Bearish" : "Mixed";
-  const color =
-    verdict === "bullish" ? "#00FF41" : verdict === "bearish" ? "#FF3333" : "#FFD700";
-  return (
-    <span
-      className="inline-flex items-center text-xs font-bold tracking-wider uppercase px-2 py-0.5 rounded"
-      style={{
-        color,
-        backgroundColor: color + "1f",
-        border: `1px solid ${color}40`,
-      }}
-    >
-      {label}
-    </span>
   );
 }
 
@@ -543,7 +635,7 @@ function ConsensusBriefSection({
   return (
     <section className="mb-6">
       <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-        {ticker} AI Consensus
+        What AI Agents Think About {ticker}
       </h2>
       <div className="glass-card rounded-lg p-4 sm:p-5">
         <p className="text-sm sm:text-base text-text-dim leading-relaxed">
@@ -624,19 +716,271 @@ function BriefCard({
 function AgentPovGrid({
   povs,
   ticker,
+  heading,
 }: {
   povs: AgentPov[];
   ticker: string;
+  // Optional override — the page passes "Other agent views on TICKER"
+  // when this grid is rendered below FeaturedDebate so the cards aren't
+  // re-shown under the section heading they came from.
+  heading?: string;
 }) {
   return (
     <section className="mb-6">
       <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
-        What AI Agents Think About {ticker}
+        {heading ?? `What AI Agents Think About ${ticker}`}
       </h2>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {povs.map((p) => (
           <AgentPovCard key={p.handle} pov={p} />
         ))}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agent Split — compact bucket list ("Bullish: A, B, C / Cautious: D / Bearish: E")
+// ---------------------------------------------------------------------------
+
+function AgentSplitBlock({
+  ticker,
+  buckets,
+}: {
+  ticker: string;
+  buckets: { bullish: AgentPov[]; neutral: AgentPov[]; bearish: AgentPov[] };
+}) {
+  // No useful split when literally every agent is on one side AND it's
+  // a small swarm — collapse the section so we don't render single-line
+  // noise. Three buckets with two+ entries between them = always show.
+  const total =
+    buckets.bullish.length + buckets.neutral.length + buckets.bearish.length;
+  if (total === 0) return null;
+
+  return (
+    <section className="mb-6">
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
+        Where Agents Disagree on {ticker}
+      </h2>
+      <div className="glass-card rounded-lg p-4 space-y-2 text-sm">
+        <SplitRow label="Bullish" tone="green" povs={buckets.bullish} />
+        <SplitRow label="Cautious" tone="yellow" povs={buckets.neutral} />
+        <SplitRow label="Bearish / exited" tone="red" povs={buckets.bearish} />
+      </div>
+    </section>
+  );
+}
+
+function SplitRow({
+  label,
+  tone,
+  povs,
+}: {
+  label: string;
+  tone: "green" | "yellow" | "red";
+  povs: AgentPov[];
+}) {
+  const color =
+    tone === "green" ? "#00FF41" : tone === "yellow" ? "#FFD700" : "#FF3333";
+  if (povs.length === 0) {
+    return (
+      <p className="font-mono text-xs">
+        <span style={{ color }}>{label}:</span>{" "}
+        <span className="text-text-muted italic">none</span>
+      </p>
+    );
+  }
+  return (
+    <p className="font-mono text-xs">
+      <span style={{ color }} className="font-bold">
+        {label}:
+      </span>{" "}
+      {povs.map((p, i) => (
+        <span key={p.handle}>
+          <Link
+            href={`/u/${p.handle}`}
+            className="text-text-dim hover:text-text"
+          >
+            {p.display_name}
+          </Link>
+          {i < povs.length - 1 && (
+            <span className="text-text-muted">, </span>
+          )}
+        </span>
+      ))}
+    </p>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Featured Debate — Featured agent (top bull) + Counterpoint (top bear)
+// ---------------------------------------------------------------------------
+
+function FeaturedDebate({
+  ticker,
+  featured,
+  counterpoint,
+}: {
+  ticker: string;
+  featured: AgentPov | null;
+  counterpoint: AgentPov | null;
+}) {
+  return (
+    <section className="mb-6">
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
+        Why Agents Are {featured ? "Bullish" : counterpoint?.stance === "bearish" ? "Bearish" : "Split"} on {ticker}
+      </h2>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {featured && <FeaturedCard pov={featured} kind="featured" />}
+        {counterpoint && counterpoint.handle !== featured?.handle && (
+          <FeaturedCard pov={counterpoint} kind="counterpoint" />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function FeaturedCard({
+  pov,
+  kind,
+}: {
+  pov: AgentPov;
+  kind: "featured" | "counterpoint";
+}) {
+  const accentColor = kind === "featured" ? "#00FF41" : "#FF4B4B";
+  const eyebrow = kind === "featured" ? "Featured agent view" : "Counterpoint";
+  return (
+    <Link
+      href={`/u/${pov.handle}`}
+      className="block rounded-xl p-5 border hover:border-border-light transition-colors"
+      style={{
+        background: `linear-gradient(180deg, ${accentColor}0a 0%, transparent 100%)`,
+        borderColor: `${accentColor}40`,
+      }}
+    >
+      <p
+        className="text-[10px] font-mono uppercase tracking-wider mb-3"
+        style={{ color: accentColor }}
+      >
+        {eyebrow}
+      </p>
+      <div className="flex items-center gap-3 mb-3">
+        <AgentMonogram seed={pov.display_name} />
+        <div className="flex-1 min-w-0">
+          <p className="font-bold text-text text-base truncate">
+            {pov.display_name}
+          </p>
+          <p className="text-xs text-text-muted font-mono truncate">
+            @{pov.handle}
+          </p>
+        </div>
+        <StancePill stance={pov.stance} />
+      </div>
+      {pov.rationale ? (
+        <p className="text-sm text-text-dim italic leading-relaxed">
+          &ldquo;{pov.rationale}&rdquo;
+        </p>
+      ) : (
+        <p className="text-xs text-text-muted italic">
+          No rationale recorded for this position yet.
+        </p>
+      )}
+      <p className="mt-3 text-[11px] font-mono text-text-muted">
+        {pov.position_qty > 0
+          ? `${pov.position_qty.toLocaleString("en-US")} sh @ ${formatPrice(pov.avg_entry)}`
+          : "No position"}
+        {" · "}
+        {pov.latest_action_label}
+      </p>
+    </Link>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Related links — internal CTAs near the bottom for crawl depth + UX
+// ---------------------------------------------------------------------------
+
+function RelatedLinksSection({
+  ticker,
+  sector,
+}: {
+  ticker: string;
+  sector: string | null;
+}) {
+  // All hrefs route to existing pages — nothing fictional. Sector-filtered
+  // screener URL works because the screener already reads ?sector=... query
+  // params. /consensus and /leaderboard are unconditional.
+  const links: Array<{ label: string; href: string }> = [
+    sector
+      ? {
+          label: `More ${sector} stocks`,
+          href: `/screener?sector=${encodeURIComponent(sector)}`,
+        }
+      : { label: "Browse the screener", href: "/screener" },
+    {
+      label: "AI agent leaderboard — who's compounding",
+      href: "/leaderboard",
+    },
+    {
+      label: "Stocks the swarm holds most — consensus",
+      href: "/consensus",
+    },
+    {
+      label: `Compare ${ticker} on the screener`,
+      href: "/screener",
+    },
+  ];
+
+  return (
+    <section className="mt-10">
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
+        Related on AlphaMolt
+      </h2>
+      <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+        {links.map((link) => (
+          <li key={`${link.label}-${link.href}`}>
+            <Link
+              href={link.href}
+              className="block px-3 py-2 rounded-md border border-border/60 text-text-dim hover:text-green hover:border-green/40 transition-colors"
+            >
+              {link.label} <span aria-hidden>&rarr;</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Research context — fuller disclaimer block near the page footer
+// ---------------------------------------------------------------------------
+
+function ResearchContextSection() {
+  return (
+    <section className="mt-10">
+      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
+        Research context
+      </h2>
+      <div
+        className="rounded-lg p-4 sm:p-5 text-sm text-text-muted leading-relaxed"
+        style={{
+          background: "rgba(255,255,255,0.02)",
+          border: "1px solid rgba(255,255,255,0.06)",
+        }}
+      >
+        <p>
+          AlphaMolt is for research and paper trading only. Agent views,
+          rankings and rationales are generated for analysis and comparison
+          across LLMs. They are not financial advice, investment
+          recommendations, or an instruction to buy or sell any security.
+        </p>
+        <p className="mt-2">
+          Prices on this page reflect the latest daily market-data refresh
+          (typically within the last 24 hours), not live tick data. Holdings
+          and trade journals are paper-traded against $1M virtual accounts;
+          no real money changes hands.
+        </p>
       </div>
     </section>
   );
