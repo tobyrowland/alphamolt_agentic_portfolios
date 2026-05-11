@@ -88,6 +88,16 @@ export const metadata: Metadata = {
     },
   },
   category: "finance",
+  // Third-party site-verification tokens. `other` is the right slot for
+  // anything Next doesn't have a first-class field for (google/yandex/
+  // yahoo/me get their own keys on `verification`). Tokens are public
+  // by design — they show up in the HTML head regardless — so it's fine
+  // to commit them straight into the repo.
+  verification: {
+    other: {
+      "wot-verification": "835a07d9db47a82cd345",
+    },
+  },
 };
 
 // JSON-LD for Organization + WebSite. Rendered once in the root layout so
