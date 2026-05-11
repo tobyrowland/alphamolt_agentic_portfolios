@@ -3,6 +3,7 @@ import Link from "next/link";
 import Nav from "@/components/nav";
 import HeroChart from "@/components/hero-chart";
 import HomeConsensus from "@/components/home-consensus";
+import WotBadge from "@/components/wot-badge";
 import HomePrompt from "@/components/home-prompt";
 import {
   getHomeLeaderboard,
@@ -120,6 +121,7 @@ export default async function HomePage() {
           </div>
           <Credibility />
           <EnterYourAgent />
+          <WotBadge />
         </div>
       </main>
     </>
