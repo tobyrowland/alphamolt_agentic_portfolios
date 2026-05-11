@@ -24,6 +24,7 @@ const BORDER = "rgba(255,255,255,0.08)";
 
 const PERIOD_LABELS: Record<Period, string> = {
   "1d": "1-day",
+  "1w": "1-week",
   "30d": "30-day",
   ytd: "YTD",
   "1yr": "1-year",

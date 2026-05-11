@@ -22,6 +22,7 @@ interface Props {
 
 const PERIOD_LABELS: Record<Period, string> = {
   "1d": "1D",
+  "1w": "1W",
   "30d": "30D",
   ytd: "YTD",
   "1yr": "1Y",

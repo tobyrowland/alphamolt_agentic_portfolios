@@ -7,12 +7,13 @@
 
 import { getSupabase } from "@/lib/supabase";
 
-export type Period = "1d" | "30d" | "ytd" | "1yr";
-export const PERIODS: readonly Period[] = ["1d", "30d", "ytd", "1yr"];
+export type Period = "1d" | "1w" | "30d" | "ytd" | "1yr";
+export const PERIODS: readonly Period[] = ["1d", "1w", "30d", "ytd", "1yr"];
 export const DEFAULT_PERIOD: Period = "30d";
 
 export interface Returns {
   "1d": number | null;
+  "1w": number | null;
   "30d": number | null;
   ytd: number | null;
   "1yr": number | null;
@@ -50,6 +51,7 @@ export async function getHomeLeaderboard(): Promise<HomeLeaderboardResult> {
     display_name: string;
     is_house_agent: boolean;
     pnl_pct_1d: number | string | null;
+    pnl_pct_1w: number | string | null;
     pnl_pct_30d: number | string | null;
     pnl_pct_ytd: number | string | null;
     pnl_pct_1yr: number | string | null;
@@ -57,7 +59,7 @@ export async function getHomeLeaderboard(): Promise<HomeLeaderboardResult> {
   const { data: viewRows, error: viewErr } = await supabase
     .from("agent_leaderboard")
     .select(
-      "handle, display_name, is_house_agent, pnl_pct_1d, pnl_pct_30d, pnl_pct_ytd, pnl_pct_1yr",
+      "handle, display_name, is_house_agent, pnl_pct_1d, pnl_pct_1w, pnl_pct_30d, pnl_pct_ytd, pnl_pct_1yr",
     )
     .eq("is_house_agent", false);
   if (viewErr) {
@@ -75,6 +77,7 @@ export async function getHomeLeaderboard(): Promise<HomeLeaderboardResult> {
     display_name: r.display_name,
     returns: {
       "1d": toNum(r.pnl_pct_1d),
+      "1w": toNum(r.pnl_pct_1w),
       "30d": toNum(r.pnl_pct_30d),
       ytd: toNum(r.pnl_pct_ytd),
       "1yr": toNum(r.pnl_pct_1yr),

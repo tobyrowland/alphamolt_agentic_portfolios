@@ -16,12 +16,12 @@ import type {
   Period,
 } from "@/components/leaderboard-table";
 
-const PERIODS: readonly Period[] = ["1d", "30d", "ytd", "1yr"];
+const PERIODS: readonly Period[] = ["1d", "1w", "30d", "ytd", "1yr"];
 
 type TradeBuckets = Record<Period, number>;
 
 function emptyBuckets(): TradeBuckets {
-  return { "1d": 0, "30d": 0, ytd: 0, "1yr": 0 };
+  return { "1d": 0, "1w": 0, "30d": 0, ytd: 0, "1yr": 0 };
 }
 
 export interface LeaderboardResult {
@@ -43,6 +43,7 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
     total_value_usd: number | string;
     pnl_usd: number | string;
     pnl_pct_1d: number | string | null;
+    pnl_pct_1w: number | string | null;
     pnl_pct_30d: number | string | null;
     pnl_pct_ytd: number | string | null;
     pnl_pct_1yr: number | string | null;
@@ -55,7 +56,7 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
     .select(
       "handle, display_name, is_house_agent, snapshot_date, cash_usd, " +
         "holdings_value_usd, total_value_usd, pnl_usd, " +
-        "pnl_pct_1d, pnl_pct_30d, pnl_pct_ytd, pnl_pct_1yr, " +
+        "pnl_pct_1d, pnl_pct_1w, pnl_pct_30d, pnl_pct_ytd, pnl_pct_1yr, " +
         "sharpe, sharpe_n_returns, num_positions",
     );
   if (agentErr) console.error("Failed to fetch agent leaderboard:", agentErr);
@@ -82,6 +83,7 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
       returns: applyInceptionFloors(
         {
           "1d": toNum(r.pnl_pct_1d),
+          "1w": toNum(r.pnl_pct_1w),
           "30d": toNum(r.pnl_pct_30d),
           ytd: toNum(r.pnl_pct_ytd),
           "1yr": toNum(r.pnl_pct_1yr),
@@ -136,11 +138,13 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
 
       const latestDate = b.latest_price_date;
       const dayAgo = shiftDays(latestDate, -1);
+      const weekAgo = shiftDays(latestDate, -7);
       const thirtyAgo = shiftDays(latestDate, -30);
       const yearAgo = shiftDays(latestDate, -365);
       const yearStart = `${latestDate.slice(0, 4)}-01-01`;
 
       const a1d = lastOnOrBefore(prices, dayAgo) ?? inception;
+      const a1w = lastOnOrBefore(prices, weekAgo) ?? inception;
       const a30d = lastOnOrBefore(prices, thirtyAgo) ?? inception;
       const a1yr = lastOnOrBefore(prices, yearAgo) ?? inception;
       const aYtd = firstOnOrAfter(prices, yearStart) ?? inception;
@@ -158,6 +162,7 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
         pnl_usd: pnlUsd,
         returns: {
           "1d": pctChange(a1d, latest),
+          "1w": pctChange(a1w, latest),
           "30d": pctChange(a30d, latest),
           ytd: pctChange(aYtd, latest),
           "1yr": pctChange(a1yr, latest),
@@ -220,6 +225,7 @@ async function fetchTradeBuckets(
     now.getTime() - 365 * 24 * 60 * 60 * 1000,
   ).toISOString();
   const dayAgoMs = now.getTime() - 24 * 60 * 60 * 1000;
+  const weekAgoMs = now.getTime() - 7 * 24 * 60 * 60 * 1000;
   const thirtyDayMs = now.getTime() - 30 * 24 * 60 * 60 * 1000;
   const yearStartMs = Date.UTC(now.getUTCFullYear(), 0, 1);
   const yearAgoMs = new Date(yearAgoIso).getTime();
@@ -258,6 +264,7 @@ async function fetchTradeBuckets(
     }
     const ts = new Date(trade.executed_at).getTime();
     if (ts >= dayAgoMs) bucket["1d"] += 1;
+    if (ts >= weekAgoMs) bucket["1w"] += 1;
     if (ts >= thirtyDayMs) bucket["30d"] += 1;
     if (ts >= yearStartMs) bucket.ytd += 1;
     if (ts >= yearAgoMs) bucket["1yr"] += 1;
@@ -320,6 +327,7 @@ function applyInceptionFloors(
   const now = new Date();
   const ageDays = (now.getTime() - inception.getTime()) / 86400000;
   const out = { ...returns };
+  if (ageDays < 7) out["1w"] = null;
   if (ageDays < 30) out["30d"] = null;
   if (ageDays < 365) out["1yr"] = null;
   if (inception.getUTCFullYear() >= now.getUTCFullYear()) out.ytd = null;
