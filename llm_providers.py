@@ -25,7 +25,7 @@ from dataclasses import dataclass
 logger = logging.getLogger("llm_providers")
 
 
-PROVIDERS = ("anthropic", "openai", "deepseek", "google", "xai")
+PROVIDERS = ("anthropic", "openai", "deepseek", "google", "xai", "qwen")
 
 # Per-provider env var holding the API key. Centralised so the heartbeat
 # workflow's env stanza and the agents.config docs can stay in sync.
@@ -35,10 +35,14 @@ ENV_VAR_FOR_PROVIDER = {
     "deepseek": "DEEPSEEK_API_KEY",
     "google": "GEMINI_API_KEY",
     "xai": "GROK_API_KEY",
+    "qwen": "DASHSCOPE_API_KEY",
 }
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 XAI_BASE_URL = "https://api.x.ai/v1"
+# Alibaba's DashScope exposes an OpenAI-compatible endpoint that serves
+# the Qwen model family. We dispatch via _call_openai_compatible.
+QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
 
 class LLMProviderError(RuntimeError):
@@ -92,6 +96,13 @@ def call_llm(
             api_key_env="GROK_API_KEY",
             base_url=XAI_BASE_URL,
             provider_label="xai",
+        )
+    if provider == "qwen":
+        return _call_openai_compatible(
+            model, system, user, max_tokens, temperature,
+            api_key_env="DASHSCOPE_API_KEY",
+            base_url=QWEN_BASE_URL,
+            provider_label="qwen",
         )
     # Unreachable — guarded by PROVIDERS check above, but keeps type-checkers happy.
     raise LLMProviderError(f"unhandled provider: {provider}")

@@ -1,0 +1,137 @@
+name: Tauric Trader Heartbeat
+
+# Weekly rebalance for the three Tauric Trader house agents
+# (tauric-opus-4-7, tauric-gemini-3, tauric-qwen). Runs each variant as a
+# separate matrix job so the framework's heavy LLM-debate workload (~300
+# LLM calls per variant per run) parallelises and a single bad-LLM
+# variant can't block the others.
+#
+# Monday 21:30 UTC — runs the day after the Sunday 07:00 UTC weekly
+# `agent_heartbeat` swarm rebalance has settled, and well after Monday's
+# 06:00 UTC `universe-snapshot` has refreshed the screener JSON that
+# the stage-1 shortlist reads.
+
+on:
+  schedule:
+    - cron: "30 21 * * 1"
+  workflow_dispatch:
+    inputs:
+      handle:
+        description: "Run only this Tauric Trader handle (optional)"
+        required: false
+        type: choice
+        default: "all"
+        options:
+          - all
+          - tauric-opus-4-7
+          - tauric-gemini-3
+          - tauric-qwen
+      dry_run:
+        description: "Plan trades but execute none"
+        required: false
+        type: boolean
+        default: false
+      force:
+        description: "Ignore heartbeat_interval_hours and run now"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    # 30 tickers × ~30s/propagate ≈ 15 min typical, 45 min worst case.
+    # Bump to 120 min for slow LLMs (Opus) and any framework warm-up.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false  # one bad variant must not block the others
+      matrix:
+        handle:
+          - tauric-opus-4-7
+          - tauric-gemini-3
+          - tauric-qwen
+
+    steps:
+      - name: Skip variant if a specific handle was requested
+        id: filter
+        env:
+          REQUESTED: ${{ inputs.handle }}
+          MATRIX_HANDLE: ${{ matrix.handle }}
+        run: |
+          set -u
+          REQ="$(printf '%s' "${REQUESTED:-}" | tr -d '[:space:]')"
+          if [ -z "${REQ}" ] || [ "${REQ}" = "all" ] || [ "${REQ}" = "${MATRIX_HANDLE}" ]; then
+            echo "should_run=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "should_run=false" >> "${GITHUB_OUTPUT}"
+            echo "Skipping ${MATRIX_HANDLE} — only running ${REQ}"
+          fi
+
+      - name: Checkout repository
+        if: steps.filter.outputs.should_run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.filter.outputs.should_run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Restore TradingAgents memory cache
+        if: steps.filter.outputs.should_run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.tradingagents
+            ~/.cache/tradingagents
+          # Per-variant memory — each variant evolves its own reflection
+          # history from past trade outcomes. ``restore-keys`` lets older
+          # caches seed newer runs while still writing a fresh entry.
+          key: tradingagents-memory-${{ matrix.handle }}-${{ github.run_id }}
+          restore-keys: |
+            tradingagents-memory-${{ matrix.handle }}-
+
+      - name: Install dependencies
+        if: steps.filter.outputs.should_run == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Run Tauric Trader heartbeat
+        if: steps.filter.outputs.should_run == 'true'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Provider keys. Only the variant's own brain reads its key;
+          # the rest stay unused per job. Missing keys raise
+          # LLMProviderError on that variant only.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # TradingAgents' Google adapter reads GOOGLE_API_KEY — mirror
+          # the Gemini key into it so the same secret powers both stages.
+          GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          # Pipe workflow_dispatch inputs via env so values with whitespace
+          # / shell metacharacters can't break the arg list. On scheduled
+          # runs these are empty strings — flags below skip.
+          HEARTBEAT_DRY_RUN: ${{ inputs.dry_run }}
+          HEARTBEAT_FORCE: ${{ inputs.force }}
+          MATRIX_HANDLE: ${{ matrix.handle }}
+        run: |
+          set -u
+          ARGS=(--handle "${MATRIX_HANDLE}")
+          if [ "${HEARTBEAT_DRY_RUN}" = "true" ]; then
+            ARGS+=(--dry-run)
+          fi
+          if [ "${HEARTBEAT_FORCE}" = "true" ]; then
+            ARGS+=(--force)
+          fi
+          echo "DEBUG: argv = python agent_heartbeat.py ${ARGS[@]+"${ARGS[@]}"}"
+          python agent_heartbeat.py ${ARGS[@]+"${ARGS[@]}"}
+
+      - name: Upload logs
+        if: always() && steps.filter.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauric-trader-${{ matrix.handle }}-${{ github.run_id }}
+          path: logs/
+          retention-days: 30

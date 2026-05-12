@@ -544,6 +544,60 @@ def rebalance_llm_pick(ctx: RebalanceContext) -> RebalanceResult:
 # ---------------------------------------------------------------------------
 
 
+def pick_shortlist_via_llm(
+    *,
+    provider: str,
+    model: str,
+    snapshot: dict,
+    snapshot_date: str,
+    portfolio: dict,
+    universe_tickers: set[str],
+    system_prompt: str,
+    user_template: str,
+    shortlist_max: int,
+    max_tokens: int = 16384,
+    temperature: float = 0.2,
+) -> tuple[str, list[dict], list[str], tuple[int | None, int | None], str | None]:
+    """Reusable shortlist call — shared by llm_pick stage 1 and trading_agents.
+
+    ``user_template`` must accept the keyword args ``snapshot_date``,
+    ``universe_json``, ``portfolio_json``, ``shortlist_max`` via str.format.
+    Validation: keeps only tickers in ``universe_tickers``, dedupes, caps
+    at ``shortlist_max``, drops entries with missing/blank tickers.
+
+    Returns (raw_text, shortlist, dropped, (input_tokens, output_tokens),
+    retry_text). ``retry_text`` is None when the first parse succeeded;
+    otherwise it's the second LLM call's response text (useful for journals).
+    """
+    user = user_template.format(
+        snapshot_date=snapshot_date,
+        universe_json=json.dumps(snapshot, separators=(",", ":")),
+        portfolio_json=json.dumps(portfolio, separators=(",", ":")),
+        shortlist_max=shortlist_max,
+    )
+    resp = call_llm(
+        provider=provider,
+        model=model,
+        system=system_prompt,
+        user=user,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    parsed, retry_resp = _parse_with_retry(
+        provider, model, resp.text, system=system_prompt,
+    )
+    shortlist, dropped = _validate_shortlist(
+        parsed, universe_tickers, cap=shortlist_max,
+    )
+    return (
+        resp.text,
+        shortlist,
+        dropped,
+        (resp.input_tokens, resp.output_tokens),
+        retry_resp.text if retry_resp else None,
+    )
+
+
 def _run_stage1(
     *,
     provider: str,
@@ -554,32 +608,18 @@ def _run_stage1(
     universe_tickers: set[str],
     params: dict,
 ) -> tuple[str, list[dict], list[str], tuple[int | None, int | None], str | None]:
-    user = STAGE1_USER_TEMPLATE.format(
-        snapshot_date=snapshot_date,
-        universe_json=json.dumps(snapshot, separators=(",", ":")),
-        portfolio_json=json.dumps(portfolio, separators=(",", ":")),
-        shortlist_max=int(params["shortlist_max"]),
-    )
-    resp = call_llm(
+    return pick_shortlist_via_llm(
         provider=provider,
         model=model,
-        system=STAGE1_SYSTEM_PROMPT,
-        user=user,
+        snapshot=snapshot,
+        snapshot_date=snapshot_date,
+        portfolio=portfolio,
+        universe_tickers=universe_tickers,
+        system_prompt=STAGE1_SYSTEM_PROMPT,
+        user_template=STAGE1_USER_TEMPLATE,
+        shortlist_max=int(params["shortlist_max"]),
         max_tokens=int(params["stage1_max_tokens"]),
         temperature=float(params["temperature"]),
-    )
-    parsed, retry_resp = _parse_with_retry(
-        provider, model, resp.text, system=STAGE1_SYSTEM_PROMPT,
-    )
-    shortlist, dropped = _validate_shortlist(
-        parsed, universe_tickers, cap=int(params["shortlist_max"]),
-    )
-    return (
-        resp.text,
-        shortlist,
-        dropped,
-        (resp.input_tokens, resp.output_tokens),
-        retry_resp.text if retry_resp else None,
     )
 
 

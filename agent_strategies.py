@@ -767,10 +767,19 @@ def _llm_pick_lazy(ctx: RebalanceContext) -> RebalanceResult:
     return rebalance_llm_pick(ctx)
 
 
+def _trading_agents_lazy(ctx: RebalanceContext) -> RebalanceResult:
+    # Lazy-imported so the upstream TauricResearch/TradingAgents
+    # framework (and its heavy LangChain dependency tree) doesn't load
+    # for unrelated heartbeats.
+    from trading_agents_strategy import rebalance_trading_agents
+    return rebalance_trading_agents(ctx)
+
+
 STRATEGIES: dict[str, Strategy] = {
     "dual_positive": rebalance_dual_positive,
     "momentum": rebalance_momentum,
     "llm_pick": _llm_pick_lazy,
+    "trading_agents": _trading_agents_lazy,
 }
 
 
