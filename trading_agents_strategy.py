@@ -37,7 +37,6 @@ near-identical decisions (LLM stochasticity aside).
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
@@ -45,19 +44,14 @@ import re
 from datetime import date
 from typing import Any
 
-from agent_strategies import US_EXCHANGES, RebalanceContext, RebalanceResult
-from db import SupabaseDB
+from agent_strategies import RebalanceContext, RebalanceResult
 from llm_picker import (
     _filter_snapshot_us_only,
     _load_latest_snapshot,
     _us_listed_tickers,
+    pick_shortlist_via_llm,
 )
-from llm_providers import (
-    LLMProviderError,
-    PROVIDERS,
-    call_llm,
-    parse_json_response,
-)
+from llm_providers import LLMProviderError, PROVIDERS
 from portfolio import PortfolioError
 
 logger = logging.getLogger("trading_agents_strategy")
@@ -226,17 +220,24 @@ def rebalance_trading_agents(ctx: RebalanceContext) -> RebalanceResult:
     }
 
     # ------------------------------------------------------------------
-    # Stage 1: shortlist
+    # Stage 1: shortlist — delegates to the shared helper in llm_picker.py
+    # so prompt/parsing logic stays single-source-of-truth.
     # ------------------------------------------------------------------
     try:
-        shortlist, stage1_dropped, stage1_usage, stage1_raw = _run_shortlist(
-            provider=provider,
-            model=deep_model,
-            snapshot=snapshot_json,
-            snapshot_date=snapshot_date,
-            portfolio=portfolio_summary,
-            universe_tickers=universe_tickers,
-            params=params,
+        stage1_raw, shortlist, stage1_dropped, stage1_usage, stage1_retry = (
+            pick_shortlist_via_llm(
+                provider=provider,
+                model=deep_model,
+                snapshot=snapshot_json,
+                snapshot_date=snapshot_date,
+                portfolio=portfolio_summary,
+                universe_tickers=universe_tickers,
+                system_prompt=SHORTLIST_SYSTEM_PROMPT,
+                user_template=SHORTLIST_USER_TEMPLATE,
+                shortlist_max=int(params["max_candidates"]),
+                max_tokens=int(params["stage1_max_tokens"]),
+                temperature=float(params["temperature"]),
+            )
         )
     except LLMProviderError as exc:
         result.errors.append(f"stage 1 (shortlist) failed: {exc}")
@@ -251,6 +252,7 @@ def rebalance_trading_agents(ctx: RebalanceContext) -> RebalanceResult:
         "input_tokens": stage1_usage[0],
         "output_tokens": stage1_usage[1],
         "raw_response_kb": len(stage1_raw) // 1024,
+        "raw_response_retry_kb": (len(stage1_retry) // 1024) if stage1_retry else None,
     }
     if not shortlist:
         result.errors.append("stage 1 returned empty shortlist")
@@ -395,83 +397,6 @@ def rebalance_trading_agents(ctx: RebalanceContext) -> RebalanceResult:
 
     result.notes = notes
     return result
-
-
-# ---------------------------------------------------------------------------
-# Stage-1 implementation (inline copy — keeps llm_picker.py untouched)
-# ---------------------------------------------------------------------------
-
-
-def _run_shortlist(
-    *,
-    provider: str,
-    model: str,
-    snapshot: dict,
-    snapshot_date: str,
-    portfolio: dict,
-    universe_tickers: set[str],
-    params: dict,
-) -> tuple[list[dict], list[str], tuple[int | None, int | None], str]:
-    """Call the variant's deep-think LLM to pick the deep-dive shortlist.
-
-    Returns (clean_shortlist, dropped_tickers, (input_tokens, output_tokens), raw_text).
-    """
-    shortlist_max = int(params["max_candidates"])
-    user = SHORTLIST_USER_TEMPLATE.format(
-        snapshot_date=snapshot_date,
-        universe_json=json.dumps(snapshot, separators=(",", ":")),
-        portfolio_json=json.dumps(portfolio, separators=(",", ":")),
-        shortlist_max=shortlist_max,
-    )
-    resp = call_llm(
-        provider=provider,
-        model=model,
-        system=SHORTLIST_SYSTEM_PROMPT,
-        user=user,
-        max_tokens=int(params["stage1_max_tokens"]),
-        temperature=float(params["temperature"]),
-    )
-    try:
-        parsed = parse_json_response(resp.text)
-    except LLMProviderError:
-        # One retry with an explicit nudge.
-        retry = call_llm(
-            provider=provider,
-            model=model,
-            system=SHORTLIST_SYSTEM_PROMPT + "\n\nIMPORTANT: previous response was not valid JSON. Output ONLY the JSON object.",
-            user="Your previous response could not be parsed. Re-emit the JSON only.",
-            max_tokens=int(params["stage1_max_tokens"]),
-            temperature=0.1,
-        )
-        parsed = parse_json_response(retry.text)
-
-    items = parsed.get("shortlist") or parsed.get("picks") or []
-    if not isinstance(items, list):
-        raise LLMProviderError("shortlist response missing 'shortlist' array")
-
-    clean: list[dict] = []
-    dropped: list[str] = []
-    seen: set[str] = set()
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        ticker = str(item.get("ticker") or "").strip().upper()
-        if not ticker:
-            continue
-        if ticker not in universe_tickers:
-            dropped.append(ticker)
-            continue
-        if ticker in seen:
-            continue
-        seen.add(ticker)
-        clean.append({
-            "ticker": ticker,
-            "rationale": str(item.get("rationale") or "").strip(),
-        })
-        if len(clean) >= shortlist_max:
-            break
-
-    return clean, dropped, (resp.input_tokens, resp.output_tokens), resp.text
 
 
 # ---------------------------------------------------------------------------
