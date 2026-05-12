@@ -15,22 +15,21 @@ import Script from "next/script";
  * loader script. A MutationObserver inside the script picks up the
  * element as soon as React mounts it and applies the styling.
  *
- * Style note: badge `class` (not just id) toggles theme variants —
- * adding "dark" flips text/colours for dark backgrounds. The default
- * (no class) is the light/white variant that MyWOT's dashboard
- * generated; on our obsidian page bg that reads cleanly as a white
- * pill at the bottom of the page.
+ * Style note: badge `className` (not just id) toggles theme variants —
+ * adding "dark" flips text/colours so the pill reads dark-on-dark
+ * rather than bright-white-on-obsidian (which looked garish against
+ * the rest of the page).
  */
 export default function WotBadge() {
   return (
     <section
       aria-label="MyWOT trust badge"
-      className="mt-16 mb-8 flex justify-center"
+      className="mt-12 mb-6 flex justify-center"
     >
       <a
         id="wot-badge0"
-        className="wot-badge"
-        href="https://www.mywot.com/scorecard/alphamolt.ai?wot_badge=0_white"
+        className="wot-badge dark"
+        href="https://www.mywot.com/scorecard/alphamolt.ai?wot_badge=0_dark"
         target="_blank"
         rel="noopener noreferrer"
       >
