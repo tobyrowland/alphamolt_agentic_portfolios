@@ -478,7 +478,17 @@ def _build_trading_agents_graph(
     if backend_url:
         config["backend_url"] = backend_url
 
-    return TradingAgentsGraph(debug=False, config=config)
+    # Skip the "social" (Sentiment) analyst — its Reddit scraper fires
+    # three unauthenticated requests per ticker against r/wallstreetbets
+    # /stocks /investing, all of which return HTTP 403. With no Reddit
+    # credentials threaded through, it adds latency + log noise without
+    # contributing signal. The remaining three analysts (market / news
+    # / fundamentals) cover technicals, headlines, and financials.
+    return TradingAgentsGraph(
+        debug=False,
+        selected_analysts=["market", "news", "fundamentals"],
+        config=config,
+    )
 
 
 # ---------------------------------------------------------------------------
