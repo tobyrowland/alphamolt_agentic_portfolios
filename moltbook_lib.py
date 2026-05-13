@@ -726,10 +726,19 @@ def create_post_and_verify(
 _SOLVER_VOTES = 3
 
 
-def _single_math_solve(client: Any, challenge_text: str, attempt: int) -> str | None:
+def _single_math_solve(
+    client: Any, challenge_text: str, attempt: int
+) -> tuple[str | None, str]:
+    """Run one solver pass; return (answer_or_None, diagnostic_label).
+
+    The label is a short tag describing how the attempt resolved
+    ('ok:text', 'ok:thinking', 'empty', 'no-number', 'stop:max_tokens', …)
+    so when all attempts fail we can surface *why* in the GitHub issue body
+    rather than the generic 'no parseable answer' message.
+    """
     resp = client.messages.create(
         model=MATH_MODEL,
-        max_tokens=2000 + MATH_THINKING_BUDGET,
+        max_tokens=4000 + MATH_THINKING_BUDGET,
         thinking={"type": "enabled", "budget_tokens": MATH_THINKING_BUDGET},
         messages=[
             {
@@ -758,24 +767,44 @@ def _single_math_solve(client: Any, challenge_text: str, attempt: int) -> str | 
             }
         ],
     )
-    raw = "".join(
+    text_raw = "".join(
         b.text for b in resp.content if getattr(b, "type", None) == "text"
+    ).strip()
+    thinking_raw = "".join(
+        getattr(b, "thinking", "") or ""
+        for b in resp.content
+        if getattr(b, "type", None) == "thinking"
     ).strip()
     stop_reason = getattr(resp, "stop_reason", None)
     log.info(
-        "math solver attempt %d (stop=%s, len=%d):\n%s",
-        attempt, stop_reason, len(raw), raw,
+        "math solver attempt %d (stop=%s, text_len=%d, thinking_len=%d):\n%s",
+        attempt, stop_reason, len(text_raw), len(thinking_raw), text_raw,
     )
 
-    answer_line = re.search(r"ANSWER:\s*(-?\d+(?:\.\d+)?)", raw)
+    # Prefer the explicit ANSWER line in text, then any number in text, then
+    # search thinking content (fallback for runs where max_tokens was hit
+    # before the model emitted a clean text block — opus on heavily-obfuscated
+    # challenges sometimes burns the whole budget in thinking and produces
+    # zero text output, leaving us with thinking trace only).
+    answer_line = re.search(r"ANSWER:\s*(-?\d+(?:\.\d+)?)", text_raw)
     if answer_line:
-        return _format_answer(answer_line.group(1))
+        return _format_answer(answer_line.group(1)), "ok:text-answer-line"
 
-    matches = re.findall(r"-?\d+(?:\.\d+)?", raw)
+    matches = re.findall(r"-?\d+(?:\.\d+)?", text_raw)
     if matches:
-        return _format_answer(matches[-1])
+        return _format_answer(matches[-1]), "ok:text-last-number"
 
-    return None
+    answer_line = re.search(r"ANSWER:\s*(-?\d+(?:\.\d+)?)", thinking_raw)
+    if answer_line:
+        return _format_answer(answer_line.group(1)), "ok:thinking-answer-line"
+
+    matches = re.findall(r"-?\d+(?:\.\d+)?", thinking_raw)
+    if matches:
+        return _format_answer(matches[-1]), "ok:thinking-last-number"
+
+    if not text_raw and not thinking_raw:
+        return None, f"empty(stop={stop_reason})"
+    return None, f"no-number(stop={stop_reason},text_len={len(text_raw)})"
 
 
 def _format_answer(raw: str) -> str:
@@ -802,19 +831,22 @@ def solve_math_challenge(challenge_text: str) -> str:
     """
     client = _anthropic_client()
     attempts: list[str] = []
+    diagnostics: list[str] = []
     for i in range(_SOLVER_VOTES):
         try:
-            answer = _single_math_solve(client, challenge_text, attempt=i + 1)
+            answer, label = _single_math_solve(client, challenge_text, attempt=i + 1)
         except Exception as exc:
             log.warning("math solver attempt %d raised: %s", i + 1, exc)
+            diagnostics.append(f"#{i + 1}=raised:{type(exc).__name__}:{exc}")
             continue
+        diagnostics.append(f"#{i + 1}={label}")
         if answer is not None:
             attempts.append(answer)
 
     if not attempts:
         raise RuntimeError(
-            f"no parseable answer across {_SOLVER_VOTES} attempts; "
-            f"challenge={challenge_text!r}"
+            f"no parseable answer across {_SOLVER_VOTES} attempts "
+            f"[{'; '.join(diagnostics)}]; challenge={challenge_text!r}"
         )
 
     from collections import Counter
