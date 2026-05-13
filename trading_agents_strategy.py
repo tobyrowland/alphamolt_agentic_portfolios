@@ -64,6 +64,10 @@ logger = logging.getLogger("trading_agents_strategy")
 TRADING_AGENTS_DEFAULTS = {
     "max_candidates": 30,        # stage-1 shortlist size
     "max_positions": 20,         # equal-weight cap for BUY targets
+    "position_floor": 15,        # build mode: while holdings < this, suppress
+                                 # SELLs on held tickers + keep them as implicit
+                                 # BUYs so the portfolio grows toward the floor
+                                 # over successive heartbeats
     "cash_reserve_pct": 0.02,
     "min_trade_usd": 500.0,
     "max_debate_rounds": 2,
@@ -335,6 +339,14 @@ def rebalance_trading_agents(ctx: RebalanceContext) -> RebalanceResult:
         result.notes = notes
         return result
 
+    # Build-mode ratchet (see ``_apply_build_mode`` for the logic).
+    buys_tickers, sells_tickers, notes["build_mode"] = _apply_build_mode(
+        buys_tickers=buys_tickers,
+        sells_tickers=sells_tickers,
+        current_holdings={h["ticker"] for h in portfolio["holdings"] if h["quantity"] > 0},
+        position_floor=int(params.get("position_floor", 0)),
+    )
+
     # ------------------------------------------------------------------
     # Stage 3: reconcile — equal-weight the BUYs, exit SELLs, hold the rest
     # ------------------------------------------------------------------
@@ -478,12 +490,68 @@ def _build_trading_agents_graph(
     if backend_url:
         config["backend_url"] = backend_url
 
-    return TradingAgentsGraph(debug=False, config=config)
+    # Skip the "social" (Sentiment) analyst — its Reddit scraper fires
+    # three unauthenticated requests per ticker against r/wallstreetbets
+    # /stocks /investing, all of which return HTTP 403. With no Reddit
+    # credentials threaded through, it adds latency + log noise without
+    # contributing signal. The remaining three analysts (market / news
+    # / fundamentals) cover technicals, headlines, and financials.
+    return TradingAgentsGraph(
+        debug=False,
+        selected_analysts=["market", "news", "fundamentals"],
+        config=config,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Stage-3 helpers
 # ---------------------------------------------------------------------------
+
+
+def _apply_build_mode(
+    *,
+    buys_tickers: list[str],
+    sells_tickers: list[str],
+    current_holdings: set[str],
+    position_floor: int,
+) -> tuple[list[str], list[str], dict]:
+    """While the portfolio is below ``position_floor``, protect existing holdings.
+
+    Suppresses SELL verdicts on currently-held tickers (treats them as HOLD)
+    and re-adds every held ticker to the BUY list so the equal-weight
+    reconcile preserves the position instead of dropping it for being
+    absent from the target set. The portfolio grows toward the floor over
+    successive heartbeats; once at/above the floor, the function is a
+    no-op and normal SELL/BUY semantics resume.
+
+    Returns ``(new_buys, new_sells, notes)``. ``notes`` is a JSON-friendly
+    dict the caller folds into ``RebalanceResult.notes`` for journalling.
+    """
+    if position_floor <= 0 or len(current_holdings) >= position_floor:
+        return buys_tickers, sells_tickers, {
+            "active": False,
+            "current_positions": len(current_holdings),
+            "position_floor": position_floor,
+        }
+
+    suppressed = [t for t in sells_tickers if t in current_holdings]
+    new_sells = [t for t in sells_tickers if t not in current_holdings]
+    new_buys = list(buys_tickers)
+    seen = set(new_buys)
+    carried: list[str] = []
+    for held in current_holdings:
+        if held in seen:
+            continue
+        new_buys.append(held)
+        carried.append(held)
+        seen.add(held)
+    return new_buys, new_sells, {
+        "active": True,
+        "current_positions": len(current_holdings),
+        "position_floor": position_floor,
+        "suppressed_sells": suppressed,
+        "carried_holds": carried,
+    }
 
 
 def _equal_weight_targets(

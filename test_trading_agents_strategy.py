@@ -15,6 +15,7 @@ import unittest
 from types import SimpleNamespace
 
 from trading_agents_strategy import (
+    _apply_build_mode,
     _equal_weight_targets,
     _extract_decision,
     _plan_trades,
@@ -186,6 +187,112 @@ class PlanTradesTests(unittest.TestCase):
         )
         self.assertEqual(plan["buys"], [])
         self.assertEqual(len(plan["noise_skipped"]), 1)
+
+
+class BuildModeTests(unittest.TestCase):
+    def test_inactive_when_at_floor(self):
+        # 15 holdings, floor 15 → not active, inputs pass through unchanged.
+        buys, sells, notes = _apply_build_mode(
+            buys_tickers=["NEW1"],
+            sells_tickers=["AAPL"],
+            current_holdings={f"H{i}" for i in range(15)},
+            position_floor=15,
+        )
+        self.assertEqual(buys, ["NEW1"])
+        self.assertEqual(sells, ["AAPL"])
+        self.assertFalse(notes["active"])
+
+    def test_inactive_when_above_floor(self):
+        buys, sells, notes = _apply_build_mode(
+            buys_tickers=["NEW1"],
+            sells_tickers=["AAPL"],
+            current_holdings={f"H{i}" for i in range(20)},
+            position_floor=15,
+        )
+        self.assertEqual(buys, ["NEW1"])
+        self.assertEqual(sells, ["AAPL"])
+        self.assertFalse(notes["active"])
+
+    def test_inactive_when_floor_zero(self):
+        # position_floor=0 → feature disabled regardless of holdings.
+        buys, sells, notes = _apply_build_mode(
+            buys_tickers=["NEW1"],
+            sells_tickers=["AAPL"],
+            current_holdings={"AAPL"},
+            position_floor=0,
+        )
+        self.assertEqual(buys, ["NEW1"])
+        self.assertEqual(sells, ["AAPL"])
+        self.assertFalse(notes["active"])
+
+    def test_active_suppresses_sell_on_held(self):
+        # Hold 5 names, floor 15, model says SELL on one of them → suppress.
+        buys, sells, notes = _apply_build_mode(
+            buys_tickers=["NEW1"],
+            sells_tickers=["AAPL"],   # AAPL is held
+            current_holdings={"AAPL", "MSFT", "NVDA", "GOOG", "META"},
+            position_floor=15,
+        )
+        self.assertTrue(notes["active"])
+        self.assertIn("AAPL", notes["suppressed_sells"])
+        self.assertNotIn("AAPL", sells)
+        # AAPL should be re-added to buys to survive the equal-weight reconcile.
+        self.assertIn("AAPL", buys)
+
+    def test_active_sells_on_unheld_pass_through(self):
+        # SELL on a ticker we DON'T currently hold (e.g., model said SELL
+        # on a shortlist ticker we never owned) — should NOT be suppressed.
+        buys, sells, notes = _apply_build_mode(
+            buys_tickers=["NEW1"],
+            sells_tickers=["TSLA"],   # TSLA is NOT held
+            current_holdings={"AAPL", "MSFT"},
+            position_floor=15,
+        )
+        self.assertTrue(notes["active"])
+        self.assertEqual(notes["suppressed_sells"], [])
+        # The (vacuous) sell on TSLA passes through; nothing to actually sell.
+        self.assertIn("TSLA", sells)
+
+    def test_active_carries_held_tickers_as_buys(self):
+        # Hold 3 names, floor 15. None of them are in the model's BUY list
+        # (model didn't re-shortlist them this run). Without carry, they'd
+        # be dropped from the target set; with carry, they survive.
+        buys, _sells, notes = _apply_build_mode(
+            buys_tickers=["NEW1", "NEW2"],
+            sells_tickers=[],
+            current_holdings={"AAPL", "MSFT", "NVDA"},
+            position_floor=15,
+        )
+        self.assertTrue(notes["active"])
+        self.assertCountEqual(notes["carried_holds"], ["AAPL", "MSFT", "NVDA"])
+        # Combined target list: 2 new + 3 carried = 5 unique tickers.
+        self.assertCountEqual(buys, ["NEW1", "NEW2", "AAPL", "MSFT", "NVDA"])
+
+    def test_active_skips_carry_when_held_already_in_buys(self):
+        # Model said BUY on a ticker we already hold → no duplicate.
+        buys, _sells, notes = _apply_build_mode(
+            buys_tickers=["AAPL", "NEW1"],
+            sells_tickers=[],
+            current_holdings={"AAPL", "MSFT"},
+            position_floor=15,
+        )
+        self.assertTrue(notes["active"])
+        self.assertEqual(buys.count("AAPL"), 1)
+        self.assertCountEqual(notes["carried_holds"], ["MSFT"])
+
+    def test_active_does_not_mutate_input_lists(self):
+        # The caller may want to inspect the originals — make sure
+        # _apply_build_mode returns new lists rather than mutating.
+        original_buys = ["NEW1"]
+        original_sells = ["AAPL"]
+        _apply_build_mode(
+            buys_tickers=original_buys,
+            sells_tickers=original_sells,
+            current_holdings={"AAPL"},
+            position_floor=15,
+        )
+        self.assertEqual(original_buys, ["NEW1"])
+        self.assertEqual(original_sells, ["AAPL"])
 
 
 if __name__ == "__main__":
