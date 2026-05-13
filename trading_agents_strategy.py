@@ -688,3 +688,455 @@ def _plan_trades(
             ))
 
     return {"buys": buys, "sells": sells, "noise_skipped": noise_skipped}
+
+
+# ---------------------------------------------------------------------------
+# Per-ticker pipeline — alternative flow for the matrix-parallel workflow.
+#
+# Splits one heartbeat into:
+#   (1) run_shortlist_stage()   — Stage 1 + persist pending rows
+#   (2) evaluate_ticker()       — framework debate + atomic trade for one ticker
+#   (3) summarize_shortlist_run() — aggregate
+#
+# Resilient: if any stage dies mid-way, the persisted rows in
+# `tauric_decisions` survive and a re-run skips already-traded rows.
+# Concurrent: stage (2) uses PortfolioManager.buy_atomic/sell_atomic
+# (Supabase RPCs with row-level locks), so the GHA matrix can run N
+# parallel jobs without racing on cash.
+# ---------------------------------------------------------------------------
+
+import uuid
+
+
+def _persist_decision_row(
+    db,
+    agent_id: str,
+    shortlist_run_id: str,
+    ticker: str,
+    *,
+    rationale: str | None = None,
+    status: str = "pending",
+) -> None:
+    """Insert (or no-op if exists) a pending decision row."""
+    db.client.table("tauric_decisions").upsert(
+        {
+            "agent_id": agent_id,
+            "shortlist_run_id": shortlist_run_id,
+            "ticker": ticker,
+            "status": status,
+            "shortlist_rationale": rationale,
+        },
+        on_conflict="agent_id,shortlist_run_id,ticker",
+    ).execute()
+
+
+def _update_decision_row(
+    db,
+    agent_id: str,
+    shortlist_run_id: str,
+    ticker: str,
+    fields: dict,
+) -> None:
+    db.client.table("tauric_decisions").update(fields).match(
+        {
+            "agent_id": agent_id,
+            "shortlist_run_id": shortlist_run_id,
+            "ticker": ticker,
+        }
+    ).execute()
+
+
+def _get_decision_row(
+    db, agent_id: str, shortlist_run_id: str, ticker: str
+) -> dict | None:
+    resp = (
+        db.client.table("tauric_decisions")
+        .select("*")
+        .match(
+            {
+                "agent_id": agent_id,
+                "shortlist_run_id": shortlist_run_id,
+                "ticker": ticker,
+            }
+        )
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    return rows[0] if rows else None
+
+
+def run_shortlist_stage(ctx: RebalanceContext, params: dict | None = None) -> dict:
+    """Stage 1 for the per-ticker pipeline.
+
+    Builds the deep-dive ticker list (shortlist + current holdings),
+    persists one ``tauric_decisions`` row per ticker with
+    ``status='pending'``, and returns the shortlist_run_id plus the
+    ordered ticker list. Idempotent on the row insertions
+    (``UPSERT`` with the unique key).
+
+    The shortlist LLM call happens here, exactly once per heartbeat.
+    Stage 2 (per-ticker debate) runs in parallel matrix jobs that each
+    consume one row and mutate it through the lifecycle.
+    """
+    params = {**TRADING_AGENTS_DEFAULTS, **(params or ctx.params or {})}
+    agent_id = ctx.agent["id"]
+    handle = ctx.agent.get("handle", agent_id[:8])
+
+    provider = params.get("llm_provider") or params.get("provider")
+    deep_model = params.get("deep_think_llm")
+    if not provider or provider not in PROVIDERS:
+        raise ValueError(
+            f"agents.config.llm_provider missing or invalid (got {provider!r})"
+        )
+    if not deep_model:
+        raise ValueError("agents.config.deep_think_llm missing")
+
+    snap_row = _load_latest_snapshot(ctx.db, "compact")
+    if not snap_row:
+        raise RuntimeError(
+            "no compact universe snapshot — run build_universe_snapshot.py"
+        )
+    us_tickers = _us_listed_tickers(ctx.db)
+    snapshot_json = _filter_snapshot_us_only(snap_row["json"], us_tickers)
+    snapshot_date = snap_row["snapshot_date"]
+    universe_tickers = {
+        str(t.get("ticker") or "").upper()
+        for t in (snapshot_json.get("tickers") or [])
+        if t.get("ticker")
+    }
+
+    portfolio = ctx.pm.get_portfolio(agent_id)
+    portfolio_summary = {
+        "cash_usd": round(float(portfolio["cash_usd"]), 2),
+        "total_value_usd": round(float(portfolio["total_value_usd"]), 2),
+        "holdings": [
+            {
+                "ticker": h["ticker"],
+                "quantity": float(h["quantity"]),
+                "avg_cost_usd": float(h["avg_cost_usd"]),
+            }
+            for h in portfolio["holdings"]
+        ],
+    }
+
+    raw, shortlist, dropped, usage, retry = pick_shortlist_via_llm(
+        provider=provider,
+        model=deep_model,
+        snapshot=snapshot_json,
+        snapshot_date=snapshot_date,
+        portfolio=portfolio_summary,
+        universe_tickers=universe_tickers,
+        system_prompt=SHORTLIST_SYSTEM_PROMPT,
+        user_template=SHORTLIST_USER_TEMPLATE,
+        shortlist_max=int(params["max_candidates"]),
+        max_tokens=int(params["stage1_max_tokens"]),
+        temperature=float(params["temperature"]),
+    )
+
+    # Union shortlist + current holdings so existing positions get
+    # re-evaluated each run (matches the all-at-once flow's behaviour).
+    deep_dive: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    for entry in shortlist:
+        t = entry["ticker"]
+        if t in seen:
+            continue
+        seen.add(t)
+        deep_dive.append((t, entry.get("rationale")))
+    for h in portfolio_summary["holdings"]:
+        t = str(h["ticker"]).upper()
+        if t in seen or float(h["quantity"]) <= 0:
+            continue
+        seen.add(t)
+        deep_dive.append((t, None))
+
+    shortlist_run_id = str(uuid.uuid4())
+    for ticker, rationale in deep_dive:
+        _persist_decision_row(
+            ctx.db,
+            agent_id=agent_id,
+            shortlist_run_id=shortlist_run_id,
+            ticker=ticker,
+            rationale=rationale,
+        )
+
+    logger.info(
+        "%s: shortlist_run_id=%s tickers=%d (shortlist=%d held=%d) snapshot=%s",
+        handle,
+        shortlist_run_id,
+        len(deep_dive),
+        len(shortlist),
+        len(portfolio_summary["holdings"]),
+        snapshot_date,
+    )
+
+    return {
+        "shortlist_run_id": shortlist_run_id,
+        "tickers": [t for t, _ in deep_dive],
+        "snapshot_date": snapshot_date,
+        "shortlist_count": len(shortlist),
+        "held_count": len(portfolio_summary["holdings"]),
+        "dropped_invalid": dropped,
+        "input_tokens": usage[0],
+        "output_tokens": usage[1],
+        "raw_response_kb": len(raw) // 1024,
+        "retry_response_kb": (len(retry) // 1024) if retry else None,
+    }
+
+
+def _per_ticker_target_qty(
+    *,
+    pm,
+    ticker: str,
+    total_value_usd: float,
+    position_floor: int,
+    cash_reserve_pct: float,
+    min_trade_usd: float,
+) -> tuple[int, float, str | None]:
+    """Compute integer share qty for a per-ticker BUY.
+
+    Returns (qty, price, skip_reason) — qty=0 + skip_reason set when
+    the trade should be skipped (unpriced, noise, or no slot left).
+    """
+    if position_floor <= 0:
+        return 0, 0.0, "skipped_no_cash"  # misconfigured
+    try:
+        price = pm.get_price(ticker)
+    except PortfolioError:
+        return 0, 0.0, "skipped_unpriced"
+    target_usd = total_value_usd * (1.0 - cash_reserve_pct) / position_floor
+    qty = int(math.floor(target_usd / price)) if price > 0 else 0
+    if qty <= 0 or qty * price < min_trade_usd:
+        return qty, price, "skipped_noise"
+    return qty, price, None
+
+
+def evaluate_ticker(
+    ctx: RebalanceContext,
+    ticker: str,
+    shortlist_run_id: str,
+    params: dict | None = None,
+) -> dict:
+    """Stage 2 + per-ticker reconcile for one ticker.
+
+    Idempotent: if the row already has ``status='traded'`` or
+    ``status='error'`` we no-op. Otherwise: run the framework debate,
+    persist the decision, then atomically execute the trade (if any)
+    via the Supabase RPCs.
+
+    Returns a status dict suitable for logging.
+    """
+    params = {**TRADING_AGENTS_DEFAULTS, **(params or ctx.params or {})}
+    agent_id = ctx.agent["id"]
+    handle = ctx.agent.get("handle", agent_id[:8])
+
+    row = _get_decision_row(ctx.db, agent_id, shortlist_run_id, ticker)
+    if row is None:
+        return {"status": "error", "reason": "no decision row"}
+    if row["status"] in ("traded", "error"):
+        return {"status": "skipped_idempotent", "prior_status": row["status"]}
+
+    provider = params.get("llm_provider") or params.get("provider")
+    deep_model = params.get("deep_think_llm")
+    quick_model = params.get("quick_think_llm") or deep_model
+
+    # Mark as evaluating
+    _update_decision_row(
+        ctx.db, agent_id, shortlist_run_id, ticker, {"status": "evaluating"},
+    )
+
+    # Run framework
+    try:
+        ta_graph = _build_trading_agents_graph(provider, deep_model, quick_model, params)
+        today_iso = date.today().isoformat()
+        _state, raw_decision = ta_graph.propagate(ticker, today_iso)
+    except Exception as exc:  # noqa: BLE001 — framework can raise anything
+        _update_decision_row(
+            ctx.db, agent_id, shortlist_run_id, ticker,
+            {"status": "error", "framework_error": str(exc)[:500]},
+        )
+        logger.warning("%s/%s: framework error: %s", handle, ticker, exc)
+        return {"status": "error", "ticker": ticker, "error": str(exc)[:300]}
+
+    decision = _extract_decision(str(raw_decision or ""))
+    reasoning = str(raw_decision or "")[:8000]
+    _update_decision_row(
+        ctx.db, agent_id, shortlist_run_id, ticker,
+        {
+            "status": "decided",
+            "decision": decision,
+            "reasoning": reasoning,
+            "decided_at": "now()",
+        },
+    )
+
+    if ctx.dry_run:
+        _update_decision_row(
+            ctx.db, agent_id, shortlist_run_id, ticker,
+            {
+                "status": "traded",
+                "trade_outcome": "skipped_hold" if decision == "HOLD" else "skipped_noise",
+                "traded_at": "now()",
+            },
+        )
+        return {
+            "status": "dry_run", "ticker": ticker, "decision": decision,
+        }
+
+    # Refresh portfolio state (other matrix jobs may have mutated it)
+    portfolio = ctx.pm.get_portfolio(agent_id)
+    total_value = float(portfolio["total_value_usd"])
+    held_qty = 0.0
+    for h in portfolio["holdings"]:
+        if h["ticker"] == ticker:
+            held_qty = float(h["quantity"])
+            break
+    held_count = sum(1 for h in portfolio["holdings"] if float(h["quantity"]) > 0)
+    position_floor = int(params.get("position_floor", 0))
+    in_build_mode = position_floor > 0 and held_count < position_floor
+
+    outcome: str
+    trade_id: int | None = None
+
+    if decision == "HOLD":
+        outcome = "skipped_hold"
+    elif decision == "SELL":
+        if held_qty <= 0:
+            outcome = "skipped_no_position"
+        elif in_build_mode:
+            outcome = "skipped_build_mode_sell"
+            logger.info(
+                "%s/%s: SELL suppressed by build mode (held=%d < floor=%d)",
+                handle, ticker, held_count, position_floor,
+            )
+        else:
+            try:
+                rpc = ctx.pm.sell_atomic(
+                    agent_id, ticker, held_qty,
+                    note=f"Sold {ticker} — TradingAgents debate concluded SELL.",
+                )
+            except Exception as exc:  # noqa: BLE001
+                _update_decision_row(
+                    ctx.db, agent_id, shortlist_run_id, ticker,
+                    {
+                        "status": "error",
+                        "framework_error": f"sell rpc raised: {exc}"[:500],
+                    },
+                )
+                return {"status": "error", "ticker": ticker, "error": str(exc)[:300]}
+            if rpc.get("status") == "ok":
+                outcome = "sold"
+                trade_id = rpc.get("trade_id")
+            elif rpc.get("status") == "no_position":
+                outcome = "skipped_no_position"
+            else:
+                outcome = "skipped_no_position"
+    else:  # BUY
+        qty, _price, skip_reason = _per_ticker_target_qty(
+            pm=ctx.pm,
+            ticker=ticker,
+            total_value_usd=total_value,
+            position_floor=position_floor,
+            cash_reserve_pct=float(params["cash_reserve_pct"]),
+            min_trade_usd=float(params["min_trade_usd"]),
+        )
+        if skip_reason:
+            outcome = skip_reason
+        else:
+            try:
+                rpc = ctx.pm.buy_atomic(
+                    agent_id, ticker, qty,
+                    note=f"Bought {ticker} — TradingAgents debate concluded BUY.",
+                )
+            except Exception as exc:  # noqa: BLE001
+                _update_decision_row(
+                    ctx.db, agent_id, shortlist_run_id, ticker,
+                    {
+                        "status": "error",
+                        "framework_error": f"buy rpc raised: {exc}"[:500],
+                    },
+                )
+                return {"status": "error", "ticker": ticker, "error": str(exc)[:300]}
+            if rpc.get("status") == "ok":
+                outcome = "bought"
+                trade_id = rpc.get("trade_id")
+            elif rpc.get("status") == "insufficient_cash":
+                outcome = "skipped_no_cash"
+            else:
+                outcome = "skipped_no_cash"
+
+    _update_decision_row(
+        ctx.db, agent_id, shortlist_run_id, ticker,
+        {
+            "status": "traded",
+            "trade_outcome": outcome,
+            "trade_id": trade_id,
+            "traded_at": "now()",
+        },
+    )
+
+    logger.info(
+        "%s/%s: decision=%s outcome=%s%s",
+        handle, ticker, decision, outcome,
+        f" trade_id={trade_id}" if trade_id else "",
+    )
+    return {
+        "status": "traded",
+        "ticker": ticker,
+        "decision": decision,
+        "outcome": outcome,
+        "trade_id": trade_id,
+    }
+
+
+def summarize_shortlist_run(
+    db, agent_id: str, shortlist_run_id: str,
+) -> dict:
+    """Aggregate the tauric_decisions rows for one shortlist run.
+
+    Returns counts by status / decision / outcome plus per-ticker
+    rollup. Idempotent — pure read.
+    """
+    resp = (
+        db.client.table("tauric_decisions")
+        .select("ticker,status,decision,trade_outcome,trade_id,framework_error")
+        .match(
+            {"agent_id": agent_id, "shortlist_run_id": shortlist_run_id}
+        )
+        .execute()
+    )
+    rows = resp.data or []
+    summary: dict[str, Any] = {
+        "shortlist_run_id": shortlist_run_id,
+        "agent_id": agent_id,
+        "total": len(rows),
+        "by_status": {},
+        "by_decision": {},
+        "by_outcome": {},
+        "trade_ids": [],
+        "errors": [],
+        "tickers": [],
+    }
+    for row in rows:
+        s = row.get("status") or "?"
+        summary["by_status"][s] = summary["by_status"].get(s, 0) + 1
+        d = row.get("decision") or "?"
+        summary["by_decision"][d] = summary["by_decision"].get(d, 0) + 1
+        o = row.get("trade_outcome") or "?"
+        summary["by_outcome"][o] = summary["by_outcome"].get(o, 0) + 1
+        if row.get("trade_id"):
+            summary["trade_ids"].append(row["trade_id"])
+        if row.get("framework_error"):
+            summary["errors"].append(
+                {"ticker": row["ticker"], "error": row["framework_error"]}
+            )
+        summary["tickers"].append(
+            {
+                "ticker": row.get("ticker"),
+                "decision": row.get("decision"),
+                "outcome": row.get("trade_outcome"),
+                "status": row.get("status"),
+            }
+        )
+    return summary

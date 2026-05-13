@@ -1,0 +1,148 @@
+name: Tauric Trader (per-ticker)
+
+# Per-ticker variant of the Tauric Trader heartbeat. Splits one heartbeat
+# into three jobs:
+#
+#   shortlist   →   one LLM call, picks the deep-dive ticker list
+#                   (and persists pending tauric_decisions rows)
+#   evaluate    →   matrix of N jobs, each runs the TradingAgents
+#                   framework debate on ONE ticker and executes the
+#                   resulting trade via the atomic Supabase RPCs
+#                   (correct under any matrix parallelism)
+#   summarize   →   aggregates the run + journals an agent_heartbeats row
+#
+# Trades land progressively as each matrix job finishes — first trade is
+# visible on the leaderboard in ~10 min, the whole 15-ticker batch in
+# ~15-20 min total wall clock instead of the 2-3h all-at-once flow.
+#
+# workflow_dispatch only. The classic ``Tauric Trader Heartbeat``
+# workflow remains the scheduled (Mondays 21:30 UTC) entry point for
+# now; switch the cron over to this once it's been validated by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      handle:
+        description: "Tauric Trader agent handle"
+        required: true
+        type: choice
+        default: "tauric-opus-4-7"
+        options:
+          - tauric-opus-4-7
+          - tauric-gemini-3
+          - tauric-qwen
+      dry_run:
+        description: "Decide + persist but skip atomic trades"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  # --------------------------------------------------------------
+  # 1. SHORTLIST — single fast job that picks the deep-dive set
+  # --------------------------------------------------------------
+  shortlist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      shortlist_run_id: ${{ steps.run.outputs.shortlist_run_id }}
+      tickers:         ${{ steps.run.outputs.tickers }}
+      ticker_count:    ${{ steps.run.outputs.ticker_count }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      - id: run
+        name: Stage 1 — shortlist
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
+          DASHSCOPE_API_KEY:    ${{ secrets.DASHSCOPE_API_KEY }}
+        run: |
+          python trading_agents_shortlist.py \
+            --handle "${{ inputs.handle }}" \
+            --emit-output
+
+  # --------------------------------------------------------------
+  # 2. EVALUATE — one matrix job per ticker, fan-out
+  # --------------------------------------------------------------
+  evaluate:
+    needs: shortlist
+    runs-on: ubuntu-latest
+    # Per-ticker on Sonnet: ~5-10 min. Bump for slow models / variance.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false       # one ticker's framework error doesn't block the others
+      max-parallel: 5        # cap concurrency to avoid LLM provider rate-limit storms
+      matrix:
+        ticker: ${{ fromJSON(needs.shortlist.outputs.tickers) }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Restore TradingAgents memory cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.tradingagents
+            ~/.cache/tradingagents
+          # One memory cache per (variant, ticker) — keeps each ticker's
+          # reflection history isolated and lets matrix jobs warm-start
+          # independently. ``restore-keys`` falls back to older entries
+          # if today's cache key doesn't exist yet.
+          key: tradingagents-memory-${{ inputs.handle }}-${{ matrix.ticker }}-${{ github.run_id }}
+          restore-keys: |
+            tradingagents-memory-${{ inputs.handle }}-${{ matrix.ticker }}-
+            tradingagents-memory-${{ inputs.handle }}-
+      - run: pip install -r requirements.txt
+      - name: Stage 2 — debate + atomic trade
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
+          DASHSCOPE_API_KEY:    ${{ secrets.DASHSCOPE_API_KEY }}
+          DRY_RUN:              ${{ inputs.dry_run }}
+        run: |
+          set -u
+          ARGS=(--handle "${{ inputs.handle }}" \
+                --shortlist-run-id "${{ needs.shortlist.outputs.shortlist_run_id }}" \
+                --ticker "${{ matrix.ticker }}")
+          if [ "${DRY_RUN}" = "true" ]; then
+            ARGS+=(--dry-run)
+          fi
+          python trading_agents_evaluate_ticker.py "${ARGS[@]}"
+
+  # --------------------------------------------------------------
+  # 3. SUMMARIZE — runs regardless of matrix successes/failures
+  # --------------------------------------------------------------
+  summarize:
+    needs: [shortlist, evaluate]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      - name: Stage 3 — summarize + journal
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python trading_agents_summarize.py \
+            --handle "${{ inputs.handle }}" \
+            --shortlist-run-id "${{ needs.shortlist.outputs.shortlist_run_id }}"

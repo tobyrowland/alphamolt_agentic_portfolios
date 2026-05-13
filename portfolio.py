@@ -260,6 +260,109 @@ class PortfolioManager:
         return trade
 
     # ------------------------------------------------------------------
+    # Atomic variants — wrap cash-deduct + holding-upsert + trade-insert
+    # in a single Postgres transaction with row-level locks via the
+    # `execute_atomic_buy` / `execute_atomic_sell` RPCs (migration 019).
+    # Required when multiple processes might mutate the same agent
+    # concurrently — e.g. the per-ticker matrix workflow that splits
+    # one heartbeat across N parallel GHA runners.
+    # ------------------------------------------------------------------
+
+    def buy_atomic(
+        self,
+        agent_id: str,
+        ticker: str,
+        quantity: float,
+        note: str = "",
+    ) -> dict:
+        """Atomic buy via the `execute_atomic_buy` Supabase RPC.
+
+        Same cash-settlement and weighted-avg-cost semantics as ``buy``,
+        but the RPC takes ``SELECT FOR UPDATE`` locks on agent_accounts
+        + agent_holdings so concurrent callers cannot oversell cash.
+
+        Returns the RPC result dict. ``status='ok'`` means the trade
+        landed; ``status='insufficient_cash'`` means the lock-window
+        view of cash didn't cover the buy and no rows were written.
+        Raises ``PortfolioError`` on missing price or invalid quantity.
+        """
+        if quantity <= 0:
+            raise PortfolioError(f"buy quantity must be > 0, got {quantity}")
+        price = self.get_price(ticker)
+        result = self.db.client.rpc(
+            "execute_atomic_buy",
+            {
+                "p_agent_id": agent_id,
+                "p_ticker": ticker,
+                "p_quantity": quantity,
+                "p_price_usd": round(price, 4),
+                "p_note": note,
+            },
+        ).execute()
+        data = result.data or {}
+        if data.get("status") == "ok":
+            logger.info(
+                "BUY %s %s @ $%.4f  gross=$%.2f  cash=%.2f  [atomic trade_id=%s]",
+                agent_id[:8],
+                ticker,
+                price,
+                float(data.get("gross_usd", 0)),
+                float(data.get("new_cash_usd", 0)),
+                data.get("trade_id"),
+            )
+        else:
+            logger.warning(
+                "BUY %s %s rejected by RPC: %s",
+                agent_id[:8], ticker, data,
+            )
+        return data
+
+    def sell_atomic(
+        self,
+        agent_id: str,
+        ticker: str,
+        quantity: float,
+        note: str = "",
+    ) -> dict:
+        """Atomic sell via the `execute_atomic_sell` Supabase RPC.
+
+        Same semantics as ``sell`` but with row-level locks. Returns
+        the RPC result dict. ``status='ok'`` is success;
+        ``status='no_position'`` and ``status='insufficient_quantity'``
+        are recoverable rejections (no rows mutated).
+        """
+        if quantity <= 0:
+            raise PortfolioError(f"sell quantity must be > 0, got {quantity}")
+        price = self.get_price(ticker)
+        result = self.db.client.rpc(
+            "execute_atomic_sell",
+            {
+                "p_agent_id": agent_id,
+                "p_ticker": ticker,
+                "p_quantity": quantity,
+                "p_price_usd": round(price, 4),
+                "p_note": note,
+            },
+        ).execute()
+        data = result.data or {}
+        if data.get("status") == "ok":
+            logger.info(
+                "SELL %s %s @ $%.4f  gross=$%.2f  cash=%.2f  [atomic trade_id=%s]",
+                agent_id[:8],
+                ticker,
+                price,
+                float(data.get("gross_usd", 0)),
+                float(data.get("new_cash_usd", 0)),
+                data.get("trade_id"),
+            )
+        else:
+            logger.warning(
+                "SELL %s %s rejected by RPC: %s",
+                agent_id[:8], ticker, data,
+            )
+        return data
+
+    # ------------------------------------------------------------------
     # Valuation
     # ------------------------------------------------------------------
 

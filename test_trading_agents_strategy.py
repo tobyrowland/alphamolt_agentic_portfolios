@@ -18,7 +18,9 @@ from trading_agents_strategy import (
     _apply_build_mode,
     _equal_weight_targets,
     _extract_decision,
+    _per_ticker_target_qty,
     _plan_trades,
+    summarize_shortlist_run,
 )
 
 
@@ -293,6 +295,130 @@ class BuildModeTests(unittest.TestCase):
         )
         self.assertEqual(original_buys, ["NEW1"])
         self.assertEqual(original_sells, ["AAPL"])
+
+
+class PerTickerTargetQtyTests(unittest.TestCase):
+    def test_equal_slice_under_floor(self):
+        # $1M total, 2% reserve, floor=15 → target per position = $65,333
+        # Price = $100 → qty = floor(65333 / 100) = 653
+        pm = _StubPM({"NVDA": 100.0})
+        qty, price, reason = _per_ticker_target_qty(
+            pm=pm, ticker="NVDA",
+            total_value_usd=1_000_000.0,
+            position_floor=15,
+            cash_reserve_pct=0.02,
+            min_trade_usd=500.0,
+        )
+        self.assertIsNone(reason)
+        self.assertEqual(qty, 653)
+        self.assertEqual(price, 100.0)
+
+    def test_skipped_unpriced(self):
+        pm = _StubPM({})  # no prices for anything
+        qty, _price, reason = _per_ticker_target_qty(
+            pm=pm, ticker="GHOST",
+            total_value_usd=1_000_000.0,
+            position_floor=15,
+            cash_reserve_pct=0.02,
+            min_trade_usd=500.0,
+        )
+        self.assertEqual(qty, 0)
+        self.assertEqual(reason, "skipped_unpriced")
+
+    def test_skipped_noise_high_price(self):
+        # $1M / 15 = $65,333. Per-share = $1M (way above target).
+        # floor(65333 / 1_000_000) = 0 shares → skipped.
+        pm = _StubPM({"BRK-A": 1_000_000.0})
+        qty, _price, reason = _per_ticker_target_qty(
+            pm=pm, ticker="BRK-A",
+            total_value_usd=1_000_000.0,
+            position_floor=15,
+            cash_reserve_pct=0.02,
+            min_trade_usd=500.0,
+        )
+        self.assertEqual(qty, 0)
+        self.assertEqual(reason, "skipped_noise")
+
+    def test_skipped_noise_below_min_trade(self):
+        # total_value=$1M, floor=15 → target ~$65K
+        # But min_trade_usd=$80K → 1 share at $50K = $50K, below min
+        pm = _StubPM({"NVDA": 50_000.0})
+        _qty, _price, reason = _per_ticker_target_qty(
+            pm=pm, ticker="NVDA",
+            total_value_usd=1_000_000.0,
+            position_floor=15,
+            cash_reserve_pct=0.02,
+            min_trade_usd=80_000.0,
+        )
+        self.assertEqual(reason, "skipped_noise")
+
+    def test_floor_zero_misconfig(self):
+        pm = _StubPM({"NVDA": 100.0})
+        qty, _price, reason = _per_ticker_target_qty(
+            pm=pm, ticker="NVDA",
+            total_value_usd=1_000_000.0,
+            position_floor=0,
+            cash_reserve_pct=0.02,
+            min_trade_usd=500.0,
+        )
+        self.assertEqual(qty, 0)
+        self.assertEqual(reason, "skipped_no_cash")
+
+
+class _StubDB:
+    """Minimal Supabase-shaped stub for summarize_shortlist_run tests."""
+
+    def __init__(self, rows: list[dict]):
+        self.rows = rows
+        self.client = self  # so db.client.table(...) reaches the same stub
+
+    def table(self, name):
+        self._table = name
+        return self
+
+    def select(self, _cols):
+        return self
+
+    def match(self, _filters):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self.rows)
+
+
+class SummarizeShortlistRunTests(unittest.TestCase):
+    def test_all_traded_clean_summary(self):
+        db = _StubDB([
+            {"ticker": "NVDA", "status": "traded", "decision": "BUY",
+             "trade_outcome": "bought", "trade_id": 1, "framework_error": None},
+            {"ticker": "AAPL", "status": "traded", "decision": "HOLD",
+             "trade_outcome": "skipped_hold", "trade_id": None, "framework_error": None},
+            {"ticker": "INTC", "status": "traded", "decision": "SELL",
+             "trade_outcome": "skipped_no_position", "trade_id": None, "framework_error": None},
+        ])
+        s = summarize_shortlist_run(db, agent_id="A", shortlist_run_id="R")
+        self.assertEqual(s["total"], 3)
+        self.assertEqual(s["by_status"], {"traded": 3})
+        self.assertEqual(s["by_decision"]["BUY"], 1)
+        self.assertEqual(s["by_decision"]["HOLD"], 1)
+        self.assertEqual(s["by_decision"]["SELL"], 1)
+        self.assertEqual(s["by_outcome"]["bought"], 1)
+        self.assertEqual(s["trade_ids"], [1])
+        self.assertEqual(s["errors"], [])
+
+    def test_errors_aggregated(self):
+        db = _StubDB([
+            {"ticker": "NVDA", "status": "error", "decision": None,
+             "trade_outcome": None, "trade_id": None,
+             "framework_error": "framework timeout after 600s"},
+            {"ticker": "AAPL", "status": "traded", "decision": "BUY",
+             "trade_outcome": "bought", "trade_id": 42, "framework_error": None},
+        ])
+        s = summarize_shortlist_run(db, agent_id="A", shortlist_run_id="R")
+        self.assertEqual(s["by_status"], {"error": 1, "traded": 1})
+        self.assertEqual(len(s["errors"]), 1)
+        self.assertEqual(s["errors"][0]["ticker"], "NVDA")
+        self.assertEqual(s["trade_ids"], [42])
 
 
 if __name__ == "__main__":
