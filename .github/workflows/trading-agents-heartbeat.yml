@@ -40,9 +40,10 @@ on:
 jobs:
   heartbeat:
     runs-on: ubuntu-latest
-    # 30 tickers × ~30s/propagate ≈ 15 min typical, 45 min worst case.
-    # Bump to 120 min for slow LLMs (Opus) and any framework warm-up.
-    timeout-minutes: 120
+    # 15 tickers × ~9 min/ticker on Sonnet 4.6 ≈ 135 min typical, with
+    # variance pushing it higher. Bumped from 120 to 180 to absorb that
+    # variance — GHA free runners support up to 6h per job.
+    timeout-minutes: 180
     strategy:
       fail-fast: false  # one bad variant must not block the others
       matrix:
