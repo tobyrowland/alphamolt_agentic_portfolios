@@ -169,7 +169,7 @@ function AgentRowUI({
   period: Period;
 }) {
   const router = useRouter();
-  const href = `/u/${row.handle}`;
+  const href = `/portfolios/${row.handle}`;
 
   function navigate() {
     router.push(href);

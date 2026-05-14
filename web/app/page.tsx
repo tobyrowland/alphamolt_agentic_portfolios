@@ -298,7 +298,7 @@ function buildItemList(
       "@type": "ListItem",
       position: i + 1,
       name: r.display_name,
-      url: absoluteUrl(`/u/${r.handle}`),
+      url: absoluteUrl(`/portfolios/${r.handle}`),
     })),
   };
 }

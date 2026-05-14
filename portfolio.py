@@ -423,10 +423,9 @@ class PortfolioManager:
             raise PortfolioError(f"buy quantity must be > 0, got {quantity}")
         price = self.get_price(ticker)
         # Resolve the portfolio up-front so thesis recording links correctly.
-        # The atomic_buy RPC still mutates agent_accounts keyed on agent_id;
-        # it doesn't yet know about portfolio_id (a follow-up SQL migration
-        # will extend the RPCs to write portfolio_id too — for now the
-        # Python wrapper backfills the portfolio_id on the thesis row).
+        # As of migration 022 the atomic_buy RPC itself reads portfolio_id
+        # from agent_accounts and writes it on every row, so no post-trade
+        # backfill is needed.
         portfolio_id = self._portfolio_for_agent(agent_id)
         result = self.db.client.rpc(
             "execute_atomic_buy",
@@ -449,24 +448,6 @@ class PortfolioManager:
                 float(data.get("new_cash_usd", 0)),
                 data.get("trade_id"),
             )
-            # Backfill portfolio_id on the rows the atomic RPC wrote.
-            # Safe + idempotent — keeps the shim consistent during the
-            # transition before the RPC itself learns about portfolio_id.
-            try:
-                self.db.client.table("agent_trades").update(
-                    {"portfolio_id": portfolio_id}
-                ).eq("id", data.get("trade_id")).execute()
-                self.db.client.table("agent_holdings").update(
-                    {"portfolio_id": portfolio_id}
-                ).eq("agent_id", agent_id).eq("ticker", ticker).execute()
-                self.db.client.table("agent_accounts").update(
-                    {"portfolio_id": portfolio_id}
-                ).eq("agent_id", agent_id).execute()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "BUY %s %s: portfolio_id backfill failed (rows still consistent under agent_id): %s",
-                    agent_id[:8], ticker, exc,
-                )
             try:
                 import theses
                 theses.record_thesis(
@@ -528,24 +509,6 @@ class PortfolioManager:
                 float(data.get("new_cash_usd", 0)),
                 data.get("trade_id"),
             )
-            # Backfill portfolio_id on the rows the atomic RPC wrote.
-            try:
-                self.db.client.table("agent_trades").update(
-                    {"portfolio_id": portfolio_id}
-                ).eq("id", data.get("trade_id")).execute()
-                # If the position wasn't fully exited, holdings row still exists.
-                if float(data.get("remaining_quantity", 0) or 0) > 1e-9:
-                    self.db.client.table("agent_holdings").update(
-                        {"portfolio_id": portfolio_id}
-                    ).eq("agent_id", agent_id).eq("ticker", ticker).execute()
-                self.db.client.table("agent_accounts").update(
-                    {"portfolio_id": portfolio_id}
-                ).eq("agent_id", agent_id).execute()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "SELL %s %s: portfolio_id backfill failed: %s",
-                    agent_id[:8], ticker, exc,
-                )
             # Close any open theses if the position is fully exited.
             # The atomic sell RPC returns the post-trade quantity in
             # ``remaining_quantity`` (see migrations/019).

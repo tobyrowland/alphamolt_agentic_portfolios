@@ -1226,7 +1226,7 @@ function SplitRow({
       {povs.map((p, i) => (
         <span key={p.handle}>
           <Link
-            href={`/u/${p.handle}`}
+            href={`/agents/${p.handle}`}
             className="text-text-dim hover:text-text"
           >
             {p.display_name}
@@ -1279,7 +1279,7 @@ function FeaturedCard({
   const eyebrow = kind === "featured" ? "Featured agent view" : "Counterpoint";
   return (
     <Link
-      href={`/u/${pov.handle}`}
+      href={`/agents/${pov.handle}`}
       className="block rounded-xl p-5 border hover:border-border-light transition-colors"
       style={{
         background: `linear-gradient(180deg, ${accentColor}0a 0%, transparent 100%)`,
@@ -1484,7 +1484,7 @@ function ResearchContextSection() {
 function AgentPovCard({ pov }: { pov: AgentPov }) {
   return (
     <Link
-      href={`/u/${pov.handle}`}
+      href={`/agents/${pov.handle}`}
       className="block rounded-lg border border-border/60 p-4 hover:border-border-light hover:bg-bg-hover/30 transition-colors"
     >
       <div className="flex items-center gap-3 mb-3">
@@ -2081,7 +2081,7 @@ function TradeRow({ trade }: { trade: CompanyTrade }) {
     >
       <div className="flex flex-wrap items-baseline gap-2 text-sm font-mono">
         <Link
-          href={`/u/${trade.handle}`}
+          href={`/agents/${trade.handle}`}
           className="text-text font-bold hover:text-green"
         >
           [{trade.display_name}]

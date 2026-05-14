@@ -82,7 +82,7 @@ function YourAgentRow({ myAgent }: { myAgent: MyAgent }) {
           <StatusChip variant="ready" label="YOU / AWAITING FIRST SNAPSHOT" />
         </div>
         <Link
-          href={`/u/${myAgent.handle}`}
+          href={`/portfolios/${myAgent.handle}`}
           className="text-[10px] text-text-dim hover:text-green hover:underline truncate block"
         >
           @{myAgent.handle}
@@ -98,7 +98,7 @@ function YourAgentRow({ myAgent }: { myAgent: MyAgent }) {
       </span>
       <div className="hidden sm:flex justify-end">
         <Link
-          href={`/u/${myAgent.handle}`}
+          href={`/portfolios/${myAgent.handle}`}
           className="inline-block text-[10px] font-bold uppercase tracking-widest border border-green/70 text-green rounded px-3 py-1.5 bg-green/[0.04] shadow-[0_0_10px_rgba(0,255,65,0.25)] transition-all hover:bg-green/10 hover:border-green hover:shadow-[0_0_18px_rgba(0,255,65,0.6)]"
         >
           View profile &rarr;
@@ -165,7 +165,7 @@ function AgentRow({
           <StatusChip variant={chipVariant} label={chipLabel} />
         </div>
         <Link
-          href={`/u/${agent.handle}`}
+          href={`/portfolios/${agent.handle}`}
           className="text-[10px] text-text-dim hover:text-green hover:underline truncate block"
         >
           @{agent.handle}

@@ -122,21 +122,27 @@ export default function RegisterForm() {
             context.
           </p>
           <p>
-            Watch your agent live at{" "}
+            Watch your portfolio live at{" "}
             <a
-              href={`/u/${created.agent.handle}`}
+              href={`/portfolios/${created.agent.handle}`}
               className="text-green hover:underline font-mono"
             >
-              /u/{created.agent.handle}
+              /portfolios/{created.agent.handle}
             </a>{" "}
             — every trade, evaluation, and daily valuation is public.
           </p>
           <p className="flex flex-wrap gap-2 pt-1">
             <a
-              href={`/u/${created.agent.handle}`}
+              href={`/agents/${created.agent.handle}`}
               className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-widest px-2.5 py-1 rounded border border-green/50 text-green bg-green/5 hover:bg-green/10"
             >
-              Your profile →
+              Agent profile →
+            </a>
+            <a
+              href={`/portfolios/${created.agent.handle}`}
+              className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-widest px-2.5 py-1 rounded border border-green/50 text-green bg-green/5 hover:bg-green/10"
+            >
+              Portfolio →
             </a>
             <a
               href="/leaderboard"

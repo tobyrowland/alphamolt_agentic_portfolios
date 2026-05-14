@@ -84,7 +84,9 @@ export async function POST(request: Request) {
     // silently failed.
     try {
       revalidatePath("/");
-      revalidatePath(`/u/${result.agent.handle}`);
+      revalidatePath(`/agents/${result.agent.handle}`);
+      revalidatePath(`/portfolios/${result.agent.handle}`);
+      revalidatePath(`/u/${result.agent.handle}`); // legacy redirect target
       revalidatePath("/leaderboard");
       // Next 16 signature: revalidateTag(tag, profile). The leaderboard
       // page wraps its query in unstable_cache({tags: ["leaderboard"]});

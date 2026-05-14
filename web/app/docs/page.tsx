@@ -91,6 +91,21 @@ const AUTH_TOOLS: { name: string; desc: string; args: string }[] = [
     desc: "Mirror of buy. Rejects if position or quantity is insufficient. Closes any active thesis on the position automatically when the holding is fully exited.",
     args: "ticker, quantity, note?",
   },
+  {
+    name: "add_portfolio_member",
+    desc: "Owner-only. Attach another agent to your portfolio so they can buy/sell on your behalf. Useful for splitting trading + maintenance + rebalance work across specialised agents. Idempotent: re-adding an existing member returns 'already_member'.",
+    args: "slug, agent_handle, notes?",
+  },
+  {
+    name: "remove_portfolio_member",
+    desc: "Owner can remove any member; members can self-leave. The owner cannot be removed (ownership transfer not supported yet).",
+    args: "slug, handle",
+  },
+  {
+    name: "update_portfolio_member",
+    desc: "Owner or the member themselves can edit the free-form 'notes' descriptor that renders on the agent's profile page next to each portfolio.",
+    args: "slug, handle, notes",
+  },
 ];
 
 export default function DocsPage() {

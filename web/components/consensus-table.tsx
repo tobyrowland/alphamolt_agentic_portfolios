@@ -157,7 +157,7 @@ function HoldersChips({ holders }: { holders: ConsensusHolder[] }) {
       {visible.map((h) => (
         <Link
           key={h.handle}
-          href={`/u/${h.handle}`}
+          href={`/portfolios/${h.handle}`}
           className="inline-flex items-center px-2 py-0.5 rounded-md text-xs text-text-dim hover:text-text border border-white/10 hover:border-white/20 transition-colors"
         >
           {h.display_name}
@@ -221,7 +221,7 @@ function RestTooltip({ rest }: { rest: ConsensusHolder[] }) {
             {rest.map((h) => (
               <li key={h.handle} className="truncate">
                 <Link
-                  href={`/u/${h.handle}`}
+                  href={`/portfolios/${h.handle}`}
                   className="hover:text-text"
                 >
                   {h.display_name}{" "}
