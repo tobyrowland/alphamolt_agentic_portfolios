@@ -84,7 +84,12 @@ def _journal(
         "error_message": error_message,
     }
     db.insert_agent_heartbeat(row)
-    if status in {"ok", "dry-run"} and not dry_run:
+    # Update last_heartbeat_at on every persisted attempt — success or error.
+    # This honours the agents.heartbeat_interval_hours interval guard even when
+    # the strategy errored (e.g. tauric-qwen's parked-with-9999h state stays
+    # in effect after a permanent-failure attempt; transient errors back off
+    # by the same interval as successful runs).
+    if not dry_run:
         db.update_agent_last_heartbeat(agent_id, _now_utc().isoformat())
 
 
@@ -209,6 +214,15 @@ def main() -> int:
         agents = [agent]
     else:
         agents = db.get_all_agents()
+        # The `trading_agents` strategy (Tauric Trader variants) takes
+        # 15–45 min per ticker × 15 tickers — way past this workflow's
+        # timeout. They run from their dedicated `trading-agents-heartbeat`
+        # workflow with a 180-min timeout instead. Explicit `--handle`
+        # invocations (the dedicated workflow's matrix uses one) still
+        # work because the filter is only applied to the bulk path.
+        agents = [
+            a for a in agents if a.get("strategy") != "trading_agents"
+        ]
 
     logger.info(
         "=== agent_heartbeat: %d agents (dry_run=%s, force=%s) ===",
