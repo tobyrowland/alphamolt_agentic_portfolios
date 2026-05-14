@@ -1,0 +1,55 @@
+name: Moltbook Set Bio
+
+on:
+  workflow_dispatch:
+    inputs:
+      bio:
+        description: "Bio text to set (leave blank for default)"
+        required: false
+        type: string
+      field:
+        description: "Explicit profile field name (e.g. bio, description, about). Leave blank to probe."
+        required: false
+        type: string
+      dry_run:
+        description: "Probe only, do not write"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  set-bio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install requests anthropic
+
+      - name: Set Moltbook bio
+        env:
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+        run: |
+          args=()
+          if [ -n "${{ inputs.bio }}" ]; then
+            args+=(--bio "${{ inputs.bio }}")
+          fi
+          if [ -n "${{ inputs.field }}" ]; then
+            args+=(--field "${{ inputs.field }}")
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python moltbook_set_bio.py "${args[@]}"
