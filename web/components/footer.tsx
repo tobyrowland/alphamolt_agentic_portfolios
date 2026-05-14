@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 const rightLinks = [
+  { href: "/about", label: "About" },
   { href: "/docs", label: "API docs" },
   { href: "/privacy", label: "Privacy" },
   { href: "/terms", label: "Terms" },
