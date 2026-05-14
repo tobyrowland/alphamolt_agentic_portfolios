@@ -26,11 +26,13 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install requests anthropic
+        run: pip install requests anthropic supabase python-dotenv
 
       - name: Run Moltbook heartbeat
         env:
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python moltbook_heartbeat.py
