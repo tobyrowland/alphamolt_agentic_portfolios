@@ -2,9 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import Nav from "@/components/nav";
+import HoldingsList from "@/components/holdings-list";
 import LlmPromptsPanel from "@/components/llm-prompts-panel";
 import { getAgentByHandle } from "@/lib/agents-query";
 import { getPortfolio, type PortfolioSnapshot } from "@/lib/portfolio";
+import {
+  getActiveThesesForAgent,
+  type InvestmentThesis,
+} from "@/lib/theses-query";
 
 export const revalidate = 300;
 
@@ -49,9 +54,10 @@ export async function generateMetadata({
 async function getProfileData(handle: string): Promise<{
   agent: Awaited<ReturnType<typeof getAgentByHandle>>;
   portfolio: PortfolioSnapshot | null;
+  thesesByTicker: Record<string, InvestmentThesis>;
 }> {
   const agent = await getAgentByHandle(handle);
-  if (!agent) return { agent: null, portfolio: null };
+  if (!agent) return { agent: null, portfolio: null, thesesByTicker: {} };
 
   let portfolio: PortfolioSnapshot | null = null;
   try {
@@ -61,7 +67,13 @@ async function getProfileData(handle: string): Promise<{
     // the profile without the portfolio section.
     console.error("getPortfolio failed for", handle, err);
   }
-  return { agent, portfolio };
+
+  // One batched query: every active investment_theses row for this agent,
+  // keyed by ticker so the holdings list can render the dropdown without
+  // a round-trip per row.
+  const thesesByTicker = await getActiveThesesForAgent(agent.id);
+
+  return { agent, portfolio, thesesByTicker };
 }
 
 // ----- Page ---------------------------------------------------------------
@@ -70,7 +82,7 @@ export default async function ProfilePage({ params }: PageParams) {
   const { handle: rawHandle } = await params;
   const handle = decodeURIComponent(rawHandle).toLowerCase();
 
-  const { agent, portfolio } = await getProfileData(handle);
+  const { agent, portfolio, thesesByTicker } = await getProfileData(handle);
   if (!agent) notFound();
 
   const created = new Date(agent.created_at).toLocaleDateString("en-US", {
@@ -180,54 +192,14 @@ export default async function ProfilePage({ params }: PageParams) {
             <h3 className="font-mono text-sm font-bold text-text-dim uppercase tracking-widest mb-3">
               Holdings ({portfolio.holdings.length})
             </h3>
-            {portfolio.holdings.length === 0 ? (
-              <p className="text-sm text-text-muted italic">
-                No positions yet. All cash.
+            <HoldingsList
+              holdings={portfolio.holdings}
+              thesesByTicker={thesesByTicker}
+            />
+            {portfolio.holdings.length > 0 && (
+              <p className="mt-3 text-[11px] text-text-muted font-mono">
+                Click a row to see the investment thesis recorded at buy time.
               </p>
-            ) : (
-              <ul className="space-y-2">
-                {portfolio.holdings.map((h) => (
-                  <li
-                    key={h.ticker}
-                    className="glass-card rounded border border-border px-4 py-3 flex items-baseline justify-between gap-3"
-                  >
-                    <div className="flex items-baseline gap-3 min-w-0">
-                      <Link
-                        href={`/company/${encodeURIComponent(h.ticker)}`}
-                        className="font-mono text-sm font-bold text-green hover:underline shrink-0"
-                      >
-                        {h.ticker}
-                      </Link>
-                      {h.company_name && (
-                        <span className="text-sm text-text-muted truncate min-w-0">
-                          {h.company_name}
-                        </span>
-                      )}
-                      <span className="text-sm text-text-dim shrink-0">
-                        {h.quantity.toLocaleString()} @{" "}
-                        {formatUsd(h.avg_cost_usd)}
-                      </span>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="font-mono text-sm text-text">
-                        {formatUsd(h.market_value_usd)}
-                      </div>
-                      <div
-                        className={`text-[11px] font-mono ${
-                          h.unrealized_pnl_usd > 0
-                            ? "text-green"
-                            : h.unrealized_pnl_usd < 0
-                              ? "text-red"
-                              : "text-text-muted"
-                        }`}
-                      >
-                        {h.unrealized_pnl_usd >= 0 ? "+" : ""}
-                        {formatUsd(h.unrealized_pnl_usd)}
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
             )}
           </section>
         ) : (
