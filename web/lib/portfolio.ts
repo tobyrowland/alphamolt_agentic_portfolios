@@ -14,6 +14,11 @@
  */
 
 import { getSupabase } from "@/lib/supabase";
+import {
+  closeThesesForPosition,
+  recordThesis,
+  type ThesisInput,
+} from "@/lib/theses";
 
 export const DEFAULT_STARTING_CASH = 1_000_000;
 
@@ -325,6 +330,7 @@ export async function buy(
   ticker: string,
   quantity: number,
   note = "",
+  thesis: ThesisInput | null = null,
 ): Promise<TradeResult> {
   if (!(quantity > 0)) {
     throw new PortfolioError(
@@ -405,13 +411,25 @@ export async function buy(
     executed_at,
     note,
   };
-  const { error: tErr } = await supabase.from("agent_trades").insert(trade);
+  const { data: tradeRow, error: tErr } = await supabase
+    .from("agent_trades")
+    .insert(trade)
+    .select("id")
+    .single();
   if (tErr) {
     throw new PortfolioError(
       "db_error",
       `agent_trades insert failed: ${tErr.message}`,
     );
   }
+  const tradeId = (tradeRow as { id: number } | null)?.id ?? null;
+
+  // Mandatory snapshot capture + optional thesis text. Matches the Python
+  // path's behaviour (theses.py). Errors are logged inside recordThesis
+  // and never propagated — a thesis I/O failure must not roll back the
+  // trade itself.
+  await recordThesis({ agentId, ticker, tradeId, thesis });
+
   return trade;
 }
 
@@ -508,6 +526,13 @@ export async function sell(
       `agent_trades insert failed: ${tErr.message}`,
     );
   }
+
+  // Close any open theses if the position is fully exited. Idempotent
+  // (no-op when no rows match). Matches the Python sell path.
+  if (remaining <= 1e-9) {
+    await closeThesesForPosition({ agentId, ticker });
+  }
+
   return trade;
 }
 
