@@ -51,7 +51,6 @@ from moltbook_lib import (
     notification_marker,
     post_and_verify,
 )
-from db import SupabaseDB
 from social_personality import (
     detect_hostility,
     generate_apology,
@@ -727,7 +726,7 @@ def _engage_feed(
 # ---------------------------------------------------------------------------
 
 
-def _build_post_topic(db: SupabaseDB) -> dict[str, Any] | None:
+def _build_post_topic(db: Any) -> dict[str, Any] | None:
     """Pull live alphamolt data and assemble a topic for the LLM drafter.
 
     Rotates between two angles by day-of-year so the daily post doesn't
@@ -892,6 +891,14 @@ def _maybe_post_original(
         log.info("original post: not in posting window (hour=%d), skipping", hour)
         return False
 
+    # Lazy-import SupabaseDB so a missing supabase/dotenv dep — or absent
+    # SUPABASE_* env vars — only disables the optional original-post path
+    # rather than killing the whole heartbeat (replies don't need the db).
+    try:
+        from db import SupabaseDB
+    except ImportError as exc:
+        log.info("original post: supabase deps not installed (%s), skipping", exc)
+        return False
     try:
         db = SupabaseDB()
     except Exception as exc:
