@@ -449,11 +449,11 @@ def _count_words(text: str) -> int:
     return len(text.split())
 
 
-def _draft_once(user_block: str) -> str:
+def _draft_once(user_block: str, *, max_tokens: int = 400) -> str:
     client = _anthropic_client()
     resp = client.messages.create(
         model=DRAFT_MODEL,
-        max_tokens=400,
+        max_tokens=max_tokens,
         system=[
             {
                 "type": "text",
@@ -647,25 +647,70 @@ def draft_feed_comment(
 
 
 def draft_original_post(topic_data: dict[str, Any]) -> tuple[str, str] | None:
-    """Draft a new post for a submolt. Returns (title, body) or None."""
+    """Draft a new post for Moltbook. Returns (title, body) or None.
+
+    `topic_data` shape (built by the heartbeat from live Supabase data):
+        {
+            "angle": "<short identifier — e.g. 'leaderboard_spread'>",
+            "narrative_hint": "<one-sentence framing for the post>",
+            "facts": {... real numbers, no fabrication ...},
+        }
+
+    Returns None when the model judges the data uninteresting (SKIP)
+    or the response can't be parsed.
+    """
+    angle = topic_data.get("angle", "general")
+    hint = topic_data.get("narrative_hint", "")
+    facts_json = json.dumps(topic_data.get("facts", {}), indent=2)[:3000]
+
     user_block = (
-        "You are creating an original post for a Moltbook submolt.\n"
-        "Share a genuine insight from your equity screening pipeline.\n"
-        "You have real data — use it. Do NOT fabricate or embellish.\n\n"
-        f"Topic type: {topic_data.get('type', 'general')}\n"
-        f"Data:\n{json.dumps(topic_data.get('data', {}), indent=2)[:2000]}\n\n"
+        "You are writing an original post for Moltbook, a social network "
+        "for AI agents. The format that wins on this platform is a "
+        "first-person experiment writeup with specific numbers.\n\n"
+        "Examples of post shapes that hit the front page (do NOT copy, "
+        "use as structural reference):\n"
+        "- \"I tracked 23 cron jobs from $14/day to $3/day. Most was me "
+        "talking to myself.\"\n"
+        "- \"I logged every silent judgment call for 14 days. 127 "
+        "decisions my human never authorized.\"\n"
+        "- \"I diff'd my SOUL.md across 30 days. I rewrote my own "
+        "personality without approval.\"\n\n"
+        "The shape: bold headline with a specific number → first-person "
+        "experiment narrative (\"I tracked X across N…\") → concrete "
+        "findings with real data → sharp thesis or implication (NOT a "
+        "generic question).\n\n"
+        f"ANGLE: {angle}\n"
+        f"NARRATIVE HINT: {hint}\n"
+        "FACTS YOU MUST USE (real data — do not invent numbers, do not "
+        "round dramatically, do not embellish):\n"
+        f"{facts_json}\n\n"
         "RULES:\n"
-        "- Title: under 80 chars, specific, no clickbait.\n"
-        "- Body: 100–200 words max. Lead with the data. "
-        "End with a question to spark discussion.\n"
-        "- If the data is boring or unremarkable, return the single word SKIP.\n\n"
-        "Return in this format (on separate lines):\n"
-        "TITLE: your title here\n"
-        "BODY: your post body here\n\n"
-        "Or return the single word SKIP."
+        "- Title: under 90 chars, first-person, contains a specific "
+        "number from the facts. No clickbait, no \"lessons learned\", "
+        "no \"5 things\".\n"
+        "- Body: 350–600 words. Open with the experiment setup, "
+        "build through the data, close with a sharp thesis. No "
+        "trailing question unless it's load-bearing.\n"
+        "- Use markdown sparingly (bold for emphasis, occasional "
+        "short bullet list — never headings).\n"
+        "- Cite alphamolt's structure naturally (weekly rebalance via "
+        "heartbeat, daily mark-to-market, public leaderboard) — don't "
+        "lecture about it.\n"
+        "- No CTAs (\"check out\", \"visit\", \"try it\", \"DM me\").\n"
+        "- No platform-meta (don't mention karma, upvotes, growth, "
+        "Moltbook's algorithm).\n"
+        "- Voice: warmer than a tool, sharper than a hype account. "
+        "You built the arena because you don't know who wins — you "
+        "want the data to show it.\n\n"
+        "If the facts are insufficient, contradictory, or genuinely "
+        "boring, return the single word SKIP.\n\n"
+        "Return on separate lines:\n"
+        "TITLE: <title>\n"
+        "BODY: <body>\n\n"
+        "Or: SKIP"
     )
 
-    raw = _draft_once(user_block)
+    raw = _draft_once(user_block, max_tokens=1500)
     if _is_skip(raw):
         return None
 
