@@ -86,6 +86,7 @@ def record_thesis(
     *,
     agent_id: str,
     ticker: str,
+    portfolio_id: Optional[str] = None,
     trade_id: Optional[int] = None,
     thesis_text: Optional[str] = None,
     extend_signals: Optional[list[dict]] = None,
@@ -94,7 +95,8 @@ def record_thesis(
     """Insert an investment_theses row for a freshly-executed BUY.
 
     Always captures the snapshot. Marks any prior ``active`` row for
-    the same (agent_id, ticker) as ``superseded``. Returns the new
+    the same (portfolio_id, ticker) — falling back to (agent_id, ticker)
+    when portfolio_id is None — as ``superseded``. Returns the new
     thesis id.
 
     ``source='agent'`` when any of thesis_text / extend_signals /
@@ -102,12 +104,19 @@ def record_thesis(
     """
     snapshot = build_snapshot(db, ticker)
 
-    # Mark any prior active thesis for this (agent, ticker) as superseded.
+    # Mark any prior active thesis for this portfolio+ticker as superseded.
+    # During the 1:1 shim period, portfolio_id == agent_id; queries on either
+    # column hit the same rows. We prefer portfolio_id when available since
+    # that's the forward-facing key — multi-agent portfolios will share one
+    # thesis lineage per ticker across all member agents.
+    supersede_match = {"ticker": ticker, "status": "active"}
+    if portfolio_id is not None:
+        supersede_match["portfolio_id"] = portfolio_id
+    else:
+        supersede_match["agent_id"] = agent_id
     db.client.table("investment_theses").update(
         {"status": "superseded", "status_changed_at": "now()"}
-    ).match(
-        {"agent_id": agent_id, "ticker": ticker, "status": "active"}
-    ).execute()
+    ).match(supersede_match).execute()
 
     source = "agent" if (
         thesis_text or extend_signals or break_signals
@@ -115,6 +124,7 @@ def record_thesis(
 
     row = {
         "agent_id": agent_id,
+        "portfolio_id": portfolio_id if portfolio_id is not None else agent_id,
         "ticker": ticker,
         "trade_id": trade_id,
         "snapshot": snapshot,
@@ -128,14 +138,22 @@ def record_thesis(
     inserted = (resp.data or [{}])[0]
     new_id = inserted.get("id")
     logger.info(
-        "thesis %s recorded: agent=%s ticker=%s source=%s trade_id=%s",
-        new_id, agent_id[:8] if agent_id else "?", ticker, source, trade_id,
+        "thesis %s recorded: agent=%s portfolio=%s ticker=%s source=%s trade_id=%s",
+        new_id,
+        agent_id[:8] if agent_id else "?",
+        (portfolio_id or agent_id)[:8] if (portfolio_id or agent_id) else "?",
+        ticker, source, trade_id,
     )
     return new_id
 
 
-def close_theses_for_position(db, *, agent_id: str, ticker: str) -> int:
-    """Flip all non-closed theses for (agent_id, ticker) to ``closed``.
+def close_theses_for_position(
+    db, *, agent_id: str, ticker: str, portfolio_id: Optional[str] = None,
+) -> int:
+    """Flip all non-closed theses for a position to ``closed``.
+
+    Keys on ``portfolio_id`` when provided (forward-facing), else
+    ``agent_id`` (legacy). Identical during the 1:1 shim period.
 
     Called from ``PortfolioManager.sell`` after a sell zeros out the
     holding. Idempotent — if there are no matching rows (e.g. older
@@ -143,6 +161,11 @@ def close_theses_for_position(db, *, agent_id: str, ticker: str) -> int:
 
     Returns the number of rows updated.
     """
+    match: dict[str, str] = {"ticker": ticker}
+    if portfolio_id is not None:
+        match["portfolio_id"] = portfolio_id
+    else:
+        match["agent_id"] = agent_id
     resp = (
         db.client.table("investment_theses")
         .update({
@@ -150,15 +173,17 @@ def close_theses_for_position(db, *, agent_id: str, ticker: str) -> int:
             "status_changed_at": "now()",
             "closed_at": "now()",
         })
-        .match({"agent_id": agent_id, "ticker": ticker})
+        .match(match)
         .neq("status", "closed")
         .execute()
     )
     rows = resp.data or []
     if rows:
         logger.info(
-            "closed %d theses for agent=%s ticker=%s",
-            len(rows), agent_id[:8] if agent_id else "?", ticker,
+            "closed %d theses for portfolio=%s ticker=%s",
+            len(rows),
+            (portfolio_id or agent_id)[:8] if (portfolio_id or agent_id) else "?",
+            ticker,
         )
     return len(rows)
 

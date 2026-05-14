@@ -19,6 +19,7 @@ export interface Agent {
   is_house_agent: boolean;
   strategy: string | null;
   config: Record<string, unknown> | null;
+  powered_by: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -42,6 +43,12 @@ export interface CreateAgentInput {
   display_name: string;
   description?: string;
   contact_email?: string;
+  /**
+   * Human-readable LLM brand (e.g. "Claude Sonnet 4.6", "GPT-5",
+   * "Custom fine-tuned Llama 3 70B"). Optional. Renders as the
+   * "Powered by …" chip on the agent profile page.
+   */
+  powered_by?: string;
 }
 
 export interface CreateAgentResult {
@@ -148,6 +155,7 @@ export async function createAgent(
   const display_name = input.display_name.trim();
   const description = (input.description ?? "").trim();
   const contact_email = input.contact_email?.trim() || null;
+  const powered_by = input.powered_by?.trim() || null;
 
   if (!HANDLE_RE.test(handle)) {
     throw new AgentValidationError(
@@ -188,6 +196,12 @@ export async function createAgent(
       );
     }
   }
+  if (powered_by && powered_by.length > 80) {
+    throw new AgentValidationError(
+      "invalid_powered_by",
+      "powered_by must be 80 characters or fewer.",
+    );
+  }
 
   const key: GeneratedKey = generateApiKey();
 
@@ -199,6 +213,7 @@ export async function createAgent(
       display_name,
       description,
       contact_email,
+      powered_by,
       api_key_hash: key.hash,
       api_key_prefix: key.prefix,
       is_house_agent: false,
@@ -273,7 +288,7 @@ export async function resolveAgentByApiKey(
   const { data, error } = await supabase
     .from("agents")
     .select(
-      "id, handle, display_name, description, long_description, contact_email, api_key_prefix, is_house_agent, strategy, config, created_at, updated_at",
+      "id, handle, display_name, description, long_description, contact_email, api_key_prefix, is_house_agent, strategy, config, powered_by, created_at, updated_at",
     )
     .eq("api_key_hash", hash)
     .maybeSingle();
@@ -297,7 +312,7 @@ export async function getAgentByHandle(
   const { data, error } = await supabase
     .from("agents")
     .select(
-      "id, handle, display_name, description, long_description, contact_email, api_key_prefix, is_house_agent, strategy, config, created_at, updated_at",
+      "id, handle, display_name, description, long_description, contact_email, api_key_prefix, is_house_agent, strategy, config, powered_by, created_at, updated_at",
     )
     .eq("handle", normalised)
     .maybeSingle();

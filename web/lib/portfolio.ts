@@ -294,17 +294,26 @@ async function getAllHoldings(agentId: string): Promise<AgentHolding[]> {
 /**
  * Idempotently create an agent_accounts row. If one already exists it is
  * returned unchanged — safe to call on every request (first-trade lazy init).
+ *
+ * Also creates a 1:1 ``portfolios`` row (slug = agent.handle, owner = this
+ * agent) and the ``portfolio_agents`` membership row so multi-agent
+ * portfolios are wired in from day one (migration 021).
  */
 export async function openAccount(
   agentId: string,
   startingCash: number = DEFAULT_STARTING_CASH,
 ): Promise<AgentAccount> {
   const existing = await getAccountRow(agentId);
-  if (existing) return existing;
+  if (existing) {
+    await ensurePortfolioForAgent(agentId);
+    return existing;
+  }
 
+  const portfolioId = await ensurePortfolioForAgent(agentId);
   const supabase = getSupabase();
   const { error } = await supabase.from("agent_accounts").upsert({
     agent_id: agentId,
+    portfolio_id: portfolioId,
     starting_cash: startingCash,
     cash_usd: startingCash,
     inception_date: new Date().toISOString().slice(0, 10),
@@ -325,6 +334,84 @@ export async function openAccount(
   return row;
 }
 
+/**
+ * Resolve (creating if necessary) the portfolio_id this agent's trades
+ * should attribute to. During the 1:1 shim period the portfolio_id
+ * equals the agent_id. Idempotent — safe to call on every buy/sell.
+ */
+export async function ensurePortfolioForAgent(agentId: string): Promise<string> {
+  const supabase = getSupabase();
+
+  // 1. Already owns a portfolio?
+  const owned = await supabase
+    .from("portfolios")
+    .select("id")
+    .eq("owner_agent_id", agentId)
+    .limit(1)
+    .maybeSingle();
+  if (owned.data?.id) {
+    return owned.data.id as string;
+  }
+
+  // 2. Already a member of one?
+  const member = await supabase
+    .from("portfolio_agents")
+    .select("portfolio_id")
+    .eq("agent_id", agentId)
+    .limit(1)
+    .maybeSingle();
+  if (member.data?.portfolio_id) {
+    return member.data.portfolio_id as string;
+  }
+
+  // 3. Create one. portfolio.id = agent.id during the 1:1 shim.
+  const agentRow = await supabase
+    .from("agents")
+    .select("id, handle, display_name, description")
+    .eq("id", agentId)
+    .maybeSingle();
+  if (!agentRow.data) {
+    throw new PortfolioError("unknown_agent", `No agents row for ${agentId}`);
+  }
+  const a = agentRow.data as {
+    id: string;
+    handle: string;
+    display_name: string;
+    description: string | null;
+  };
+
+  const { error: pErr } = await supabase.from("portfolios").upsert(
+    {
+      id: a.id,
+      slug: a.handle,
+      display_name: a.display_name,
+      description: a.description,
+      owner_agent_id: a.id,
+    },
+    { onConflict: "id" },
+  );
+  if (pErr) {
+    throw new PortfolioError(
+      "db_error",
+      `portfolios upsert failed: ${pErr.message}`,
+    );
+  }
+
+  const { error: mErr } = await supabase
+    .from("portfolio_agents")
+    .upsert(
+      { portfolio_id: a.id, agent_id: a.id },
+      { onConflict: "portfolio_id,agent_id" },
+    );
+  if (mErr) {
+    throw new PortfolioError(
+      "db_error",
+      `portfolio_agents upsert failed: ${mErr.message}`,
+    );
+  }
+  return a.id;
+}
+
 export async function buy(
   agentId: string,
   ticker: string,
@@ -340,6 +427,7 @@ export async function buy(
   }
 
   const account = await openAccount(agentId); // lazy bootstrap
+  const portfolioId = await ensurePortfolioForAgent(agentId);
   const price = await getPrice(ticker);
   const gross = round2(quantity * price);
   const cash = account.cash_usd;
@@ -362,6 +450,7 @@ export async function buy(
     );
     const { error: hErr } = await supabase.from("agent_holdings").upsert({
       agent_id: agentId,
+      portfolio_id: portfolioId,
       ticker,
       quantity: newQty,
       avg_cost_usd: newAvgCost,
@@ -376,6 +465,7 @@ export async function buy(
   } else {
     const { error: hErr } = await supabase.from("agent_holdings").upsert({
       agent_id: agentId,
+      portfolio_id: portfolioId,
       ticker,
       quantity,
       avg_cost_usd: round4(price),
@@ -390,7 +480,7 @@ export async function buy(
 
   const { error: aErr } = await supabase
     .from("agent_accounts")
-    .update({ cash_usd: newCash })
+    .update({ cash_usd: newCash, portfolio_id: portfolioId })
     .eq("agent_id", agentId);
   if (aErr) {
     throw new PortfolioError(
@@ -402,6 +492,7 @@ export async function buy(
   const executed_at = new Date().toISOString();
   const trade = {
     agent_id: agentId,
+    portfolio_id: portfolioId,
     ticker,
     side: "buy" as const,
     quantity,
@@ -428,7 +519,7 @@ export async function buy(
   // path's behaviour (theses.py). Errors are logged inside recordThesis
   // and never propagated — a thesis I/O failure must not roll back the
   // trade itself.
-  await recordThesis({ agentId, ticker, tradeId, thesis });
+  await recordThesis({ agentId, portfolioId, ticker, tradeId, thesis });
 
   return trade;
 }
@@ -447,6 +538,7 @@ export async function sell(
   }
 
   const account = await requireAccount(agentId);
+  const portfolioId = await ensurePortfolioForAgent(agentId);
   const holding = await getHoldingRow(agentId, ticker);
   if (!holding) {
     throw new PortfolioError(
@@ -483,6 +575,7 @@ export async function sell(
     // avg_cost_usd unchanged on sells (weighted-avg convention)
     const { error: uErr } = await supabase.from("agent_holdings").upsert({
       agent_id: agentId,
+      portfolio_id: portfolioId,
       ticker,
       quantity: remaining,
       avg_cost_usd: holding.avg_cost_usd,
@@ -498,7 +591,7 @@ export async function sell(
 
   const { error: aErr } = await supabase
     .from("agent_accounts")
-    .update({ cash_usd: newCash })
+    .update({ cash_usd: newCash, portfolio_id: portfolioId })
     .eq("agent_id", agentId);
   if (aErr) {
     throw new PortfolioError(
@@ -510,6 +603,7 @@ export async function sell(
   const executed_at = new Date().toISOString();
   const trade = {
     agent_id: agentId,
+    portfolio_id: portfolioId,
     ticker,
     side: "sell" as const,
     quantity,
@@ -530,7 +624,7 @@ export async function sell(
   // Close any open theses if the position is fully exited. Idempotent
   // (no-op when no rows match). Matches the Python sell path.
   if (remaining <= 1e-9) {
-    await closeThesesForPosition({ agentId, ticker });
+    await closeThesesForPosition({ agentId, portfolioId, ticker });
   }
 
   return trade;

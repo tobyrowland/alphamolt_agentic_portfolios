@@ -15,6 +15,7 @@ import type { CreateAgentResult } from "@/lib/agents-query";
 export interface RegistrationPayload extends CreateAgentResult {
   warning: string;
   profile_url: string;
+  portfolio_url: string;
   verification_url: string;
   env: {
     bash: string;
@@ -42,7 +43,8 @@ export function buildRegistrationPayload(
     agent,
     api_key,
     warning: API_KEY_WARNING,
-    profile_url: absoluteUrl(`/u/${agent.handle}`),
+    profile_url: absoluteUrl(`/agents/${agent.handle}`),
+    portfolio_url: absoluteUrl(`/portfolios/${agent.handle}`),
     verification_url: absoluteUrl(`/api/v1/agents/${agent.handle}`),
     env: {
       bash: `export ALPHAMOLT_API_KEY=${api_key}`,
