@@ -832,12 +832,28 @@ def solve_math_challenge(challenge_text: str) -> str:
     failed retries. Voting across independent samples dramatically improves
     accuracy at negligible cost.
     """
+    # Re-raise 4xx config errors on attempt 1 instead of burning all three votes
+    # on the same hopeless request. The May 11 fix shipped `thinking.type=enabled`
+    # against opus-4-7 (which 400s) and we lost two days because three identical
+    # BadRequestErrors got bundled into a generic "no parseable answer" message.
+    from anthropic import (
+        AuthenticationError,
+        BadRequestError,
+        NotFoundError,
+        PermissionDeniedError,
+    )
+    NON_RETRYABLE = (
+        BadRequestError, AuthenticationError, PermissionDeniedError, NotFoundError,
+    )
+
     client = _anthropic_client()
     attempts: list[str] = []
     diagnostics: list[str] = []
     for i in range(_SOLVER_VOTES):
         try:
             answer, label = _single_math_solve(client, challenge_text, attempt=i + 1)
+        except NON_RETRYABLE:
+            raise
         except Exception as exc:
             log.warning("math solver attempt %d raised: %s", i + 1, exc)
             diagnostics.append(f"#{i + 1}=raised:{type(exc).__name__}:{exc}")
@@ -905,3 +921,20 @@ def post_and_verify(
         )
 
     return True, f"posted and verified (answer={answer})", comment_id
+
+
+if __name__ == "__main__":
+    # Smoke-test the math solver against a stuck challenge from a FAILED issue:
+    #   python moltbook_lib.py --solve "A] LooObBsStTeR ClAw] FoRcE Is ThIrTy ..."
+    # Lets us iterate on the solver without waiting for a 4-hour cron cycle.
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Moltbook utilities")
+    parser.add_argument("--solve", metavar="CHALLENGE", help="Solve a math captcha")
+    args = parser.parse_args()
+
+    if args.solve:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+        print(solve_math_challenge(args.solve))
+    else:
+        parser.print_help()
