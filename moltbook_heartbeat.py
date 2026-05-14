@@ -51,6 +51,7 @@ from moltbook_lib import (
     notification_marker,
     post_and_verify,
 )
+from db import SupabaseDB
 from social_personality import (
     detect_hostility,
     generate_apology,
@@ -726,38 +727,181 @@ def _engage_feed(
 # ---------------------------------------------------------------------------
 
 
+def _build_post_topic(db: SupabaseDB) -> dict[str, Any] | None:
+    """Pull live alphamolt data and assemble a topic for the LLM drafter.
+
+    Rotates between two angles by day-of-year so the daily post doesn't
+    repeat the same shape:
+
+    - ``leaderboard_spread`` — biggest 30d return gap across registered
+      agents vs SPY/URTH benchmarks.
+    - ``sharpe_vs_return`` — finds two agents where Sharpe and 30d return
+      tell different stories (high return, low Sharpe — or vice versa).
+
+    Returns None when there isn't enough warm data (fewer than 2 agents
+    with a 30d figure, or every agent has identical numbers) so the
+    heartbeat skips the post instead of shipping a stale template.
+    """
+    try:
+        rows = (
+            db.client.table("agent_leaderboard")
+            .select(
+                "agent_id, handle, display_name, total_value_usd, "
+                "pnl_pct, pnl_pct_1d, pnl_pct_30d, pnl_pct_ytd, "
+                "sharpe, sharpe_n_returns, num_positions"
+            )
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # network / schema mismatch
+        log.warning("post topic: leaderboard fetch failed: %s", exc)
+        return None
+
+    agents = [
+        r for r in rows
+        if r.get("handle") and r.get("pnl_pct_30d") is not None
+    ]
+    if len(agents) < 2:
+        log.info("post topic: only %d agents with 30d data, skipping", len(agents))
+        return None
+
+    # Benchmarks (SPY, URTH) — same view doesn't carry them; pull from
+    # benchmarks + benchmark_prices and compute 30d return inline.
+    benchmarks: list[dict[str, Any]] = []
+    try:
+        bench_rows = (
+            db.client.table("benchmarks")
+            .select("ticker, display_name, latest_price, inception_price")
+            .execute()
+            .data
+            or []
+        )
+        for b in bench_rows:
+            start = b.get("inception_price")
+            end = b.get("latest_price")
+            if start and end:
+                benchmarks.append({
+                    "ticker": b["ticker"],
+                    "name": b.get("display_name") or b["ticker"],
+                    "since_inception_pct": round(
+                        (float(end) - float(start)) / float(start) * 100, 2
+                    ),
+                })
+    except Exception as exc:
+        log.warning("post topic: benchmark fetch failed: %s", exc)
+
+    day_of_year = datetime.now(timezone.utc).timetuple().tm_yday
+    angle = ("leaderboard_spread", "sharpe_vs_return")[day_of_year % 2]
+
+    if angle == "leaderboard_spread":
+        ranked = sorted(agents, key=lambda r: r["pnl_pct_30d"], reverse=True)
+        top, bottom = ranked[0], ranked[-1]
+        if abs(top["pnl_pct_30d"] - bottom["pnl_pct_30d"]) < 0.5:
+            log.info("post topic: leaderboard spread <0.5pp, skipping")
+            return None
+        return {
+            "angle": "leaderboard_spread",
+            "narrative_hint": (
+                f"I tracked {len(agents)} AI stock-pickers on alphamolt for "
+                f"30 days. The spread between best and worst surprised me."
+            ),
+            "facts": {
+                "agent_count": len(agents),
+                "period_days": 30,
+                "top_agent": {k: top.get(k) for k in (
+                    "handle", "display_name", "pnl_pct_30d", "pnl_pct_ytd",
+                    "sharpe", "num_positions",
+                )},
+                "bottom_agent": {k: bottom.get(k) for k in (
+                    "handle", "display_name", "pnl_pct_30d", "pnl_pct_ytd",
+                    "sharpe", "num_positions",
+                )},
+                "spread_30d_pct": round(
+                    top["pnl_pct_30d"] - bottom["pnl_pct_30d"], 2
+                ),
+                "all_agents_30d": [
+                    {"handle": a["handle"], "pnl_pct_30d": a["pnl_pct_30d"]}
+                    for a in ranked
+                ],
+                "benchmarks": benchmarks,
+            },
+        }
+
+    # angle == "sharpe_vs_return"
+    with_sharpe = [
+        a for a in agents
+        if a.get("sharpe") is not None
+        and (a.get("sharpe_n_returns") or 0) >= 30
+    ]
+    if len(with_sharpe) < 2:
+        log.info("post topic: only %d agents with warm Sharpe, skipping", len(with_sharpe))
+        return None
+    by_return = sorted(with_sharpe, key=lambda r: r["pnl_pct_30d"], reverse=True)
+    by_sharpe = sorted(with_sharpe, key=lambda r: r["sharpe"], reverse=True)
+    if by_return[0]["handle"] == by_sharpe[0]["handle"]:
+        # Sharpe and return tell the same story — boring, skip.
+        log.info("post topic: top return == top Sharpe, no tension, skipping")
+        return None
+    return {
+        "angle": "sharpe_vs_return",
+        "narrative_hint": (
+            "Two agents on alphamolt have the same trajectory by one "
+            "metric and tell completely different stories by another. "
+            "Sharpe and absolute return disagree."
+        ),
+        "facts": {
+            "agent_count": len(with_sharpe),
+            "period_days": 30,
+            "top_by_return": {k: by_return[0].get(k) for k in (
+                "handle", "display_name", "pnl_pct_30d", "sharpe",
+                "sharpe_n_returns", "num_positions",
+            )},
+            "top_by_sharpe": {k: by_sharpe[0].get(k) for k in (
+                "handle", "display_name", "pnl_pct_30d", "sharpe",
+                "sharpe_n_returns", "num_positions",
+            )},
+            "benchmarks": benchmarks,
+        },
+    }
+
+
 def _maybe_post_original(
     client: MoltbookClient,
     gh: GitHubIssuer | None,
     ledger: dict[str, Any],
     dry_run: bool = False,
 ) -> bool:
-    """Post one original piece per day to a finance submolt."""
+    """Post one original piece per day to m/general.
+
+    Targeting m/general because the recon (issue #853) showed every
+    top-of-feed post is in m/general; the finance-themed submolts that
+    we used to target appear to share the same global feed but get no
+    distinct distribution. Window widened to four UTC hours so a daily
+    post is more likely to actually fire (ledger ratchets daily_post_count
+    so we still cap at 1/day).
+    """
     today = _today()
     daily_posts = ledger.get("daily_post_count", {})
     if daily_posts.get(today, 0) >= 1:
         log.info("original post: already posted today, skipping")
         return False
 
-    # Only post in afternoon UTC runs to maximize visibility
     hour = datetime.now(timezone.utc).hour
-    if hour not in (12, 16):
+    if hour not in (12, 14, 16, 18):
         log.info("original post: not in posting window (hour=%d), skipping", hour)
         return False
 
-    # For now, source topic data from a simple placeholder. A future
-    # iteration can pull from the nightly screen or EODHD pipeline.
-    topic_data: dict[str, Any] = {
-        "type": "methodology",
-        "data": {
-            "topic": "How our composite score works",
-            "detail": (
-                "R40 47%, P/S 29% (inverted), 52w vs SPY 24%. "
-                "Momentum collar: < -0.5 → score=0 (falling knife), "
-                "> 0.4 → capped. Rating multiplier tapers 1.21–1.6."
-            ),
-        },
-    }
+    try:
+        db = SupabaseDB()
+    except Exception as exc:
+        log.warning("original post: db init failed: %s", exc)
+        return False
+
+    topic_data = _build_post_topic(db)
+    if topic_data is None:
+        log.info("original post: no usable topic today, skipping")
+        return False
 
     result = draft_original_post(topic_data)
     if result is None:
@@ -767,11 +911,11 @@ def _maybe_post_original(
     title, body = result
     log.info("original post drafted: %s (%d chars)", title[:60], len(body))
 
+    submolt = "general"
     if dry_run:
-        log.info("DRY RUN — would post to m/investing: %s", title)
+        log.info("DRY RUN — would post to m/%s: %s", submolt, title)
         return False
 
-    submolt = "investing"
     success, outcome, post_id = create_post_and_verify(
         client, submolt, title, body
     )
