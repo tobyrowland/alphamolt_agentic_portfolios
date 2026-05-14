@@ -50,6 +50,13 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
     sharpe: number | string | null;
     sharpe_n_returns: number | string | null;
     num_positions: number;
+    // Portfolio fields from the rebuilt view (migration 021).
+    member_agents: Array<{
+      handle: string;
+      display_name: string;
+      powered_by: string | null;
+      is_house_agent: boolean;
+    }> | null;
   }
   const { data: agentData, error: agentErr } = await supabase
     .from("agent_leaderboard")
@@ -57,7 +64,7 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
       "handle, display_name, is_house_agent, snapshot_date, cash_usd, " +
         "holdings_value_usd, total_value_usd, pnl_usd, " +
         "pnl_pct_1d, pnl_pct_1w, pnl_pct_30d, pnl_pct_ytd, pnl_pct_1yr, " +
-        "sharpe, sharpe_n_returns, num_positions",
+        "sharpe, sharpe_n_returns, num_positions, member_agents",
     );
   if (agentErr) console.error("Failed to fetch agent leaderboard:", agentErr);
   const rawAgents = (agentData ?? []) as unknown as RawAgentRow[];
@@ -94,6 +101,12 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
       sharpe_n_returns: toNum(r.sharpe_n_returns) ?? 0,
       trades: tradesByHandle.get(r.handle) ?? emptyBuckets(),
       num_positions: r.num_positions,
+      members: (r.member_agents ?? []).map((m) => ({
+        handle: m.handle,
+        display_name: m.display_name,
+        powered_by: m.powered_by,
+        is_house_agent: m.is_house_agent,
+      })),
     };
   });
 

@@ -16,6 +16,13 @@ const PERIOD_LABELS: Record<Period, string> = {
   "1yr": "1Yr",
 };
 
+export interface LeaderboardMemberAgent {
+  handle: string;
+  display_name: string;
+  powered_by: string | null;
+  is_house_agent: boolean;
+}
+
 export interface LeaderboardAgentRow {
   kind: "agent";
   handle: string;
@@ -31,6 +38,11 @@ export interface LeaderboardAgentRow {
   sharpe_n_returns: number;
   trades: Record<Period, number>;
   num_positions: number;
+  // Portfolio-aware fields surfaced by migration 021. ``handle`` above
+  // is the portfolio's slug (1:1 with the owner agent's handle today);
+  // ``members`` lists every agent operating this portfolio. Empty array
+  // when the join was unavailable.
+  members: LeaderboardMemberAgent[];
 }
 
 export interface LeaderboardBenchmarkRow {
@@ -235,7 +247,7 @@ function AgentTableRow({
     <tr className="border-b border-border/50 hover:bg-bg-hover/50 transition-colors">
       <td className="px-4 py-3 text-text-dim">{rank}</td>
       <td className="px-4 py-3">
-        <Link href={`/u/${row.handle}`} className="group block">
+        <Link href={`/portfolios/${row.handle}`} className="group block">
           <div className="flex items-center gap-2">
             <span className="text-text group-hover:text-green transition-colors">
               {row.display_name}
@@ -248,6 +260,20 @@ function AgentTableRow({
           </div>
           <div className="text-xs text-text-muted">@{row.handle}</div>
         </Link>
+        {row.members.length > 1 && (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {row.members.map((m) => (
+              <Link
+                key={m.handle}
+                href={`/agents/${m.handle}`}
+                className="text-[10px] font-mono text-text-muted hover:text-green border border-border rounded px-1 py-0.5"
+                title={m.powered_by ? `Powered by ${m.powered_by}` : undefined}
+              >
+                {m.display_name}
+              </Link>
+            ))}
+          </div>
+        )}
       </td>
       <td className="px-4 py-3 text-right text-text">
         {formatUsd(row.total_value_usd)}

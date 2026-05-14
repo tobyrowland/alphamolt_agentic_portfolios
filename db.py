@@ -180,6 +180,148 @@ class SupabaseDB:
         self._sanitize(data)
         self.client.table("agent_accounts").upsert(data).execute()
 
+    # ------------------------------------------------------------------
+    # Portfolios (migration 021) — first-class entity that one or more
+    # agents can operate on. During the shim period every existing
+    # agent_account also has a portfolios row with the same UUID and
+    # the owner agent as the sole member of portfolio_agents.
+    # ------------------------------------------------------------------
+
+    def get_portfolio_by_id(self, portfolio_id: str) -> dict | None:
+        resp = (
+            self.client.table("portfolios")
+            .select("*")
+            .eq("id", portfolio_id)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+
+    def get_portfolio_by_slug(self, slug: str) -> dict | None:
+        resp = (
+            self.client.table("portfolios")
+            .select("*")
+            .eq("slug", slug)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+
+    def get_portfolio_by_agent_id(self, agent_id: str) -> dict | None:
+        """Return the portfolio this agent owns (or the first one they're a member of).
+
+        Resolves in two steps so non-owner members still get a sensible
+        default: first check `portfolios.owner_agent_id`, then fall back
+        to `portfolio_agents.agent_id`. Returns None if the agent has no
+        portfolio yet (typical for analyst agents).
+        """
+        owned = (
+            self.client.table("portfolios")
+            .select("*")
+            .eq("owner_agent_id", agent_id)
+            .limit(1)
+            .execute()
+        )
+        if owned.data:
+            return owned.data[0]
+        member = (
+            self.client.table("portfolio_agents")
+            .select("portfolio_id")
+            .eq("agent_id", agent_id)
+            .limit(1)
+            .execute()
+        )
+        if not member.data:
+            return None
+        return self.get_portfolio_by_id(member.data[0]["portfolio_id"])
+
+    def get_portfolios_for_agent(self, agent_id: str) -> list[dict]:
+        """Return every portfolio the agent is a member of (incl. owned).
+
+        Used by the agent profile page. Returns rows shaped as
+        ``{portfolio: portfolios_row, notes: portfolio_agents.notes,
+            joined_at: portfolio_agents.joined_at}``.
+        """
+        memberships = (
+            self.client.table("portfolio_agents")
+            .select("*")
+            .eq("agent_id", agent_id)
+            .execute()
+        )
+        out: list[dict] = []
+        for m in memberships.data or []:
+            p = self.get_portfolio_by_id(m["portfolio_id"])
+            if p:
+                out.append({
+                    "portfolio": p,
+                    "notes": m.get("notes"),
+                    "joined_at": m.get("joined_at"),
+                })
+        return out
+
+    def get_portfolio_members(self, portfolio_id: str) -> list[dict]:
+        """Return [{agent: agents_row, notes, joined_at}, ...] for a portfolio."""
+        memberships = (
+            self.client.table("portfolio_agents")
+            .select("*")
+            .eq("portfolio_id", portfolio_id)
+            .order("joined_at")
+            .execute()
+        )
+        out: list[dict] = []
+        for m in memberships.data or []:
+            agent = (
+                self.client.table("agents")
+                .select("*")
+                .eq("id", m["agent_id"])
+                .limit(1)
+                .execute()
+            )
+            if agent.data:
+                out.append({
+                    "agent": agent.data[0],
+                    "notes": m.get("notes"),
+                    "joined_at": m.get("joined_at"),
+                })
+        return out
+
+    def create_portfolio(
+        self,
+        *,
+        portfolio_id: str,
+        slug: str,
+        display_name: str,
+        owner_agent_id: str,
+        description: str | None = None,
+    ) -> dict:
+        """Insert a portfolios row (idempotent on the id)."""
+        row = {
+            "id": portfolio_id,
+            "slug": slug,
+            "display_name": display_name,
+            "description": description,
+            "owner_agent_id": owner_agent_id,
+        }
+        self._sanitize(row)
+        self.client.table("portfolios").upsert(row).execute()
+        return self.get_portfolio_by_id(portfolio_id)
+
+    def add_portfolio_member(
+        self,
+        *,
+        portfolio_id: str,
+        agent_id: str,
+        notes: str | None = None,
+    ) -> None:
+        """Add an agent to a portfolio (idempotent on the composite PK)."""
+        row = {
+            "portfolio_id": portfolio_id,
+            "agent_id": agent_id,
+            "notes": notes,
+        }
+        self._sanitize(row)
+        self.client.table("portfolio_agents").upsert(row).execute()
+
     def get_agent_holdings(self, agent_id: str) -> list[dict]:
         """Return all holdings rows for an agent."""
         resp = (

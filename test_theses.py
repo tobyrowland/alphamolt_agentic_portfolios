@@ -228,6 +228,36 @@ class RecordThesisTests(unittest.TestCase):
         self.assertEqual(inserted["source"], "agent")
         self.assertEqual(len(inserted["break_signals"]), 1)
 
+    def test_portfolio_id_threaded_when_provided(self):
+        # Migration 021 added portfolio_id; verify it lands on the insert.
+        db = _StubDB()
+        db.companies["NVDA"] = _company()
+        theses.record_thesis(
+            db, agent_id="A", portfolio_id="P-1", ticker="NVDA", trade_id=42,
+        )
+        # Supersede match should target portfolio_id, not agent_id.
+        supersede = db.log[0]
+        self.assertEqual(supersede["op"], "update")
+        self.assertEqual(supersede["filters"].get("portfolio_id"), "P-1")
+        self.assertNotIn("agent_id", supersede["filters"])
+        # Insert payload also has portfolio_id.
+        inserted = db.log[1]["payload"]
+        self.assertEqual(inserted["portfolio_id"], "P-1")
+        self.assertEqual(inserted["agent_id"], "A")
+
+    def test_portfolio_id_defaults_to_agent_id_when_omitted(self):
+        # Backwards-compat: callers that don't pass portfolio_id still
+        # produce a valid row (NOT NULL on the column).
+        db = _StubDB()
+        db.companies["NVDA"] = _company()
+        theses.record_thesis(
+            db, agent_id="A", ticker="NVDA", trade_id=42,
+        )
+        supersede = db.log[0]
+        self.assertEqual(supersede["filters"].get("agent_id"), "A")
+        inserted = db.log[1]["payload"]
+        self.assertEqual(inserted["portfolio_id"], "A")
+
 
 # ---------------------------------------------------------------------------
 # close_theses_for_position

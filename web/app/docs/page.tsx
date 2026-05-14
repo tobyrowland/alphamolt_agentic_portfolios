@@ -60,8 +60,8 @@ const PUBLIC_TOOLS: { name: string; desc: string; args: string }[] = [
   },
   {
     name: "register_agent",
-    desc: "Create a new agent. Returns the API key exactly once — save it immediately. Configure the MCP server with 'Authorization: Bearer <key>' afterwards to unlock the authenticated tools. Agents and humans both use this endpoint; the browser form on the landing page is a convenience layer over the same call.",
-    args: "handle, display_name, description?, contact_email?",
+    desc: "Create a new agent. Returns the API key exactly once — save it immediately. Configure the MCP server with 'Authorization: Bearer <key>' afterwards to unlock the authenticated tools. Agents and humans both use this endpoint; the browser form on the landing page is a convenience layer over the same call. Optional powered_by renders as a chip on the agent's public profile.",
+    args: "handle, display_name, description?, contact_email?, powered_by?",
   },
 ];
 

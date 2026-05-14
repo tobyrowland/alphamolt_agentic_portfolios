@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""Unit tests for the portfolios shim (migration 021).
+
+Covers the read-side helpers in ``db.py`` and the
+``PortfolioManager._ensure_portfolio_for_agent`` flow with a stubbed
+Supabase. No live DB calls.
+
+Run directly:
+
+    python test_portfolios.py
+"""
+
+from __future__ import annotations
+
+import sys
+import unittest
+from types import SimpleNamespace
+
+import portfolio as portfolio_module
+from db import SupabaseDB  # noqa: F401 — make sure import works
+
+
+# ---------------------------------------------------------------------------
+# Minimal Supabase stub — same shape as the one in test_theses.py.
+# ---------------------------------------------------------------------------
+
+
+class _Query:
+    def __init__(self, db, table_name):
+        self._db = db
+        self.table_name = table_name
+        self.op = None
+        self.payload = None
+        self.eq_filters: dict = {}
+        self.match_filters: dict = {}
+        self.limited = False
+        self.on_conflict: str | None = None
+
+    def select(self, _cols="*"):
+        self.op = "select"
+        return self
+
+    def insert(self, payload):
+        self.op = "insert"
+        self.payload = payload
+        return self
+
+    def upsert(self, payload, on_conflict=None):
+        self.op = "upsert"
+        self.payload = payload
+        self.on_conflict = on_conflict
+        return self
+
+    def update(self, payload):
+        self.op = "update"
+        self.payload = payload
+        return self
+
+    def eq(self, key, value):
+        self.eq_filters[key] = value
+        return self
+
+    def match(self, filters):
+        self.match_filters = dict(filters)
+        return self
+
+    def order(self, _key, **_kw):
+        return self
+
+    def limit(self, _n):
+        self.limited = True
+        return self
+
+    def execute(self):
+        # Log the op.
+        self._db.log.append({
+            "table": self.table_name,
+            "op": self.op,
+            "payload": self.payload,
+            "eq": dict(self.eq_filters),
+            "match": dict(self.match_filters),
+            "on_conflict": self.on_conflict,
+        })
+        if self.op == "select":
+            key = (self.table_name, frozenset(self.eq_filters.items()))
+            rows = self._db.canned_selects.get(key, [])
+            return SimpleNamespace(data=rows)
+        if self.op in ("insert", "upsert"):
+            return SimpleNamespace(data=[self.payload])
+        return SimpleNamespace(data=[])
+
+
+class _StubDB:
+    def __init__(self):
+        self.log: list[dict] = []
+        self.canned_selects: dict = {}
+        self.client = self
+
+    def table(self, name):
+        return _Query(self, name)
+
+
+# ---------------------------------------------------------------------------
+# Tests for db.py portfolio helpers (via wrapper functions)
+# ---------------------------------------------------------------------------
+
+
+class DbPortfolioHelpersTests(unittest.TestCase):
+    """Construct a real SupabaseDB by injecting our stub client."""
+
+    def _make_db(self) -> "SupabaseDB":
+        # SupabaseDB.__init__ initialises the real client; bypass it.
+        db = SupabaseDB.__new__(SupabaseDB)
+        db.client = _StubDB()
+        return db
+
+    def test_get_portfolio_by_slug_returns_first_row(self):
+        db = self._make_db()
+        db.client.canned_selects[
+            ("portfolios", frozenset({("slug", "tauric-opus-4-7")}))
+        ] = [{"id": "abc", "slug": "tauric-opus-4-7", "display_name": "Foo"}]
+        row = db.get_portfolio_by_slug("tauric-opus-4-7")
+        self.assertEqual(row["id"], "abc")
+
+    def test_get_portfolio_by_slug_returns_none_when_missing(self):
+        db = self._make_db()
+        # No canned data → empty select.
+        self.assertIsNone(db.get_portfolio_by_slug("ghost"))
+
+    def test_get_portfolio_by_agent_id_prefers_owner(self):
+        db = self._make_db()
+        # Owner lookup returns a hit.
+        db.client.canned_selects[
+            ("portfolios", frozenset({("owner_agent_id", "agent-1")}))
+        ] = [{"id": "p-1", "slug": "agent-1", "owner_agent_id": "agent-1"}]
+        row = db.get_portfolio_by_agent_id("agent-1")
+        self.assertEqual(row["id"], "p-1")
+        # No fallback select to portfolio_agents was made.
+        tables_queried = [op["table"] for op in db.client.log]
+        self.assertIn("portfolios", tables_queried)
+        self.assertNotIn("portfolio_agents", tables_queried)
+
+    def test_get_portfolio_by_agent_id_falls_back_to_membership(self):
+        db = self._make_db()
+        # Owner lookup empty; portfolio_agents has them as a member.
+        db.client.canned_selects[
+            ("portfolio_agents", frozenset({("agent_id", "agent-2")}))
+        ] = [{"portfolio_id": "p-2"}]
+        db.client.canned_selects[
+            ("portfolios", frozenset({("id", "p-2")}))
+        ] = [{"id": "p-2", "slug": "shared", "owner_agent_id": "other"}]
+        row = db.get_portfolio_by_agent_id("agent-2")
+        self.assertEqual(row["id"], "p-2")
+
+    def test_get_portfolio_by_agent_id_returns_none_for_analyst(self):
+        db = self._make_db()
+        # Neither owner nor member.
+        self.assertIsNone(db.get_portfolio_by_agent_id("analyst-1"))
+
+    def test_create_portfolio_upserts_row(self):
+        db = self._make_db()
+        db.client.canned_selects[
+            ("portfolios", frozenset({("id", "p-3")}))
+        ] = [{"id": "p-3", "slug": "test", "display_name": "Test"}]
+        result = db.create_portfolio(
+            portfolio_id="p-3",
+            slug="test",
+            display_name="Test",
+            owner_agent_id="agent-3",
+            description="hello",
+        )
+        self.assertEqual(result["id"], "p-3")
+        # First op is upsert into portfolios, second is select for readback.
+        ops = [(op["op"], op["table"]) for op in db.client.log]
+        self.assertEqual(ops[0], ("upsert", "portfolios"))
+        # Payload reflects the args.
+        payload = db.client.log[0]["payload"]
+        self.assertEqual(payload["slug"], "test")
+        self.assertEqual(payload["owner_agent_id"], "agent-3")
+
+    def test_add_portfolio_member_uses_composite_pk(self):
+        db = self._make_db()
+        db.add_portfolio_member(portfolio_id="p-4", agent_id="agent-4", notes="rebalancer")
+        self.assertEqual(db.client.log[0]["op"], "upsert")
+        self.assertEqual(db.client.log[0]["table"], "portfolio_agents")
+        self.assertEqual(db.client.log[0]["payload"]["notes"], "rebalancer")
+
+
+# ---------------------------------------------------------------------------
+# PortfolioManager._ensure_portfolio_for_agent — creates the 1:1 shim
+# ---------------------------------------------------------------------------
+
+
+class EnsurePortfolioTests(unittest.TestCase):
+    def _make_pm(self) -> "portfolio_module.PortfolioManager":
+        pm = portfolio_module.PortfolioManager.__new__(
+            portfolio_module.PortfolioManager
+        )
+        db = SupabaseDB.__new__(SupabaseDB)
+        db.client = _StubDB()
+        pm.db = db
+        return pm
+
+    def test_returns_existing_portfolio_id_without_writing(self):
+        pm = self._make_pm()
+        pm.db.client.canned_selects[
+            ("portfolios", frozenset({("owner_agent_id", "agent-x")}))
+        ] = [{"id": "existing-pid", "slug": "x", "owner_agent_id": "agent-x"}]
+        pid = pm._ensure_portfolio_for_agent("agent-x")
+        self.assertEqual(pid, "existing-pid")
+        # No inserts/upserts.
+        ops = [op["op"] for op in pm.db.client.log]
+        self.assertNotIn("upsert", ops)
+        self.assertNotIn("insert", ops)
+
+    def test_creates_portfolio_when_missing(self):
+        pm = self._make_pm()
+        # No existing portfolio for owner_agent_id agent-y.
+        # But the agents row for agent-y exists.
+        pm.db.client.canned_selects[
+            ("agents", frozenset({("id", "agent-y")}))
+        ] = [{
+            "id": "agent-y", "handle": "newbie",
+            "display_name": "Newbie", "description": "test",
+        }]
+        # The portfolios row that create_portfolio reads back after upsert:
+        pm.db.client.canned_selects[
+            ("portfolios", frozenset({("id", "agent-y")}))
+        ] = [{
+            "id": "agent-y", "slug": "newbie",
+            "display_name": "Newbie", "owner_agent_id": "agent-y",
+        }]
+        pid = pm._ensure_portfolio_for_agent("agent-y")
+        self.assertEqual(pid, "agent-y")
+        ops = [(op["op"], op["table"]) for op in pm.db.client.log]
+        # Upsert portfolios + upsert portfolio_agents happened.
+        self.assertIn(("upsert", "portfolios"), ops)
+        self.assertIn(("upsert", "portfolio_agents"), ops)
+
+
+if __name__ == "__main__":
+    result = unittest.main(exit=False, verbosity=2).result
+    sys.exit(0 if result.wasSuccessful() else 1)

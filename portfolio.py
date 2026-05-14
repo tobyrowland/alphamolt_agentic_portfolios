@@ -81,8 +81,13 @@ class PortfolioManager:
     ) -> dict:
         """Idempotently create an `agent_accounts` row for an agent.
 
-        If an account already exists, returns it unchanged. Otherwise inserts
-        a new row with the given starting cash balance.
+        Also creates a 1:1 `portfolios` row (slug = agent.handle,
+        display_name = agent.display_name) and a `portfolio_agents`
+        row linking the agent as the sole member. Idempotent.
+
+        If an account already exists, returns it unchanged but still
+        ensures the portfolio + membership exist (helps backfill old
+        accounts created before migration 021).
         """
         existing = self.db.get_agent_account(agent_id)
         if existing:
@@ -91,12 +96,14 @@ class PortfolioManager:
                 agent_id,
                 float(existing.get("cash_usd") or 0),
             )
+            self._ensure_portfolio_for_agent(agent_id)
             return existing
 
         row = {
             "starting_cash": starting_cash,
             "cash_usd": starting_cash,
             "inception_date": date.today().isoformat(),
+            # portfolio_id is set after we create/fetch the portfolio below
         }
         self.db.upsert_agent_account(agent_id, row)
         logger.info(
@@ -104,7 +111,56 @@ class PortfolioManager:
             agent_id,
             starting_cash,
         )
+        portfolio_id = self._ensure_portfolio_for_agent(agent_id)
+        # Backfill portfolio_id on the just-created account row.
+        self.db.upsert_agent_account(agent_id, {"portfolio_id": portfolio_id})
         return self.db.get_agent_account(agent_id)
+
+    def _ensure_portfolio_for_agent(self, agent_id: str) -> str:
+        """Ensure (portfolios, portfolio_agents) rows exist for an agent.
+
+        Returns the portfolio_id. Idempotent — if a portfolio already
+        exists (owned by this agent or fetched as their default
+        membership) it's reused without changes.
+        """
+        existing = self.db.get_portfolio_by_agent_id(agent_id)
+        if existing:
+            return existing["id"]
+
+        agent = self.db.client.table("agents").select("*").eq("id", agent_id).limit(1).execute().data
+        if not agent:
+            raise PortfolioError(f"No agents row for id={agent_id}")
+        a = agent[0]
+        portfolio = self.db.create_portfolio(
+            portfolio_id=agent_id,                 # 1:1 shim: portfolio_id = agent_id
+            slug=a["handle"],
+            display_name=a["display_name"],
+            owner_agent_id=agent_id,
+            description=a.get("description"),
+        )
+        self.db.add_portfolio_member(
+            portfolio_id=portfolio["id"],
+            agent_id=agent_id,
+            notes=None,
+        )
+        logger.info(
+            "Created portfolio %s (slug=%s) owned by agent %s",
+            portfolio["id"], portfolio["slug"], agent_id,
+        )
+        return portfolio["id"]
+
+    def _portfolio_for_agent(self, agent_id: str) -> str:
+        """Resolve the portfolio_id an agent's trade should be attributed to.
+
+        First call after migration 021 creates the portfolio lazily. After
+        that the lookup is a cheap single-row fetch. Raises
+        ``PortfolioError`` if no portfolio can be resolved (shouldn't
+        happen once open_account has been called).
+        """
+        existing = self.db.get_portfolio_by_agent_id(agent_id)
+        if existing:
+            return existing["id"]
+        return self._ensure_portfolio_for_agent(agent_id)
 
     # ------------------------------------------------------------------
     # Pricing
@@ -151,6 +207,7 @@ class PortfolioManager:
             raise PortfolioError(f"buy quantity must be > 0, got {quantity}")
 
         account = self._require_account(agent_id)
+        portfolio_id = self._portfolio_for_agent(agent_id)
         price = self.get_price(ticker)
         gross = round(quantity * price, 2)
         cash = float(account["cash_usd"])
@@ -174,6 +231,7 @@ class PortfolioManager:
             self.db.upsert_agent_holding(
                 {
                     "agent_id": agent_id,
+                    "portfolio_id": portfolio_id,
                     "ticker": ticker,
                     "quantity": new_qty,
                     "avg_cost_usd": new_avg_cost,
@@ -184,6 +242,7 @@ class PortfolioManager:
             self.db.upsert_agent_holding(
                 {
                     "agent_id": agent_id,
+                    "portfolio_id": portfolio_id,
                     "ticker": ticker,
                     "quantity": quantity,
                     "avg_cost_usd": round(price, 4),
@@ -191,11 +250,15 @@ class PortfolioManager:
             )
 
         # Debit cash.
-        self.db.upsert_agent_account(agent_id, {"cash_usd": new_cash})
+        self.db.upsert_agent_account(agent_id, {
+            "cash_usd": new_cash,
+            "portfolio_id": portfolio_id,
+        })
 
         # Journal the trade.
         trade = {
             "agent_id": agent_id,
+            "portfolio_id": portfolio_id,
             "ticker": ticker,
             "side": "buy",
             "quantity": quantity,
@@ -220,6 +283,7 @@ class PortfolioManager:
             theses.record_thesis(
                 self.db,
                 agent_id=agent_id,
+                portfolio_id=portfolio_id,
                 ticker=ticker,
                 trade_id=trade_id,
                 **_thesis_kwargs(thesis),
@@ -247,6 +311,7 @@ class PortfolioManager:
             raise PortfolioError(f"sell quantity must be > 0, got {quantity}")
 
         account = self._require_account(agent_id)
+        portfolio_id = self._portfolio_for_agent(agent_id)
         holding = self.db.get_agent_holding(agent_id, ticker)
         if not holding:
             raise PortfolioError(f"No position in {ticker} for agent {agent_id}")
@@ -270,6 +335,7 @@ class PortfolioManager:
             self.db.upsert_agent_holding(
                 {
                     "agent_id": agent_id,
+                    "portfolio_id": portfolio_id,
                     "ticker": ticker,
                     "quantity": remaining,
                     "avg_cost_usd": float(holding["avg_cost_usd"]),
@@ -277,10 +343,14 @@ class PortfolioManager:
                 }
             )
 
-        self.db.upsert_agent_account(agent_id, {"cash_usd": new_cash})
+        self.db.upsert_agent_account(agent_id, {
+            "cash_usd": new_cash,
+            "portfolio_id": portfolio_id,
+        })
 
         trade = {
             "agent_id": agent_id,
+            "portfolio_id": portfolio_id,
             "ticker": ticker,
             "side": "sell",
             "quantity": quantity,
@@ -304,7 +374,10 @@ class PortfolioManager:
             try:
                 import theses
                 theses.close_theses_for_position(
-                    self.db, agent_id=agent_id, ticker=ticker,
+                    self.db,
+                    agent_id=agent_id,
+                    portfolio_id=portfolio_id,
+                    ticker=ticker,
                 )
             except Exception as exc:  # noqa: BLE001 — never block a sell on thesis I/O
                 logger.warning(
@@ -349,6 +422,12 @@ class PortfolioManager:
         if quantity <= 0:
             raise PortfolioError(f"buy quantity must be > 0, got {quantity}")
         price = self.get_price(ticker)
+        # Resolve the portfolio up-front so thesis recording links correctly.
+        # The atomic_buy RPC still mutates agent_accounts keyed on agent_id;
+        # it doesn't yet know about portfolio_id (a follow-up SQL migration
+        # will extend the RPCs to write portfolio_id too — for now the
+        # Python wrapper backfills the portfolio_id on the thesis row).
+        portfolio_id = self._portfolio_for_agent(agent_id)
         result = self.db.client.rpc(
             "execute_atomic_buy",
             {
@@ -370,11 +449,30 @@ class PortfolioManager:
                 float(data.get("new_cash_usd", 0)),
                 data.get("trade_id"),
             )
+            # Backfill portfolio_id on the rows the atomic RPC wrote.
+            # Safe + idempotent — keeps the shim consistent during the
+            # transition before the RPC itself learns about portfolio_id.
+            try:
+                self.db.client.table("agent_trades").update(
+                    {"portfolio_id": portfolio_id}
+                ).eq("id", data.get("trade_id")).execute()
+                self.db.client.table("agent_holdings").update(
+                    {"portfolio_id": portfolio_id}
+                ).eq("agent_id", agent_id).eq("ticker", ticker).execute()
+                self.db.client.table("agent_accounts").update(
+                    {"portfolio_id": portfolio_id}
+                ).eq("agent_id", agent_id).execute()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "BUY %s %s: portfolio_id backfill failed (rows still consistent under agent_id): %s",
+                    agent_id[:8], ticker, exc,
+                )
             try:
                 import theses
                 theses.record_thesis(
                     self.db,
                     agent_id=agent_id,
+                    portfolio_id=portfolio_id,
                     ticker=ticker,
                     trade_id=data.get("trade_id"),
                     **_thesis_kwargs(thesis),
@@ -408,6 +506,7 @@ class PortfolioManager:
         if quantity <= 0:
             raise PortfolioError(f"sell quantity must be > 0, got {quantity}")
         price = self.get_price(ticker)
+        portfolio_id = self._portfolio_for_agent(agent_id)
         result = self.db.client.rpc(
             "execute_atomic_sell",
             {
@@ -429,6 +528,24 @@ class PortfolioManager:
                 float(data.get("new_cash_usd", 0)),
                 data.get("trade_id"),
             )
+            # Backfill portfolio_id on the rows the atomic RPC wrote.
+            try:
+                self.db.client.table("agent_trades").update(
+                    {"portfolio_id": portfolio_id}
+                ).eq("id", data.get("trade_id")).execute()
+                # If the position wasn't fully exited, holdings row still exists.
+                if float(data.get("remaining_quantity", 0) or 0) > 1e-9:
+                    self.db.client.table("agent_holdings").update(
+                        {"portfolio_id": portfolio_id}
+                    ).eq("agent_id", agent_id).eq("ticker", ticker).execute()
+                self.db.client.table("agent_accounts").update(
+                    {"portfolio_id": portfolio_id}
+                ).eq("agent_id", agent_id).execute()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "SELL %s %s: portfolio_id backfill failed: %s",
+                    agent_id[:8], ticker, exc,
+                )
             # Close any open theses if the position is fully exited.
             # The atomic sell RPC returns the post-trade quantity in
             # ``remaining_quantity`` (see migrations/019).
@@ -436,7 +553,10 @@ class PortfolioManager:
                 try:
                     import theses
                     theses.close_theses_for_position(
-                        self.db, agent_id=agent_id, ticker=ticker,
+                        self.db,
+                        agent_id=agent_id,
+                        portfolio_id=portfolio_id,
+                        ticker=ticker,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
@@ -545,10 +665,14 @@ class PortfolioManager:
 
         for acc in accounts:
             agent_id = acc["agent_id"]
+            # Resolve the portfolio_id for the snapshot row. Falls back to
+            # agent_id during the shim period if no portfolio exists yet.
+            portfolio_id = acc.get("portfolio_id") or agent_id
             try:
                 portfolio = self.get_portfolio(agent_id)
                 row = {
                     "agent_id": agent_id,
+                    "portfolio_id": portfolio_id,
                     "snapshot_date": snapshot_date,
                     "cash_usd": portfolio["cash_usd"],
                     "holdings_value_usd": portfolio["holdings_value_usd"],
@@ -566,6 +690,7 @@ class PortfolioManager:
                 details.append(
                     {
                         "agent_id": agent_id,
+                        "portfolio_id": portfolio_id,
                         "total_value_usd": portfolio["total_value_usd"],
                         "pnl_pct": portfolio["pnl_pct"],
                         "num_positions": len(portfolio["holdings"]),

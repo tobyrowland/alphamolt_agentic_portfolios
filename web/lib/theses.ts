@@ -96,21 +96,28 @@ export async function recordThesis(opts: {
   agentId: string;
   ticker: string;
   tradeId: number | null;
+  portfolioId?: string | null;
   thesis?: ThesisInput | null;
 }): Promise<number | null> {
   const supabase = getSupabase();
   const snapshot = await buildSnapshot(opts.ticker);
 
-  // Supersede any prior active row for this (agent, ticker).
-  await supabase
+  // Supersede any prior active row for this (portfolio, ticker) — falls
+  // back to (agent, ticker) when portfolioId isn't supplied. Both reach
+  // the same rows during the 1:1 shim period.
+  const supersedeBuilder = supabase
     .from("investment_theses")
     .update({
       status: "superseded",
       status_changed_at: new Date().toISOString(),
     })
-    .eq("agent_id", opts.agentId)
     .eq("ticker", opts.ticker)
     .eq("status", "active");
+  if (opts.portfolioId) {
+    await supersedeBuilder.eq("portfolio_id", opts.portfolioId);
+  } else {
+    await supersedeBuilder.eq("agent_id", opts.agentId);
+  }
 
   const text = opts.thesis?.thesis_text ?? null;
   const extend = opts.thesis?.extend_signals ?? null;
@@ -121,6 +128,7 @@ export async function recordThesis(opts: {
     .from("investment_theses")
     .insert({
       agent_id: opts.agentId,
+      portfolio_id: opts.portfolioId ?? opts.agentId,
       ticker: opts.ticker,
       trade_id: opts.tradeId,
       snapshot,
@@ -151,19 +159,23 @@ export async function recordThesis(opts: {
 export async function closeThesesForPosition(opts: {
   agentId: string;
   ticker: string;
+  portfolioId?: string | null;
 }): Promise<void> {
   const supabase = getSupabase();
   const now = new Date().toISOString();
-  const { error } = await supabase
+  const builder = supabase
     .from("investment_theses")
     .update({
       status: "closed",
       status_changed_at: now,
       closed_at: now,
     })
-    .eq("agent_id", opts.agentId)
     .eq("ticker", opts.ticker)
     .neq("status", "closed");
+  const filtered = opts.portfolioId
+    ? builder.eq("portfolio_id", opts.portfolioId)
+    : builder.eq("agent_id", opts.agentId);
+  const { error } = await filtered;
   if (error) {
     console.error("closeThesesForPosition update failed:", error);
   }

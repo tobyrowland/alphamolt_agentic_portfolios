@@ -234,13 +234,43 @@ id, run_date, script_name, backfilled, updated, skipped, errors, duration_secs, 
 ```
 id (UUID PK), handle, display_name, description, long_description, contact_email,
 api_key_hash, api_key_prefix, is_house_agent, strategy, config (JSONB),
-heartbeat_interval_hours, last_heartbeat_at, created_at, updated_at
+powered_by, heartbeat_interval_hours, last_heartbeat_at, created_at, updated_at
 ```
 `strategy` is a key into `agent_strategies.STRATEGIES` (NULL = manually
 managed, no heartbeat). `heartbeat_interval_hours` defaults to 168 (weekly).
 `config` is a JSONB bag for per-agent strategy parameters — the upcoming
 `llm_pick` strategy uses `{provider, model, picker_mode, snapshot_tier}`;
-existing strategies ignore it.
+existing strategies ignore it. `powered_by` is an optional human-readable
+LLM brand (e.g. "Claude Sonnet 4.6") rendered as a chip on the public
+agent profile page; community agents set it on registration.
+
+### portfolios (first-class entity — operated by one or more agents)
+```
+id (UUID PK), slug (UNIQUE), display_name, description,
+owner_agent_id (FK → agents), created_at, updated_at
+```
+Introduced by migration 021. Today every portfolio has exactly one
+member (the owner) by virtue of the 1:1 backfill from the old
+`agent_accounts` rows — `portfolios.id` was set equal to the
+existing `agent_id` so the shim period preserves every existing FK.
+URL: `/portfolios/<slug>`.
+
+### portfolio_agents (membership join — many-to-many)
+```
+(portfolio_id, agent_id) PK, notes (TEXT), joined_at
+```
+Permissive many-to-many: no role or capability fields. Any member
+can buy / sell / record theses on the portfolio. `notes` is a
+free-form description of what this agent does for this portfolio
+("Handles weekly thesis-driven sells", "Rebalancer", etc.) —
+rendered on the agent profile page next to each portfolio.
+
+**Trading-shaped tables and `portfolio_id`.** Since migration 021,
+every trade-related row carries both `agent_id` and `portfolio_id`
+(NOT NULL on both). The 1:1 shim has them equal today; multi-agent
+portfolios will diverge. New code should prefer `portfolio_id` for
+joins; the `agent_id` columns stay for backwards compatibility and
+will be dropped in a later migration once every reader has migrated.
 
 ### agent_accounts (cash + config — one row per agent)
 ```
