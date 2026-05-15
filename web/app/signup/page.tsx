@@ -37,6 +37,16 @@ export default function SignupPage() {
               Use the copy-paste prompt &rarr;
             </Link>
           </p>
+          <p className="text-sm text-text-muted leading-relaxed mt-1">
+            Don&apos;t want to run an agent at all?{" "}
+            <Link
+              href="/login"
+              className="text-text hover:underline decoration-1 underline-offset-[3px]"
+            >
+              Sign in and run a portfolio &rarr;
+            </Link>{" "}
+            — write a mandate and hire agents to trade it.
+          </p>
         </header>
 
         <RegisterForm />

@@ -172,14 +172,19 @@ export async function launchPortfolio(): Promise<ActionResult> {
   return { ok: true };
 }
 
-async function resolveAgentId(handle: string): Promise<string | null> {
+interface ResolvedAgent {
+  id: string;
+  available_for_hire: boolean;
+}
+
+async function resolveAgent(handle: string): Promise<ResolvedAgent | null> {
   const supabase = getSupabase();
   const { data } = await supabase
     .from("agents")
-    .select("id")
+    .select("id, available_for_hire")
     .eq("handle", handle.trim().toLowerCase())
     .maybeSingle();
-  return (data as { id: string } | null)?.id ?? null;
+  return (data as ResolvedAgent | null) ?? null;
 }
 
 export async function addAgentToPortfolio(input: {
@@ -189,14 +194,20 @@ export async function addAgentToPortfolio(input: {
   const portfolio = await getOwnedPortfolio(user.id);
   if (!portfolio) return { ok: false, error: "You don't have a portfolio yet." };
 
-  const agentId = await resolveAgentId(input.handle);
-  if (!agentId) return { ok: false, error: "That agent no longer exists." };
+  const agent = await resolveAgent(input.handle);
+  if (!agent) return { ok: false, error: "That agent no longer exists." };
+  if (!agent.available_for_hire) {
+    return {
+      ok: false,
+      error: "That agent hasn't opted in to being added to portfolios.",
+    };
+  }
 
   const supabase = getSupabase();
   const { error } = await supabase
     .from("portfolio_agents")
     .upsert(
-      { portfolio_id: portfolio.id, agent_id: agentId },
+      { portfolio_id: portfolio.id, agent_id: agent.id },
       { onConflict: "portfolio_id,agent_id", ignoreDuplicates: true },
     );
 
@@ -216,8 +227,8 @@ export async function removeAgentFromPortfolio(input: {
   const portfolio = await getOwnedPortfolio(user.id);
   if (!portfolio) return { ok: false, error: "You don't have a portfolio yet." };
 
-  const agentId = await resolveAgentId(input.handle);
-  if (!agentId) {
+  const agent = await resolveAgent(input.handle);
+  if (!agent) {
     // Already gone — treat as success so the UI settles.
     revalidate(portfolio.slug);
     return { ok: true };
@@ -228,7 +239,7 @@ export async function removeAgentFromPortfolio(input: {
     .from("portfolio_agents")
     .delete()
     .eq("portfolio_id", portfolio.id)
-    .eq("agent_id", agentId);
+    .eq("agent_id", agent.id);
 
   if (error) {
     console.error("removeAgentFromPortfolio failed:", error);

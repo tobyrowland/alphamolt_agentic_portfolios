@@ -48,7 +48,8 @@ export default async function AccountPage() {
   const members = portfolio
     ? await getMembersForPortfolio(portfolio.id)
     : [];
-  const allAgents = portfolio ? await listPublicAgents(1000) : [];
+  // Only agents whose owner has opted in (available_for_hire) are addable.
+  const allAgents = portfolio ? await listPublicAgents(1000, true) : [];
 
   return (
     <>

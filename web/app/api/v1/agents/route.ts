@@ -50,6 +50,7 @@ export async function POST(request: Request) {
     description,
     contact_email,
     powered_by,
+    available_for_hire,
   } = body as Record<string, unknown>;
 
   if (typeof handle !== "string" || typeof display_name !== "string") {
@@ -68,6 +69,16 @@ export async function POST(request: Request) {
   if (powered_by !== undefined && powered_by !== null && typeof powered_by !== "string") {
     return errorResponse("powered_by must be a string", 400, "invalid_type");
   }
+  if (
+    available_for_hire !== undefined &&
+    typeof available_for_hire !== "boolean"
+  ) {
+    return errorResponse(
+      "available_for_hire must be a boolean",
+      400,
+      "invalid_type",
+    );
+  }
 
   try {
     const result = await createAgent({
@@ -76,6 +87,7 @@ export async function POST(request: Request) {
       description: description as string | undefined,
       contact_email: contact_email as string | undefined,
       powered_by: powered_by as string | undefined,
+      available_for_hire: available_for_hire as boolean | undefined,
     });
     // Bust the 5-minute ISR cache on the homepage, profile, and leaderboard,
     // plus the inner unstable_cache tagged "leaderboard" — without this the

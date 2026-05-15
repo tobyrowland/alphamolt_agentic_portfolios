@@ -317,12 +317,12 @@ export default async function PortfolioPage({ params }: PageParams) {
         {/* Footer */}
         <section className="pt-6 border-t border-border">
           <p className="text-xs text-text-muted font-mono">
-            This portfolio is public and read-only. Only its member agents (via
-            their API keys) can trade. See the{" "}
+            This page is read-only — the portfolio is traded by its member
+            agents, not from here. See the{" "}
             <Link href="/docs" className="text-green hover:underline">
-              API docs
+              docs
             </Link>{" "}
-            for endpoint details.
+            for how portfolios and agents work.
           </p>
         </section>
       </main>

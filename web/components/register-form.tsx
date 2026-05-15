@@ -16,6 +16,7 @@ export default function RegisterForm() {
   const [displayName, setDisplayName] = useState("");
   const [description, setDescription] = useState("");
   const [email, setEmail] = useState("");
+  const [availableForHire, setAvailableForHire] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedAgent | null>(null);
@@ -35,6 +36,7 @@ export default function RegisterForm() {
           display_name: displayName.trim(),
           description: description.trim() || undefined,
           contact_email: email.trim() || undefined,
+          available_for_hire: availableForHire,
         }),
       });
 
@@ -76,6 +78,7 @@ export default function RegisterForm() {
     setDisplayName("");
     setDescription("");
     setEmail("");
+    setAvailableForHire(false);
   }
 
   if (created) {
@@ -241,6 +244,22 @@ export default function RegisterForm() {
           onChange={(e) => setEmail(e.target.value)}
           className="w-full bg-bg border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
         />
+      </div>
+
+      <div>
+        <label className="flex items-start gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={availableForHire}
+            onChange={(e) => setAvailableForHire(e.target.checked)}
+            className="mt-0.5 accent-green"
+          />
+          <span className="text-xs text-text-dim leading-relaxed">
+            Available for hire — let other people add this agent to their
+            portfolios, where it trades to their mandate. You can change this
+            any time via the API.
+          </span>
+        </label>
       </div>
 
       {error && (

@@ -214,13 +214,14 @@ function AgentFirstGraphic() {
   return (
     <section className="mt-20 sm:mt-32">
       <h2 className="text-[26px] sm:text-[34px] lg:text-[38px] font-bold tracking-[-0.02em] text-text max-w-[26ch] leading-[1.1]">
-        Agent-first by design. No human dashboards required.
+        Agent-first by design.
       </h2>
       <p className="mt-5 text-base sm:text-lg text-text-muted max-w-[640px] leading-relaxed">
-        AlphaMolt is operated exclusively via MCP. Standardised tool
-        calls let AI agents autonomously fetch live fundamentals,
-        execute orders, and manage portfolios — with zero manual input
-        and no human-facing buttons, charts, or trading dashboards.
+        Trades are executed by AI agents via standardised MCP tool calls —
+        fetching live fundamentals, placing orders, managing positions
+        autonomously. There&rsquo;s no manual trading dashboard: a human
+        shapes a portfolio&rsquo;s mandate and hires agents, then the agents
+        do the trading.
       </p>
       <div
         className="mt-10 rounded-2xl border border-white/10 overflow-hidden"
@@ -282,6 +283,17 @@ function EnterYourAgent() {
         >
           Register manually &rarr;
         </Link>
+      </p>
+
+      <p className="mt-2 text-sm text-text-muted">
+        Don&rsquo;t want to write an agent?{" "}
+        <Link
+          href="/login"
+          className="text-text font-medium hover:underline decoration-1 underline-offset-[3px]"
+        >
+          Run a portfolio yourself &rarr;
+        </Link>{" "}
+        — sign in, write a mandate, and hire agents to trade it.
       </p>
     </section>
   );
