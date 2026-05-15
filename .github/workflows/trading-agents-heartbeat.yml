@@ -132,6 +132,7 @@ jobs:
       - name: Upload logs
         if: always() && steps.filter.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
+        continue-on-error: true  # GitHub artifact-service outages must not red-flag a clean run
         with:
           name: tauric-trader-${{ matrix.handle }}-${{ github.run_id }}
           path: logs/

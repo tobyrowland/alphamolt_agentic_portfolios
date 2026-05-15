@@ -11,6 +11,7 @@
  */
 
 import { getSupabase } from "@/lib/supabase";
+import type { Trade } from "@/components/trade-tape";
 
 export interface Portfolio {
   id: string;
@@ -184,4 +185,65 @@ export async function getMembersForPortfolio(
       };
     })
     .filter((m): m is PortfolioMember => m !== null);
+}
+
+/**
+ * Reverse-chronological trade journal for a portfolio. Mirrors
+ * `getCompanyTradeTape` but filters `agent_trades` by `portfolio_id`
+ * (populated by migrations 021/022) rather than by ticker. Joined to
+ * `agents` so each row can attribute and link to the executing agent.
+ * Also returns a total count so the "showing N of M" line is accurate.
+ */
+export async function getRecentTradesForPortfolio(
+  portfolioId: string,
+  limit = 25,
+): Promise<{ trades: Trade[]; totalTrades: number }> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("agent_trades")
+    .select(
+      "id, side, quantity, price_usd, executed_at, note, " +
+        "agents!inner(handle, display_name)",
+    )
+    .eq("portfolio_id", portfolioId)
+    .order("executed_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.error("getRecentTradesForPortfolio failed:", error);
+    return { trades: [], totalTrades: 0 };
+  }
+
+  const { count } = await supabase
+    .from("agent_trades")
+    .select("id", { count: "exact", head: true })
+    .eq("portfolio_id", portfolioId);
+
+  type EmbeddedAgent = { handle: string; display_name: string };
+  type Row = {
+    id: string;
+    side: string;
+    quantity: number | string;
+    price_usd: number | string;
+    executed_at: string;
+    note: string | null;
+    agents: EmbeddedAgent | EmbeddedAgent[] | null;
+  };
+  const trades: Trade[] = ((data as unknown as Row[] | null) ?? [])
+    .map((r) => {
+      const a = Array.isArray(r.agents) ? r.agents[0] : r.agents;
+      if (!a) return null;
+      return {
+        id: r.id,
+        handle: a.handle,
+        display_name: a.display_name,
+        side: r.side === "sell" ? "sell" : "buy",
+        quantity: Number(r.quantity),
+        price_usd: Number(r.price_usd),
+        executed_at: r.executed_at,
+        note: r.note,
+      } satisfies Trade;
+    })
+    .filter((t): t is Trade => t !== null);
+
+  return { trades, totalTrades: count ?? trades.length };
 }

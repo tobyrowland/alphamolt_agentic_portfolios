@@ -3,10 +3,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import Nav from "@/components/nav";
 import HoldingsList from "@/components/holdings-list";
+import { AgentMonogram } from "@/components/agent-monogram";
+import { TradeTape, type Trade } from "@/components/trade-tape";
 import { getPortfolio, type PortfolioSnapshot } from "@/lib/portfolio";
 import {
   getMembersForPortfolio,
   getPortfolioBySlug,
+  getRecentTradesForPortfolio,
   type Portfolio,
   type PortfolioMember,
 } from "@/lib/portfolios-query";
@@ -60,10 +63,19 @@ async function getPortfolioPageData(slug: string): Promise<{
   snapshot: PortfolioSnapshot | null;
   members: PortfolioMember[];
   thesesByTicker: Record<string, InvestmentThesis>;
+  trades: Trade[];
+  totalTrades: number;
 }> {
   const portfolio = await getPortfolioBySlug(slug);
   if (!portfolio) {
-    return { portfolio: null, snapshot: null, members: [], thesesByTicker: {} };
+    return {
+      portfolio: null,
+      snapshot: null,
+      members: [],
+      thesesByTicker: {},
+      trades: [],
+      totalTrades: 0,
+    };
   }
 
   // The snapshot helper (cash + holdings + MTM) is still keyed on agent_id
@@ -80,8 +92,11 @@ async function getPortfolioPageData(slug: string): Promise<{
   // Theses are still keyed via agent_id under the shim; owner_agent_id has
   // the same rows as portfolio_id today.
   const thesesByTicker = await getActiveThesesForAgent(portfolio.owner_agent_id);
+  const { trades, totalTrades } = await getRecentTradesForPortfolio(
+    portfolio.id,
+  );
 
-  return { portfolio, snapshot, members, thesesByTicker };
+  return { portfolio, snapshot, members, thesesByTicker, trades, totalTrades };
 }
 
 // ----- Page ---------------------------------------------------------------
@@ -90,7 +105,7 @@ export default async function PortfolioPage({ params }: PageParams) {
   const { slug: rawSlug } = await params;
   const slug = decodeURIComponent(rawSlug).toLowerCase();
 
-  const { portfolio, snapshot, members, thesesByTicker } =
+  const { portfolio, snapshot, members, thesesByTicker, trades, totalTrades } =
     await getPortfolioPageData(slug);
   if (!portfolio) notFound();
 
@@ -115,36 +130,87 @@ export default async function PortfolioPage({ params }: PageParams) {
             </h1>
             <code className="text-sm text-text-muted">/{portfolio.slug}</code>
           </div>
-          {portfolio.description && (
-            <p className="text-text-dim max-w-2xl text-base leading-relaxed mb-3">
+          <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted">
+            Created {created}
+          </p>
+        </section>
+
+        {/* Mandate — the brief agents work to */}
+        <section className="mb-10">
+          <h2 className="font-mono text-sm font-bold text-text-dim uppercase tracking-widest mb-1.5">
+            Mandate
+          </h2>
+          <p className="text-[11px] font-mono text-text-muted mb-3">
+            The brief agents work to when operating this portfolio.
+          </p>
+          {portfolio.description ? (
+            <p className="text-text-dim max-w-2xl text-base leading-relaxed">
               {portfolio.description}
             </p>
+          ) : (
+            <p className="text-sm text-text-muted italic">
+              No mandate set yet — the owner can set one via the API.
+            </p>
           )}
+        </section>
 
-          {/* Member-agent chips */}
-          {members.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-3 mb-2">
+        {/* Agents — who operates this portfolio */}
+        <section className="mb-10">
+          <h2 className="font-mono text-sm font-bold text-text-dim uppercase tracking-widest mb-3">
+            Agents ({members.length})
+          </h2>
+          {members.length > 0 ? (
+            <div className="grid gap-3 sm:grid-cols-2">
               {members.map((m) => (
                 <Link
                   key={m.agent_id}
                   href={`/agents/${encodeURIComponent(m.handle)}`}
-                  className="inline-flex items-baseline gap-1.5 rounded border border-border px-2 py-1 text-xs font-mono hover:bg-bg-elevated transition-colors"
-                  title={m.notes || undefined}
+                  className="group glass-card rounded-lg border border-border p-4 flex gap-4 hover:bg-bg-hover transition-colors"
                 >
-                  <span className="text-text">{m.display_name}</span>
-                  <span className="text-text-muted">@{m.handle}</span>
-                  {m.is_house_agent && (
-                    <span className="text-[9px] uppercase tracking-widest text-orange">
-                      House
-                    </span>
-                  )}
+                  <AgentMonogram
+                    displayName={m.display_name}
+                    handle={m.handle}
+                    size={48}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2 flex-wrap">
+                      <span className="font-mono font-bold text-text group-hover:text-green truncate">
+                        {m.display_name}
+                      </span>
+                      {m.is_house_agent && (
+                        <span className="text-[9px] font-mono uppercase tracking-widest text-orange">
+                          House
+                        </span>
+                      )}
+                    </div>
+                    <p className="font-mono text-xs text-text-muted">
+                      @{m.handle}
+                    </p>
+                    {m.powered_by && (
+                      <span className="inline-block mt-1.5 rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-text-dim">
+                        Powered by {m.powered_by}
+                      </span>
+                    )}
+                    {m.notes && (
+                      <p className="mt-2 text-xs text-text-muted leading-relaxed">
+                        {m.notes}
+                      </p>
+                    )}
+                  </div>
                 </Link>
               ))}
             </div>
+          ) : (
+            <p className="text-sm text-text-muted italic">
+              No agents operate this portfolio yet.
+            </p>
           )}
-
-          <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted">
-            Created {created}
+          <p className="mt-3 text-[11px] font-mono text-text-muted">
+            Add agents via{" "}
+            <code className="text-text-dim">
+              POST /api/v1/portfolios/{portfolio.slug}/members
+            </code>
+            .
           </p>
         </section>
 
@@ -203,6 +269,18 @@ export default async function PortfolioPage({ params }: PageParams) {
             </p>
           </section>
         )}
+
+        {/* Recent trades */}
+        <section className="mb-10">
+          <h2 className="font-mono text-sm font-bold text-text-dim uppercase tracking-widest mb-3">
+            Recent trades
+          </h2>
+          <TradeTape
+            trades={trades}
+            totalTrades={totalTrades}
+            emptyLabel="No trades recorded for this portfolio yet."
+          />
+        </section>
 
         {/* Footer */}
         <section className="pt-6 border-t border-border">

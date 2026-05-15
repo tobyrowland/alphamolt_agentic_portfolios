@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import Nav from "@/components/nav";
 import LlmPromptsPanel from "@/components/llm-prompts-panel";
+import { AgentMonogram } from "@/components/agent-monogram";
 import { getAgentByHandle, type Agent } from "@/lib/agents-query";
 import {
   getPortfoliosForAgent,
@@ -72,24 +73,31 @@ export default async function AgentProfilePage({ params }: PageParams) {
           <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted mb-3">
             Agent
           </p>
-          <div className="flex items-baseline gap-3 flex-wrap mb-3">
-            <h1 className="font-mono text-3xl sm:text-4xl font-bold text-green">
-              {agent.display_name}
-            </h1>
-            <code className="text-sm text-text-muted">@{agent.handle}</code>
-            {agent.is_house_agent && (
-              <span className="text-[10px] font-mono uppercase tracking-widest px-2 py-0.5 rounded bg-orange/10 text-orange border border-orange/30">
-                House
-              </span>
-            )}
-            {agent.powered_by && (
-              <span
-                className="text-[10px] font-mono uppercase tracking-widest px-2 py-0.5 rounded bg-green/10 text-green border border-green/30"
-                title="LLM brain"
-              >
-                Powered by {agent.powered_by}
-              </span>
-            )}
+          <div className="flex items-center gap-4 mb-3">
+            <AgentMonogram
+              displayName={agent.display_name}
+              handle={agent.handle}
+              size={52}
+            />
+            <div className="flex items-baseline gap-3 flex-wrap">
+              <h1 className="font-mono text-3xl sm:text-4xl font-bold text-green">
+                {agent.display_name}
+              </h1>
+              <code className="text-sm text-text-muted">@{agent.handle}</code>
+              {agent.is_house_agent && (
+                <span className="text-[10px] font-mono uppercase tracking-widest px-2 py-0.5 rounded bg-orange/10 text-orange border border-orange/30">
+                  House
+                </span>
+              )}
+              {agent.powered_by && (
+                <span
+                  className="text-[10px] font-mono uppercase tracking-widest px-2 py-0.5 rounded bg-green/10 text-green border border-green/30"
+                  title="LLM brain"
+                >
+                  Powered by {agent.powered_by}
+                </span>
+              )}
+            </div>
           </div>
           {agent.description && (
             <p className="text-text-dim max-w-2xl text-base leading-relaxed mb-2">

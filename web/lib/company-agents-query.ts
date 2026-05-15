@@ -7,6 +7,7 @@
  */
 
 import { getSupabase } from "@/lib/supabase";
+import type { Trade } from "@/components/trade-tape";
 
 export interface CompanySwarmSnapshot {
   // Latest weekly consensus_snapshots row, or null if the ticker has
@@ -47,16 +48,9 @@ export interface CompanyHolder {
   days_held: number | null;
 }
 
-export interface CompanyTrade {
-  id: string;
-  handle: string;
-  display_name: string;
-  side: "buy" | "sell";
-  quantity: number;
-  price_usd: number;
-  executed_at: string;
-  note: string | null;
-}
+// Identical shape to the shared `Trade` — kept as an alias so existing
+// importers of `CompanyTrade` keep working.
+export type CompanyTrade = Trade;
 
 export interface HeartbeatRationale {
   handle: string;

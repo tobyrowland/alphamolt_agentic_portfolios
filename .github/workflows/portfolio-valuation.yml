@@ -45,6 +45,7 @@ jobs:
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true  # GitHub artifact-service outages must not red-flag a clean run
         with:
           name: portfolio-valuation-logs-${{ github.run_id }}
           # Intraday runs produce ~40 log files/day — drop retention from

@@ -32,9 +32,9 @@ import {
   type AgentStance,
   type CompanyConsensus,
   type CompanySwarmSnapshot,
-  type CompanyTrade,
   type SwarmViewLine,
 } from "@/lib/company-agents-query";
+import { TradeTape } from "@/components/trade-tape";
 
 // 300s ISR matches the 15-min intraday cadence — readers see fresh
 // prices within 5 min of the next refresh, but we don't re-render
@@ -418,11 +418,12 @@ export default async function CompanyPage({
 
         <AiOutlook company={company} />
 
-        <RecentTradesPanel
-          ticker={company.ticker}
-          trades={trades.slice(0, 8)}
-          totalTrades={trades.length}
-        />
+        <section className="mb-6">
+          <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
+            Recent AI Agent Trades in {company.ticker}
+          </h2>
+          <TradeTape trades={trades.slice(0, 8)} totalTrades={trades.length} />
+        </section>
 
         <SeoBlock
           ticker={company.ticker}
@@ -2022,89 +2023,6 @@ function AiOutlook({ company }: { company: Company }) {
 }
 
 // ---------------------------------------------------------------------------
-// Recent AI Agent Trades (renamed from Trade Tape)
-// ---------------------------------------------------------------------------
-
-function RecentTradesPanel({
-  ticker,
-  trades,
-  totalTrades,
-}: {
-  ticker: string;
-  trades: CompanyTrade[];
-  totalTrades: number;
-}) {
-  if (trades.length === 0) {
-    return (
-      <section className="mb-6">
-        <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-          Recent AI Agent Trades in {ticker}
-        </h2>
-        <div className="glass-card rounded-lg p-4 text-sm text-text-muted">
-          No trades recorded yet.
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section className="mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-        Recent AI Agent Trades in {ticker}
-      </h2>
-      <div className="glass-card rounded-lg overflow-hidden">
-        <ul className="divide-y divide-border/40">
-          {trades.map((t) => (
-            <TradeRow key={t.id} trade={t} />
-          ))}
-        </ul>
-        {totalTrades > trades.length && (
-          <p className="px-4 py-3 text-xs font-mono text-text-muted border-t border-border/40">
-            Showing the {trades.length} most recent of {totalTrades.toLocaleString("en-US")} trades on this ticker.
-          </p>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function TradeRow({ trade }: { trade: CompanyTrade }) {
-  const isBuy = trade.side === "buy";
-  const stripeColor = isBuy ? "#00FF41" : "#FF3333";
-  const sideLabel = isBuy ? "BOUGHT" : "SOLD";
-  const ago = formatRelative(trade.executed_at);
-
-  return (
-    <li
-      className="pl-3 pr-4 py-3 flex flex-col gap-1"
-      style={{ borderLeft: `3px solid ${stripeColor}` }}
-    >
-      <div className="flex flex-wrap items-baseline gap-2 text-sm font-mono">
-        <Link
-          href={`/agents/${trade.handle}`}
-          className="text-text font-bold hover:text-green"
-        >
-          [{trade.display_name}]
-        </Link>
-        <span className="font-bold" style={{ color: stripeColor }}>
-          {sideLabel}
-        </span>
-        <span className="text-text-dim">
-          {formatNumber(trade.quantity, { decimals: 0 })} @ $
-          {trade.price_usd.toFixed(2)}
-        </span>
-        <span className="text-text-muted text-xs">· {ago}</span>
-      </div>
-      {trade.note && (
-        <p className="text-xs text-text-muted italic pl-1 leading-relaxed">
-          {trade.note}
-        </p>
-      )}
-    </li>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // SEO content block + disclaimer
 // ---------------------------------------------------------------------------
 
@@ -2193,18 +2111,6 @@ function CompactStat({
       <span className="font-mono text-sm text-text mt-0.5">{value}</span>
     </div>
   );
-}
-
-function formatRelative(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "—";
-  const diffMs = Date.now() - t;
-  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  if (days >= 1) return `${days}d ago`;
-  const hours = Math.floor(diffMs / (1000 * 60 * 60));
-  if (hours >= 1) return `${hours}h ago`;
-  const mins = Math.max(0, Math.floor(diffMs / (1000 * 60)));
-  return `${mins}m ago`;
 }
 
 function formatSignedPct(n: number | null | undefined): string {
