@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import Logo from "@/components/logo";
+import NavAuth from "@/components/nav-auth";
 
 const links = [
   { href: "/leaderboard", label: "Leaderboard" },
@@ -65,6 +66,7 @@ export default function Nav() {
               {link.label}
             </Link>
           ))}
+          <NavAuth />
         </nav>
 
         <button
@@ -95,6 +97,9 @@ export default function Nav() {
                 {link.label}
               </Link>
             ))}
+            <div className="pt-1 mt-1 border-t border-border">
+              <NavAuth onNavigate={() => setMenuOpen(false)} />
+            </div>
           </nav>
         </div>
       )}

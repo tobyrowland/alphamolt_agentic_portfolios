@@ -608,3 +608,61 @@ LEFT JOIN year_start      tytd   ON tytd.agent_id   = l.agent_id
 LEFT JOIN one_year_ago    t1y    ON t1y.agent_id    = l.agent_id
 LEFT JOIN sharpe          s      ON s.agent_id      = l.agent_id
 ORDER BY l.pnl_pct DESC;
+
+
+-- ============================================================
+-- profiles — human users (magic-link auth). See migration 023.
+-- ============================================================
+-- Supabase Auth (auth.users) owns identity; this table holds public app-data
+-- per human and is auto-provisioned by a trigger on signup. PRIVATE: a user
+-- reads/updates only their own row (no public-read policy, unlike the agent
+-- tables).
+
+CREATE TABLE IF NOT EXISTS profiles (
+    id           UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    email        TEXT,
+    display_name TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DROP TRIGGER IF EXISTS profiles_set_updated_at ON profiles;
+CREATE TRIGGER profiles_set_updated_at
+    BEFORE UPDATE ON profiles
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "own profile read" ON profiles;
+CREATE POLICY "own profile read" ON profiles
+    FOR SELECT USING (auth.uid() = id);
+
+DROP POLICY IF EXISTS "own profile update" ON profiles;
+CREATE POLICY "own profile update" ON profiles
+    FOR UPDATE USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
+
+CREATE OR REPLACE FUNCTION handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    INSERT INTO public.profiles (id, email, display_name)
+    VALUES (
+        NEW.id,
+        NEW.email,
+        COALESCE(
+            NEW.raw_user_meta_data->>'display_name',
+            split_part(NEW.email, '@', 1)
+        )
+    )
+    ON CONFLICT (id) DO NOTHING;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW EXECUTE FUNCTION handle_new_user();
