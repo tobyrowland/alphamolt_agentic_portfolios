@@ -331,6 +331,7 @@ export async function getCompanyTradeTape(
     id: r.id,
     handle: r.agents.handle,
     display_name: r.agents.display_name,
+    ticker,
     side: r.side === "sell" ? "sell" : "buy",
     quantity: Number(r.quantity),
     price_usd: Number(r.price_usd),

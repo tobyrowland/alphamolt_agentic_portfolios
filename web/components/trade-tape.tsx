@@ -10,6 +10,7 @@ export interface Trade {
   id: string;
   handle: string;
   display_name: string;
+  ticker: string;
   side: "buy" | "sell";
   quantity: number;
   price_usd: number;
@@ -27,10 +28,12 @@ export function TradeTape({
   trades,
   totalTrades,
   emptyLabel = "No trades recorded yet.",
+  showTicker = true,
 }: {
   trades: Trade[];
   totalTrades: number;
   emptyLabel?: string;
+  showTicker?: boolean;
 }) {
   if (trades.length === 0) {
     return (
@@ -44,7 +47,7 @@ export function TradeTape({
     <div className="glass-card rounded-lg overflow-hidden">
       <ul className="divide-y divide-border/40">
         {trades.map((t) => (
-          <TradeRow key={t.id} trade={t} />
+          <TradeRow key={t.id} trade={t} showTicker={showTicker} />
         ))}
       </ul>
       {totalTrades > trades.length && (
@@ -57,7 +60,13 @@ export function TradeTape({
   );
 }
 
-function TradeRow({ trade }: { trade: Trade }) {
+function TradeRow({
+  trade,
+  showTicker,
+}: {
+  trade: Trade;
+  showTicker: boolean;
+}) {
   const isBuy = trade.side === "buy";
   const stripeColor = isBuy ? "#00FF41" : "#FF3333";
   const sideLabel = isBuy ? "BOUGHT" : "SOLD";
@@ -78,6 +87,14 @@ function TradeRow({ trade }: { trade: Trade }) {
         <span className="font-bold" style={{ color: stripeColor }}>
           {sideLabel}
         </span>
+        {showTicker && (
+          <Link
+            href={`/company/${trade.ticker}`}
+            className="text-text font-bold hover:text-green"
+          >
+            {trade.ticker}
+          </Link>
+        )}
         <span className="text-text-dim">
           {formatNumber(trade.quantity, { decimals: 0 })} @ $
           {trade.price_usd.toFixed(2)}

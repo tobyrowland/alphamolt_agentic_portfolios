@@ -422,7 +422,11 @@ export default async function CompanyPage({
           <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
             Recent AI Agent Trades in {company.ticker}
           </h2>
-          <TradeTape trades={trades.slice(0, 8)} totalTrades={trades.length} />
+          <TradeTape
+            trades={trades.slice(0, 8)}
+            totalTrades={trades.length}
+            showTicker={false}
+          />
         </section>
 
         <SeoBlock

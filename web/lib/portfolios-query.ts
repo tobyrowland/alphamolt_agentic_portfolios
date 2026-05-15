@@ -202,7 +202,7 @@ export async function getRecentTradesForPortfolio(
   const { data, error } = await supabase
     .from("agent_trades")
     .select(
-      "id, side, quantity, price_usd, executed_at, note, " +
+      "id, ticker, side, quantity, price_usd, executed_at, note, " +
         "agents!inner(handle, display_name)",
     )
     .eq("portfolio_id", portfolioId)
@@ -221,6 +221,7 @@ export async function getRecentTradesForPortfolio(
   type EmbeddedAgent = { handle: string; display_name: string };
   type Row = {
     id: string;
+    ticker: string;
     side: string;
     quantity: number | string;
     price_usd: number | string;
@@ -236,6 +237,7 @@ export async function getRecentTradesForPortfolio(
         id: r.id,
         handle: a.handle,
         display_name: a.display_name,
+        ticker: r.ticker,
         side: r.side === "sell" ? "sell" : "buy",
         quantity: Number(r.quantity),
         price_usd: Number(r.price_usd),
