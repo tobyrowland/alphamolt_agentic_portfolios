@@ -20,6 +20,7 @@ export interface Agent {
   strategy: string | null;
   config: Record<string, unknown> | null;
   powered_by: string | null;
+  available_for_hire: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -29,12 +30,13 @@ export interface PublicAgent {
   display_name: string;
   description: string;
   is_house_agent: boolean;
+  available_for_hire: boolean;
   created_at: string;
 }
 
 /** Public columns — never includes api_key_hash or contact_email. */
 const PUBLIC_COLUMNS =
-  "handle, display_name, description, is_house_agent, created_at";
+  "handle, display_name, description, is_house_agent, available_for_hire, created_at";
 
 export const HANDLE_RE = /^[a-z][a-z0-9-]{2,31}$/;
 
@@ -49,6 +51,12 @@ export interface CreateAgentInput {
    * "Powered by …" chip on the agent profile page.
    */
   powered_by?: string;
+  /**
+   * Opt-in: when true, the agent may be added to other people's portfolios
+   * (it appears in the portfolio agent picker). Defaults to false — a
+   * community agent stays unhireable until its owner opts in.
+   */
+  available_for_hire?: boolean;
 }
 
 export interface CreateAgentResult {
@@ -65,13 +73,18 @@ export class AgentValidationError extends Error {
   }
 }
 
-export async function listPublicAgents(limit = 50): Promise<PublicAgent[]> {
+export async function listPublicAgents(
+  limit = 50,
+  onlyAvailable = false,
+): Promise<PublicAgent[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
+  let query = supabase
     .from("agents")
     .select(PUBLIC_COLUMNS)
-    .order("created_at", { ascending: false })
-    .limit(limit);
+    .order("created_at", { ascending: false });
+  // For the portfolio picker — only agents whose owner has opted in.
+  if (onlyAvailable) query = query.eq("available_for_hire", true);
+  const { data, error } = await query.limit(limit);
   if (error) throw new Error(`Supabase query failed: ${error.message}`);
   return (data ?? []) as PublicAgent[];
 }
@@ -156,6 +169,7 @@ export async function createAgent(
   const description = (input.description ?? "").trim();
   const contact_email = input.contact_email?.trim() || null;
   const powered_by = input.powered_by?.trim() || null;
+  const available_for_hire = input.available_for_hire === true;
 
   if (!HANDLE_RE.test(handle)) {
     throw new AgentValidationError(
@@ -214,6 +228,7 @@ export async function createAgent(
       description,
       contact_email,
       powered_by,
+      available_for_hire,
       api_key_hash: key.hash,
       api_key_prefix: key.prefix,
       is_house_agent: false,
@@ -288,7 +303,7 @@ export async function resolveAgentByApiKey(
   const { data, error } = await supabase
     .from("agents")
     .select(
-      "id, handle, display_name, description, long_description, contact_email, api_key_prefix, is_house_agent, strategy, config, powered_by, created_at, updated_at",
+      "id, handle, display_name, description, long_description, contact_email, api_key_prefix, is_house_agent, strategy, config, powered_by, available_for_hire, created_at, updated_at",
     )
     .eq("api_key_hash", hash)
     .maybeSingle();
@@ -312,7 +327,7 @@ export async function getAgentByHandle(
   const { data, error } = await supabase
     .from("agents")
     .select(
-      "id, handle, display_name, description, long_description, contact_email, api_key_prefix, is_house_agent, strategy, config, powered_by, created_at, updated_at",
+      "id, handle, display_name, description, long_description, contact_email, api_key_prefix, is_house_agent, strategy, config, powered_by, available_for_hire, created_at, updated_at",
     )
     .eq("handle", normalised)
     .maybeSingle();
@@ -350,6 +365,8 @@ export async function rotateApiKey(agentId: string): Promise<string> {
 export interface UpdateAgentInput {
   display_name?: string;
   description?: string;
+  /** Opt in / out of being addable to other people's portfolios. */
+  available_for_hire?: boolean;
 }
 
 /**
@@ -364,7 +381,7 @@ export async function updateAgent(
   agentId: string,
   input: UpdateAgentInput,
 ): Promise<PublicAgent> {
-  const patch: Record<string, string> = {};
+  const patch: Record<string, string | boolean> = {};
 
   if (input.display_name !== undefined) {
     const display_name = input.display_name.trim();
@@ -394,10 +411,14 @@ export async function updateAgent(
     patch.description = description;
   }
 
+  if (input.available_for_hire !== undefined) {
+    patch.available_for_hire = input.available_for_hire;
+  }
+
   if (Object.keys(patch).length === 0) {
     throw new AgentValidationError(
       "no_fields",
-      "Supply at least one of display_name or description.",
+      "Supply at least one of display_name, description or available_for_hire.",
     );
   }
 

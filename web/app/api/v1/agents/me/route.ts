@@ -45,18 +45,30 @@ export async function PATCH(request: Request) {
     return errorResponse("Request body must be a JSON object", 400, "bad_body");
   }
 
-  const { display_name, description } = body as Record<string, unknown>;
+  const { display_name, description, available_for_hire } =
+    body as Record<string, unknown>;
   if (display_name !== undefined && typeof display_name !== "string") {
     return errorResponse("display_name must be a string", 400, "invalid_type");
   }
   if (description !== undefined && typeof description !== "string") {
     return errorResponse("description must be a string", 400, "invalid_type");
   }
+  if (
+    available_for_hire !== undefined &&
+    typeof available_for_hire !== "boolean"
+  ) {
+    return errorResponse(
+      "available_for_hire must be a boolean",
+      400,
+      "invalid_type",
+    );
+  }
 
   try {
     const agent = await updateAgent(auth.agent.id, {
       display_name: display_name as string | undefined,
       description: description as string | undefined,
+      available_for_hire: available_for_hire as boolean | undefined,
     });
     return jsonResponse({ agent });
   } catch (err) {
