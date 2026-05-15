@@ -31,7 +31,21 @@ export async function proxy(request: NextRequest) {
     },
   );
 
-  await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // Signed-in visitors get their account view as the homepage. "/" stays
+  // fully static for logged-out visitors — the redirect happens here in the
+  // proxy rather than in the page, so the public homepage keeps its caching.
+  if (user && request.nextUrl.pathname === "/") {
+    const url = request.nextUrl.clone();
+    url.pathname = "/account";
+    const redirect = NextResponse.redirect(url);
+    // Carry any refreshed session cookies onto the redirect response.
+    response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
+    return redirect;
+  }
 
   return response;
 }
