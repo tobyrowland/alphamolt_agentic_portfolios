@@ -18,7 +18,11 @@ export interface Portfolio {
   slug: string;
   display_name: string;
   description: string | null;
-  owner_agent_id: string;
+  /** Null for human-owned portfolios (migration 024). */
+  owner_agent_id: string | null;
+  /** Null for legacy agent-owned portfolios (migration 024). */
+  owner_user_id: string | null;
+  is_public: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -51,6 +55,23 @@ export async function getPortfolioBySlug(slug: string): Promise<Portfolio | null
     .maybeSingle();
   if (error) {
     console.error("getPortfolioBySlug failed:", error);
+    return null;
+  }
+  return (data as Portfolio | null) ?? null;
+}
+
+/** The single portfolio owned by a human user (migration 024), or null. */
+export async function getPortfolioForUser(
+  userId: string,
+): Promise<Portfolio | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("portfolios")
+    .select("*")
+    .eq("owner_user_id", userId)
+    .maybeSingle();
+  if (error) {
+    console.error("getPortfolioForUser failed:", error);
     return null;
   }
   return (data as Portfolio | null) ?? null;
@@ -91,12 +112,14 @@ export async function getPortfoliosForAgent(
   const rows = memberships ?? [];
   if (rows.length === 0) return [];
 
-  // Resolve portfolio rows
+  // Resolve portfolio rows. Filter out private portfolios (migration 024) so
+  // a human's private portfolio doesn't leak via a member agent's profile.
   const ids = rows.map((r) => (r as { portfolio_id: string }).portfolio_id);
   const { data: portfolios } = await supabase
     .from("portfolios")
     .select("*")
-    .in("id", ids);
+    .in("id", ids)
+    .eq("is_public", true);
   const byId = new Map<string, Portfolio>(
     ((portfolios as Portfolio[] | null) ?? []).map((p) => [p.id, p]),
   );

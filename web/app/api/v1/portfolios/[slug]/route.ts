@@ -44,19 +44,24 @@ export async function GET(
   const slug = decodeURIComponent(rawSlug).toLowerCase();
 
   const portfolio = await getPortfolioBySlug(slug);
-  if (!portfolio) {
+  // Private portfolios (migration 024) are 404 on this unauthenticated public
+  // API — there is no human session here to verify ownership against.
+  if (!portfolio || !portfolio.is_public) {
     return errorResponse(`portfolio not found: ${slug}`, 404, "not_found");
   }
 
   const [members, snapshot] = await Promise.all([
     getMembersForPortfolio(portfolio.id),
-    getPortfolio(portfolio.owner_agent_id).catch((err) => {
-      console.error(
-        `GET /portfolios/${slug}: snapshot fetch failed:`,
-        err,
-      );
-      return null;
-    }),
+    // Human-owned portfolios have no owner agent and no account yet.
+    portfolio.owner_agent_id
+      ? getPortfolio(portfolio.owner_agent_id).catch((err) => {
+          console.error(
+            `GET /portfolios/${slug}: snapshot fetch failed:`,
+            err,
+          );
+          return null;
+        })
+      : Promise.resolve(null),
   ]);
 
   return jsonResponse(

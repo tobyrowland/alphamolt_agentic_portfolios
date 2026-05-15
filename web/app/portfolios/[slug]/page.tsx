@@ -17,11 +17,35 @@ import {
   getActiveThesesForAgent,
   type InvestmentThesis,
 } from "@/lib/theses-query";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const revalidate = 300;
 
 interface PageParams {
   params: Promise<{ slug: string }>;
+}
+
+/**
+ * Fetch a portfolio by slug, applying the migration-024 visibility gate: a
+ * private portfolio is visible only to its owner (the signed-in human).
+ * Returns null when the portfolio is missing or hidden from the viewer. The
+ * session read happens only on the private branch, so public portfolios stay
+ * statically cacheable.
+ */
+async function resolveVisiblePortfolio(
+  slug: string,
+): Promise<Portfolio | null> {
+  const portfolio = await getPortfolioBySlug(slug);
+  if (!portfolio) return null;
+  if (portfolio.is_public) return portfolio;
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (user && portfolio.owner_user_id && user.id === portfolio.owner_user_id) {
+    return portfolio;
+  }
+  return null;
 }
 
 // ----- Metadata ------------------------------------------------------------
@@ -32,7 +56,7 @@ export async function generateMetadata({
   const { slug: rawSlug } = await params;
   const slug = decodeURIComponent(rawSlug).toLowerCase();
 
-  const portfolio = await getPortfolioBySlug(slug);
+  const portfolio = await resolveVisiblePortfolio(slug);
   if (!portfolio) {
     return {
       title: `Portfolio ${slug} — not found`,
@@ -66,7 +90,7 @@ async function getPortfolioPageData(slug: string): Promise<{
   trades: Trade[];
   totalTrades: number;
 }> {
-  const portfolio = await getPortfolioBySlug(slug);
+  const portfolio = await resolveVisiblePortfolio(slug);
   if (!portfolio) {
     return {
       portfolio: null,
@@ -78,20 +102,21 @@ async function getPortfolioPageData(slug: string): Promise<{
     };
   }
 
-  // The snapshot helper (cash + holdings + MTM) is still keyed on agent_id
-  // during the shim period. Use the owner agent's id — for 1:1 portfolios
-  // this is exactly the data we want.
+  // Human-owned portfolios (owner_agent_id null, migration 024) don't trade
+  // yet — no account, holdings or theses. The snapshot/theses helpers are
+  // keyed on agent_id during the shim period, so skip them entirely.
   let snapshot: PortfolioSnapshot | null = null;
-  try {
-    snapshot = await getPortfolio(portfolio.owner_agent_id);
-  } catch (err) {
-    console.error("getPortfolio failed for", slug, err);
+  let thesesByTicker: Record<string, InvestmentThesis> = {};
+  if (portfolio.owner_agent_id) {
+    try {
+      snapshot = await getPortfolio(portfolio.owner_agent_id);
+    } catch (err) {
+      console.error("getPortfolio failed for", slug, err);
+    }
+    thesesByTicker = await getActiveThesesForAgent(portfolio.owner_agent_id);
   }
 
   const members = await getMembersForPortfolio(portfolio.id);
-  // Theses are still keyed via agent_id under the shim; owner_agent_id has
-  // the same rows as portfolio_id today.
-  const thesesByTicker = await getActiveThesesForAgent(portfolio.owner_agent_id);
   const { trades, totalTrades } = await getRecentTradesForPortfolio(
     portfolio.id,
   );
@@ -259,6 +284,13 @@ export default async function PortfolioPage({ params }: PageParams) {
                 Click a row to see the investment thesis recorded at buy time.
               </p>
             )}
+          </section>
+        ) : portfolio.owner_agent_id === null ? (
+          <section className="mb-10">
+            <p className="text-sm text-text-muted italic">
+              Not trading yet — this portfolio is being set up by its owner.
+              Agent execution is coming soon.
+            </p>
           </section>
         ) : (
           <section className="mb-10">
