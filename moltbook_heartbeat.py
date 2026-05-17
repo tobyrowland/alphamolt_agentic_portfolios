@@ -722,24 +722,19 @@ def _engage_feed(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 — Original posts (optional)
+# Phase 3 — Original posts (event-driven, not cadence-driven)
 # ---------------------------------------------------------------------------
 
+# An angle can't be reused until this many days have passed since it last
+# shipped — so even if the data qualifies every day, the post shape varies.
+ANGLE_COOLDOWN_DAYS = 7
 
-def _build_post_topic(db: Any) -> dict[str, Any] | None:
-    """Pull live alphamolt data and assemble a topic for the LLM drafter.
 
-    Rotates between two angles by day-of-year so the daily post doesn't
-    repeat the same shape:
+def _fetch_leaderboard(db: Any) -> tuple[list[dict], list[dict]]:
+    """Return (agents, benchmarks).
 
-    - ``leaderboard_spread`` — biggest 30d return gap across registered
-      agents vs SPY/URTH benchmarks.
-    - ``sharpe_vs_return`` — finds two agents where Sharpe and 30d return
-      tell different stories (high return, low Sharpe — or vice versa).
-
-    Returns None when there isn't enough warm data (fewer than 2 agents
-    with a 30d figure, or every agent has identical numbers) so the
-    heartbeat skips the post instead of shipping a stale template.
+    agents — leaderboard rows with a 30d figure. benchmarks — SPY/URTH
+    with a since-inception return computed inline. Either may be empty.
     """
     try:
         rows = (
@@ -755,18 +750,13 @@ def _build_post_topic(db: Any) -> dict[str, Any] | None:
         )
     except Exception as exc:  # network / schema mismatch
         log.warning("post topic: leaderboard fetch failed: %s", exc)
-        return None
+        return [], []
 
     agents = [
         r for r in rows
         if r.get("handle") and r.get("pnl_pct_30d") is not None
     ]
-    if len(agents) < 2:
-        log.info("post topic: only %d agents with 30d data, skipping", len(agents))
-        return None
 
-    # Benchmarks (SPY, URTH) — same view doesn't carry them; pull from
-    # benchmarks + benchmark_prices and compute 30d return inline.
     benchmarks: list[dict[str, Any]] = []
     try:
         bench_rows = (
@@ -790,79 +780,242 @@ def _build_post_topic(db: Any) -> dict[str, Any] | None:
     except Exception as exc:
         log.warning("post topic: benchmark fetch failed: %s", exc)
 
-    day_of_year = datetime.now(timezone.utc).timetuple().tm_yday
-    angle = ("leaderboard_spread", "sharpe_vs_return")[day_of_year % 2]
+    return agents, benchmarks
 
-    if angle == "leaderboard_spread":
-        ranked = sorted(agents, key=lambda r: r["pnl_pct_30d"], reverse=True)
-        top, bottom = ranked[0], ranked[-1]
-        if abs(top["pnl_pct_30d"] - bottom["pnl_pct_30d"]) < 0.5:
-            log.info("post topic: leaderboard spread <0.5pp, skipping")
-            return None
-        return {
-            "angle": "leaderboard_spread",
-            "narrative_hint": (
-                f"I tracked {len(agents)} AI stock-pickers on alphamolt for "
-                f"30 days. The spread between best and worst surprised me."
-            ),
-            "facts": {
-                "agent_count": len(agents),
-                "period_days": 30,
-                "top_agent": {k: top.get(k) for k in (
-                    "handle", "display_name", "pnl_pct_30d", "pnl_pct_ytd",
-                    "sharpe", "num_positions",
-                )},
-                "bottom_agent": {k: bottom.get(k) for k in (
-                    "handle", "display_name", "pnl_pct_30d", "pnl_pct_ytd",
-                    "sharpe", "num_positions",
-                )},
-                "spread_30d_pct": round(
-                    top["pnl_pct_30d"] - bottom["pnl_pct_30d"], 2
-                ),
-                "all_agents_30d": [
-                    {"handle": a["handle"], "pnl_pct_30d": a["pnl_pct_30d"]}
-                    for a in ranked
-                ],
-                "benchmarks": benchmarks,
-            },
-        }
 
-    # angle == "sharpe_vs_return"
+def _angle_leaderboard_spread(
+    agents: list[dict], benchmarks: list[dict]
+) -> dict[str, Any] | None:
+    """Notable only when best vs worst agent diverge by >= 4 percentage points."""
+    if len(agents) < 2:
+        return None
+    ranked = sorted(agents, key=lambda r: r["pnl_pct_30d"], reverse=True)
+    top, bottom = ranked[0], ranked[-1]
+    spread = round(top["pnl_pct_30d"] - bottom["pnl_pct_30d"], 2)
+    if spread < 4.0:
+        log.info("angle leaderboard_spread: spread %.2fpp <4pp, not notable", spread)
+        return None
+    keep = ("handle", "display_name", "pnl_pct_30d", "pnl_pct_ytd",
+            "sharpe", "num_positions")
+    return {
+        "angle": "leaderboard_spread",
+        "narrative_hint": (
+            f"I tracked {len(agents)} AI stock-pickers on alphamolt for 30 "
+            f"days. Same universe, same rebalance cadence — and a {spread:g}-"
+            f"point gap opened between the best and worst."
+        ),
+        "facts": {
+            "agent_count": len(agents),
+            "period_days": 30,
+            "top_agent": {k: top.get(k) for k in keep},
+            "bottom_agent": {k: bottom.get(k) for k in keep},
+            "spread_30d_pct": spread,
+            "all_agents_30d": [
+                {"handle": a["handle"], "pnl_pct_30d": a["pnl_pct_30d"]}
+                for a in ranked
+            ],
+            "benchmarks": benchmarks,
+        },
+    }
+
+
+def _angle_sharpe_vs_return(
+    agents: list[dict], benchmarks: list[dict]
+) -> dict[str, Any] | None:
+    """Notable when the return leader and the Sharpe leader are different
+    agents *and* their 30d returns differ by >= 2pp (real tension, not a tie).
+    """
     with_sharpe = [
         a for a in agents
         if a.get("sharpe") is not None
         and (a.get("sharpe_n_returns") or 0) >= 30
     ]
     if len(with_sharpe) < 2:
-        log.info("post topic: only %d agents with warm Sharpe, skipping", len(with_sharpe))
         return None
     by_return = sorted(with_sharpe, key=lambda r: r["pnl_pct_30d"], reverse=True)
     by_sharpe = sorted(with_sharpe, key=lambda r: r["sharpe"], reverse=True)
-    if by_return[0]["handle"] == by_sharpe[0]["handle"]:
-        # Sharpe and return tell the same story — boring, skip.
-        log.info("post topic: top return == top Sharpe, no tension, skipping")
+    ret_leader, sharpe_leader = by_return[0], by_sharpe[0]
+    if ret_leader["handle"] == sharpe_leader["handle"]:
         return None
+    gap = abs(ret_leader["pnl_pct_30d"] - sharpe_leader["pnl_pct_30d"])
+    if gap < 2.0:
+        log.info("angle sharpe_vs_return: return gap %.2fpp <2pp, not notable", gap)
+        return None
+    keep = ("handle", "display_name", "pnl_pct_30d", "sharpe",
+            "sharpe_n_returns", "num_positions")
     return {
         "angle": "sharpe_vs_return",
         "narrative_hint": (
-            "Two agents on alphamolt have the same trajectory by one "
-            "metric and tell completely different stories by another. "
-            "Sharpe and absolute return disagree."
+            "Two agents on alphamolt. One is ahead on raw 30d return, the "
+            "other on risk-adjusted Sharpe. Picking a 'winner' depends "
+            "entirely on which number you trust."
         ),
         "facts": {
             "agent_count": len(with_sharpe),
             "period_days": 30,
-            "top_by_return": {k: by_return[0].get(k) for k in (
-                "handle", "display_name", "pnl_pct_30d", "sharpe",
-                "sharpe_n_returns", "num_positions",
-            )},
-            "top_by_sharpe": {k: by_sharpe[0].get(k) for k in (
-                "handle", "display_name", "pnl_pct_30d", "sharpe",
-                "sharpe_n_returns", "num_positions",
-            )},
+            "top_by_return": {k: ret_leader.get(k) for k in keep},
+            "top_by_sharpe": {k: sharpe_leader.get(k) for k in keep},
             "benchmarks": benchmarks,
         },
     }
+
+
+def _angle_benchmark_scoreboard(
+    agents: list[dict], benchmarks: list[dict]
+) -> dict[str, Any] | None:
+    """Notable when the agents-vs-benchmark scoreboard is lopsided — most
+    agents beating the index, or most losing to it. A 50/50 split is noise.
+    """
+    scored = [a for a in agents if a.get("pnl_pct") is not None]
+    if len(scored) < 3 or not benchmarks:
+        return None
+    spy = next((b for b in benchmarks if "SPY" in b["ticker"].upper()), benchmarks[0])
+    bench_pct = spy["since_inception_pct"]
+    beat = [a for a in scored if a["pnl_pct"] > bench_pct]
+    frac = len(beat) / len(scored)
+    if 0.3 < frac < 0.7:
+        log.info("angle benchmark_scoreboard: %d/%d beat, not lopsided",
+                 len(beat), len(scored))
+        return None
+    keep = ("handle", "display_name", "pnl_pct", "pnl_pct_30d", "sharpe")
+    return {
+        "angle": "benchmark_scoreboard",
+        "narrative_hint": (
+            f"{len(beat)} of {len(scored)} AI stock-pickers on alphamolt "
+            f"are {'beating' if frac >= 0.7 else 'losing to'} the "
+            f"{spy['name']} benchmark since inception. The split is not "
+            f"close."
+        ),
+        "facts": {
+            "agent_count": len(scored),
+            "benchmark": spy,
+            "agents_beating_benchmark": len(beat),
+            "beat_fraction": round(frac, 2),
+            "agents": [
+                {k: a.get(k) for k in keep}
+                for a in sorted(scored, key=lambda r: r["pnl_pct"], reverse=True)
+            ],
+        },
+    }
+
+
+def _angle_consensus_conviction(db: Any) -> dict[str, Any] | None:
+    """Notable when the swarm's top-held ticker is held by >= 50% of agents,
+    or its share-weighted P&L is past +/-15%.
+    """
+    try:
+        tickers, snapshot_date = db.get_latest_consensus_top_tickers(limit=5)
+    except Exception as exc:
+        log.warning("angle consensus_conviction: fetch failed: %s", exc)
+        return None
+    if not tickers:
+        return None
+    top = tickers[0]
+    pct = top.get("pct_agents") or 0
+    swarm_pnl = top.get("swarm_pnl_pct") or 0
+    if pct < 50 and abs(swarm_pnl) < 15:
+        log.info("angle consensus_conviction: pct=%.0f swarm_pnl=%.1f, not notable",
+                 pct, swarm_pnl)
+        return None
+    company = (top.get("companies") or {}).get("company_name") or top["ticker"]
+    return {
+        "angle": "consensus_conviction",
+        "narrative_hint": (
+            f"The AI agents on alphamolt quietly converged on one stock — "
+            f"{top['ticker']} is the swarm's highest-conviction pick this "
+            f"week, with no coordination between them."
+        ),
+        "facts": {
+            "snapshot_date": snapshot_date,
+            "ticker": top["ticker"],
+            "company_name": company,
+            "num_agents_holding": top.get("num_agents"),
+            "total_agents": top.get("total_agents"),
+            "pct_agents": pct,
+            "swarm_pnl_pct": swarm_pnl,
+            "runner_up_tickers": [
+                {"ticker": t["ticker"], "pct_agents": t.get("pct_agents")}
+                for t in tickers[1:4]
+            ],
+        },
+    }
+
+
+_POST_ANGLE_BUILDERS = (
+    _angle_leaderboard_spread,
+    _angle_sharpe_vs_return,
+    _angle_benchmark_scoreboard,
+)
+
+
+def _build_post_topic(
+    db: Any, ledger: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Assemble a post topic from live alphamolt data — event-driven.
+
+    Every angle has a notability gate and only surfaces when the data
+    genuinely has something to say (a wide leaderboard gap, a Sharpe/return
+    disagreement, a lopsided benchmark scoreboard, an unusually convicted
+    swarm pick). On a quiet week every angle returns None and the heartbeat
+    posts nothing — which is correct.
+
+    On top of that, an angle that shipped within ``ANGLE_COOLDOWN_DAYS`` is
+    skipped even if it qualifies, and among the angles that remain the
+    least-recently-used one is chosen. Between the event gate and the
+    cooldown, the post shape can't repeat for a week.
+
+    Returns None when nothing qualifies.
+    """
+    agents, benchmarks = _fetch_leaderboard(db)
+
+    candidates: list[dict[str, Any]] = []
+    for builder in _POST_ANGLE_BUILDERS:
+        try:
+            topic = builder(agents, benchmarks)
+        except Exception as exc:
+            log.warning("post topic: angle %s raised: %s", builder.__name__, exc)
+            continue
+        if topic:
+            candidates.append(topic)
+
+    try:
+        consensus = _angle_consensus_conviction(db)
+        if consensus:
+            candidates.append(consensus)
+    except Exception as exc:
+        log.warning("post topic: consensus angle raised: %s", exc)
+
+    if not candidates:
+        log.info("post topic: no angle is notable today, skipping")
+        return None
+
+    history = ledger.get("post_angle_history", {})
+    today = datetime.now(timezone.utc).date()
+    fresh: list[dict[str, Any]] = []
+    for topic in candidates:
+        last = history.get(topic["angle"])
+        if last:
+            try:
+                days_ago = (today - datetime.fromisoformat(last).date()).days
+            except ValueError:
+                days_ago = ANGLE_COOLDOWN_DAYS  # unparseable → treat as off cooldown
+            if days_ago < ANGLE_COOLDOWN_DAYS:
+                log.info("post topic: angle %s on cooldown (%dd ago)",
+                         topic["angle"], days_ago)
+                continue
+        fresh.append(topic)
+
+    if not fresh:
+        log.info("post topic: %d notable angle(s) but all on cooldown",
+                 len(candidates))
+        return None
+
+    # Least-recently-used first; never-posted angles sort ahead of all.
+    fresh.sort(key=lambda t: history.get(t["angle"], ""))
+    chosen = fresh[0]
+    log.info("post topic: chose %s (%d notable, %d off cooldown)",
+             chosen["angle"], len(candidates), len(fresh))
+    return chosen
 
 
 def _maybe_post_original(
@@ -871,14 +1024,16 @@ def _maybe_post_original(
     ledger: dict[str, Any],
     dry_run: bool = False,
 ) -> bool:
-    """Post one original piece per day to m/general.
+    """Post an original piece to m/general when the data warrants it.
 
-    Targeting m/general because the recon (issue #853) showed every
-    top-of-feed post is in m/general; the finance-themed submolts that
-    we used to target appear to share the same global feed but get no
-    distinct distribution. Window widened to four UTC hours so a daily
-    post is more likely to actually fire (ledger ratchets daily_post_count
-    so we still cap at 1/day).
+    Event-driven, not daily: a post only ships when `_build_post_topic`
+    finds a notable, off-cooldown angle. Quiet weeks produce nothing. The
+    1/day cap and the UTC posting window remain — they bound *when* a post
+    can land, not *whether* one is due.
+
+    m/general because the recon (issue #853) showed every top-of-feed post
+    lives there; the finance submolts share the same global feed with no
+    distinct distribution.
     """
     today = _today()
     daily_posts = ledger.get("daily_post_count", {})
@@ -905,7 +1060,7 @@ def _maybe_post_original(
         log.warning("original post: db init failed: %s", exc)
         return False
 
-    topic_data = _build_post_topic(db)
+    topic_data = _build_post_topic(db, ledger)
     if topic_data is None:
         log.info("original post: no usable topic today, skipping")
         return False
@@ -920,7 +1075,8 @@ def _maybe_post_original(
 
     submolt = "general"
     if dry_run:
-        log.info("DRY RUN — would post to m/%s: %s", submolt, title)
+        log.info("DRY RUN — would post to m/%s [angle=%s]: %s",
+                 submolt, topic_data["angle"], title)
         return False
 
     success, outcome, post_id = create_post_and_verify(
@@ -931,6 +1087,9 @@ def _maybe_post_original(
         log.info("original post published: %s — %s", post_id, outcome)
         daily_posts[today] = daily_posts.get(today, 0) + 1
         ledger["daily_post_count"] = daily_posts
+        # Record the angle so the cooldown guard can keep the shape varied.
+        history = ledger.setdefault("post_angle_history", {})
+        history[topic_data["angle"]] = today
 
         if gh:
             post_url = f"https://www.moltbook.com/post/{post_id}"
