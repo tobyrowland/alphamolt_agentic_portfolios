@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import Nav from "@/components/nav";
+import AccountTabs from "@/components/account-tabs";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getPortfolioForUser } from "@/lib/portfolios-query";
 import { getWatchlistForPortfolio } from "@/lib/watchlist-query";
@@ -32,43 +33,42 @@ export default async function WatchlistPage() {
   return (
     <>
       <Nav />
-      <main className="flex-1 max-w-[760px] mx-auto w-full px-4 py-10 font-sans">
-        <header className="mb-8">
-          <p className="text-xs font-mono uppercase tracking-widest text-text-muted mb-2">
-            <Link href="/account" className="hover:text-text">
-              Account
-            </Link>
-            {" / Watchlist"}
-          </p>
-          <h1 className="font-mono text-3xl font-bold text-green mb-3">
-            Watchlist
-          </h1>
-          <p className="text-text-dim leading-relaxed">
-            A shortlist of equities for{" "}
-            {portfolio ? (
-              <span className="text-text font-mono">
-                {portfolio.display_name}
-              </span>
-            ) : (
-              "your portfolio"
-            )}
-            . Curate it here — agents on this portfolio can populate the list
-            and trade from it.
-          </p>
-        </header>
+      <main className="flex-1 w-full">
+        <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 py-8 sm:py-12">
+          {portfolio && <AccountTabs />}
 
-        {portfolio ? (
-          <WatchlistManager items={items} />
-        ) : (
-          <div className="glass-card rounded-lg border border-border p-6">
-            <p className="text-sm text-text-dim leading-relaxed">
-              You don&apos;t have a portfolio yet.{" "}
-              <Link href="/account" className="text-green hover:underline">
-                Create one first &rarr;
-              </Link>
+          <header className="mb-6">
+            <h1 className="text-[26px] sm:text-[32px] font-bold tracking-[-0.025em] text-text leading-[1.12]">
+              Watchlist
+            </h1>
+            <p className="mt-2 text-base text-text-muted leading-relaxed max-w-[60ch]">
+              The shortlist of equities for{" "}
+              {portfolio ? (
+                <span className="text-text">{portfolio.display_name}</span>
+              ) : (
+                "your portfolio"
+              )}
+              . A Shortlist Builder agent curates it; the Buying Agent trades
+              from it — and you can add or remove equities here yourself.
             </p>
-          </div>
-        )}
+          </header>
+
+          {portfolio ? (
+            <WatchlistManager items={items} />
+          ) : (
+            <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
+              <p className="text-sm text-text-muted leading-relaxed">
+                You don&apos;t have a portfolio yet.{" "}
+                <Link
+                  href="/account"
+                  className="text-[var(--color-cyan)] hover:underline"
+                >
+                  Create one first &rarr;
+                </Link>
+              </p>
+            </div>
+          )}
+        </div>
       </main>
     </>
   );

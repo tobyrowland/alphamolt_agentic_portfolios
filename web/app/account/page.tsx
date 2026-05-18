@@ -11,13 +11,13 @@ import {
   type PortfolioMember,
 } from "@/lib/portfolios-query";
 import { listPublicAgents, getAgentReturns30d } from "@/lib/agents-query";
-import { getWatchlistForPortfolio, type WatchlistItem } from "@/lib/watchlist-query";
 import { roleFor } from "@/lib/agent-roles";
 import CreatePortfolioForm from "@/components/portfolio/create-portfolio-form";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import AgentPicker from "@/components/portfolio/agent-picker";
 import LaunchControl from "@/components/portfolio/launch-control";
+import AccountTabs from "@/components/account-tabs";
 
 export const metadata: Metadata = {
   title: "Your account — AlphaMolt",
@@ -65,7 +65,6 @@ export default async function AccountPage() {
   let members: PortfolioMember[] = [];
   let allAgents: Awaited<ReturnType<typeof listPublicAgents>> = [];
   let returns30d = new Map<string, number | null>();
-  let watchlist: WatchlistItem[] = [];
   if (portfolio) {
     try {
       members = await getMembersForPortfolio(portfolio.id);
@@ -83,11 +82,6 @@ export default async function AccountPage() {
     } catch {
       returns30d = new Map();
     }
-    try {
-      watchlist = await getWatchlistForPortfolio(portfolio.id);
-    } catch {
-      watchlist = [];
-    }
   }
 
   return (
@@ -96,14 +90,16 @@ export default async function AccountPage() {
       <main className="flex-1 w-full">
         <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 py-8 sm:py-12">
           {portfolio ? (
-            <PortfolioView
-              portfolio={portfolio}
-              members={members}
-              allAgents={allAgents}
-              returns30d={returns30d}
-              watchlist={watchlist}
-              email={email}
-            />
+            <>
+              <AccountTabs />
+              <PortfolioView
+                portfolio={portfolio}
+                members={members}
+                allAgents={allAgents}
+                returns30d={returns30d}
+                email={email}
+              />
+            </>
           ) : (
             <NoPortfolioView displayName={displayName} email={email} />
           )}
@@ -152,14 +148,12 @@ function PortfolioView({
   members,
   allAgents,
   returns30d,
-  watchlist,
   email,
 }: {
   portfolio: Portfolio;
   members: PortfolioMember[];
   allAgents: Awaited<ReturnType<typeof listPublicAgents>>;
   returns30d: Map<string, number | null>;
-  watchlist: WatchlistItem[];
   email: string;
 }) {
   const live = portfolio.launched_at != null;
@@ -241,15 +235,6 @@ function PortfolioView({
           <AgentPicker members={pickerMembers} allAgents={pickerAll} />
         </SetupCard>
 
-        {/* Watchlist preview */}
-        <SetupCard
-          glyph="target"
-          title="Watchlist"
-          intro="The shortlist of equities your agents populate and trade from."
-        >
-          <WatchlistPreview items={watchlist} />
-        </SetupCard>
-
         {/* 3. Go live */}
         <SetupCard
           step={3}
@@ -307,60 +292,6 @@ function PortfolioView({
           </p>
         </RailCard>
       </aside>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Watchlist preview
-// ---------------------------------------------------------------------------
-
-function WatchlistPreview({ items }: { items: WatchlistItem[] }) {
-  const top = items.slice(0, 5);
-  return (
-    <div>
-      {top.length > 0 ? (
-        <ul className="divide-y divide-border rounded-lg border border-white/10 overflow-hidden">
-          {top.map((it) => (
-            <li
-              key={it.ticker}
-              className="flex items-center justify-between gap-3 bg-white/[0.02] px-3 py-2.5"
-            >
-              <div className="min-w-0">
-                <span className="font-mono text-sm font-bold text-text">
-                  {it.ticker}
-                </span>
-                {it.company_name && (
-                  <span className="ml-2 text-[12px] text-text-muted truncate">
-                    {it.company_name}
-                  </span>
-                )}
-              </div>
-              <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono font-bold uppercase tracking-widest border ${
-                  it.source === "agent"
-                    ? "border-cyan/30 bg-cyan/[0.08] text-cyan"
-                    : "border-border bg-bg text-text-muted"
-                }`}
-              >
-                {it.source === "agent" ? "Agent" : "You"}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-sm text-text-muted italic">
-          No equities on the watchlist yet.
-        </p>
-      )}
-      <Link
-        href="/account/watchlist"
-        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text hover:border-cyan/40 hover:text-cyan focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 transition-colors"
-      >
-        {items.length > top.length
-          ? `Manage all ${items.length} watchlist items →`
-          : "Manage watchlist →"}
-      </Link>
     </div>
   );
 }
