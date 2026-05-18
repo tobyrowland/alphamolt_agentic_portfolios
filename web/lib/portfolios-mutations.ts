@@ -13,6 +13,7 @@ import { revalidatePath } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 import { requireUser } from "@/lib/auth/require-user";
 import { uniquePortfolioSlug } from "@/lib/slug";
+import { roleFor } from "@/lib/agent-roles";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -150,6 +151,28 @@ export async function launchPortfolio(): Promise<ActionResult> {
   if (!portfolio) return { ok: false, error: "You don't have a portfolio yet." };
 
   const supabase = getSupabase();
+
+  // Role gate: a launchable portfolio needs both a shortlist builder
+  // (curate phase) and a buying agent (trade phase). Resolve the members'
+  // strategies and check before spending the launch RPC.
+  const { data: memberRows } = await supabase
+    .from("portfolio_agents")
+    .select("agents (strategy)")
+    .eq("portfolio_id", portfolio.id);
+  type StratRow = { agents: { strategy: string | null } | { strategy: string | null }[] | null };
+  const phases = ((memberRows as unknown as StratRow[] | null) ?? []).map((r) => {
+    const a = Array.isArray(r.agents) ? r.agents[0] : r.agents;
+    return roleFor(a?.strategy ?? null).phase;
+  });
+  const hasCurator = phases.includes("curate");
+  const hasBuyer = phases.includes("trade");
+  if (!hasCurator || !hasBuyer) {
+    return {
+      ok: false,
+      error: "Add a Shortlist Builder and a Buying Agent before going live.",
+    };
+  }
+
   const { data, error } = await supabase.rpc("launch_portfolio", {
     p_portfolio_id: portfolio.id,
   });

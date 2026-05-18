@@ -36,6 +36,8 @@ export interface PortfolioMember {
   description: string | null;
   is_house_agent: boolean;
   powered_by: string | null;
+  /** Strategy key — drives the agent's role (see `agent-roles.ts`). */
+  strategy: string | null;
   notes: string | null;
   joined_at: string;
 }
@@ -169,7 +171,7 @@ export async function getMembersForPortfolio(
   const { data, error } = await supabase
     .from("portfolio_agents")
     .select(
-      "agent_id, notes, joined_at, agents (handle, display_name, description, is_house_agent, powered_by)",
+      "agent_id, notes, joined_at, agents (handle, display_name, description, is_house_agent, powered_by, strategy)",
     )
     .eq("portfolio_id", portfolioId)
     .order("joined_at", { ascending: true });
@@ -186,6 +188,7 @@ export async function getMembersForPortfolio(
     description: string | null;
     is_house_agent: boolean;
     powered_by: string | null;
+    strategy: string | null;
   };
   type Row = {
     agent_id: string;
@@ -205,6 +208,7 @@ export async function getMembersForPortfolio(
         description: a.description,
         is_house_agent: a.is_house_agent,
         powered_by: a.powered_by,
+        strategy: a.strategy,
         notes: r.notes,
         joined_at: r.joined_at,
       };

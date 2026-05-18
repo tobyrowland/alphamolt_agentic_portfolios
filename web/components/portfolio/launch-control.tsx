@@ -6,10 +6,14 @@ import { launchPortfolio } from "@/lib/portfolios-mutations";
 
 export default function LaunchControl({
   launchedAt,
-  memberCount,
+  hasCurator,
+  hasBuyer,
 }: {
   launchedAt: string | null;
-  memberCount: number;
+  /** A curate-phase member (Shortlist Builder) is on the portfolio. */
+  hasCurator: boolean;
+  /** A trade-phase member (Buying Agent) is on the portfolio. */
+  hasBuyer: boolean;
 }) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
@@ -35,6 +39,8 @@ export default function LaunchControl({
     );
   }
 
+  const ready = hasCurator && hasBuyer;
+
   function launch() {
     setError(null);
     startTransition(async () => {
@@ -49,25 +55,34 @@ export default function LaunchControl({
   }
 
   return (
-    <div className="rounded-lg border border-border bg-bg px-4 py-3">
-      <p className="text-[11px] font-mono text-orange uppercase tracking-widest mb-1">
-        Draft — not trading yet
-      </p>
+    <div>
       <p className="text-sm text-text-dim leading-relaxed mb-3">
-        Shape the mandate and assemble your agents below. When you&apos;re
-        ready, go live: this grants the portfolio $1M of paper cash and its
-        agents start trading at the next heartbeat.
+        When you&apos;re ready, go live: this grants the portfolio $1M of paper
+        cash and its agents start trading at the next heartbeat.
       </p>
 
-      {memberCount === 0 ? (
-        <p className="text-xs font-mono text-text-muted">
-          Add at least one agent before you can go live.
-        </p>
+      {!ready ? (
+        <div className="rounded-lg border border-orange/30 bg-orange/[0.05] px-3 py-2.5">
+          <p className="text-xs font-mono font-bold text-orange uppercase tracking-widest mb-1.5">
+            Not ready to launch
+          </p>
+          <ul className="space-y-1 text-[12px] text-text-dim font-mono">
+            <li className={hasCurator ? "text-text-muted" : ""}>
+              {hasCurator ? "✓" : "○"} Shortlist Builder added
+            </li>
+            <li className={hasBuyer ? "text-text-muted" : ""}>
+              {hasBuyer ? "✓" : "○"} Buying Agent added
+            </li>
+          </ul>
+          <p className="text-[11px] text-text-muted mt-2 leading-relaxed">
+            Add a Shortlist Builder and a Buying Agent above before going live.
+          </p>
+        </div>
       ) : !confirming ? (
         <button
           type="button"
           onClick={() => setConfirming(true)}
-          className="px-4 py-2 bg-green/10 border border-green/40 text-green font-mono text-sm uppercase tracking-widest rounded hover:bg-green/20 hover:border-green transition-colors"
+          className="px-4 py-2 bg-green/10 border border-green/40 text-green font-mono text-sm uppercase tracking-widest rounded hover:bg-green/20 hover:border-green focus:outline-none focus-visible:ring-2 focus-visible:ring-green/40 transition-colors"
         >
           Go live →
         </button>
@@ -81,7 +96,7 @@ export default function LaunchControl({
               type="button"
               onClick={launch}
               disabled={pending}
-              className="px-4 py-2 bg-green/10 border border-green/40 text-green font-mono text-sm uppercase tracking-widest rounded hover:bg-green/20 hover:border-green disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-4 py-2 bg-green/10 border border-green/40 text-green font-mono text-sm uppercase tracking-widest rounded hover:bg-green/20 hover:border-green disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-green/40 transition-colors"
             >
               {pending ? "Launching…" : "Confirm — go live"}
             </button>
@@ -89,7 +104,7 @@ export default function LaunchControl({
               type="button"
               onClick={() => setConfirming(false)}
               disabled={pending}
-              className="text-xs font-mono text-text-muted hover:text-text"
+              className="text-xs font-mono text-text-muted hover:text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-text/40 rounded px-1"
             >
               Cancel
             </button>

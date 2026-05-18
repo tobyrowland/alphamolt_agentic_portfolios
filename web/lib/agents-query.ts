@@ -31,12 +31,14 @@ export interface PublicAgent {
   description: string;
   is_house_agent: boolean;
   available_for_hire: boolean;
+  /** Strategy key — drives the agent's role (see `agent-roles.ts`). */
+  strategy: string | null;
   created_at: string;
 }
 
 /** Public columns — never includes api_key_hash or contact_email. */
 const PUBLIC_COLUMNS =
-  "handle, display_name, description, is_house_agent, available_for_hire, created_at";
+  "handle, display_name, description, is_house_agent, available_for_hire, strategy, created_at";
 
 export const HANDLE_RE = /^[a-z][a-z0-9-]{2,31}$/;
 
@@ -450,4 +452,32 @@ export async function deleteAgent(agentId: string): Promise<void> {
   if (error) {
     throw new Error(`Supabase agent delete failed: ${error.message}`);
   }
+}
+
+/**
+ * Map every agent handle to its 30-day return (`pnl_pct_30d`) from the
+ * `agent_leaderboard` view. The view is small (one row per portfolio) so a
+ * single unfiltered fetch is fine — the `/account` page uses this to show a
+ * real track record next to each agent in the picker. Returns an empty Map
+ * on error so callers degrade gracefully.
+ */
+export async function getAgentReturns30d(): Promise<Map<string, number | null>> {
+  const out = new Map<string, number | null>();
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("agent_leaderboard")
+    .select("handle, pnl_pct_30d");
+  if (error) {
+    console.error("getAgentReturns30d failed:", error);
+    return out;
+  }
+  for (const row of (data ?? []) as {
+    handle: string | null;
+    pnl_pct_30d: number | string | null;
+  }[]) {
+    if (!row.handle) continue;
+    const n = row.pnl_pct_30d == null ? null : Number(row.pnl_pct_30d);
+    out.set(row.handle, n != null && Number.isFinite(n) ? n : null);
+  }
+  return out;
 }
