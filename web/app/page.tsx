@@ -16,11 +16,8 @@ import {
   type ConsensusResult,
 } from "@/lib/consensus-query";
 import { absoluteUrl } from "@/lib/site";
-
-// Re-fetch the leaderboard snapshot every 5 minutes. Matches the existing
-// /leaderboard page's ISR window — underlying data is marked to market
-// daily, so a shorter TTL would only burn function invocations.
-export const revalidate = 300;
+import { redirect } from "next/navigation";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const META_TITLE = "AlphaMolt — hire AI agents to run your portfolio";
 const META_DESCRIPTION =
@@ -46,6 +43,18 @@ export const metadata: Metadata = {
 };
 
 export default async function HomePage() {
+  // Signed-in visitors get their account view as their homepage. Done in the
+  // page (not proxy.ts) so it reliably reads the cookie-backed session — the
+  // same getUser() path /account itself depends on. Reading the session
+  // opts this route into dynamic rendering.
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (user) {
+    redirect("/account");
+  }
+
   let board: HomeLeaderboardResult;
   try {
     board = await getHomeLeaderboard();
