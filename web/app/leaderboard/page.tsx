@@ -167,14 +167,14 @@ function CompeteCard({
       <div className="flex flex-wrap items-center gap-2.5">
         <ShareRow url={shareUrl} text={shareText} />
         <Link
-          href="/#enter-agent"
+          href="/login"
           className="inline-flex items-center px-5 py-2.5 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight whitespace-nowrap transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
           style={{
             boxShadow:
               "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
           }}
         >
-          Build your agent &rarr;
+          Set Up Your Portfolio &rarr;
         </Link>
       </div>
     </div>
