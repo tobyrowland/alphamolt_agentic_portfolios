@@ -17,6 +17,20 @@ Current strategies:
     dual_positive  — equal-weight the top N tickers where `bear` and `bull`
                      are both ✅, deduped by company, favouring US listings.
                      This is the rebalance version of build_portfolio.py.
+    momentum       — low-churn momentum rebalance.
+    llm_pick       — two-stage LLM-driven portfolio picker (llm_picker.py).
+    trading_agents — TauricResearch/TradingAgents multi-agent framework.
+    watchlist_curator — mandate-aware LLM curator for human portfolios; writes
+                     a shortlist into portfolio_watchlist (source='agent').
+    watchlist_buyer — mechanical buyer that equal-weights a portfolio's
+                     watchlist and trades it, recording a thesis per buy.
+
+Strategy phases (``STRATEGY_PHASES`` / ``strategy_phase``): a strategy is
+either a ``'curate'`` strategy (it produces inputs other strategies consume —
+today only ``watchlist_curator``) or a ``'trade'`` strategy (the default — it
+places trades). The portfolio heartbeat runs all curate-phase members before
+any trade-phase member so the curator's fresh shortlist is visible to the
+buyer in the same heartbeat.
 """
 
 from __future__ import annotations
@@ -796,6 +810,418 @@ def rebalance_momentum(ctx: RebalanceContext) -> RebalanceResult:
 
 
 # ---------------------------------------------------------------------------
+# Strategy: watchlist_curator
+# ---------------------------------------------------------------------------
+#
+# The curator half of the two-agent pipeline for human-owned portfolios.
+# It screens the daily compact universe snapshot against the portfolio's
+# free-text mandate via an LLM, then writes the result into
+# portfolio_watchlist as the portfolio's source='agent' rows. The buyer
+# strategy (watchlist_buyer) trades from that list later in the same
+# heartbeat — the heartbeat runs curate-phase strategies before trade-phase
+# ones (see STRATEGY_PHASES below).
+
+
+WATCHLIST_CURATOR_DEFAULTS = {
+    "watchlist_size": 20,        # target shortlist length (~15-25)
+    "max_tokens": 16384,
+    "temperature": 0.2,
+}
+
+
+WATCHLIST_CURATOR_SYSTEM_PROMPT = """\
+You are an equity research analyst curating a watchlist for a $1M paper-money portfolio.
+
+You will be given:
+1. A universe of screened companies with their current fundamentals.
+2. The portfolio's investment mandate (the human owner's brief).
+
+Your task: pick the tickers that best fit the mandate — a focused shortlist a buyer agent will then equal-weight and trade. Be selective and mandate-driven; this is a shortlist, not the whole universe.
+
+Output strict JSON only. No prose, no markdown fences."""
+
+
+WATCHLIST_CURATOR_USER_TEMPLATE = """\
+{mandate_block}UNIVERSE (compact tier, snapshot {snapshot_date}):
+{universe_json}
+
+CURRENT PORTFOLIO:
+{portfolio_json}
+
+OUTPUT SCHEMA (strict JSON, no other text):
+{{
+  "shortlist": [
+    {{"ticker": "XXX", "rationale": "<10-20 word reason this fits the mandate>"}}
+  ]
+}}
+
+Pick {shortlist_max} tickers (fewer is fine if you can't justify {shortlist_max}).
+Only tickers from the universe above are valid. Output JSON only."""
+
+
+def rebalance_watchlist_curator(ctx: RebalanceContext) -> RebalanceResult:
+    """Mandate-aware LLM curator — writes portfolio_watchlist source='agent' rows.
+
+    Lazy-imports the llm_picker machinery (and through it the LLM SDKs) so
+    the dependency only matters for runs that actually curate — momentum /
+    dual_positive heartbeats stay independent.
+
+    Defensive by contract: a missing snapshot, an LLM/provider error, or a
+    parse failure are all captured into ``result.errors`` / ``result.notes``
+    — the function never raises, so the heartbeat cannot crash on it.
+    """
+    result = RebalanceResult()
+    params = {**WATCHLIST_CURATOR_DEFAULTS, **(ctx.params or {})}
+    handle = ctx.agent.get("handle", ctx.agent["id"][:8])
+
+    # Only meaningful for a shared human portfolio — there is no watchlist
+    # to curate for a legacy 1:1 agent account.
+    if not ctx.portfolio_id:
+        result.notes["reason"] = "watchlist_curator only runs on a human portfolio"
+        return result
+
+    # Reuse llm_picker's snapshot loader + provider/model + LLM-call code.
+    try:
+        from llm_picker import (
+            _filter_snapshot_us_only,
+            _load_latest_snapshot,
+            _mandate_block,
+            _us_listed_tickers,
+            pick_shortlist_via_llm,
+        )
+        from llm_providers import LLMProviderError, PROVIDERS
+    except ImportError as exc:  # pragma: no cover — defensive
+        result.errors.append(f"watchlist_curator import failed: {exc}")
+        return result
+
+    provider = params.get("provider")
+    model = params.get("model")
+    if not provider or provider not in PROVIDERS:
+        result.errors.append(
+            f"agents.config.provider missing or invalid (got {provider!r}). "
+            f"Expected one of: {', '.join(PROVIDERS)}"
+        )
+        return result
+    if not model:
+        result.errors.append("agents.config.model missing")
+        return result
+
+    # Load the compact universe snapshot, filtered to US-listed tickers
+    # (same currency caveat the llm_pick strategy guards against).
+    snap_row = _load_latest_snapshot(ctx.db, "compact")
+    if not snap_row:
+        result.errors.append(
+            "no compact universe snapshot. Build one via build_universe_snapshot.py."
+        )
+        return result
+    us_tickers = _us_listed_tickers(ctx.db)
+    snapshot_json = _filter_snapshot_us_only(snap_row["json"], us_tickers)
+    snapshot_date = snap_row["snapshot_date"]
+    universe_tickers = {
+        str(t.get("ticker") or "").upper()
+        for t in (snapshot_json.get("tickers") or [])
+        if t.get("ticker")
+    }
+    if not universe_tickers:
+        result.errors.append("compact snapshot has no US-listed tickers")
+        return result
+
+    portfolio = ctx.get_book()
+    portfolio_summary = {
+        "cash_usd": round(float(portfolio["cash_usd"]), 2),
+        "total_value_usd": round(float(portfolio["total_value_usd"]), 2),
+        "holdings": [
+            {"ticker": h["ticker"], "quantity": float(h["quantity"])}
+            for h in portfolio["holdings"]
+        ],
+    }
+
+    watchlist_size = int(params["watchlist_size"])
+    notes: dict[str, Any] = {
+        "snapshot_date": snapshot_date,
+        "provider": provider,
+        "model": model,
+        "watchlist_size": watchlist_size,
+        "has_mandate": bool(ctx.mandate),
+    }
+
+    # Call the LLM via the same reusable shortlist helper llm_pick stage 1
+    # uses — validates each ticker against the universe, dedupes, caps.
+    try:
+        raw_text, shortlist, dropped, usage, retry_text = pick_shortlist_via_llm(
+            provider=provider,
+            model=model,
+            snapshot=snapshot_json,
+            snapshot_date=snapshot_date,
+            portfolio=portfolio_summary,
+            universe_tickers=universe_tickers,
+            system_prompt=WATCHLIST_CURATOR_SYSTEM_PROMPT,
+            user_template=WATCHLIST_CURATOR_USER_TEMPLATE,
+            shortlist_max=watchlist_size,
+            max_tokens=int(params["max_tokens"]),
+            temperature=float(params["temperature"]),
+            mandate_block=_mandate_block(ctx.mandate),
+        )
+    except LLMProviderError as exc:
+        result.errors.append(f"curator LLM call failed: {exc}")
+        notes["llm_error"] = str(exc)
+        result.notes = notes
+        return result
+    except Exception as exc:  # noqa: BLE001 — never crash the heartbeat
+        result.errors.append(f"curator unexpected error: {exc}")
+        notes["error"] = str(exc)
+        result.notes = notes
+        return result
+
+    notes["shortlist"] = shortlist
+    notes["shortlist_count"] = len(shortlist)
+    notes["dropped_invalid_tickers"] = dropped
+    notes["raw_response"] = raw_text[:8000]
+    notes["raw_response_retry"] = retry_text[:8000] if retry_text else None
+    notes["input_tokens"] = usage[0]
+    notes["output_tokens"] = usage[1]
+
+    if not shortlist:
+        result.errors.append("curator LLM returned an empty shortlist")
+        result.notes = notes
+        return result
+
+    # Defence-in-depth: pick_shortlist_via_llm already filters to the
+    # snapshot's universe, but re-confirm each ticker exists in companies
+    # (the snapshot could lag a freshly-delisted name).
+    valid_tickers = ctx.db.get_all_tickers()
+    items = [
+        {"ticker": p["ticker"], "rationale": p.get("rationale") or ""}
+        for p in shortlist
+        if p["ticker"] in valid_tickers
+    ]
+    missing = [p["ticker"] for p in shortlist if p["ticker"] not in valid_tickers]
+    if missing:
+        notes["dropped_not_in_companies"] = missing
+    if not items:
+        result.errors.append("curator shortlist had no tickers in `companies`")
+        result.notes = notes
+        return result
+
+    if ctx.dry_run:
+        notes["dry_run_plan"] = {
+            "would_write": items,
+            "count": len(items),
+        }
+        logger.info(
+            "[dry-run] %s: curated %d watchlist tickers (%s)",
+            handle, len(items), provider,
+        )
+        result.notes = notes
+        return result
+
+    # Replace the portfolio's agent-sourced watchlist rows. The owner's
+    # manual source='user' rows are never touched.
+    try:
+        ctx.db.replace_agent_watchlist(ctx.portfolio_id, ctx.agent["id"], items)
+    except Exception as exc:  # noqa: BLE001 — never crash the heartbeat
+        result.errors.append(f"watchlist write failed: {exc}")
+        result.notes = notes
+        return result
+
+    notes["watchlist_written"] = len(items)
+    logger.info("%s: wrote %d watchlist tickers", handle, len(items))
+    result.notes = notes
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Strategy: watchlist_buyer
+# ---------------------------------------------------------------------------
+#
+# The buyer half of the pipeline. Closely modelled on rebalance_dual_positive
+# — equal-weight, diff vs book, sells-before-buys, dry-run plan, idempotent —
+# but the candidate set is the portfolio's watchlist (all rows, source
+# 'agent' AND 'user') rather than the dual-positive screen. Each buy passes a
+# thesis kwarg so an investment thesis is recorded.
+
+
+WATCHLIST_BUYER_DEFAULTS = {
+    "cash_reserve_pct": 0.02,  # keep 2% cash to absorb rounding / price drift
+    "min_trade_usd": 500.0,    # ignore rebalance deltas below this notional
+}
+
+
+def _format_watchlist_sell_note(ticker: str) -> str:
+    return f"Sold {ticker} — no longer on the portfolio watchlist."
+
+
+def _format_watchlist_buy_note(ticker: str, rationale: str | None) -> str:
+    if rationale:
+        return f"Bought {ticker} — watchlist pick: {rationale}"
+    return f"Bought {ticker} — equal-weight watchlist pick."
+
+
+def rebalance_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
+    """Equal-weight the portfolio's watchlist and trade towards it.
+
+    Candidate set is every ``portfolio_watchlist`` row for the portfolio —
+    both the owner's manual ``source='user'`` picks and the curator's
+    ``source='agent'`` picks. Algorithm mirrors ``rebalance_dual_positive``:
+
+        1. Read the watchlist; price every ticker, drop the unpriced.
+        2. Equal-weight: per-target = total * (1 - cash_reserve) / N.
+        3. Sell holdings no longer on the watchlist (and trim overweights).
+        4. Buy watchlist tickers up to their target qty.
+
+    Sells run before buys so cash is freed for rotations. Trades below
+    ``min_trade_usd`` are skipped as noise, which keeps a back-to-back rerun
+    on an unchanged watchlist a no-op modulo price drift. Each buy passes a
+    ``thesis`` kwarg so an ``investment_theses`` row is recorded — using the
+    watchlist row's ``rationale`` as the thesis text when present.
+    """
+    result = RebalanceResult()
+    params = {**WATCHLIST_BUYER_DEFAULTS, **(ctx.params or {})}
+    handle = ctx.agent.get("handle", ctx.agent["id"][:8])
+
+    if not ctx.portfolio_id:
+        result.notes["reason"] = "watchlist_buyer only runs on a human portfolio"
+        return result
+
+    watchlist = ctx.db.get_portfolio_watchlist(ctx.portfolio_id)
+    # Dedupe by ticker (a ticker could in principle appear once per source);
+    # the (portfolio_id, ticker) PK makes that impossible today, but keep the
+    # buyer robust. Prefer a row that carries a rationale.
+    rationale_for: dict[str, str | None] = {}
+    for row in watchlist:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        rationale = (row.get("rationale") or "").strip() or None
+        if ticker not in rationale_for or (
+            rationale and not rationale_for.get(ticker)
+        ):
+            rationale_for[ticker] = rationale
+    watchlist_tickers = list(rationale_for.keys())
+
+    if not watchlist_tickers:
+        result.notes["reason"] = "portfolio watchlist is empty"
+        return result
+
+    # Price every candidate; skip unpriced ones rather than aborting.
+    priced: list[tuple[str, float]] = []
+    unpriced: list[str] = []
+    for ticker in watchlist_tickers:
+        try:
+            price = ctx.pm.get_price(ticker)
+        except PortfolioError:
+            unpriced.append(ticker)
+            continue
+        priced.append((ticker, price))
+    if unpriced:
+        result.notes["unpriced"] = unpriced
+    if not priced:
+        result.notes["reason"] = "no priced watchlist tickers"
+        return result
+
+    target_tickers = {t for t, _ in priced}
+    price_map = dict(priced)
+
+    portfolio = ctx.get_book()
+    total_value = portfolio["total_value_usd"]
+    if total_value <= 0:
+        result.errors.append(f"total_value_usd <= 0 for {handle}")
+        return result
+
+    cash_reserve = float(params["cash_reserve_pct"])
+    investable = total_value * (1.0 - cash_reserve)
+    per_target_usd = investable / len(priced)
+    min_trade = float(params["min_trade_usd"])
+
+    desired_qty: dict[str, int] = {
+        t: int(math.floor(per_target_usd / p)) for t, p in priced
+    }
+    current_qty: dict[str, float] = {
+        h["ticker"]: float(h["quantity"]) for h in portfolio["holdings"]
+    }
+
+    # --- Phase 1: sell positions no longer on the watchlist, trim overshoots.
+    sells: list[tuple[str, float, bool]] = []  # (ticker, qty, off_watchlist)
+    buys: list[tuple[str, int]] = []
+
+    for ticker, held in current_qty.items():
+        want = desired_qty.get(ticker, 0) if ticker in target_tickers else 0
+        delta = held - want  # positive → need to sell
+        if delta <= 0:
+            continue
+        px = price_map.get(ticker)
+        if px is None:
+            try:
+                px = ctx.pm.get_price(ticker)
+            except PortfolioError:
+                result.notes.setdefault("unpriced_holdings", []).append(ticker)
+                continue
+        # Skip noise trims within a still-targeted position; an off-watchlist
+        # exit always sells in full regardless of notional.
+        if ticker in target_tickers and delta * px < min_trade:
+            continue
+        sells.append((ticker, delta, ticker not in target_tickers))
+
+    for ticker, price in priced:
+        held = current_qty.get(ticker, 0.0)
+        delta = desired_qty[ticker] - held
+        if delta <= 0:
+            continue
+        if delta * price < min_trade:
+            continue
+        buys.append((ticker, int(delta)))
+
+    # --- Dry-run: serialise the plan and return.
+    if ctx.dry_run:
+        result.notes["dry_run_plan"] = {
+            "sells": [
+                {"ticker": t, "qty": q, "off_watchlist": off}
+                for (t, q, off) in sells
+            ],
+            "buys": [
+                {"ticker": t, "qty": q, "rationale": rationale_for.get(t)}
+                for (t, q) in buys
+            ],
+            "targets": len(priced),
+            "per_target_usd": round(per_target_usd, 2),
+            "total_value_usd": total_value,
+        }
+        logger.info(
+            "[dry-run] %s: %d sells, %d buys, watchlist=%d, total=$%.2f",
+            handle, len(sells), len(buys), len(priced), total_value,
+        )
+        return result
+
+    # --- Live: execute sells first, then buys.
+    for ticker, qty, _off in sells:
+        try:
+            ctx.sell(ticker, qty, note=_format_watchlist_sell_note(ticker))
+            result.sells += 1
+        except PortfolioError as exc:
+            result.errors.append(f"sell {ticker} x{qty}: {exc}")
+
+    for ticker, qty in buys:
+        rationale = rationale_for.get(ticker)
+        note = _format_watchlist_buy_note(ticker, rationale)
+        # Pass a thesis so an investment_theses row is recorded on the buy.
+        # The watchlist rationale becomes the thesis text when present;
+        # otherwise the buy is snapshot-only (source='auto').
+        thesis = {"thesis_text": rationale} if rationale else None
+        try:
+            ctx.buy(ticker, qty, note=note, thesis=thesis)
+            result.buys += 1
+        except PortfolioError as exc:
+            # Cash drift between plan and execution is the usual failure
+            # mode — a partial rebalance beats aborting.
+            result.errors.append(f"buy {ticker} x{qty}: {exc}")
+
+    result.notes["targets"] = len(priced)
+    result.notes["per_target_usd"] = round(per_target_usd, 2)
+    result.notes["total_value_usd"] = total_value
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -821,7 +1247,36 @@ STRATEGIES: dict[str, Strategy] = {
     "momentum": rebalance_momentum,
     "llm_pick": _llm_pick_lazy,
     "trading_agents": _trading_agents_lazy,
+    "watchlist_curator": rebalance_watchlist_curator,
+    "watchlist_buyer": rebalance_watchlist_buyer,
 }
+
+
+# ---------------------------------------------------------------------------
+# Strategy phases — curate-before-trade ordering
+# ---------------------------------------------------------------------------
+#
+# A strategy is either a 'curate' strategy (it produces inputs other
+# strategies consume — today only watchlist_curator, which refreshes the
+# portfolio_watchlist) or a 'trade' strategy (the default — it places
+# trades). agent_heartbeat._run_portfolio runs all curate-phase members of
+# a portfolio before any trade-phase member, so the curator's fresh
+# shortlist is visible to the watchlist_buyer in the same heartbeat.
+
+DEFAULT_STRATEGY_PHASE = "trade"
+
+STRATEGY_PHASES: dict[str, str] = {
+    "watchlist_curator": "curate",
+}
+
+
+def strategy_phase(name: str | None) -> str:
+    """Return the phase ('curate' | 'trade') for a strategy name.
+
+    Anything not explicitly listed in ``STRATEGY_PHASES`` — including
+    ``None`` and unknown names — defaults to ``'trade'``.
+    """
+    return STRATEGY_PHASES.get(name or "", DEFAULT_STRATEGY_PHASE)
 
 
 def get_strategy(name: str) -> Strategy | None:
