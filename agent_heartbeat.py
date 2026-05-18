@@ -10,9 +10,11 @@ Iterates over every row in the `agents` table. For each agent:
     4. Journal the run in `agent_heartbeats` and update
        `agents.last_heartbeat_at`.
 
-Designed to run weekly (Sundays 07:00 UTC) via
-``.github/workflows/agent-heartbeat.yml`` but safe to run ad-hoc for a
-single agent.
+Designed to run daily (07:00 UTC) via
+``.github/workflows/agent-heartbeat.yml``; each agent — and each human
+portfolio member — only rebalances when its own ``heartbeat_interval_hours``
+cadence is due, so a daily run is mostly cheap no-op skips. Safe to run
+ad-hoc for a single agent.
 
 Usage::
 
@@ -101,10 +103,10 @@ def _journal(
     # in effect after a permanent-failure attempt; transient errors back off
     # by the same interval as successful runs).
     #
-    # advance_agent is False for human-portfolio member runs: those rebalance
-    # on the *portfolio's* cadence (portfolios.last_heartbeat_at), and an
-    # agent may be a member of several portfolios, so its own clock must not
-    # be touched here.
+    # advance_agent is False for human-portfolio member runs: those track
+    # cadence per (portfolio, agent) membership via
+    # portfolio_agents.last_heartbeat_at (an agent can be a member of
+    # several portfolios), so the shared agents row is left untouched.
     if not dry_run and advance_agent:
         db.update_agent_last_heartbeat(agent_id, _now_utc().isoformat())
 
@@ -192,15 +194,20 @@ def _run_one(
     return status
 
 
-# Human portfolios rebalance weekly, matching the default agent cadence.
-PORTFOLIO_HEARTBEAT_INTERVAL_HOURS = 168
+def _member_is_due(agent: dict, member_last: str | None, now: datetime) -> bool:
+    """Whether a portfolio member is due to rebalance, on its own cadence.
 
-
-def _portfolio_is_due(portfolio: dict, now: datetime) -> bool:
-    last = _parse_ts(portfolio.get("last_heartbeat_at"))
+    Gates on the per-membership last-run (``portfolio_agents.last_heartbeat_at``,
+    passed as ``member_last``) and the agent's ``heartbeat_interval_hours``.
+    A NULL last-run (never run in this portfolio) or NULL interval is due.
+    """
+    last = _parse_ts(member_last)
     if last is None:
         return True
-    return now >= last + timedelta(hours=PORTFOLIO_HEARTBEAT_INTERVAL_HOURS)
+    interval = agent.get("heartbeat_interval_hours")
+    if interval is None:
+        return True
+    return now >= last + timedelta(hours=int(interval))
 
 
 def _run_portfolio(
@@ -214,34 +221,35 @@ def _run_portfolio(
 ) -> dict[str, int]:
     """Rebalance one launched human portfolio.
 
-    Each member agent runs its own strategy, in portfolio_agents.joined_at
-    order, against the *shared* portfolio book — so a later member sees the
-    trades earlier members already made. Returns a status-count dict.
+    Each member agent runs its own strategy against the *shared* portfolio
+    book — so a later member sees the trades earlier members made. Members
+    are gated individually on their own cadence (the per-membership clock
+    ``portfolio_agents.last_heartbeat_at`` plus the agent's
+    ``heartbeat_interval_hours``), so e.g. a daily curator and a weekly
+    buyer coexist in one portfolio. Curate-phase members run before
+    trade-phase ones, so on a day both are due the buyer sees the fresh
+    shortlist. Returns a status-count dict.
     """
     counts = {"ok": 0, "dry-run": 0, "skipped": 0, "error": 0}
     slug = portfolio.get("slug") or portfolio["id"][:8]
 
-    if not force and not _portfolio_is_due(portfolio, _now_utc()):
-        logger.info("  portfolio %-22s skip (not due)", slug)
-        counts["skipped"] += 1
-        return counts
-
-    members = [m["agent"] for m in db.get_portfolio_members(portfolio["id"])]
+    member_entries = db.get_portfolio_members(portfolio["id"])
     mandate = portfolio.get("description")
 
     # Run curate-phase members (e.g. watchlist_curator) before trade-phase
-    # ones so a curator's fresh shortlist is visible to the buyer in the
-    # same heartbeat. Stable sort by (phase_rank, original joined_at index)
-    # preserves joined_at order within each phase.
+    # ones. Stable sort preserves joined_at order within each phase.
     _phase_rank = {"curate": 0, "trade": 1}
-    members.sort(
-        key=lambda m: (
-            _phase_rank.get(strategy_phase(m.get("strategy")), 1),
+    member_entries.sort(
+        key=lambda e: _phase_rank.get(
+            strategy_phase(e["agent"].get("strategy")), 1
         ),
     )
-    logger.info("  portfolio %-22s %d member(s)", slug, len(members))
+    member_agents = [e["agent"] for e in member_entries]
+    logger.info("  portfolio %-22s %d member(s)", slug, len(member_entries))
 
-    for member in members:
+    ran_any = False
+    for entry in member_entries:
+        member = entry["agent"]
         handle = member.get("handle", member["id"][:8])
         strategy_name = member.get("strategy")
         started = _now_utc()
@@ -253,6 +261,19 @@ def _run_portfolio(
         # trading_agents runs from its own long-timeout workflow.
         if strategy_name == "trading_agents":
             logger.info("    %-22s skip (trading_agents)", handle)
+            counts["skipped"] += 1
+            continue
+        # Per-membership cadence guard (migration 029): a member only
+        # rebalances when its own heartbeat_interval_hours is due here.
+        if not force and not _member_is_due(
+            member, entry.get("member_last_heartbeat_at"), started
+        ):
+            logger.info(
+                "    %-22s skip (last=%s, interval=%sh)",
+                handle,
+                entry.get("member_last_heartbeat_at") or "never",
+                member.get("heartbeat_interval_hours"),
+            )
             counts["skipped"] += 1
             continue
 
@@ -268,14 +289,19 @@ def _run_portfolio(
                 portfolio_id=portfolio["id"], advance_agent=False,
                 dry_run=dry_run,
             )
+            if not dry_run:
+                db.update_portfolio_member_heartbeat(
+                    portfolio["id"], member["id"], _now_utc().isoformat()
+                )
             counts["error"] += 1
+            ran_any = True
             continue
 
         ctx = RebalanceContext(
             db=db, pm=pm, agent=member, dry_run=dry_run,
             params=dict(member.get("config") or {}),
             portfolio_id=portfolio["id"],
-            members=members,
+            members=member_agents,
             mandate=mandate,
         )
         try:
@@ -289,7 +315,12 @@ def _run_portfolio(
                 portfolio_id=portfolio["id"], advance_agent=False,
                 dry_run=dry_run,
             )
+            if not dry_run:
+                db.update_portfolio_member_heartbeat(
+                    portfolio["id"], member["id"], _now_utc().isoformat()
+                )
             counts["error"] += 1
+            ran_any = True
             continue
 
         status = (
@@ -305,10 +336,16 @@ def _run_portfolio(
             error_message="; ".join(result.errors) if result.errors else None,
             portfolio_id=portfolio["id"], advance_agent=False, dry_run=dry_run,
         )
+        if not dry_run:
+            db.update_portfolio_member_heartbeat(
+                portfolio["id"], member["id"], _now_utc().isoformat()
+            )
         counts[status] = counts.get(status, 0) + 1
+        ran_any = True
 
-    # Stamp the portfolio's heartbeat clock once, after every member ran.
-    if not dry_run:
+    # Stamp the portfolio's clock when at least one member actually ran —
+    # informational ("last activity"); the per-member clocks are the gate.
+    if not dry_run and ran_any:
         db.update_portfolio_last_heartbeat(
             portfolio["id"], _now_utc().isoformat()
         )

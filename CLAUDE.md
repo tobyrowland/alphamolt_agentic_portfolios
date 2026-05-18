@@ -22,9 +22,9 @@ Daily (UTC):
 05:00           score_ai_analysis.py      Score, rank & assign sort_order
 05:30           portfolio_valuation.py    Mark-to-market every agent + launched human portfolio
 06:00           build_universe_snapshot.py  Daily universe JSON snapshot (3 tiers)
+07:00           agent_heartbeat.py        Rebalance loop — every agent / human-portfolio member that is due on its own heartbeat_interval_hours cadence
 
 Weekly (Sunday UTC):
-Sun 07:00       agent_heartbeat.py        Rebalance every agent portfolio + every launched human portfolio
 Sun 08:00       consensus_snapshot.py     Aggregate agent_holdings → consensus_snapshots (powers /consensus)
 
 Every 15 min (Mon–Fri, 13:00–22:00 UTC):
@@ -130,9 +130,11 @@ view). Two cadences share the same script:
 Supports `--dry-run` and `--agent HANDLE` flags. See `portfolio.py` for the
 trading layer.
 
-### agent_heartbeat.py (Sundays 07:00 UTC)
-Weekly rebalance loop — the reason portfolios aren't frozen after the initial
-build. Runs in **two passes**:
+### agent_heartbeat.py (07:00 UTC daily)
+Rebalance loop — the reason portfolios aren't frozen after the initial
+build. Runs **daily**, but each agent / member only rebalances when its own
+`heartbeat_interval_hours` cadence is due, so most daily runs are cheap
+no-op skips. Runs in **two passes**:
 
 1. **Agent pass** — for every row in `agents` with a non-null `strategy` whose
    `last_heartbeat_at` is older than `heartbeat_interval_hours` (default 168h),
@@ -145,9 +147,13 @@ build. Runs in **two passes**:
    `portfolio_holdings`) — sequential rebalance, so a later agent sees what
    earlier ones did. Members run **curate-phase strategies before trade-phase
    ones** (see `STRATEGY_PHASES` below), and within each phase in
-   `portfolio_agents.joined_at` order (stable sort). Mandate-aware strategies
-   receive `portfolios.description` as their brief. Gated on
-   `portfolios.last_heartbeat_at`.
+   `portfolio_agents.joined_at` order (stable sort). Each member is gated on
+   its **own cadence** — the per-membership clock `portfolio_agents.last_heartbeat_at`
+   (migration 029) plus the agent's `heartbeat_interval_hours` — so a daily
+   curator and a weekly buyer coexist in one portfolio. The per-membership
+   clock (not the shared `agents` row) is used because one agent can belong
+   to many portfolios. Mandate-aware strategies receive `portfolios.description`
+   as their brief.
 
 The Pass-1 agents loop skips `trading_agents` (own long-timeout workflow) and
 the pipeline strategies `watchlist_curator` / `watchlist_buyer` (only
@@ -171,22 +177,27 @@ the phase for any name, listed or not). A *curate* strategy produces inputs a
 members first so their output is visible to the buyers in the same run.
 
 **Two-agent pipeline (`watchlist_curator` → `watchlist_buyer`).** A pair of
-strategies for human portfolios. `watchlist_curator` (phase `curate`) is a
-mandate-aware LLM curator: it loads the daily compact universe snapshot,
-prompts an LLM with the snapshot + the portfolio's mandate, parses ~15-25
-`{ticker, rationale}` items (count via `config.watchlist_size`, default 20),
-validates each against `companies`, and replaces the portfolio's
-`source='agent'` `portfolio_watchlist` rows (the owner's `source='user'`
-picks are never touched). It reuses `llm_picker`'s snapshot loader and the
-shared `pick_shortlist_via_llm` LLM-call helper; provider/model come from
-`agents.config` like `llm_pick`. `watchlist_buyer` (phase `trade`) is a
-mechanical buyer modelled on `dual_positive`: it reads the *whole* watchlist
-(both sources), equal-weights it with a 2% cash reserve, diffs against the
-shared book, sells holdings no longer on the watchlist (before buys), and
-buys watchlist tickers — passing a `thesis` kwarg on each buy so an
+strategies for human portfolios, run on different per-agent cadences:
+specialist curators populate the shortlist often (the house curator runs
+daily), buyers trade it less often (the house buyer runs weekly).
+`watchlist_curator` (phase `curate`) is a mandate-aware LLM curator: it loads
+the daily compact universe snapshot, prompts an LLM with the snapshot + the
+portfolio's mandate, parses ~15-25 `{ticker, rationale}` items (count via
+`config.watchlist_size`, default 20), validates each against `companies`, and
+replaces **only its own** `source='agent'` `portfolio_watchlist` rows — keyed
+by `added_by_agent_id`, so several specialist curators can each maintain
+their own slice, and the owner's `source='user'` picks are never touched. It
+reuses `llm_picker`'s snapshot loader and the shared `pick_shortlist_via_llm`
+LLM-call helper; provider/model come from `agents.config` like `llm_pick`.
+`watchlist_buyer` (phase `trade`) is a mechanical buyer modelled on
+`dual_positive`: it reads the *whole* watchlist (every curator's rows + the
+owner's), equal-weights it with a 2% cash reserve, diffs against the shared
+book, sells holdings no longer on the watchlist (before buys), and buys
+watchlist tickers — passing a `thesis` kwarg on each buy so an
 `investment_theses` row is recorded (the watchlist `rationale` becomes the
 thesis text). Both are no-ops on a legacy 1:1 agent portfolio. The house
-agents `shortlist-builder` and `buying-agent` (migration 028) drive them.
+agents `shortlist-builder` (curator, `gemini-2.5-flash`, 24h cadence) and
+`buying-agent` (buyer, 168h cadence) — migration 028 — drive them.
 
 Supports `--handle`, `--force` (ignore interval guard), and `--dry-run`.
 
@@ -350,13 +361,17 @@ public surfaces. URL: `/portfolios/<slug>`.
 
 ### portfolio_agents (membership join — many-to-many)
 ```
-(portfolio_id, agent_id) PK, notes (TEXT), joined_at
+(portfolio_id, agent_id) PK, notes (TEXT), joined_at, last_heartbeat_at
 ```
-Permissive many-to-many: no role or capability fields. Any member
-can buy / sell / record theses on the portfolio. `notes` is a
-free-form description of what this agent does for this portfolio
-("Handles weekly thesis-driven sells", "Rebalancer", etc.) —
+Permissive many-to-many: no role or capability fields (a member's job is
+its `agents.strategy`). Any member can buy / sell / record theses on the
+portfolio. `notes` is a free-form description of what this agent does for
+this portfolio ("Handles weekly thesis-driven sells", "Rebalancer", etc.) —
 rendered on the agent profile page next to each portfolio.
+`last_heartbeat_at` (migration 029) is the per-membership rebalance clock:
+`agent_heartbeat.py` gates each member on it plus the agent's
+`heartbeat_interval_hours`, so the same agent runs on its own cadence
+independently in every portfolio it joins.
 
 ### portfolio_accounts / portfolio_holdings (shared-pot trading — migration 025)
 ```

@@ -11,10 +11,11 @@
 --     Reads the portfolio's watchlist, equal-weights it, and places paper
 --     trades, recording an investment thesis on each buy.
 --
--- The heartbeat runs curate-phase strategies before trade-phase ones
--- (see agent_strategies.STRATEGY_PHASES), so within a single human
--- portfolio the curator refreshes the shortlist and the buyer trades from
--- the fresh list in the same heartbeat.
+-- Each member rebalances on its own cadence (agents.heartbeat_interval_hours
+-- + migration 029's per-membership clock): the curator runs daily (24h),
+-- the buyer weekly (168h). On a day both are due the heartbeat runs the
+-- curate-phase member before the trade-phase one (see
+-- agent_strategies.STRATEGY_PHASES) so the buyer sees the fresh shortlist.
 --
 -- Like every other agent, each gets a 1:1 portfolios row (id == agent id),
 -- a portfolio_agents self-membership, and an agent_accounts row — exactly
@@ -35,14 +36,14 @@
 
 INSERT INTO agents (
     handle, display_name, description, long_description,
-    is_house_agent, available_for_hire, strategy, config,
-    api_key_hash, api_key_prefix
+    is_house_agent, available_for_hire, strategy, heartbeat_interval_hours,
+    config, api_key_hash, api_key_prefix
 )
 VALUES
     (
         'shortlist-builder',
         'Shortlist Builder',
-        'Curator agent. Screens the daily equity universe against a portfolio''s mandate and writes a ~20-name shortlist into the portfolio watchlist for a buyer agent to trade from. Brain: claude-opus-4-7 (anthropic).',
+        'Curator agent. Screens the daily equity universe against a portfolio''s mandate and writes a ~20-name shortlist into the portfolio watchlist for a buyer agent to trade from. Runs daily. Brain: gemini-2.5-flash (google).',
         $md$# Strategy: watchlist_curator
 
 The curator half of the two-agent pipeline for human-owned portfolios.
@@ -52,11 +53,11 @@ prompt from that snapshot plus the portfolio's free-text **mandate**, and
 asks the model for ~15-25 tickers with a one-line rationale each. Every
 ticker is validated against the `companies` universe.
 
-The result fully replaces the portfolio's `source='agent'` watchlist rows
-(the owner's manual `source='user'` picks are never touched). A buyer agent
-(`watchlist_buyer`) then trades from that shortlist later in the same
-heartbeat — the heartbeat runs curate-phase strategies before trade-phase
-ones.
+It refreshes only its own `source='agent'` watchlist rows — other curators'
+picks and the owner's manual `source='user'` picks are never touched. A
+buyer agent (`watchlist_buyer`) trades from the shortlist on its own
+(weekly) cadence; the heartbeat orders curate-phase members before
+trade-phase ones so the buyer always sees the freshest list.
 
 Only meaningful for shared human portfolios; on a legacy 1:1 agent
 portfolio it is a no-op.
@@ -65,7 +66,8 @@ portfolio it is a no-op.
         TRUE,
         TRUE,
         'watchlist_curator',
-        '{"provider": "anthropic", "model": "claude-opus-4-7", "watchlist_size": 20}'::jsonb,
+        24,
+        '{"provider": "google", "model": "gemini-2.5-flash", "watchlist_size": 20}'::jsonb,
         'house-agent',
         'ak_house_sb'
     ),
@@ -95,6 +97,7 @@ portfolio, or with an empty watchlist, it is a no-op.
         TRUE,
         TRUE,
         'watchlist_buyer',
+        168,
         '{}'::jsonb,
         'house-agent',
         'ak_house_ba'

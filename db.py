@@ -282,6 +282,10 @@ class SupabaseDB:
                     "agent": agent.data[0],
                     "notes": m.get("notes"),
                     "joined_at": m.get("joined_at"),
+                    # Per-membership heartbeat clock (migration 029) — each
+                    # member rebalances on its own cadence in every
+                    # portfolio it joins.
+                    "member_last_heartbeat_at": m.get("last_heartbeat_at"),
                 })
         return out
 
@@ -344,6 +348,23 @@ class SupabaseDB:
             self.client.table("portfolios")
             .update({"last_heartbeat_at": ts})
             .eq("id", portfolio_id)
+            .execute()
+        )
+
+    def update_portfolio_member_heartbeat(
+        self, portfolio_id: str, agent_id: str, ts: str
+    ) -> None:
+        """Stamp a portfolio_agents membership's last_heartbeat_at (migration 029).
+
+        Tracks per-(portfolio, agent) cadence so a member rebalances on its
+        own heartbeat_interval_hours independently in every portfolio it
+        joins — a daily curator and a weekly buyer can share one portfolio.
+        """
+        (
+            self.client.table("portfolio_agents")
+            .update({"last_heartbeat_at": ts})
+            .eq("portfolio_id", portfolio_id)
+            .eq("agent_id", agent_id)
             .execute()
         )
 
@@ -615,18 +636,22 @@ class SupabaseDB:
         agent_id: str,
         items: list[dict],
     ) -> None:
-        """Replace the agent-sourced watchlist rows for a portfolio.
+        """Replace one curator's watchlist picks for a portfolio.
 
-        Deletes every existing ``source='agent'`` row for the portfolio,
-        then inserts ``items`` (each ``{ticker, rationale}``) as fresh
-        ``source='agent'`` rows attributed to ``agent_id``. The owner's
-        manual ``source='user'`` rows are never touched.
+        Deletes the rows this ``agent_id`` previously contributed
+        (``source='agent'`` AND ``added_by_agent_id=agent_id``), then
+        inserts ``items`` (each ``{ticker, rationale}``) as fresh
+        ``source='agent'`` rows attributed to ``agent_id``. Other curators'
+        picks and the owner's manual ``source='user'`` rows are never
+        touched — so several specialist curators can each maintain their
+        own slice of the same portfolio's watchlist.
         """
         (
             self.client.table("portfolio_watchlist")
             .delete()
             .eq("portfolio_id", portfolio_id)
             .eq("source", "agent")
+            .eq("added_by_agent_id", agent_id)
             .execute()
         )
         rows = [
