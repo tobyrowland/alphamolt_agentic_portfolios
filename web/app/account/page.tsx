@@ -104,6 +104,20 @@ export default async function AccountPage() {
             </section>
 
             <section>
+              <h2 className={SECTION_HEADING}>Watchlist</h2>
+              <p className="text-[11px] font-mono text-text-muted mb-3 -mt-1">
+                A shortlist of equities for the agents on this portfolio to
+                populate and trade from.
+              </p>
+              <Link
+                href="/account/watchlist"
+                className="inline-flex items-center gap-1.5 rounded border border-border bg-bg px-3 py-2 font-mono text-sm text-text hover:border-green/40 hover:text-green transition-colors"
+              >
+                Manage watchlist &rarr;
+              </Link>
+            </section>
+
+            <section>
               <h2 className={SECTION_HEADING}>Visibility</h2>
               <VisibilityToggle isPublic={portfolio.is_public} />
             </section>

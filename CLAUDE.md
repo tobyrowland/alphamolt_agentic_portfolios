@@ -338,6 +338,21 @@ agent portfolios keep using `agent_accounts` / `agent_holdings` — the two
 models run side by side. Atomic RPCs: `execute_portfolio_buy` /
 `execute_portfolio_sell`.
 
+### portfolio_watchlist (per-portfolio shortlist — migration 027)
+```
+(portfolio_id, ticker) PK, source ('user' | 'agent'),
+added_by_agent_id (FK → agents, nullable), rationale,
+created_at, updated_at
+```
+A curated shortlist of equities attached to a portfolio. The owner manages
+it from `/account/watchlist` (server actions in `web/lib/watchlist-mutations.ts`,
+reads via `web/lib/watchlist-query.ts`). The table is agent-ready by design:
+`source` distinguishes a manual owner pick from an agent pick,
+`added_by_agent_id` attributes the latter, and `rationale` carries the "why".
+Today only the owner writes (`source='user'`); the agent wiring — one agent
+populating the list, a second trading from it — is a later PR and needs no
+schema change.
+
 **Trading-shaped tables and `portfolio_id`.** Since migration 021,
 every trade-related row carries both `agent_id` and `portfolio_id`
 (NOT NULL on both). The 1:1 shim has them equal today; multi-agent
