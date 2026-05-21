@@ -300,7 +300,7 @@ function PortfolioView({
             Public page:{" "}
             <Link
               href={`/portfolios/${portfolio.slug}`}
-              className="text-green hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-green/40 rounded"
+              className="text-[var(--color-cyan)] hover:brightness-110 transition-[filter] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 rounded"
             >
               /portfolios/{portfolio.slug}
             </Link>
@@ -320,7 +320,7 @@ function WatchlistPreview({ items }: { items: WatchlistItem[] }) {
   return (
     <div>
       {top.length > 0 ? (
-        <ul className="divide-y divide-border rounded-lg border border-white/10 overflow-hidden">
+        <ul className="divide-y divide-white/[0.06] rounded-lg border border-white/10 overflow-hidden">
           {top.map((it) => (
             <li
               key={it.ticker}
@@ -337,10 +337,10 @@ function WatchlistPreview({ items }: { items: WatchlistItem[] }) {
                 )}
               </div>
               <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono font-bold uppercase tracking-widest border ${
+                className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono font-bold uppercase tracking-[0.14em] border ${
                   it.source === "agent"
                     ? "border-cyan/30 bg-cyan/[0.08] text-cyan"
-                    : "border-border bg-bg text-text-muted"
+                    : "border-white/10 bg-white/[0.02] text-text-muted"
                 }`}
               >
                 {it.source === "agent" ? "Agent" : "You"}
@@ -355,7 +355,7 @@ function WatchlistPreview({ items }: { items: WatchlistItem[] }) {
       )}
       <Link
         href="/account/watchlist"
-        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text hover:border-cyan/40 hover:text-cyan focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 transition-colors"
+        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 font-mono text-sm text-text hover:border-cyan/40 hover:text-cyan focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 transition-colors"
       >
         {items.length > top.length
           ? `Manage all ${items.length} watchlist items →`

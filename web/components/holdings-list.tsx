@@ -46,18 +46,18 @@ export default function HoldingsList({ holdings, thesesByTicker }: Props) {
         return (
           <li
             key={h.ticker}
-            className="glass-card rounded border border-border overflow-hidden"
+            className="rounded-lg border border-white/10 bg-white/[0.02] overflow-hidden"
           >
             <button
               type="button"
               onClick={() => setOpenTicker(isOpen ? null : h.ticker)}
-              className="w-full px-4 py-3 flex items-baseline justify-between gap-3 hover:bg-bg-elevated transition-colors text-left"
+              className="w-full px-4 py-3 flex items-baseline justify-between gap-3 hover:bg-white/[0.04] transition-colors text-left"
               aria-expanded={isOpen}
               aria-controls={`thesis-panel-${h.ticker}`}
             >
               <div className="flex items-baseline gap-3 min-w-0">
                 <span
-                  className="font-mono text-sm font-bold text-green shrink-0"
+                  className="font-mono text-sm font-bold text-text-muted shrink-0"
                   aria-hidden="true"
                 >
                   {isOpen ? "▼" : "▶"}
@@ -65,7 +65,7 @@ export default function HoldingsList({ holdings, thesesByTicker }: Props) {
                 <Link
                   href={`/company/${encodeURIComponent(h.ticker)}`}
                   onClick={(e) => e.stopPropagation()}
-                  className="font-mono text-sm font-bold text-green hover:underline shrink-0"
+                  className="font-mono text-sm font-bold text-text hover:text-[var(--color-cyan)] hover:underline decoration-1 underline-offset-[3px] shrink-0 transition-colors"
                 >
                   {h.ticker}
                 </Link>
@@ -103,7 +103,7 @@ export default function HoldingsList({ holdings, thesesByTicker }: Props) {
             {isOpen && (
               <div
                 id={`thesis-panel-${h.ticker}`}
-                className="border-t border-border bg-bg-elevated/40 px-4 py-4"
+                className="border-t border-white/[0.06] bg-white/[0.015] px-4 py-4"
               >
                 {thesis ? (
                   <ThesisPanel thesis={thesis} />
@@ -138,7 +138,7 @@ function ThesisBadge({ thesis }: { thesis: InvestmentThesis }) {
   }
   return (
     <span
-      className="text-[10px] font-mono uppercase tracking-wider text-text-muted border border-border rounded px-1.5 py-0.5 shrink-0"
+      className="text-[10px] font-mono uppercase tracking-wider text-text-muted border border-white/10 rounded px-1.5 py-0.5 shrink-0"
       title="Snapshot of the equity data at buy time. No agent-written thesis."
     >
       Snapshot
@@ -278,8 +278,8 @@ function StatusPill({ status }: { status: InvestmentThesis["status"] }) {
     active: "text-green border-green/30",
     broken: "text-red border-red/30",
     improved: "text-green border-green/30",
-    superseded: "text-text-muted border-border",
-    closed: "text-text-muted border-border",
+    superseded: "text-text-muted border-white/10",
+    closed: "text-text-muted border-white/10",
   };
   return (
     <span

@@ -37,21 +37,21 @@ export function TradeTape({
 }) {
   if (trades.length === 0) {
     return (
-      <div className="glass-card rounded-lg p-4 text-sm text-text-muted">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 text-sm text-text-muted">
         {emptyLabel}
       </div>
     );
   }
 
   return (
-    <div className="glass-card rounded-lg overflow-hidden">
-      <ul className="divide-y divide-border/40">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.02] overflow-hidden">
+      <ul className="divide-y divide-white/[0.06]">
         {trades.map((t) => (
           <TradeRow key={t.id} trade={t} showTicker={showTicker} />
         ))}
       </ul>
       {totalTrades > trades.length && (
-        <p className="px-4 py-3 text-xs font-mono text-text-muted border-t border-border/40">
+        <p className="px-4 py-3 text-xs font-mono text-text-muted border-t border-white/[0.06]">
           Showing the {trades.length} most recent of{" "}
           {totalTrades.toLocaleString("en-US")} trades.
         </p>
@@ -80,7 +80,7 @@ function TradeRow({
       <div className="flex flex-wrap items-baseline gap-2 text-sm font-mono">
         <Link
           href={`/agents/${trade.handle}`}
-          className="text-text font-bold hover:text-green"
+          className="text-text font-bold hover:text-[var(--color-cyan)] transition-colors"
         >
           [{trade.display_name}]
         </Link>
@@ -90,7 +90,7 @@ function TradeRow({
         {showTicker && (
           <Link
             href={`/company/${trade.ticker}`}
-            className="text-text font-bold hover:text-green"
+            className="text-text font-bold hover:text-[var(--color-cyan)] transition-colors"
           >
             {trade.ticker}
           </Link>
