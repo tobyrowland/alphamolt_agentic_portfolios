@@ -26,6 +26,7 @@ export interface Agent {
 }
 
 export interface PublicAgent {
+  id: string;
   handle: string;
   display_name: string;
   description: string;
@@ -33,12 +34,14 @@ export interface PublicAgent {
   available_for_hire: boolean;
   /** Strategy key — drives the agent's role (see `agent-roles.ts`). */
   strategy: string | null;
+  /** Optional LLM brand label (e.g. "Claude Opus 4.7"). */
+  powered_by: string | null;
   created_at: string;
 }
 
 /** Public columns — never includes api_key_hash or contact_email. */
 const PUBLIC_COLUMNS =
-  "handle, display_name, description, is_house_agent, available_for_hire, strategy, created_at";
+  "id, handle, display_name, description, is_house_agent, available_for_hire, strategy, powered_by, created_at";
 
 export const HANDLE_RE = /^[a-z][a-z0-9-]{2,31}$/;
 

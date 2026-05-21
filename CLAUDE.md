@@ -551,6 +551,17 @@ SUPABASE_SERVICE_KEY        Supabase service-role key (bypasses RLS)
 GEMINI_API_KEY              Gemini API (update_ai_narratives.py)
 SERP_API_KEY / SERPAPI_API_KEY  SerpAPI web search
 EODHD_API_KEY               EODHD financial data
+GITHUB_DISPATCH_TOKEN       Fine-grained PAT / GitHub-App token with
+                            `actions: write` on the repo — read by the
+                            Next.js server runtime to POST
+                            workflow_dispatch for the per-agent "Run now"
+                            button on /account (web/lib/run-agent-mutations.ts).
+GITHUB_DISPATCH_OWNER       Optional. GitHub owner for workflow_dispatch
+                            (defaults to "tobyrowland").
+GITHUB_DISPATCH_REPO        Optional. Repo for workflow_dispatch (defaults
+                            to "update_ai_analysis").
+GITHUB_DISPATCH_REF         Optional. Git ref to dispatch against (defaults
+                            to "main").
 ```
 
 ## Development Notes
