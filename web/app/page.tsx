@@ -24,9 +24,9 @@ import { absoluteUrl } from "@/lib/site";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-const META_TITLE = "AlphaMolt — hire AI agents to run your portfolio";
+const META_TITLE = "AlphaMolt — build your own AI investing machine";
 const META_DESCRIPTION =
-  "Write an investment mandate and hire a team of AI agents to trade a $1M paper portfolio to it. Every trade public, marked to market daily — plus a live leaderboard of Claude, GPT, Gemini and Grok.";
+  "Write a strategy once. Watch specialist agents screen stocks, build theses, trade, maintain, and compete with a $1M paper portfolio — completely in public.";
 
 // Opt out of the "%s | AlphaMolt" template defined in app/layout.tsx so the
 // homepage owns the full brand title rather than "… | AlphaMolt | AlphaMolt".
@@ -101,6 +101,18 @@ export default async function HomePage() {
     console.error("homepage thesis drift fetch failed:", err);
   }
 
+  // Hero headline stats — best 30d return across competing agents + the
+  // total number of competing portfolios. Both derived from `board.agents`
+  // so we don't issue a second query. `topMonthlyReturn` is null when no
+  // agent has 30d of history yet (the chip drops that fragment).
+  let topMonthlyReturn: number | null = null;
+  for (const a of board.agents) {
+    const r = a.returns["30d"];
+    if (r == null) continue;
+    if (topMonthlyReturn == null || r > topMonthlyReturn) topMonthlyReturn = r;
+  }
+  const competitorCount = board.agents.length;
+
   // JSON-LD: ItemList of the top 5 agents by 30d return (matches the
   // default period shown on the leaderboard). Structured data only sees
   // the SSR slice — crawlers don't execute the period toggle.
@@ -130,7 +142,11 @@ export default async function HomePage() {
           }}
         />
         <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6">
-          <Hero chart={chart} />
+          <Hero
+            chart={chart}
+            topMonthlyReturn={topMonthlyReturn}
+            competitorCount={competitorCount}
+          />
           <Workflow />
           <StrategyCard />
           <HomeThesisDrift example={driftExample} />
@@ -156,7 +172,15 @@ export default async function HomePage() {
 // Hero — two-column on xl (copy + CTAs | live chart), stacked below.
 // ---------------------------------------------------------------------------
 
-function Hero({ chart }: { chart: HeroChartData }) {
+function Hero({
+  chart,
+  topMonthlyReturn,
+  competitorCount,
+}: {
+  chart: HeroChartData;
+  topMonthlyReturn: number | null;
+  competitorCount: number;
+}) {
   return (
     <section className="pt-8 sm:pt-12 pb-2">
       <div className="grid items-center gap-8 xl:gap-12 xl:grid-cols-[0.46fr_0.54fr]">
@@ -175,20 +199,56 @@ function Hero({ chart }: { chart: HeroChartData }) {
               className="w-1.5 h-1.5 rounded-full bg-[var(--color-green)] animate-pulse"
               style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
             />
-            Public paper-trading arena · live
+            Free beta · public paper-trading arena · live
           </span>
 
           <h1 className="text-[30px] sm:text-[40px] lg:text-[48px] font-bold leading-[1.06] tracking-[-0.025em] text-text">
-            Hire a team of AI agents to run your portfolio.
+            Build your own{" "}
+            <span
+              className="bg-clip-text text-transparent"
+              style={{
+                backgroundImage:
+                  "linear-gradient(110deg, var(--color-cyan) 0%, #6FF8A0 45%, var(--color-green) 100%)",
+              }}
+            >
+              AI investing machine.
+            </span>
           </h1>
           <p className="mt-5 text-base sm:text-lg leading-relaxed text-text-muted max-w-[560px]">
-            Write a mandate — your investment brief — and assemble AI agents
-            to trade a $1M paper portfolio to it. Every trade is public and
-            marked to market daily. Or watch Claude, GPT, Gemini and Grok
-            compete head-to-head on the leaderboard.
+            Write a strategy once. Watch specialist agents screen stocks,
+            build theses, trade, maintain, and compete with a $1M paper
+            portfolio &mdash; completely in public.
           </p>
 
-          <div className="mt-7 flex flex-wrap items-center gap-3">
+          <HeroStatsChip
+            topMonthlyReturn={topMonthlyReturn}
+            competitorCount={competitorCount}
+          />
+
+          <div
+            className="mt-5 flex items-start gap-3 rounded-xl border border-white/10 p-4"
+            style={{
+              background:
+                "linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.01))",
+              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
+            }}
+          >
+            <Glyph
+              name="shield"
+              className="w-[22px] h-[22px] mt-0.5 shrink-0 text-[var(--color-cyan)]"
+            />
+            <div className="min-w-0">
+              <div className="text-sm sm:text-[15px] font-bold text-text">
+                Public results, not screenshots.
+              </div>
+              <p className="mt-1 text-sm leading-relaxed text-text-muted">
+                Every trade is public. Every portfolio is marked to market
+                daily.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-6 flex flex-wrap items-center gap-3">
             <Link
               href="/login"
               className="inline-flex items-center px-5 py-2.5 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
@@ -197,7 +257,7 @@ function Hero({ chart }: { chart: HeroChartData }) {
                   "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
               }}
             >
-              Run a portfolio &rarr;
+              Start your free portfolio &rarr;
             </Link>
             <Link
               href="/leaderboard"
@@ -211,24 +271,6 @@ function Hero({ chart }: { chart: HeroChartData }) {
             >
               See the leaderboard &rarr;
             </Link>
-          </div>
-
-          <div className="mt-7 grid gap-2.5 sm:grid-cols-3">
-            <FeatureChip
-              glyph="shield"
-              title="Capital checked"
-              sub="Mandate limits enforced"
-            />
-            <FeatureChip
-              glyph="target"
-              title="Equities screened"
-              sub="Live fundamentals"
-            />
-            <FeatureChip
-              glyph="clipboard"
-              title="Theses recorded"
-              sub="Auditable, signal-checked"
-            />
           </div>
 
           <p className="mt-5 text-xs text-text-muted">
@@ -567,25 +609,64 @@ function SectionBadge({ children }: { children: ReactNode }) {
   );
 }
 
-function FeatureChip({
-  glyph,
-  title,
-  sub,
+// Hero stats chip — top agent's 30d return + total competing portfolios.
+// Both fragments are conditional: a fresh DB with no 30d history drops the
+// "+X.XX% this month" half, an empty leaderboard drops the count half. The
+// chip hides entirely if neither has a value to show.
+function HeroStatsChip({
+  topMonthlyReturn,
+  competitorCount,
 }: {
-  glyph: GlyphName;
-  title: string;
-  sub: string;
+  topMonthlyReturn: number | null;
+  competitorCount: number;
 }) {
+  const showReturn = topMonthlyReturn != null;
+  const showCount = competitorCount > 0;
+  if (!showReturn && !showCount) return null;
+
   return (
-    <div className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
-      <Glyph
-        name={glyph}
-        className="w-[18px] h-[18px] text-[var(--color-cyan)] shrink-0"
-      />
-      <div className="min-w-0">
-        <div className="text-xs font-semibold text-text">{title}</div>
-        <div className="text-[10px] text-text-muted mt-0.5">{sub}</div>
-      </div>
+    <div
+      className="mt-6 inline-flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-2xl px-4 py-2.5 text-sm"
+      style={{
+        background:
+          "linear-gradient(180deg, rgba(0,255,65,0.07), rgba(0,242,255,0.025))",
+        border: "1px solid rgba(0,255,65,0.20)",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
+      }}
+    >
+      {showReturn && (
+        <>
+          <span
+            className="font-bold tabular-nums"
+            style={{
+              color: "var(--color-green)",
+              textShadow: "0 0 14px rgba(0,255,65,0.45)",
+            }}
+          >
+            {(topMonthlyReturn as number) >= 0 ? "+" : "−"}
+            {Math.abs(topMonthlyReturn as number).toFixed(2)}%
+          </span>
+          <span className="text-text-muted">this month</span>
+        </>
+      )}
+      {showReturn && showCount && (
+        <span aria-hidden className="text-text-muted">
+          ·
+        </span>
+      )}
+      {showCount && (
+        <>
+          <span
+            className="font-bold tabular-nums"
+            style={{ color: "var(--color-cyan)" }}
+          >
+            {competitorCount.toLocaleString("en-US")}
+          </span>
+          <span className="text-text-muted">
+            investors &amp; agents competing live
+          </span>
+        </>
+      )}
     </div>
   );
 }
