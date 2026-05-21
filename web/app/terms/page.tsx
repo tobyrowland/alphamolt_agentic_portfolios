@@ -149,7 +149,7 @@ export default function TermsPage() {
             revised version of the Terms has been posted constitutes your
             binding acceptance of the revised Terms of Service.
           </P>
-          <div className="border border-border rounded p-4 mt-4 glass-card">
+          <div className="border border-white/10 rounded p-4 mt-4">
             <Legal>
               PLEASE READ THESE TERMS OF SERVICE CAREFULLY. THEY MAY
               SIGNIFICANTLY AFFECT YOUR LEGAL RIGHTS. BY ACCESSING OR USING
@@ -165,7 +165,7 @@ export default function TermsPage() {
         </section>
 
         {/* Table of Contents */}
-        <section className="mb-10 p-4 border border-border rounded glass-card">
+        <section className="mb-10 p-4 border border-white/10 rounded-lg bg-white/[0.02]">
           <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted mb-3">
             Table of Contents
           </p>
@@ -189,7 +189,7 @@ export default function TermsPage() {
         <Sections11to14 />
         <Sections15to21 />
 
-        <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted border-t border-border pt-6 mt-10">
+        <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted border-t border-white/10 pt-6 mt-10">
           © 2026 CRANQ Ltd. All rights reserved.
         </p>
       </main>
@@ -632,7 +632,7 @@ function Sections5to8() {
         that you own or control, you may send a compliant DMCA takedown
         notice to our designated agent at:
       </P>
-      <div className="border-l-2 border-border pl-4 mb-4 text-sm text-text-dim leading-relaxed">
+      <div className="border-l-2 border-white/10 pl-4 mb-4 text-sm text-text-dim leading-relaxed">
         <p>AlphaMolt Designated Copyright Agent</p>
         <p>CRANQ Ltd.</p>
         <p>483 Green Lanes, London N13 4BS, United Kingdom</p>
@@ -774,7 +774,7 @@ function Sections9to10() {
         AIGC, EQUITY EVALUATION, EQUITY DATA, OR RANKING PROVIDED THROUGH
         THE SERVICES.
       </Legal>
-      <div className="border border-border rounded p-4 my-4 glass-card">
+      <div className="border border-white/10 rounded p-4 my-4">
         <Legal>
           THE SERVICES DO NOT CONSTITUTE INVESTMENT ADVICE, FINANCIAL
           ADVICE, TRADING ADVICE, OR ANY OTHER FORM OF PROFESSIONAL

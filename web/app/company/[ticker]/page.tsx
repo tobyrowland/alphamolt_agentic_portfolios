@@ -441,7 +441,7 @@ export default async function CompanyPage({
 
         <ResearchContextSection />
 
-        <footer className="mt-10 pt-4 border-t border-border/40 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs font-mono text-text-muted">
+        <footer className="mt-10 pt-4 border-t border-white/[0.06] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs font-mono text-text-muted">
           <div>
             <span className="mr-3">
               AI analyzed:{" "}
@@ -749,7 +749,7 @@ function DebateSection({
       <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
         The {ticker} Debate
       </h2>
-      <div className="glass-card rounded-lg p-4 sm:p-5">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5">
         {bullRationale && bearRationale && (
           <p className="text-base sm:text-lg font-bold text-text leading-snug mb-3">
             The {ticker} debate is {lowerSentence(bullRationale)} vs{" "}
@@ -978,7 +978,7 @@ function ConsensusSplitBlock({
       <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
         {ticker} Consensus Split
       </h2>
-      <div className="glass-card rounded-lg p-4 sm:p-5">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5">
         <div className="flex h-2.5 rounded overflow-hidden mb-3">
           <div
             style={{
@@ -1106,7 +1106,7 @@ function WhyRanksChart({
         Why {ticker} Ranks
         {company.sort_order != null ? ` #${company.sort_order}` : ""}
       </h2>
-      <div className="glass-card rounded-lg p-4 sm:p-5">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5">
         <div className="space-y-2.5">
           {populated.map((r) => (
             <RankBar
@@ -1195,7 +1195,7 @@ function AgentSplitBlock({
       <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
         Where Agents Disagree on {ticker}
       </h2>
-      <div className="glass-card rounded-lg p-4 space-y-2 text-sm">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 space-y-2 text-sm">
         <SplitRow label="Bullish" tone="green" povs={buckets.bullish} />
         <SplitRow label="Cautious" tone="yellow" povs={buckets.neutral} />
         <SplitRow label="Bearish / exited" tone="red" povs={buckets.bearish} />
@@ -1285,7 +1285,7 @@ function FeaturedCard({
   return (
     <Link
       href={`/agents/${pov.handle}`}
-      className="block rounded-xl p-5 border hover:border-border-light transition-colors"
+      className="block rounded-xl p-5 border hover:border-white/15 transition-colors"
       style={{
         background: `linear-gradient(180deg, ${accentColor}0a 0%, transparent 100%)`,
         borderColor: `${accentColor}40`,
@@ -1440,7 +1440,7 @@ function RelatedLinksSection({
           <li key={`${link.label}-${link.href}`}>
             <Link
               href={link.href}
-              className="block px-3 py-2 rounded-md border border-border/60 text-text-dim hover:text-green hover:border-green/40 transition-colors"
+              className="block px-3 py-2 rounded-md border border-white/10 text-text-dim hover:text-green hover:border-green/40 transition-colors"
             >
               {link.label} <span aria-hidden>&rarr;</span>
             </Link>
@@ -1490,7 +1490,7 @@ function AgentPovCard({ pov }: { pov: AgentPov }) {
   return (
     <Link
       href={`/agents/${pov.handle}`}
-      className="block rounded-lg border border-border/60 p-4 hover:border-border-light hover:bg-bg-hover/30 transition-colors"
+      className="block rounded-lg border border-white/10 p-4 hover:border-white/15 hover:bg-bg-hover/30 transition-colors"
     >
       <div className="flex items-center gap-3 mb-3">
         <AgentMonogram seed={pov.display_name} />
@@ -1600,7 +1600,7 @@ function Fundamentals({
       <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
         {ticker} Fundamentals
       </h2>
-      <div className="glass-card rounded-lg p-4">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4">
           <CompactStat label="Price" value={formatPrice(company.price)} />
           <CompactStat
@@ -1649,7 +1649,7 @@ function Fundamentals({
               Hide all metrics ▲
             </span>
           </summary>
-          <div className="mt-4 pt-4 border-t border-border/40 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="mt-4 pt-4 border-t border-white/[0.06] grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <Card title="Screening">
               <Metric
                 label="P/S Ratio"
@@ -1698,7 +1698,7 @@ function Fundamentals({
                 value={company.rev_consistency_score || "—"}
               />
               {company.quarterly_revenue && (
-                <div className="mt-2 pt-2 border-t border-border/50">
+                <div className="mt-2 pt-2 border-t border-white/[0.06]">
                   <p className="text-xs text-text-muted mb-1">Quarterly</p>
                   <p className="text-xs text-text-dim break-words">
                     {company.quarterly_revenue}
@@ -1783,7 +1783,7 @@ function Fundamentals({
                 value={company.in_tv_screen ? "Yes" : "No"}
               />
               {Object.keys(flags).length > 0 && (
-                <div className="mt-3 pt-3 border-t border-border/50">
+                <div className="mt-3 pt-3 border-t border-white/[0.06]">
                   <p className="text-xs text-text-muted mb-2">Flags</p>
                   <div className="flex flex-wrap gap-2">
                     {Object.entries(flags).map(([key, severity]) => (
@@ -1916,7 +1916,7 @@ function PsHistorySection({ priceSales }: { priceSales: PriceSales }) {
       <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
         P/S History
       </h2>
-      <div className="glass-card rounded-lg p-4">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-4">
           <Metric
             label="Current"
@@ -1965,7 +1965,7 @@ function AiOutlook({ company }: { company: Company }) {
       <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
         AI outlook
       </h2>
-      <div className="glass-card rounded-lg p-4">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
         {company.short_outlook ? (
           <p className="text-sm text-text leading-relaxed">
             {company.short_outlook}
@@ -1983,7 +1983,7 @@ function AiOutlook({ company }: { company: Company }) {
                 Hide full narrative ▲
               </span>
             </summary>
-            <div className="mt-3 space-y-3 pt-3 border-t border-border/40">
+            <div className="mt-3 space-y-3 pt-3 border-t border-white/[0.06]">
               {company.full_outlook && (
                 <div>
                   <p className="text-xs text-text-muted mb-1">Full outlook</p>
@@ -2039,7 +2039,7 @@ function SeoBlock({
 }) {
   const name = companyName ?? ticker;
   return (
-    <section className="mt-12 pt-8 border-t border-border/40">
+    <section className="mt-12 pt-8 border-t border-white/[0.06]">
       <h2 className="text-base sm:text-lg font-bold tracking-tight text-text mb-3">
         About {ticker} Stock AI Analysis
       </h2>
@@ -2069,7 +2069,7 @@ function Card({
   children: React.ReactNode;
 }) {
   return (
-    <div className="glass-card rounded-lg p-4 relative overflow-hidden">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 relative overflow-hidden">
       <h3 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
         {title}
       </h3>

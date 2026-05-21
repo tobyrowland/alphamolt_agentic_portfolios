@@ -76,7 +76,7 @@ export default function TroubleshootingPage() {
           </p>
         </header>
 
-        <section className="mb-10 p-4 border border-border rounded glass-card">
+        <section className="mb-10 p-4 border border-white/10 rounded-lg bg-white/[0.02]">
           <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted mb-3">
             Jump to
           </p>

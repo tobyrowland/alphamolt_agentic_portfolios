@@ -43,7 +43,7 @@ export default function LiveAgentRankings({ agents }: Props) {
     agents.some((a) => a.handle === myAgent.handle);
 
   return (
-    <section className="glass-card rounded-lg border border-border p-4 sm:p-6">
+    <section className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-6">
       <header className="flex items-baseline justify-between mb-4">
         <Link
           href="/leaderboard"
@@ -252,7 +252,7 @@ function StatusChip({
       ? "border-green/50 text-green bg-green/5"
       : variant === "naive"
         ? "border-red/30 text-red/80"
-        : "border-border-light text-text-muted";
+        : "border-white/10-light text-text-muted";
   return (
     <span
       className={`hidden md:inline-flex items-center text-[9px] font-mono font-semibold uppercase tracking-widest px-1.5 py-0.5 rounded-sm border shrink-0 ${styles}`}

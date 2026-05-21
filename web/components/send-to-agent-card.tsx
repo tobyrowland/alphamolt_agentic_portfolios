@@ -40,7 +40,7 @@ export default function SendToAgentCard() {
   }
 
   return (
-    <div className="glass-card rounded-xl border border-green/40 p-6 sm:p-8 bg-green/[0.02]">
+    <div className="rounded-2xl border border-[var(--color-green)]/40 bg-[var(--color-green)]/[0.03] p-6 sm:p-8">
       <div className="flex items-baseline justify-between flex-wrap gap-3 mb-2">
         <h2 className="font-mono text-xl sm:text-2xl font-bold text-text">
           Get your agent stock-picking on alphamolt
@@ -62,7 +62,7 @@ export default function SendToAgentCard() {
       <div
         role="tablist"
         aria-label="Onboarding flow"
-        className="inline-flex rounded-md border border-border overflow-hidden mb-6 text-xs font-mono uppercase tracking-widest"
+        className="inline-flex rounded-md border border-white/10 overflow-hidden mb-6 text-xs font-mono uppercase tracking-widest"
       >
         <button
           type="button"
@@ -88,7 +88,7 @@ export default function SendToAgentCard() {
             setMode("browser");
             setCopied(false);
           }}
-          className={`px-4 py-2 border-l border-border transition-colors ${
+          className={`px-4 py-2 border-l border-white/10 transition-colors ${
             mode === "browser"
               ? "bg-green text-bg"
               : "text-text-dim hover:text-text"
@@ -222,7 +222,7 @@ function SelfServeFlow({
         <p className="text-sm font-mono font-bold uppercase tracking-wider text-green mb-2">
           1. Paste this into your agent
         </p>
-        <pre className="font-mono text-sm leading-relaxed bg-bg-card border border-border rounded-lg px-5 py-4 text-text whitespace-pre-wrap break-words">
+        <pre className="font-mono text-sm leading-relaxed bg-bg-card border border-white/10 rounded-lg px-5 py-4 text-text whitespace-pre-wrap break-words">
 {prompt}
         </pre>
         <CopyButton copied={copied} onClick={onCopy} />
@@ -240,7 +240,7 @@ function SelfServeFlow({
         <p className="text-sm font-mono font-bold uppercase tracking-wider text-green mb-2">
           2. Save the key the agent shows you
         </p>
-        <pre className="font-mono text-sm leading-relaxed bg-bg-card border border-border rounded-lg px-5 py-4 text-text whitespace-pre-wrap break-words">
+        <pre className="font-mono text-sm leading-relaxed bg-bg-card border border-white/10 rounded-lg px-5 py-4 text-text whitespace-pre-wrap break-words">
 {`export ALPHAMOLT_API_KEY=ak_live_...`}
         </pre>
         <p className="text-xs text-text-muted mt-2 leading-relaxed max-w-3xl">
@@ -308,7 +308,7 @@ function BrowserFlow({
         <p className="text-sm font-mono font-bold uppercase tracking-wider text-green mb-2">
           2. Export the key in your shell
         </p>
-        <pre className="font-mono text-sm leading-relaxed bg-bg-card border border-border rounded-lg px-5 py-4 text-text whitespace-pre-wrap break-words">
+        <pre className="font-mono text-sm leading-relaxed bg-bg-card border border-white/10 rounded-lg px-5 py-4 text-text whitespace-pre-wrap break-words">
 {exportCmd}
         </pre>
         <p className="text-xs text-text-muted mt-2 leading-relaxed max-w-3xl">
@@ -322,7 +322,7 @@ function BrowserFlow({
         <p className="text-sm font-mono font-bold uppercase tracking-wider text-green mb-2">
           3. Tell your agent to start trading
         </p>
-        <pre className="font-mono text-sm leading-relaxed bg-bg-card border border-border rounded-lg px-5 py-4 text-text whitespace-pre-wrap break-words">
+        <pre className="font-mono text-sm leading-relaxed bg-bg-card border border-white/10 rounded-lg px-5 py-4 text-text whitespace-pre-wrap break-words">
 {prompt}
         </pre>
         <CopyButton copied={copied} onClick={onCopy} />

@@ -83,7 +83,7 @@ export default function RegisterForm() {
 
   if (created) {
     return (
-      <div className="glass-card rounded-lg border border-green/40 p-5">
+      <div className="rounded-2xl border border-[var(--color-green)]/40 bg-[var(--color-green)]/[0.03] p-5">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-green font-mono text-xs uppercase tracking-widest">
             ✓ Agent registered
@@ -97,13 +97,13 @@ export default function RegisterForm() {
         </p>
 
         <div className="relative mb-4">
-          <pre className="bg-bg border border-border rounded px-4 py-3 overflow-x-auto text-xs font-mono text-green">
+          <pre className="bg-bg border border-white/10 rounded px-4 py-3 overflow-x-auto text-xs font-mono text-green">
             <code>{created.api_key}</code>
           </pre>
           <button
             type="button"
             onClick={copyKey}
-            className="absolute top-2 right-2 text-[10px] font-mono uppercase tracking-widest px-2 py-1 rounded border border-border bg-bg/80 text-text-muted hover:text-green hover:border-green transition-colors"
+            className="absolute top-2 right-2 text-[10px] font-mono uppercase tracking-widest px-2 py-1 rounded border border-white/10 bg-bg/80 text-text-muted hover:text-green hover:border-green transition-colors"
           >
             {copied ? "Copied" : "Copy"}
           </button>
@@ -149,7 +149,7 @@ export default function RegisterForm() {
             </a>
             <a
               href="/leaderboard"
-              className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-widest px-2.5 py-1 rounded border border-border text-text-dim hover:border-green/50 hover:text-green"
+              className="inline-flex items-center gap-1 text-[11px] font-mono uppercase tracking-widest px-2.5 py-1 rounded border border-white/10 text-text-dim hover:border-green/50 hover:text-green"
             >
               Leaderboard →
             </a>
@@ -175,7 +175,7 @@ export default function RegisterForm() {
   return (
     <form
       onSubmit={handleSubmit}
-      className="glass-card rounded-lg border border-border p-5 space-y-4"
+      className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 space-y-4"
     >
       <div>
         <label className="block text-xs font-mono uppercase tracking-widest text-text-dim mb-1">
@@ -190,7 +190,7 @@ export default function RegisterForm() {
           pattern="^[a-z][a-z0-9-]{2,31}$"
           minLength={3}
           maxLength={32}
-          className="w-full bg-bg border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
+          className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
         />
         <p className="text-[10px] text-text-dim mt-1 font-mono">
           3-32 chars · lowercase letters, digits, hyphens · starts with a letter
@@ -208,7 +208,7 @@ export default function RegisterForm() {
           placeholder="My Agent"
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
-          className="w-full bg-bg border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
+          className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
         />
       </div>
 
@@ -225,7 +225,7 @@ export default function RegisterForm() {
           placeholder="What kind of equities does your agent hunt? How does it decide?"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          className="w-full bg-bg border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted resize-none"
+          className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted resize-none"
         />
       </div>
 
@@ -242,7 +242,7 @@ export default function RegisterForm() {
           placeholder="you@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="w-full bg-bg border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
+          className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
         />
       </div>
 

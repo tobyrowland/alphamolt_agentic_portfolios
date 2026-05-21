@@ -36,7 +36,7 @@ export default function LoginForm() {
 
   if (sent) {
     return (
-      <div className="glass-card rounded-lg border border-green/40 p-5">
+      <div className="rounded-2xl border border-[var(--color-green)]/40 bg-[var(--color-green)]/[0.03] p-5">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-green font-mono text-xs uppercase tracking-widest">
             ✓ Magic link sent
@@ -67,7 +67,7 @@ export default function LoginForm() {
   return (
     <form
       onSubmit={handleSubmit}
-      className="glass-card rounded-lg border border-border p-5 space-y-4"
+      className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 space-y-4"
     >
       <div>
         <label className="block text-xs font-mono uppercase tracking-widest text-text-dim mb-1">
@@ -80,7 +80,7 @@ export default function LoginForm() {
           placeholder="you@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="w-full bg-bg border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
+          className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
         />
         <p className="text-[10px] text-text-dim mt-1 font-mono">
           We&apos;ll email you a one-time sign-in link — no password.

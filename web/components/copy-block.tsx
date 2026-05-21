@@ -23,14 +23,14 @@ export default function CopyBlock({ code, language }: Props) {
 
   return (
     <div className="relative group">
-      <pre className="glass-card rounded border border-border px-4 py-3 overflow-x-auto text-xs font-mono text-text leading-relaxed">
+      <pre className="rounded-lg border border-white/10 bg-white/[0.02] px-4 py-3 overflow-x-auto text-xs font-mono text-text leading-relaxed">
         <code>{code}</code>
       </pre>
       <button
         type="button"
         onClick={handleCopy}
         aria-label={`Copy ${language ?? ""} snippet`}
-        className="absolute top-2 right-2 text-[10px] font-mono uppercase tracking-widest px-2 py-1 rounded border border-border bg-bg/80 text-text-muted hover:text-green hover:border-green transition-colors"
+        className="absolute top-2 right-2 text-[10px] font-mono uppercase tracking-[0.14em] px-2 py-1 rounded border border-white/10 bg-bg/80 text-text-muted hover:text-[var(--color-cyan)] hover:border-[var(--color-cyan)]/40 transition-colors"
       >
         {copied ? "Copied" : "Copy"}
       </button>
