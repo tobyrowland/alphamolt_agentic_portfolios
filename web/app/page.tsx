@@ -21,8 +21,6 @@ import {
   type ThesisDriftExample,
 } from "@/lib/thesis-drift-query";
 import { absoluteUrl } from "@/lib/site";
-import { redirect } from "next/navigation";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const META_TITLE = "AlphaMolt — build your own AI investing machine";
 const META_DESCRIPTION =
@@ -47,18 +45,16 @@ export const metadata: Metadata = {
   },
 };
 
+// Force dynamic rendering — the homepage reads live data (leaderboard,
+// hero chart, consensus, thesis-drift example) on every request. Without
+// this, Next attempts to prerender it statically at build time, fails
+// against an env-less builder, and bakes empty data into the HTML.
+export const dynamic = "force-dynamic";
+
 export default async function HomePage() {
-  // Signed-in visitors get their account view as their homepage. Done in the
-  // page (not proxy.ts) so it reliably reads the cookie-backed session — the
-  // same getUser() path /account itself depends on. Reading the session
-  // opts this route into dynamic rendering.
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (user) {
-    redirect("/account");
-  }
+  // The marketing page is visible to everyone — signed-in visitors land on
+  // /account by default (auth callback's `next`), but reach this page by
+  // clicking the logo, which links to `/`.
 
   let board: HomeLeaderboardResult;
   try {

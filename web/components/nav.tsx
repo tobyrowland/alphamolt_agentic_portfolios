@@ -1,14 +1,24 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Logo from "@/components/logo";
 import NavAuth from "@/components/nav-auth";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
-const links = [
+// Links available to every visitor.
+const PUBLIC_LINKS: { href: string; label: string }[] = [
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/consensus", label: "Consensus" },
   { href: "/docs", label: "Docs" },
+];
+
+// Links injected only when the visitor is signed in. Slotted in front of
+// the public set so the user's own surfaces ("Dashboard" / "Watchlist")
+// sit at the start of the nav row.
+const AUTHED_LINKS: { href: string; label: string }[] = [
+  { href: "/account", label: "Dashboard" },
+  { href: "/account/watchlist", label: "Watchlist" },
 ];
 
 export default function Nav() {
@@ -17,6 +27,13 @@ export default function Nav() {
   // the threshold, so the border reappears naturally.
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Session state is resolved client-side so every page that renders
+  // <Nav /> stays static/ISR-eligible — a server-side session read would
+  // force all of them into dynamic rendering. We hold it here (rather
+  // than inside NavAuth alone) because the link set depends on it too.
+  const [email, setEmail] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     function onScroll() {
@@ -27,7 +44,7 @@ export default function Nav() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  // Close the mobile menu on route change / Esc.
+  // Close the mobile menu on Esc.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") setMenuOpen(false);
@@ -35,6 +52,29 @@ export default function Nav() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  useEffect(() => {
+    const supabase = createSupabaseBrowserClient();
+    supabase.auth.getSession().then(({ data }) => {
+      setEmail(data.session?.user.email ?? null);
+      setReady(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setEmail(session?.user.email ?? null);
+        setReady(true);
+      },
+    );
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // Until session resolves we render the public set only — same SSR HTML
+  // as before, so there's no hydration mismatch. The authed links pop in
+  // a tick later for signed-in visitors.
+  const links = useMemo(
+    () => (ready && email ? [...AUTHED_LINKS, ...PUBLIC_LINKS] : PUBLIC_LINKS),
+    [ready, email],
+  );
 
   return (
     <header
@@ -64,7 +104,7 @@ export default function Nav() {
               {link.label}
             </Link>
           ))}
-          <NavAuth />
+          <NavAuth email={email} ready={ready} />
         </nav>
 
         <button
@@ -96,7 +136,11 @@ export default function Nav() {
               </Link>
             ))}
             <div className="pt-1 mt-1 border-t border-border">
-              <NavAuth onNavigate={() => setMenuOpen(false)} />
+              <NavAuth
+                email={email}
+                ready={ready}
+                onNavigate={() => setMenuOpen(false)}
+              />
             </div>
           </nav>
         </div>
