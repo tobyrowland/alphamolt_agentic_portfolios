@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import Nav from "@/components/nav";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -11,11 +10,9 @@ import {
   type PortfolioMember,
 } from "@/lib/portfolios-query";
 import { listPublicAgents, getAgentReturns30d } from "@/lib/agents-query";
-import { getWatchlistForPortfolio, type WatchlistItem } from "@/lib/watchlist-query";
 import { roleFor } from "@/lib/agent-roles";
 import CreatePortfolioForm from "@/components/portfolio/create-portfolio-form";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
-import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import AgentPicker from "@/components/portfolio/agent-picker";
 import LaunchControl from "@/components/portfolio/launch-control";
 
@@ -65,7 +62,6 @@ export default async function AccountPage() {
   let members: PortfolioMember[] = [];
   let allAgents: Awaited<ReturnType<typeof listPublicAgents>> = [];
   let returns30d = new Map<string, number | null>();
-  let watchlist: WatchlistItem[] = [];
   if (portfolio) {
     try {
       members = await getMembersForPortfolio(portfolio.id);
@@ -83,25 +79,19 @@ export default async function AccountPage() {
     } catch {
       returns30d = new Map();
     }
-    try {
-      watchlist = await getWatchlistForPortfolio(portfolio.id);
-    } catch {
-      watchlist = [];
-    }
   }
 
   return (
     <>
       <Nav />
       <main className="flex-1 w-full">
-        <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 py-8 sm:py-12">
+        <div className="max-w-[820px] mx-auto w-full px-4 sm:px-6 py-10 sm:py-14">
           {portfolio ? (
             <PortfolioView
               portfolio={portfolio}
               members={members}
               allAgents={allAgents}
               returns30d={returns30d}
-              watchlist={watchlist}
               email={email}
             />
           ) : (
@@ -144,7 +134,7 @@ function NoPortfolioView({
 }
 
 // ---------------------------------------------------------------------------
-// Portfolio exists — the two-column guided-setup layout.
+// Portfolio exists — ultra-minimal single-column path: mandate → agents → launch.
 // ---------------------------------------------------------------------------
 
 function PortfolioView({
@@ -152,14 +142,12 @@ function PortfolioView({
   members,
   allAgents,
   returns30d,
-  watchlist,
   email,
 }: {
   portfolio: Portfolio;
   members: PortfolioMember[];
   allAgents: Awaited<ReturnType<typeof listPublicAgents>>;
   returns30d: Map<string, number | null>;
-  watchlist: WatchlistItem[];
   email: string;
 }) {
   const live = portfolio.launched_at != null;
@@ -168,11 +156,9 @@ function PortfolioView({
   const hasBuyer = phases.includes("trade");
   const hasMandate = (portfolio.description ?? "").trim().length > 0;
 
-  // 3-step progress: mandate → agents (both roles) → live.
   const step1 = hasMandate;
   const step2 = hasCurator && hasBuyer;
   const step3 = live;
-  const completed = [step1, step2, step3].filter(Boolean).length;
 
   const pickerMembers = members.map((m) => ({
     handle: m.handle,
@@ -190,177 +176,54 @@ function PortfolioView({
   }));
 
   return (
-    <div className="grid gap-6 xl:gap-8 xl:grid-cols-[1fr_320px]">
-      {/* ---- Main column ---- */}
-      <div className="space-y-6">
-        {/* Header + progress */}
-        <header>
-          <div className="flex items-center gap-3">
-            <StateBadge live={live} />
-            <span className="text-[11px] font-mono uppercase tracking-widest text-text-muted">
-              {completed} / 3 steps done
-            </span>
-          </div>
-          <h1 className="mt-3 text-[26px] sm:text-[32px] font-bold tracking-[-0.025em] text-text leading-[1.12]">
-            {portfolio.display_name}
-          </h1>
-          <p className="mt-2 text-base text-text-muted leading-relaxed max-w-[60ch]">
-            {live
-              ? "Your team of agents is trading the shared $1M paper book to your mandate. Tune the setup below at any time."
-              : "Set up your portfolio in three steps, then go live to trade a $1M paper account."}
-          </p>
-          <ProgressSteps
-            steps={[
-              { label: "Write mandate", done: step1 },
-              { label: "Add agents", done: step2 },
-              { label: "Go live", done: step3 },
-            ]}
-          />
-        </header>
-
-        {/* 1. Mandate */}
-        <SetupCard
-          step={1}
-          glyph="clipboard"
-          title="Write the mandate"
-          intro="Your investment brief — the agents trade to it. Pick an example to start, then edit and save."
-        >
-          <PortfolioDetailsEditor
-            initialName={portfolio.display_name}
-            initialMandate={portfolio.description ?? ""}
-          />
-        </SetupCard>
-
-        {/* 2. Agents */}
-        <SetupCard
-          step={2}
-          glyph="branch"
-          title="Add your agents"
-          intro="A portfolio needs a Shortlist Builder to curate the watchlist and a Buying Agent to trade it. The 30-day return is each agent's live track record."
-        >
-          <AgentPicker members={pickerMembers} allAgents={pickerAll} />
-        </SetupCard>
-
-        {/* Watchlist preview */}
-        <SetupCard
-          glyph="target"
-          title="Watchlist"
-          intro="The shortlist of equities your agents populate and trade from."
-        >
-          <WatchlistPreview items={watchlist} />
-        </SetupCard>
-
-        {/* 3. Go live */}
-        <SetupCard
-          step={3}
-          glyph="bolt"
-          title={live ? "Live" : "Go live"}
-          intro={
-            live
-              ? "Your portfolio is trading."
-              : "Grant the $1M paper account and start trading."
-          }
-        >
-          <LaunchControl
-            launchedAt={portfolio.launched_at}
-            hasCurator={hasCurator}
-            hasBuyer={hasBuyer}
-          />
-        </SetupCard>
-
-        <SignOutRow email={email} />
-      </div>
-
-      {/* ---- Status rail ---- */}
-      <aside className="space-y-4 xl:sticky xl:top-20 xl:self-start">
-        <RailCard title="Portfolio status">
-          <div className="mb-3">
-            <StateBadge live={live} />
-          </div>
-          <ul className="space-y-2">
-            <ChecklistRow label="Mandate written" done={hasMandate} />
-            <ChecklistRow label="Shortlist Builder added" done={hasCurator} />
-            <ChecklistRow label="Buying Agent added" done={hasBuyer} />
-            <ChecklistRow label="Paper account live" done={live} />
-          </ul>
-        </RailCard>
-
-        <RailCard title="Benchmark goal" accent="cyan">
-          <p className="text-sm font-bold text-text">Beat the S&amp;P 500.</p>
-          <p className="mt-1.5 text-[12px] text-text-muted leading-relaxed">
-            Your portfolio is marked to market every day and charted against
-            the S&amp;P 500 (SPY) and MSCI World (URTH) on the public
-            leaderboard.
-          </p>
-        </RailCard>
-
-        <RailCard title="Visibility">
-          <VisibilityToggle isPublic={portfolio.is_public} />
-          <p className="mt-3 text-[11px] font-mono text-text-muted">
-            Public page:{" "}
-            <Link
-              href={`/portfolios/${portfolio.slug}`}
-              className="text-[var(--color-cyan)] hover:brightness-110 transition-[filter] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 rounded"
-            >
-              /portfolios/{portfolio.slug}
-            </Link>
-          </p>
-        </RailCard>
-      </aside>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Watchlist preview
-// ---------------------------------------------------------------------------
-
-function WatchlistPreview({ items }: { items: WatchlistItem[] }) {
-  const top = items.slice(0, 5);
-  return (
-    <div>
-      {top.length > 0 ? (
-        <ul className="divide-y divide-white/[0.06] rounded-lg border border-white/10 overflow-hidden">
-          {top.map((it) => (
-            <li
-              key={it.ticker}
-              className="flex items-center justify-between gap-3 bg-white/[0.02] px-3 py-2.5"
-            >
-              <div className="min-w-0">
-                <span className="font-mono text-sm font-bold text-text">
-                  {it.ticker}
-                </span>
-                {it.company_name && (
-                  <span className="ml-2 text-[12px] text-text-muted truncate">
-                    {it.company_name}
-                  </span>
-                )}
-              </div>
-              <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono font-bold uppercase tracking-[0.14em] border ${
-                  it.source === "agent"
-                    ? "border-cyan/30 bg-cyan/[0.08] text-cyan"
-                    : "border-white/10 bg-white/[0.02] text-text-muted"
-                }`}
-              >
-                {it.source === "agent" ? "Agent" : "You"}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-sm text-text-muted italic">
-          No equities on the watchlist yet.
+    <div className="space-y-6 sm:space-y-8">
+      <header>
+        <h1 className="text-[30px] sm:text-[36px] font-bold tracking-[-0.02em] text-text leading-[1.08]">
+          {portfolio.display_name}
+        </h1>
+        <p className="mt-3 text-base text-text-muted leading-relaxed max-w-[60ch]">
+          {live
+            ? "Your team of agents is trading the shared $1M paper book to your mandate. Tune the setup below at any time."
+            : "Two steps, then go live. Write your mandate, add the agents, launch."}
         </p>
-      )}
-      <Link
-        href="/account/watchlist"
-        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 font-mono text-sm text-text hover:border-cyan/40 hover:text-cyan focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 transition-colors"
+        <ProgressSteps
+          steps={[
+            { label: "Write mandate", done: step1 },
+            { label: "Add agents", done: step2 },
+            { label: "Go live", done: step3 },
+          ]}
+        />
+      </header>
+
+      <SetupCard
+        step={1}
+        glyph="clipboard"
+        title="Write the mandate"
+        intro="Your investment brief — the agents trade to it. Pick an example to start, then edit and save."
       >
-        {items.length > top.length
-          ? `Manage all ${items.length} watchlist items →`
-          : "Manage watchlist →"}
-      </Link>
+        <PortfolioDetailsEditor
+          initialName={portfolio.display_name}
+          initialMandate={portfolio.description ?? ""}
+        />
+      </SetupCard>
+
+      <SetupCard
+        step={2}
+        glyph="branch"
+        title="Add your agents"
+        intro="A portfolio needs a Shortlist Builder to curate the watchlist and a Buying Agent to trade it. The 30-day return is each agent's live track record."
+      >
+        <AgentPicker members={pickerMembers} allAgents={pickerAll} />
+      </SetupCard>
+
+      <LaunchControl
+        launchedAt={portfolio.launched_at}
+        hasCurator={hasCurator}
+        hasBuyer={hasBuyer}
+        publicPath={`/portfolios/${portfolio.slug}`}
+      />
+
+      <SignOutRow email={email} />
     </div>
   );
 }
@@ -369,40 +232,19 @@ function WatchlistPreview({ items }: { items: WatchlistItem[] }) {
 // Shared layout bits — match the homepage's visual language.
 // ---------------------------------------------------------------------------
 
-function StateBadge({ live }: { live: boolean }) {
-  if (live) {
-    return (
-      <span className="inline-flex items-center gap-2 rounded-full border border-green/30 bg-green/[0.07] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-green">
-        <span
-          aria-hidden
-          className="h-1.5 w-1.5 rounded-full bg-green animate-pulse"
-          style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
-        />
-        Live
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-orange/30 bg-orange/[0.07] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-orange">
-      <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-orange" />
-      Draft — not live yet
-    </span>
-  );
-}
-
 function ProgressSteps({
   steps,
 }: {
   steps: { label: string; done: boolean }[];
 }) {
   return (
-    <ol className="mt-5 grid gap-2.5 sm:grid-cols-3">
+    <ol className="mt-6 grid gap-2.5 sm:grid-cols-3">
       {steps.map((s, i) => (
         <li
           key={s.label}
           className={`flex items-center gap-2.5 rounded-xl border px-3.5 py-2.5 ${
             s.done
-              ? "border-green/30 bg-green/[0.05]"
+              ? "border-[var(--color-green)]/30 bg-[var(--color-green)]/[0.05]"
               : "border-white/10 bg-white/[0.02]"
           }`}
         >
@@ -410,8 +252,8 @@ function ProgressSteps({
             aria-hidden
             className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold font-mono ${
               s.done
-                ? "bg-green/20 text-green"
-                : "border border-cyan/30 bg-cyan/[0.08] text-cyan"
+                ? "bg-[var(--color-green)]/20 text-[var(--color-green)]"
+                : "border border-[var(--color-cyan)]/30 bg-[var(--color-cyan)]/[0.08] text-[var(--color-cyan)]"
             }`}
           >
             {s.done ? "✓" : i + 1}
@@ -452,13 +294,16 @@ function SetupCard({
       }}
     >
       <div className="flex items-start gap-3 mb-4">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-cyan/25 bg-cyan/[0.07]">
-          <Glyph name={glyph} className="w-[18px] h-[18px] text-cyan" />
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--color-cyan)]/25 bg-[var(--color-cyan)]/[0.07]">
+          <Glyph
+            name={glyph}
+            className="w-[18px] h-[18px] text-[var(--color-cyan)]"
+          />
         </span>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             {step != null && (
-              <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-cyan">
+              <span className="text-[10px] font-mono font-bold uppercase tracking-[0.14em] text-[var(--color-cyan)]">
                 Step {step}
               </span>
             )}
@@ -473,64 +318,6 @@ function SetupCard({
       </div>
       {children}
     </section>
-  );
-}
-
-function RailCard({
-  title,
-  accent,
-  children,
-}: {
-  title: string;
-  accent?: "cyan";
-  children: ReactNode;
-}) {
-  return (
-    <section
-      className="rounded-2xl border p-5"
-      style={
-        accent === "cyan"
-          ? {
-              background:
-                "linear-gradient(135deg, rgba(0,242,255,0.07), rgba(0,255,65,0.03) 48%, rgba(255,255,255,0.02))",
-              borderColor: "rgba(0,242,255,0.2)",
-              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
-            }
-          : {
-              background:
-                "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.012))",
-              borderColor: "rgba(255,255,255,0.1)",
-              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
-            }
-      }
-    >
-      <p className="text-[10px] font-mono font-bold uppercase tracking-[0.16em] text-text-dim mb-3">
-        {title}
-      </p>
-      {children}
-    </section>
-  );
-}
-
-function ChecklistRow({ label, done }: { label: string; done: boolean }) {
-  return (
-    <li className="flex items-center gap-2.5">
-      <span
-        aria-hidden
-        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
-          done
-            ? "bg-green/20 text-green"
-            : "border border-text-muted/40 text-transparent"
-        }`}
-      >
-        ✓
-      </span>
-      <span
-        className={`text-[13px] ${done ? "text-text" : "text-text-muted"}`}
-      >
-        {label}
-      </span>
-    </li>
   );
 }
 
@@ -558,14 +345,14 @@ function SignOutRow({ email }: { email: string }) {
 // Inline icons — matches the homepage's dependency-free SVG glyph style.
 // ---------------------------------------------------------------------------
 
-type GlyphName = "clipboard" | "branch" | "target" | "bolt";
+type GlyphName = "clipboard" | "branch";
 
 function SectionBadge({ children }: { children: ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-cyan/25 bg-cyan/[0.07] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-cyan">
+    <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-cyan)]/25 bg-[var(--color-cyan)]/[0.07] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--color-cyan)]">
       <span
         aria-hidden
-        className="h-1.5 w-1.5 rounded-full bg-cyan"
+        className="h-1.5 w-1.5 rounded-full bg-[var(--color-cyan)]"
         style={{ boxShadow: "0 0 6px rgba(0,242,255,0.8)" }}
       />
       {children}
@@ -597,14 +384,6 @@ function Glyph({
         <path d="M17.5 10.6c0 5-11 1.7-11 5" />
       </>
     ),
-    target: (
-      <>
-        <circle cx="12" cy="12" r="8.5" />
-        <circle cx="12" cy="12" r="3.4" />
-        <path d="M12 1.5V5M12 19v3.5M1.5 12H5M19 12h3.5" />
-      </>
-    ),
-    bolt: <path d="M13.5 2 4.5 13.5H11l-1 8.5 9.5-12H13l.5-8Z" />,
   };
   return (
     <svg
@@ -621,3 +400,4 @@ function Glyph({
     </svg>
   );
 }
+

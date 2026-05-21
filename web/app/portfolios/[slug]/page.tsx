@@ -5,6 +5,7 @@ import Nav from "@/components/nav";
 import HoldingsList from "@/components/holdings-list";
 import { AgentMonogram } from "@/components/agent-monogram";
 import { TradeTape, type Trade } from "@/components/trade-tape";
+import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import { getPortfolio, type PortfolioSnapshot } from "@/lib/portfolio";
 import {
   getMembersForPortfolio,
@@ -48,6 +49,20 @@ async function resolveVisiblePortfolio(
   return null;
 }
 
+/**
+ * Did the current viewer create this portfolio? Used to gate owner-only
+ * controls (visibility toggle, future settings). Always returns false for
+ * agent-owned legacy portfolios since they have no human owner.
+ */
+async function isViewerOwner(portfolio: Portfolio): Promise<boolean> {
+  if (!portfolio.owner_user_id) return false;
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return !!user && user.id === portfolio.owner_user_id;
+}
+
 // ----- Metadata ------------------------------------------------------------
 
 export async function generateMetadata({
@@ -84,6 +99,7 @@ export async function generateMetadata({
 
 async function getPortfolioPageData(slug: string): Promise<{
   portfolio: Portfolio | null;
+  isOwner: boolean;
   snapshot: PortfolioSnapshot | null;
   members: PortfolioMember[];
   thesesByTicker: Record<string, InvestmentThesis>;
@@ -94,6 +110,7 @@ async function getPortfolioPageData(slug: string): Promise<{
   if (!portfolio) {
     return {
       portfolio: null,
+      isOwner: false,
       snapshot: null,
       members: [],
       thesesByTicker: {},
@@ -101,6 +118,7 @@ async function getPortfolioPageData(slug: string): Promise<{
       totalTrades: 0,
     };
   }
+  const isOwner = await isViewerOwner(portfolio);
 
   // Human-owned portfolios (owner_agent_id null, migration 024) don't trade
   // yet — no account, holdings or theses. The snapshot/theses helpers are
@@ -121,7 +139,15 @@ async function getPortfolioPageData(slug: string): Promise<{
     portfolio.id,
   );
 
-  return { portfolio, snapshot, members, thesesByTicker, trades, totalTrades };
+  return {
+    portfolio,
+    isOwner,
+    snapshot,
+    members,
+    thesesByTicker,
+    trades,
+    totalTrades,
+  };
 }
 
 // ----- Page ---------------------------------------------------------------
@@ -130,8 +156,15 @@ export default async function PortfolioPage({ params }: PageParams) {
   const { slug: rawSlug } = await params;
   const slug = decodeURIComponent(rawSlug).toLowerCase();
 
-  const { portfolio, snapshot, members, thesesByTicker, trades, totalTrades } =
-    await getPortfolioPageData(slug);
+  const {
+    portfolio,
+    isOwner,
+    snapshot,
+    members,
+    thesesByTicker,
+    trades,
+    totalTrades,
+  } = await getPortfolioPageData(slug);
   if (!portfolio) notFound();
 
   const created = new Date(portfolio.created_at).toLocaleDateString("en-US", {
@@ -158,9 +191,14 @@ export default async function PortfolioPage({ params }: PageParams) {
                 /{portfolio.slug}
               </code>
             </div>
-            <p className="mt-2 text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted">
-              Created {created}
-            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted">
+                Created {created}
+              </p>
+              {isOwner && (
+                <VisibilityToggle isPublic={portfolio.is_public} />
+              )}
+            </div>
           </header>
 
           {/* Mandate — the brief agents work to */}
