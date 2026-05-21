@@ -22,7 +22,7 @@ export default function VisibilityToggle({ isPublic }: { isPublic: boolean }) {
   }
 
   return (
-    <div className="glass-card rounded-lg border border-border p-5">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="font-mono text-sm text-text">
@@ -38,7 +38,7 @@ export default function VisibilityToggle({ isPublic }: { isPublic: boolean }) {
           type="button"
           onClick={toggle}
           disabled={pending}
-          className="shrink-0 px-3 py-1.5 font-mono text-xs uppercase tracking-widest rounded border border-border text-text-dim hover:text-text hover:border-text/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="shrink-0 px-3 py-1.5 font-mono text-xs uppercase tracking-widest rounded border border-white/10 text-text-dim hover:text-text hover:border-text/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {pending ? "…" : isPublic ? "Make private" : "Make public"}
         </button>

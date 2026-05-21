@@ -62,11 +62,11 @@ export default function WatchlistManager({
     <div className="space-y-5">
       <form
         onSubmit={onAdd}
-        className="glass-card rounded-lg border border-border p-5"
+        className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 sm:p-6"
       >
-        <p className="text-xs font-mono uppercase tracking-widest text-text-dim mb-3">
+        <h2 className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted mb-3">
           Add an equity
-        </p>
+        </h2>
         <div className="flex flex-col sm:flex-row gap-2">
           <input
             type="text"
@@ -75,7 +75,7 @@ export default function WatchlistManager({
             placeholder="Ticker"
             aria-label="Ticker symbol"
             maxLength={12}
-            className="sm:w-32 bg-bg border border-border rounded px-3 py-2 font-mono text-sm text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
+            className="sm:w-32 bg-bg-card border border-white/10 rounded-lg px-3 py-2 font-mono text-sm text-text focus:outline-none focus:border-white/20 focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 placeholder:text-text-muted transition-colors"
           />
           <input
             type="text"
@@ -84,12 +84,16 @@ export default function WatchlistManager({
             placeholder="Note — why you're watching it (optional)"
             aria-label="Note"
             maxLength={280}
-            className="flex-1 bg-bg border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
+            className="flex-1 bg-bg-card border border-white/10 rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-white/20 focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 placeholder:text-text-muted transition-colors"
           />
           <button
             type="submit"
             disabled={pending === ADD_KEY || !ticker.trim()}
-            className="shrink-0 px-4 py-2 font-mono text-[11px] uppercase tracking-widest rounded border border-green/40 text-green hover:bg-green/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="shrink-0 inline-flex items-center justify-center px-4 py-2 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:brightness-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+            style={{
+              boxShadow:
+                "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
+            }}
           >
             {pending === ADD_KEY ? "…" : "Add"}
           </button>
@@ -97,37 +101,37 @@ export default function WatchlistManager({
       </form>
 
       {error && (
-        <div className="text-sm text-red font-mono border-l-2 border-red pl-3 py-1">
+        <div className="text-sm text-[var(--color-red)] font-mono border-l-2 border-[var(--color-red)] pl-3 py-1">
           {error}
         </div>
       )}
 
       {items.length === 0 ? (
-        <div className="glass-card rounded-lg border border-border p-6">
-          <p className="text-sm text-text-dim leading-relaxed">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 sm:p-8">
+          <p className="text-sm text-text-muted leading-relaxed">
             Your watchlist is empty. Add equities above to build a shortlist —
             agents on this portfolio will be able to populate the list and
             trade from it.
           </p>
         </div>
       ) : (
-        <div className="glass-card rounded-lg border border-border overflow-hidden">
-          <div className="px-4 py-3 border-b border-border">
-            <p className="text-xs font-mono uppercase tracking-widest text-text-dim">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.02] overflow-hidden">
+          <div className="px-5 py-3 border-b border-white/[0.06]">
+            <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted">
               {items.length} {items.length === 1 ? "equity" : "equities"}
             </p>
           </div>
-          <ul className="divide-y divide-border">
+          <ul className="divide-y divide-white/[0.06]">
             {items.map((it) => (
               <li
                 key={it.ticker}
-                className="flex items-start justify-between gap-3 p-4"
+                className="flex items-start justify-between gap-3 px-5 py-4 hover:bg-white/[0.025] transition-colors"
               >
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <Link
                       href={`/company/${encodeURIComponent(it.ticker)}`}
-                      className="font-mono text-sm font-bold text-green hover:underline decoration-1 underline-offset-[3px]"
+                      className="font-mono text-sm font-bold text-text hover:text-[var(--color-cyan)] hover:underline decoration-1 underline-offset-[3px] transition-colors"
                     >
                       {it.ticker}
                     </Link>
@@ -172,7 +176,7 @@ export default function WatchlistManager({
                   }
                   disabled={pending === it.ticker}
                   aria-label={`Remove ${it.ticker} from watchlist`}
-                  className="shrink-0 text-text-muted hover:text-red disabled:opacity-50 text-lg leading-none px-1"
+                  className="shrink-0 text-text-muted hover:text-[var(--color-red)] disabled:opacity-50 text-lg leading-none px-1 transition-colors"
                 >
                   ×
                 </button>
@@ -188,7 +192,7 @@ export default function WatchlistManager({
 function SourceBadge({ source }: { source: "user" | "agent" }) {
   const label = source === "agent" ? "Agent" : "You";
   return (
-    <span className="text-[9px] font-mono uppercase tracking-widest text-text-muted border border-border rounded px-1 py-0.5">
+    <span className="text-[9px] font-mono uppercase tracking-[0.14em] text-text-muted border border-white/10 rounded px-1 py-0.5">
       {label}
     </span>
   );

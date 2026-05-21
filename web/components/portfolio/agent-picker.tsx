@@ -108,7 +108,7 @@ function RolePill({ phase, role }: { phase: AgentPhase; role: string }) {
       ? "border-cyan/30 bg-cyan/[0.08] text-cyan"
       : phase === "trade"
         ? "border-green/30 bg-green/[0.08] text-green"
-        : "border-border bg-bg text-text-muted";
+        : "border-white/10 bg-bg text-text-muted";
   return (
     <span
       className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-mono font-bold uppercase tracking-widest border ${cls}`}
@@ -348,9 +348,9 @@ export default function AgentPicker({
           aria-label="Search agents"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="w-full bg-bg border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 focus:border-cyan/50 placeholder:text-text-muted mb-2"
+          className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 focus:border-cyan/50 placeholder:text-text-muted mb-2"
         />
-        <ul className="divide-y divide-border max-h-72 overflow-y-auto">
+        <ul className="divide-y divide-white/[0.06] max-h-72 overflow-y-auto">
           {candidates.map((a) => {
             const { role, phase } = roleFor(a.strategy);
             const ret = fmtReturn(a.return30d);

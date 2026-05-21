@@ -101,7 +101,7 @@ export default function PrivacyPage() {
         </section>
 
         {/* Table of Contents */}
-        <section className="mb-10 p-4 border border-border rounded glass-card">
+        <section className="mb-10 p-4 border border-white/10 rounded-lg bg-white/[0.02]">
           <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted mb-3">
             Table of Contents
           </p>
@@ -427,21 +427,21 @@ function Sections9to11() {
       <P>
         <Strong>Legal Bases:</Strong>
       </P>
-      <div className="overflow-x-auto mb-4 border border-border rounded">
+      <div className="overflow-x-auto mb-4 border border-white/10 rounded">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-bg-card">
-              <th className="text-left font-mono text-[11px] uppercase tracking-widest text-text-muted px-3 py-2 border-b border-border">
+              <th className="text-left font-mono text-[11px] uppercase tracking-widest text-text-muted px-3 py-2 border-b border-white/10">
                 Processing Activity
               </th>
-              <th className="text-left font-mono text-[11px] uppercase tracking-widest text-text-muted px-3 py-2 border-b border-border">
+              <th className="text-left font-mono text-[11px] uppercase tracking-widest text-text-muted px-3 py-2 border-b border-white/10">
                 Legal Basis
               </th>
             </tr>
           </thead>
           <tbody>
             {LEGAL_BASES.map((row) => (
-              <tr key={row.activity} className="border-b border-border last:border-0">
+              <tr key={row.activity} className="border-b border-white/10 last:border-0">
                 <td className="px-3 py-2 text-text-dim align-top">
                   {row.activity}
                 </td>
@@ -635,7 +635,7 @@ function Sections12to15() {
         <p>United Kingdom</p>
       </div>
 
-      <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted border-t border-border pt-6 mt-10">
+      <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted border-t border-white/10 pt-6 mt-10">
         © 2026 CRANQ Ltd. All rights reserved.
       </p>
     </>

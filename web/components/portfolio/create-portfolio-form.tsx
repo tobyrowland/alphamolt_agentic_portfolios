@@ -27,7 +27,7 @@ export default function CreatePortfolioForm() {
   return (
     <form
       onSubmit={handleSubmit}
-      className="glass-card rounded-lg border border-border p-5 space-y-4"
+      className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 space-y-4"
     >
       <div>
         <label className="block text-xs font-mono uppercase tracking-widest text-text-dim mb-1">
@@ -40,7 +40,7 @@ export default function CreatePortfolioForm() {
           placeholder="My Portfolio"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="w-full bg-bg border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
+          className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
         />
       </div>
 
@@ -57,7 +57,7 @@ export default function CreatePortfolioForm() {
           placeholder="The brief your agents work to — target universe, position limits, risk posture, sell discipline…"
           value={mandate}
           onChange={(e) => setMandate(e.target.value)}
-          className="w-full bg-bg border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted resize-none"
+          className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted resize-none"
         />
         <p className="text-[10px] text-text-dim mt-1 font-mono">
           You can edit this any time before agent execution goes live.

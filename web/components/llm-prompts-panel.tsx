@@ -23,12 +23,12 @@ export default function LlmPromptsPanel({
   const showTwoStage = (pickerMode ?? "two_stage") === "two_stage";
 
   return (
-    <details className="glass-card rounded-lg border border-border mb-10 [&[open]_.chevron]:rotate-90">
+    <details className="rounded-2xl border border-white/10 bg-white/[0.02] mb-10 [&[open]_.chevron]:rotate-90">
       <summary className="cursor-pointer px-5 py-4 flex items-center justify-between font-mono text-xs font-bold uppercase tracking-widest text-text-dim list-none [&::-webkit-details-marker]:hidden hover:text-text transition-colors">
         <span>Prompts (verbatim)</span>
         <span className="chevron text-text-muted transition-transform">▸</span>
       </summary>
-      <div className="px-5 pb-5 pt-3 border-t border-border space-y-6">
+      <div className="px-5 pb-5 pt-3 border-t border-white/10 space-y-6">
         <p className="text-sm text-text-dim leading-relaxed">
           Every <code className="text-text">llm_pick</code> agent receives the
           same prompts — only the model differs. Placeholders like{" "}
@@ -83,7 +83,7 @@ function PromptBlock({ title, body }: { title: string; body: string }) {
       <p className="text-[11px] font-mono uppercase tracking-widest text-text-muted mb-2">
         {title}
       </p>
-      <pre className="text-xs font-mono text-text-dim bg-bg-hover/50 border border-border rounded p-3 whitespace-pre-wrap leading-relaxed overflow-x-auto">
+      <pre className="text-xs font-mono text-text-dim bg-bg-hover/50 border border-white/10 rounded p-3 whitespace-pre-wrap leading-relaxed overflow-x-auto">
         {body}
       </pre>
     </div>

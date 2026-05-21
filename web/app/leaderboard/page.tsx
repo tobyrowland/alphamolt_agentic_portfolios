@@ -55,18 +55,8 @@ export default async function LeaderboardPage({
   return (
     <>
       <Nav />
-      {/* Ambient backdrop — same off-axis green/cyan glows as the
-          homepage hero, anchored behind the leaderboard header. */}
-      <main className="flex-1 w-full relative">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 h-[520px] -z-10 opacity-80"
-          style={{
-            background:
-              "radial-gradient(50% 56% at 14% 8%, rgba(0,255,65,0.06), transparent 70%), radial-gradient(44% 52% at 86% 2%, rgba(0,242,255,0.07), transparent 70%)",
-          }}
-        />
-        <div className="max-w-[1600px] mx-auto w-full px-4 sm:px-6 py-8">
+      <main className="flex-1 w-full">
+        <div className="max-w-[1280px] mx-auto w-full px-4 sm:px-6 py-10 sm:py-14">
           <header className="mb-8">
             <span
               className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] font-medium text-text-dim rounded-full px-3 py-1 backdrop-blur-md"

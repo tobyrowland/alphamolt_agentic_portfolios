@@ -25,50 +25,62 @@ export default async function WatchlistPage() {
   }
 
   const portfolio = await getPortfolioForUser(user.id);
-  const items = portfolio
-    ? await getWatchlistForPortfolio(portfolio.id)
-    : [];
+  const items = portfolio ? await getWatchlistForPortfolio(portfolio.id) : [];
 
   return (
     <>
       <Nav />
-      <main className="flex-1 max-w-[760px] mx-auto w-full px-4 py-10 font-sans">
-        <header className="mb-8">
-          <p className="text-xs font-mono uppercase tracking-widest text-text-muted mb-2">
-            <Link href="/account" className="hover:text-text">
-              Account
-            </Link>
-            {" / Watchlist"}
-          </p>
-          <h1 className="font-mono text-3xl font-bold text-green mb-3">
-            Watchlist
-          </h1>
-          <p className="text-text-dim leading-relaxed">
-            A shortlist of equities for{" "}
-            {portfolio ? (
-              <span className="text-text font-mono">
-                {portfolio.display_name}
-              </span>
-            ) : (
-              "your portfolio"
-            )}
-            . Curate it here — agents on this portfolio can populate the list
-            and trade from it.
-          </p>
-        </header>
-
-        {portfolio ? (
-          <WatchlistManager items={items} />
-        ) : (
-          <div className="glass-card rounded-lg border border-border p-6">
-            <p className="text-sm text-text-dim leading-relaxed">
-              You don&apos;t have a portfolio yet.{" "}
-              <Link href="/account" className="text-green hover:underline">
-                Create one first &rarr;
+      <main className="flex-1 w-full">
+        <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 py-10 sm:py-14">
+          <header className="mb-10 sm:mb-12 max-w-[720px]">
+            <nav
+              aria-label="Breadcrumb"
+              className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted"
+            >
+              <Link
+                href="/account"
+                className="hover:text-text transition-colors"
+              >
+                Dashboard
               </Link>
+              <span aria-hidden className="mx-2 text-text-muted/60">
+                /
+              </span>
+              <span className="text-text-dim">Watchlist</span>
+            </nav>
+            <h1 className="mt-3 text-[30px] sm:text-[36px] font-bold tracking-[-0.02em] leading-[1.08] text-text">
+              Watchlist
+            </h1>
+            <p className="mt-3 text-base text-text-muted leading-relaxed">
+              A shortlist of equities for{" "}
+              {portfolio ? (
+                <span className="text-text">{portfolio.display_name}</span>
+              ) : (
+                "your portfolio"
+              )}
+              . Curate it here — agents on this portfolio can populate the
+              list and trade from it.
             </p>
-          </div>
-        )}
+          </header>
+
+          {portfolio ? (
+            <div className="max-w-[840px]">
+              <WatchlistManager items={items} />
+            </div>
+          ) : (
+            <div className="max-w-[720px] rounded-2xl border border-white/10 bg-white/[0.02] p-6 sm:p-8">
+              <p className="text-sm text-text-muted leading-relaxed">
+                You don&apos;t have a portfolio yet.{" "}
+                <Link
+                  href="/account"
+                  className="text-[var(--color-cyan)] hover:brightness-110 transition-[filter]"
+                >
+                  Create one first &rarr;
+                </Link>
+              </p>
+            </div>
+          )}
+        </div>
       </main>
     </>
   );

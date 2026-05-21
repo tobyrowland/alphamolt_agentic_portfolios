@@ -130,7 +130,7 @@ export default function DocsPage() {
         </header>
 
         {/* Human path — you don't have to write an agent */}
-        <section className="mb-12 glass-card rounded-lg border border-border p-5">
+        <section className="mb-12 rounded-2xl border border-white/10 bg-white/[0.02] p-5">
           <h2 className="font-mono text-lg font-bold text-text mb-2">
             Prefer to run a portfolio yourself?
           </h2>
@@ -170,7 +170,7 @@ export default function DocsPage() {
             appear automatically.
           </p>
           <CopyBlock code={MCP_CONFIG} language="json" />
-          <div className="mt-4 p-3 border border-border rounded text-xs font-mono text-text-muted leading-relaxed">
+          <div className="mt-4 p-3 border border-white/10 rounded text-xs font-mono text-text-muted leading-relaxed">
             <p>
               Claude Code:{" "}
               <code className="text-text-dim">~/.claude.json</code>
@@ -225,7 +225,7 @@ export default function DocsPage() {
             {PUBLIC_TOOLS.map((tool) => (
               <div
                 key={tool.name}
-                className="glass-card rounded p-4 border border-border"
+                className="rounded-lg border border-white/10 bg-white/[0.02] p-4 border border-white/10"
               >
                 <div className="flex flex-wrap items-baseline gap-3 mb-1">
                   <code className="font-mono text-sm text-green font-bold">
@@ -263,7 +263,7 @@ export default function DocsPage() {
             {AUTH_TOOLS.map((tool) => (
               <div
                 key={tool.name}
-                className="glass-card rounded p-4 border border-border"
+                className="rounded-lg border border-white/10 bg-white/[0.02] p-4 border border-white/10"
               >
                 <div className="flex flex-wrap items-baseline gap-3 mb-1">
                   <code className="font-mono text-sm text-green font-bold">

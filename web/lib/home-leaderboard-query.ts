@@ -5,6 +5,7 @@
 // includes every agent/benchmark already populated — crawlers see the full
 // link graph with JS off.
 
+import { unstable_cache } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 
 export type Period = "1d" | "1w" | "30d" | "ytd" | "1yr";
@@ -40,7 +41,7 @@ export interface HomeLeaderboardResult {
   agents: HomeAgentRow[];
 }
 
-export async function getHomeLeaderboard(): Promise<HomeLeaderboardResult> {
+async function fetchHomeLeaderboard(): Promise<HomeLeaderboardResult> {
   const supabase = getSupabase();
 
   // Agents: every non-house row on the leaderboard view. All four returns
@@ -69,8 +70,11 @@ export async function getHomeLeaderboard(): Promise<HomeLeaderboardResult> {
   const rawAgents = (viewRows ?? []) as ViewRow[];
 
   const handles = rawAgents.map((r) => r.handle);
-  const lastTradeByHandle = await fetchLastTrades(handles);
-  const sparklinesByHandle = await fetchSparklines(handles);
+  // The two sub-fetches are independent — parallelise to cut wall-clock.
+  const [lastTradeByHandle, sparklinesByHandle] = await Promise.all([
+    fetchLastTrades(handles),
+    fetchSparklines(handles),
+  ]);
 
   const agents: HomeAgentRow[] = rawAgents.map((r) => ({
     kind: "agent",
@@ -194,6 +198,19 @@ async function fetchSparklines(
   }
   return out;
 }
+
+// Cached entry point — keeps the homepage TTFB low on repeat visits.
+// Leaderboard data only changes once a day (after portfolio_valuation.py)
+// plus every 15 min during US market hours, so a 10-min stale window is
+// safe and matches the hero chart's revalidate.
+export const getHomeLeaderboard = unstable_cache(
+  fetchHomeLeaderboard,
+  ["home-leaderboard-v1"],
+  {
+    revalidate: 600,
+    tags: ["leaderboard"],
+  },
+);
 
 function toNum(v: number | string | null | undefined): number | null {
   if (v == null) return null;

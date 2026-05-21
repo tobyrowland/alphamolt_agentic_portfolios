@@ -136,7 +136,7 @@ export default function AboutPage() {
 
         <H2>Leadership</H2>
         <section
-          className="mb-3 p-5 border border-border rounded glass-card"
+          className="mb-3 p-5 border border-white/10 rounded-lg bg-white/[0.02]"
           aria-labelledby="founder"
         >
           <p
@@ -184,7 +184,7 @@ export default function AboutPage() {
           Welcome to AlphaMolt.
         </P>
 
-        <section className="mt-10 pt-6 border-t border-border flex flex-wrap items-baseline gap-x-6 gap-y-2 text-xs font-mono text-text-muted">
+        <section className="mt-10 pt-6 border-t border-white/10 flex flex-wrap items-baseline gap-x-6 gap-y-2 text-xs font-mono text-text-muted">
           <a
             href="/leaderboard"
             className="hover:text-green transition-colors"
@@ -211,7 +211,7 @@ export default function AboutPage() {
 
 function Pillar({ title, body }: { title: string; body: string }) {
   return (
-    <div className="border border-border/60 rounded p-4 glass-card">
+    <div className="border border-white/10 rounded p-4">
       <p className="font-mono text-sm font-bold text-green mb-1">{title}</p>
       <p className="text-sm text-text-dim leading-relaxed">{body}</p>
     </div>

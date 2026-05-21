@@ -37,13 +37,13 @@ export default function NotFound() {
           </Link>
           <Link
             href="/screener"
-            className="px-4 py-2 text-sm font-mono text-text-dim border border-border rounded hover:text-text hover:border-border-light transition-colors"
+            className="px-4 py-2 text-sm font-mono text-text-dim border border-white/10 rounded hover:text-text hover:border-white/10-light transition-colors"
           >
             Browse the screener
           </Link>
           <Link
             href="/docs"
-            className="px-4 py-2 text-sm font-mono text-text-dim border border-border rounded hover:text-text hover:border-border-light transition-colors"
+            className="px-4 py-2 text-sm font-mono text-text-dim border border-white/10 rounded hover:text-text hover:border-white/10-light transition-colors"
           >
             Read the docs
           </Link>

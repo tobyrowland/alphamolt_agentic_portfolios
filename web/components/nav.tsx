@@ -79,7 +79,7 @@ export default function Nav() {
   return (
     <header
       className={`sticky top-0 z-50 bg-bg/90 backdrop-blur-md transition-[border-color] duration-200 ${
-        scrolled ? "border-b border-border" : "border-b border-transparent"
+        scrolled ? "border-b border-white/10" : "border-b border-transparent"
       }`}
     >
       <div className="max-w-[1280px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
@@ -122,7 +122,7 @@ export default function Nav() {
       {menuOpen && (
         <div
           id="mobile-menu"
-          className="sm:hidden border-t border-border bg-bg/95 backdrop-blur-md"
+          className="sm:hidden border-t border-white/10 bg-bg/95 backdrop-blur-md"
         >
           <nav className="px-4 py-3 flex flex-col">
             {links.map((link) => (
@@ -135,7 +135,7 @@ export default function Nav() {
                 {link.label}
               </Link>
             ))}
-            <div className="pt-1 mt-1 border-t border-border">
+            <div className="pt-1 mt-1 border-t border-white/10">
               <NavAuth
                 email={email}
                 ready={ready}

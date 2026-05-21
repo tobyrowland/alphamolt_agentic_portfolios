@@ -105,7 +105,7 @@ export default function PortfolioDetailsEditor({
               setName(e.target.value);
               setSaved(false);
             }}
-            className="w-full bg-bg border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 focus:border-cyan/50 placeholder:text-text-muted"
+            className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 focus:border-cyan/50 placeholder:text-text-muted"
           />
         </div>
 
@@ -129,7 +129,7 @@ export default function PortfolioDetailsEditor({
               setMandate(e.target.value);
               setSaved(false);
             }}
-            className="w-full bg-bg border border-border rounded px-3 py-2 text-sm text-text leading-relaxed focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 focus:border-cyan/50 placeholder:text-text-muted resize-none"
+            className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text leading-relaxed focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 focus:border-cyan/50 placeholder:text-text-muted resize-none"
           />
           <p className="text-[10px] text-text-muted mt-1 font-mono">
             {mandate.length} / 2000

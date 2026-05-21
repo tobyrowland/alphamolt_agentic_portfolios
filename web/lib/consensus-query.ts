@@ -9,6 +9,7 @@
  * this is just a static read.
  */
 
+import { unstable_cache } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 
 export interface ConsensusHolder {
@@ -36,7 +37,7 @@ export interface ConsensusResult {
   rows: ConsensusRow[];
 }
 
-export async function getLatestConsensus(): Promise<ConsensusResult> {
+async function fetchLatestConsensus(): Promise<ConsensusResult> {
   const supabase = getSupabase();
 
   // Most recent snapshot date — small index-only read against
@@ -58,6 +59,19 @@ export async function getLatestConsensus(): Promise<ConsensusResult> {
   const rows = await fetchSnapshotRows(snapshot_date);
   return { snapshot_date, rows };
 }
+
+// Cached entry point. The snapshot is materialised once a week
+// (Sundays 08:00 UTC by consensus_snapshot.py), so a 10-min stale
+// window adds no perceptible lag but keeps both the homepage and the
+// /consensus page (which share this query) snappy on repeat hits.
+export const getLatestConsensus = unstable_cache(
+  fetchLatestConsensus,
+  ["consensus-latest-v1"],
+  {
+    revalidate: 600,
+    tags: ["consensus"],
+  },
+);
 
 /**
  * Fetch a snapshot for a specific date. Returns rows = [] when the date

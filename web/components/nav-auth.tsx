@@ -76,7 +76,7 @@ export default function NavAuth({
       {open && (
         <div
           role="menu"
-          className="absolute right-0 mt-1 min-w-[140px] rounded border border-border bg-bg-card shadow-lg py-1 z-50"
+          className="absolute right-0 mt-1 min-w-[140px] rounded-lg border border-white/10 bg-bg-card shadow-lg py-1 z-50"
         >
           <form action="/auth/signout" method="post">
             <button

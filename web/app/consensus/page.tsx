@@ -69,18 +69,8 @@ export default async function ConsensusPage() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(itemList) }}
       />
-      <main className="flex-1 w-full relative">
-        {/* Same ambient backdrop pattern as the homepage hero — scoped to
-            the top of the page so it doesn't paint behind the table. */}
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 h-[560px] -z-10 opacity-70"
-          style={{
-            background:
-              "radial-gradient(60% 60% at 18% 12%, rgba(0,255,65,0.07), transparent 70%), radial-gradient(45% 50% at 85% 5%, rgba(120,160,255,0.05), transparent 70%)",
-          }}
-        />
-        <div className="max-w-[1120px] mx-auto w-full px-4 sm:px-6">
+      <main className="flex-1 w-full">
+        <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6">
           <Hero
             totalAgents={rows[0]?.total_agents ?? null}
             snapshotLabel={formattedDate}
@@ -90,7 +80,7 @@ export default async function ConsensusPage() {
 
           <section className="mt-2 sm:mt-4 mb-20 sm:mb-28">
             {fetchError ? (
-              <div className="glass-card rounded-lg p-10 text-center">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-10 text-center">
                 <p className="text-sm text-text-muted">
                   Consensus snapshot temporarily unavailable.
                 </p>

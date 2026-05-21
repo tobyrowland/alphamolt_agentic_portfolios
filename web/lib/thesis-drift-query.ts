@@ -11,6 +11,7 @@
  * explainer-only variant.
  */
 
+import { unstable_cache } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 
 export interface ThesisSignal {
@@ -71,7 +72,7 @@ interface RawThesisRow {
   break_signals: ThesisSignal[] | null;
 }
 
-export async function getThesisDriftExample(): Promise<ThesisDriftExample | null> {
+async function fetchThesisDriftExample(): Promise<ThesisDriftExample | null> {
   const supabase = getSupabase();
 
   // Three-tiered pull: best-case rows first, then progressively looser
@@ -255,3 +256,14 @@ function toNum(v: unknown): number | null {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
 }
+
+// Cached entry point — the drift example is pseudo-static (just an
+// illustrative row), so a 10-min stale window is more than enough.
+export const getThesisDriftExample = unstable_cache(
+  fetchThesisDriftExample,
+  ["thesis-drift-example-v1"],
+  {
+    revalidate: 600,
+    tags: ["theses"],
+  },
+);

@@ -63,30 +63,35 @@ export default async function PortfolioPage() {
   return (
     <>
       <Nav />
-      <main className="flex-1 max-w-[1600px] mx-auto w-full px-4 py-6">
-        <div className="mb-6">
-          <h1 className="font-mono text-xl font-bold text-text mb-1">
-            Example Agent
-          </h1>
-          <p className="text-sm text-text-muted font-mono">
-            {picks.length > 0
-              ? `${picks.length} picks — dual-positive (bear ✓ + bull ✓)${dupesRemoved > 0 ? `, ${dupesRemoved} duplicate listing${dupesRemoved === 1 ? "" : "s"} collapsed` : ""}. `
-              : ""}
-            One agent&apos;s view. AlphaMolt is a neutral arena; this is a
-            reference implementation, not an official portfolio.
-          </p>
-        </div>
-
-        {picks.length === 0 ? (
-          <div className="glass-card rounded-lg p-8 text-center">
-            <p className="font-mono text-text-muted">
-              No picks yet. This example agent selects equities where both its
-              bear and bull evaluators give a pass.
+      <main className="flex-1 w-full">
+        <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 py-10 sm:py-14">
+          <header className="mb-8 sm:mb-10 max-w-[720px]">
+            <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted">
+              Example Agent
             </p>
-          </div>
-        ) : (
-          <DataTable companies={picks} />
-        )}
+            <h1 className="mt-2 text-[30px] sm:text-[36px] font-bold tracking-[-0.02em] leading-[1.08] text-text">
+              Dual-positive picks
+            </h1>
+            <p className="mt-3 text-base text-text-muted leading-relaxed">
+              {picks.length > 0
+                ? `${picks.length} equities — bear ✓ + bull ✓${dupesRemoved > 0 ? `, ${dupesRemoved} duplicate listing${dupesRemoved === 1 ? "" : "s"} collapsed` : ""}. `
+                : ""}
+              One agent&apos;s view. AlphaMolt is a neutral arena; this is a
+              reference implementation, not an official portfolio.
+            </p>
+          </header>
+
+          {picks.length === 0 ? (
+            <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-8 text-center">
+              <p className="text-text-muted">
+                No picks yet. This example agent selects equities where both
+                its bear and bull evaluators give a pass.
+              </p>
+            </div>
+          ) : (
+            <DataTable companies={picks} />
+          )}
+        </div>
       </main>
     </>
   );

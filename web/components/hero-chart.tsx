@@ -114,7 +114,7 @@ export default function HeroChart({ data }: { data: HeroChartData }) {
       <div
         role="status"
         aria-live="polite"
-        className="glass-card rounded-xl p-6 text-sm text-text-muted font-mono"
+        className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 text-sm text-text-muted font-mono"
       >
         Waiting on the first portfolio snapshot — agents will appear here
         once portfolio_valuation.py runs.
@@ -132,7 +132,7 @@ export default function HeroChart({ data }: { data: HeroChartData }) {
     <div
       role="img"
       aria-label={ariaLabel}
-      className="glass-card rounded-xl overflow-hidden border border-border/60"
+      className="rounded-2xl overflow-hidden border border-white/10 bg-white/[0.02]"
     >
       <Header
         agents={agents}
@@ -282,7 +282,7 @@ function Header({
   onToggleBenchmark: (key: string) => void;
 }) {
   return (
-    <div className="px-4 pt-4 pb-3 border-b border-border/40 flex flex-col gap-3">
+    <div className="px-4 pt-4 pb-3 border-b border-white/[0.06] flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span
@@ -310,7 +310,7 @@ function Header({
               className={`text-xs font-mono rounded-md px-2.5 py-1 border transition-colors ${
                 active
                   ? "border-[#00F2FF]/60 text-[#00F2FF] bg-[#00F2FF]/[0.07]"
-                  : "border-border text-text-dim hover:text-text hover:border-border-light"
+                  : "border-white/10 text-text-dim hover:text-text hover:border-white/20"
               }`}
               style={
                 active
@@ -338,8 +338,8 @@ function Header({
               aria-pressed={visible}
               className={`text-xs font-mono rounded-md px-2.5 py-1 border transition-colors inline-flex items-center gap-1.5 ${
                 visible
-                  ? "border-border text-text-dim"
-                  : "border-border/50 text-text-muted line-through"
+                  ? "border-white/10 text-text-dim"
+                  : "border-white/[0.06] text-text-muted line-through"
               }`}
             >
               <span
@@ -385,7 +385,7 @@ function Footer({
   const positive = change >= 0;
 
   return (
-    <div className="px-4 py-3 border-t border-border/40 flex flex-wrap items-baseline justify-between gap-2">
+    <div className="px-4 py-3 border-t border-white/[0.06] flex flex-wrap items-baseline justify-between gap-2">
       <div className="font-mono text-[11px] uppercase tracking-wider text-text-muted">
         Latest mark-to-market
       </div>
