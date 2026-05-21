@@ -81,18 +81,25 @@ export default async function ScreenerPage({
   return (
     <>
       <Nav />
-      <main className="flex-1 max-w-[1600px] mx-auto w-full px-4 py-6">
-        <div className="mb-6">
-          <h1 className="font-mono text-xl font-bold text-text mb-1">
-            {heading}
-          </h1>
-          <p className="text-sm text-text-muted font-mono">{sub}</p>
-          <p className="text-xs text-text-muted font-mono mt-1">
-            Prices 15-minute delayed (EODHD) · refreshed every 15 min during
-            US market hours
-          </p>
+      <main className="flex-1 w-full">
+        <div className="max-w-[1280px] mx-auto w-full px-4 sm:px-6 py-10 sm:py-14">
+          <header className="mb-8 sm:mb-10 max-w-[760px]">
+            <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted">
+              Stock screener
+            </p>
+            <h1 className="mt-2 text-[30px] sm:text-[36px] font-bold tracking-[-0.02em] leading-[1.08] text-text">
+              {heading}
+            </h1>
+            <p className="mt-3 text-base text-text-muted leading-relaxed">
+              {sub}
+            </p>
+            <p className="mt-2 text-xs text-text-muted">
+              Prices 15-minute delayed (EODHD) · refreshed every 15 min during
+              US market hours
+            </p>
+          </header>
+          <DataTable companies={companies} />
         </div>
-        <DataTable companies={companies} />
       </main>
     </>
   );

@@ -14,7 +14,7 @@ interface Props {
 export default function ConsensusTable({ rows }: Props) {
   if (rows.length === 0) {
     return (
-      <div className="glass-card rounded-lg p-10 text-center">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-10 text-center">
         <p className="text-sm text-text-muted font-mono">
           No consensus snapshot yet — first run lands Sunday 08:00 UTC.
         </p>
@@ -23,7 +23,7 @@ export default function ConsensusTable({ rows }: Props) {
   }
 
   return (
-    <div className="glass-card rounded-lg overflow-hidden">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.02] overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -70,7 +70,7 @@ function Row({ row }: { row: ConsensusRow }) {
           <div className="min-w-0">
             <Link
               href={`/company/${encodeURIComponent(row.ticker)}`}
-              className="font-mono text-[15px] font-bold text-green hover:underline decoration-1 underline-offset-[3px]"
+              className="font-mono text-[15px] font-bold text-text hover:text-[var(--color-cyan)] hover:underline decoration-1 underline-offset-[3px] transition-colors"
             >
               {row.ticker}
             </Link>
@@ -204,7 +204,7 @@ function RestTooltip({ rest }: { rest: ConsensusHolder[] }) {
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center px-2 py-0.5 rounded-md text-xs text-green border border-green/30 hover:border-green/60 hover:bg-green/[0.06] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green/50"
+        className="inline-flex items-center px-2 py-0.5 rounded-md text-xs text-[var(--color-cyan)] border border-[var(--color-cyan)]/30 hover:border-[var(--color-cyan)]/60 hover:bg-[var(--color-cyan)]/[0.08] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/50"
       >
         +{rest.length}
       </button>

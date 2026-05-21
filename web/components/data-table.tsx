@@ -62,7 +62,7 @@ export default function DataTable({ companies }: { companies: Company[] }) {
           placeholder="Search ticker, company, sector..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="flex-1 bg-bg-card border border-border rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
+          className="flex-1 bg-bg-card border border-white/10 rounded-lg px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-white/20 focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 placeholder:text-text-muted transition-colors"
         />
       </div>
 
@@ -72,7 +72,7 @@ export default function DataTable({ companies }: { companies: Company[] }) {
       </p>
 
       {/* Table */}
-      <div className="overflow-x-auto rounded-lg border border-border">
+      <div className="overflow-x-auto rounded-2xl border border-white/10 bg-white/[0.02]">
         <table className="w-full text-sm font-mono table-fixed min-w-[1560px]">
           <colgroup>
             <col className="w-[50px]" />   {/* # */}
@@ -94,7 +94,7 @@ export default function DataTable({ companies }: { companies: Company[] }) {
             <col className="w-[70px]" />   {/* Bull */}
           </colgroup>
           <thead>
-            <tr className="border-b border-border bg-bg-card">
+            <tr className="border-b border-white/10 bg-white/[0.02]">
               <Th onClick={() => handleSort("sort_order")} active={sortKey === "sort_order"} dir={sortDir} tooltip="Composite rank (1 = best). Recomputed daily.">#</Th>
               <Th onClick={() => handleSort("ticker")} active={sortKey === "ticker"} dir={sortDir} tooltip="Exchange ticker. Click the row for the company detail page.">Ticker</Th>
               <Th onClick={() => handleSort("company_name")} active={sortKey === "company_name"} dir={sortDir} tooltip="Company name.">Company</Th>
@@ -124,7 +124,7 @@ export default function DataTable({ companies }: { companies: Company[] }) {
               return (
                 <tr
                   key={c.ticker}
-                  className="border-b border-border/50 hover:bg-bg-hover transition-colors"
+                  className="border-b border-white/[0.06] hover:bg-white/[0.025] transition-colors"
                 >
                   <td className="px-3 py-2 text-text-muted text-right whitespace-nowrap">
                     {c.sort_order ?? "--"}
@@ -138,7 +138,7 @@ export default function DataTable({ companies }: { companies: Company[] }) {
                   >
                     <Link
                       href={`/company/${c.ticker}`}
-                      className="text-green hover:underline"
+                      className="text-text hover:text-[var(--color-cyan)] hover:underline decoration-1 underline-offset-[3px] transition-colors"
                     >
                       {c.company_name || "--"}
                     </Link>
@@ -280,7 +280,7 @@ function Th({
       title={tooltip}
       className="px-3 py-2.5 text-left text-xs uppercase tracking-wider text-text-dim cursor-pointer hover:text-text select-none whitespace-nowrap"
     >
-      <span className={active ? "text-green" : ""}>
+      <span className={active ? "text-[var(--color-cyan)]" : ""}>
         {children}
         {active && (
           <span className="ml-1">{dir === "asc" ? "\u25B2" : "\u25BC"}</span>

@@ -102,7 +102,7 @@ export default function LeaderboardTable({ rows, initialPeriod }: Props) {
         <div
           role="tablist"
           aria-label="Leaderboard period"
-          className="inline-flex rounded-md border border-border bg-bg-hover overflow-hidden"
+          className="inline-flex rounded-md border border-white/10 bg-white/[0.02] overflow-hidden"
         >
           {PERIODS.map((p) => {
             const active = p === period;
@@ -125,10 +125,10 @@ export default function LeaderboardTable({ rows, initialPeriod }: Props) {
         </div>
       </div>
 
-      <div className="glass-card rounded-lg overflow-hidden">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full font-mono text-sm">
-            <thead className="bg-bg-hover border-b border-border text-left text-xs uppercase tracking-wider text-text-dim">
+            <thead className="bg-white/[0.02] border-b border-white/10 text-left text-xs uppercase tracking-wider text-text-dim">
               <tr>
                 <th className="px-4 py-3 font-normal">#</th>
                 <th className="px-4 py-3 font-normal">Portfolio</th>
@@ -244,7 +244,7 @@ function AgentTableRow({
 }) {
   const ret = row.returns[period];
   return (
-    <tr className="border-b border-border/50 hover:bg-bg-hover/50 transition-colors">
+    <tr className="border-b border-white/[0.06] hover:bg-white/[0.025] transition-colors">
       <td className="px-4 py-3 text-text-dim">{rank}</td>
       <td className="px-4 py-3">
         <Link href={`/portfolios/${row.handle}`} className="group block">
@@ -253,7 +253,7 @@ function AgentTableRow({
               {row.display_name}
             </span>
             {row.is_house_agent && (
-              <span className="text-[10px] uppercase tracking-wider text-text-muted border border-border-light rounded px-1 py-0.5">
+              <span className="text-[10px] uppercase tracking-wider text-text-muted border border-white/10 rounded px-1 py-0.5">
                 house
               </span>
             )}
@@ -266,7 +266,7 @@ function AgentTableRow({
               <Link
                 key={m.handle}
                 href={`/agents/${m.handle}`}
-                className="text-[10px] font-mono text-text-muted hover:text-[var(--color-cyan)] border border-border rounded px-1 py-0.5"
+                className="text-[10px] font-mono text-text-muted hover:text-[var(--color-cyan)] border border-white/10 hover:border-[var(--color-cyan)]/40 rounded px-1 py-0.5 transition-colors"
                 title={m.powered_by ? `Powered by ${m.powered_by}` : undefined}
               >
                 {m.display_name}
@@ -319,7 +319,7 @@ function BenchmarkTableRow({
 }) {
   const ret = row.returns[period];
   return (
-    <tr className="border-b border-border/50 bg-orange/[0.04] hover:bg-orange/[0.08] transition-colors">
+    <tr className="border-b border-white/[0.06] bg-[var(--color-orange)]/[0.04] hover:bg-[var(--color-orange)]/[0.08] transition-colors">
       <td className="px-4 py-3 text-orange/80">{rank}</td>
       <td className="px-4 py-3">
         <div className="flex items-center gap-2">
