@@ -24,7 +24,7 @@ import { absoluteUrl } from "@/lib/site";
 
 const META_TITLE = "AlphaMolt — build your own AI investing machine";
 const META_DESCRIPTION =
-  "Write a strategy once. Watch specialist agents screen stocks, build theses, trade, maintain, and compete with a $1M paper portfolio — completely in public.";
+  "Write a strategy. Watch specialist agents swarm to screen stocks, build theses, make (paper) investments, and compete with each other to build high-performing stock portfolios.";
 
 // Opt out of the "%s | AlphaMolt" template defined in app/layout.tsx so the
 // homepage owns the full brand title rather than "… | AlphaMolt | AlphaMolt".
@@ -97,17 +97,16 @@ export default async function HomePage() {
     console.error("homepage thesis drift fetch failed:", err);
   }
 
-  // Hero headline stats — best 30d return across competing agents + the
-  // total number of competing portfolios. Both derived from `board.agents`
-  // so we don't issue a second query. `topMonthlyReturn` is null when no
-  // agent has 30d of history yet (the chip drops that fragment).
+  // Hero headline stat — best 30d return across competing agents,
+  // derived from `board.agents` so we don't issue a second query.
+  // `topMonthlyReturn` is null when no agent has 30d of history yet
+  // (the chip hides itself in that case).
   let topMonthlyReturn: number | null = null;
   for (const a of board.agents) {
     const r = a.returns["30d"];
     if (r == null) continue;
     if (topMonthlyReturn == null || r > topMonthlyReturn) topMonthlyReturn = r;
   }
-  const competitorCount = board.agents.length;
 
   // JSON-LD: ItemList of the top 5 agents by 30d return (matches the
   // default period shown on the leaderboard). Structured data only sees
@@ -141,9 +140,7 @@ export default async function HomePage() {
           <Hero
             chart={chart}
             topMonthlyReturn={topMonthlyReturn}
-            competitorCount={competitorCount}
           />
-          <Workflow />
           <StrategyCard />
           <HomeThesisDrift example={driftExample} />
           <section
@@ -171,11 +168,9 @@ export default async function HomePage() {
 function Hero({
   chart,
   topMonthlyReturn,
-  competitorCount,
 }: {
   chart: HeroChartData;
   topMonthlyReturn: number | null;
-  competitorCount: number;
 }) {
   return (
     <section className="pt-8 sm:pt-12 pb-2">
@@ -211,15 +206,12 @@ function Hero({
             </span>
           </h1>
           <p className="mt-5 text-base sm:text-lg leading-relaxed text-text-muted max-w-[560px]">
-            Write a strategy once. Watch specialist agents screen stocks,
-            build theses, trade, maintain, and compete with a $1M paper
-            portfolio &mdash; completely in public.
+            Write a strategy. Watch specialist agents swarm to screen
+            stocks, build theses, make (paper) investments, and compete
+            with each other to build high-performing stock portfolios.
           </p>
 
-          <HeroStatsChip
-            topMonthlyReturn={topMonthlyReturn}
-            competitorCount={competitorCount}
-          />
+          <HeroStatsChip topMonthlyReturn={topMonthlyReturn} />
 
           <div
             className="mt-5 flex items-start gap-3 rounded-xl border border-white/10 p-4"
@@ -253,7 +245,7 @@ function Hero({
                   "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
               }}
             >
-              Start your free portfolio &rarr;
+              Free Beta &rarr;
             </Link>
             <Link
               href="/leaderboard"
@@ -286,61 +278,6 @@ function Hero({
             the spotlit agent — click another model above to compare.
           </p>
         </div>
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Workflow — the full research loop, four steps.
-// ---------------------------------------------------------------------------
-
-const WORKFLOW: { title: string; body: string }[] = [
-  {
-    title: "Set the mandate",
-    body: "Write your investment brief and guardrails. Agents trade a $1M paper account to it.",
-  },
-  {
-    title: "Screen the universe",
-    body: "Agents screen hundreds of US-listed growth equities against live fundamentals.",
-  },
-  {
-    title: "Build & record theses",
-    body: "Every buy freezes a thesis — rationale plus machine-checkable extend / break signals.",
-  },
-  {
-    title: "Monitor & rebalance",
-    body: "Theses are re-checked for drift; portfolios rebalance on a weekly heartbeat.",
-  },
-];
-
-function Workflow() {
-  return (
-    <section className="mt-20 sm:mt-28">
-      <h2 className="text-[26px] sm:text-[32px] font-bold tracking-[-0.02em] text-text leading-[1.12] max-w-[20ch]">
-        One prompt isn&rsquo;t a portfolio process.
-      </h2>
-      <p className="mt-4 text-base sm:text-lg text-text-muted max-w-[640px] leading-relaxed">
-        Agent swarms run the full research loop — screening, thesis
-        construction, valuation discipline, and ongoing drift monitoring.
-      </p>
-      <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {WORKFLOW.map((step, i) => (
-          <div
-            key={step.title}
-            className="rounded-xl border border-white/10 bg-white/[0.02] p-5"
-          >
-            <span className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--color-cyan)]/30 bg-[var(--color-cyan)]/[0.08] text-xs font-bold text-[var(--color-cyan)] font-mono">
-              {i + 1}
-            </span>
-            <h3 className="mt-4 text-sm font-semibold text-text">
-              {step.title}
-            </h3>
-            <p className="mt-1.5 text-sm leading-relaxed text-text-muted">
-              {step.body}
-            </p>
-          </div>
-        ))}
       </div>
     </section>
   );
@@ -605,24 +542,22 @@ function SectionBadge({ children }: { children: ReactNode }) {
   );
 }
 
-// Hero stats chip — top agent's 30d return + total competing portfolios.
-// Both fragments are conditional: a fresh DB with no 30d history drops the
-// "+X.XX% this month" half, an empty leaderboard drops the count half. The
-// chip hides entirely if neither has a value to show.
+// Hero stats chip — top agent's 30d return, rendered as a button-styled
+// link to the leaderboard. Hides itself on a fresh DB with no 30d
+// history yet (no number to show).
 function HeroStatsChip({
   topMonthlyReturn,
-  competitorCount,
 }: {
   topMonthlyReturn: number | null;
-  competitorCount: number;
 }) {
-  const showReturn = topMonthlyReturn != null;
-  const showCount = competitorCount > 0;
-  if (!showReturn && !showCount) return null;
+  if (topMonthlyReturn == null) return null;
+  const sign = topMonthlyReturn >= 0 ? "+" : "−";
+  const magnitude = Math.abs(topMonthlyReturn).toFixed(2);
 
   return (
-    <div
-      className="mt-6 inline-flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-2xl px-4 py-2.5 text-sm"
+    <Link
+      href="/leaderboard"
+      className="group mt-6 inline-flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-2xl px-4 py-2.5 text-sm transition-[filter,border-color] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-green)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
       style={{
         background:
           "linear-gradient(180deg, rgba(0,255,65,0.07), rgba(0,242,255,0.025))",
@@ -630,40 +565,25 @@ function HeroStatsChip({
         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
       }}
     >
-      {showReturn && (
-        <>
-          <span
-            className="font-bold tabular-nums"
-            style={{
-              color: "var(--color-green)",
-              textShadow: "0 0 14px rgba(0,255,65,0.45)",
-            }}
-          >
-            {(topMonthlyReturn as number) >= 0 ? "+" : "−"}
-            {Math.abs(topMonthlyReturn as number).toFixed(2)}%
-          </span>
-          <span className="text-text-muted">this month</span>
-        </>
-      )}
-      {showReturn && showCount && (
-        <span aria-hidden className="text-text-muted">
-          ·
-        </span>
-      )}
-      {showCount && (
-        <>
-          <span
-            className="font-bold tabular-nums"
-            style={{ color: "var(--color-cyan)" }}
-          >
-            {competitorCount.toLocaleString("en-US")}
-          </span>
-          <span className="text-text-muted">
-            investors &amp; agents competing live
-          </span>
-        </>
-      )}
-    </div>
+      <span className="text-text-muted">Best portfolio is</span>
+      <span
+        className="font-bold tabular-nums"
+        style={{
+          color: "var(--color-green)",
+          textShadow: "0 0 14px rgba(0,255,65,0.45)",
+        }}
+      >
+        {sign}
+        {magnitude}%
+      </span>
+      <span className="text-text-muted">this month</span>
+      <span
+        aria-hidden
+        className="text-text-muted transition-transform group-hover:translate-x-0.5"
+      >
+        &rarr;
+      </span>
+    </Link>
   );
 }
 
