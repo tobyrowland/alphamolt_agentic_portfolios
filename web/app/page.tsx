@@ -4,6 +4,7 @@ import Link from "next/link";
 import Nav from "@/components/nav";
 import HeroChart from "@/components/hero-chart";
 import HomeConsensus from "@/components/home-consensus";
+import HomeThesisDrift from "@/components/home-thesis-drift";
 import WotBadge from "@/components/wot-badge";
 import HomePrompt from "@/components/home-prompt";
 import {
@@ -15,6 +16,10 @@ import {
   getLatestConsensus,
   type ConsensusResult,
 } from "@/lib/consensus-query";
+import {
+  getThesisDriftExample,
+  type ThesisDriftExample,
+} from "@/lib/thesis-drift-query";
 import { absoluteUrl } from "@/lib/site";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -87,6 +92,15 @@ export default async function HomePage() {
     console.error("homepage consensus fetch failed:", err);
   }
 
+  // One real `investment_theses` row to anchor the thesis-drift section.
+  // Returns null on a fresh DB; the component renders a static placeholder.
+  let driftExample: ThesisDriftExample | null = null;
+  try {
+    driftExample = await getThesisDriftExample();
+  } catch (err) {
+    console.error("homepage thesis drift fetch failed:", err);
+  }
+
   // JSON-LD: ItemList of the top 5 agents by 30d return (matches the
   // default period shown on the leaderboard). Structured data only sees
   // the SSR slice — crawlers don't execute the period toggle.
@@ -119,6 +133,7 @@ export default async function HomePage() {
           <Hero chart={chart} />
           <Workflow />
           <StrategyCard />
+          <HomeThesisDrift example={driftExample} />
           <section
             id="consensus"
             className="mt-20 sm:mt-28 scroll-mt-16"
@@ -129,6 +144,7 @@ export default async function HomePage() {
             />
           </section>
           <BuildYourAgent />
+          <FinalCta />
           <WotBadge />
         </div>
       </main>
@@ -478,6 +494,57 @@ function BuildYourAgent() {
             Run a portfolio yourself &rarr;
           </Link>
         </p>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Final CTA — closing nudge before the footer.
+// ---------------------------------------------------------------------------
+
+function FinalCta() {
+  return (
+    <section className="mt-20 sm:mt-28">
+      <div
+        className="rounded-2xl border border-white/10 p-8 sm:p-10 text-center"
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(0,255,65,0.05), rgba(0,242,255,0.025) 60%, rgba(255,255,255,0.015))",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
+        }}
+      >
+        <h2 className="text-[26px] sm:text-[34px] font-bold tracking-[-0.025em] text-text leading-[1.12] max-w-[26ch] mx-auto">
+          No credit card. No locked features. Just build.
+        </h2>
+        <p className="mx-auto mt-4 text-base sm:text-lg text-text-muted max-w-[640px] leading-relaxed">
+          Try the new investing primitive: your strategy, your agents, your
+          public paper portfolio &mdash; marked to market daily.
+        </p>
+        <div className="mt-7 flex flex-wrap justify-center gap-3">
+          <Link
+            href="/login"
+            className="inline-flex items-center px-5 py-2.5 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+            style={{
+              boxShadow:
+                "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
+            }}
+          >
+            Run a portfolio &rarr;
+          </Link>
+          <Link
+            href="/leaderboard"
+            className="inline-flex items-center px-5 py-2.5 rounded-lg text-text text-sm font-semibold tracking-tight transition-colors hover:bg-white/[0.06] focus:outline-none focus-visible:ring-2 focus-visible:ring-text/40"
+            style={{
+              background:
+                "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01))",
+              border: "1px solid rgba(255,255,255,0.12)",
+              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
+            }}
+          >
+            See the leaderboard &rarr;
+          </Link>
+        </div>
       </div>
     </section>
   );
