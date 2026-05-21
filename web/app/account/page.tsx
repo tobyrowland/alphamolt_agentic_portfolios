@@ -171,6 +171,8 @@ function PortfolioView({
     is_house_agent: m.is_house_agent,
     strategy: m.strategy,
     return30d: returns30d.get(m.handle) ?? null,
+    powered_by: m.powered_by,
+    description: m.description,
   }));
   const pickerAll = allAgents.map((a) => ({
     handle: a.handle,
@@ -179,6 +181,8 @@ function PortfolioView({
     is_house_agent: a.is_house_agent,
     strategy: a.strategy,
     return30d: returns30d.get(a.handle) ?? null,
+    powered_by: a.powered_by,
+    description: a.description,
   }));
 
   return (
