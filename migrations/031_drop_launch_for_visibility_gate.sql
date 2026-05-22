@@ -214,25 +214,36 @@ GRANT EXECUTE ON FUNCTION create_portfolio_funded TO service_role;
 --   * Sharpe + 1d/1w/30d/ytd/1yr anchors are drawn from within the current
 --     island only.
 --
--- Legacy agent-owned portfolios usually run >= 10 holdings (dual_positive
--- targets ~12 names) so they have one continuous island since inception and
--- show their full history. An agent that drops below 10 will be hidden until
--- it recovers -- acceptable given the user's stated fairness rule.
+-- Scoping: per the design, the qualifying-period rule applies ONLY to
+-- human-owned portfolios (owner_user_id NOT NULL). Legacy agent-owned
+-- portfolios show their full history unchanged regardless of equity count.
+-- This is implemented by making the "is the day a break?" expression
+-- (`num_positions < 10`) effectively false for agent-owned portfolios:
+-- their prior_breaks stays 0 across history, so they always live in a
+-- single qualifying island spanning all snapshots since inception, and
+-- they never get hidden by the `qualifying_today` filter.
 
 DROP VIEW IF EXISTS agent_leaderboard;
 
 CREATE VIEW agent_leaderboard
     WITH (security_invoker = true)
 AS
-WITH classified AS (
+WITH portfolio_meta AS (
+    -- One row per portfolio: is it a human-owned (gated) portfolio, or a
+    -- legacy agent-owned (ungated) one?
+    SELECT id AS portfolio_id, owner_user_id IS NOT NULL AS is_human
+    FROM portfolios
+),
+classified AS (
     SELECT
-        portfolio_id, snapshot_date, total_value_usd, num_positions,
-        cash_usd, holdings_value_usd, pnl_usd,
-        SUM(CASE WHEN num_positions < 10 THEN 1 ELSE 0 END)
-            OVER (PARTITION BY portfolio_id ORDER BY snapshot_date
+        h.portfolio_id, h.snapshot_date, h.total_value_usd, h.num_positions,
+        h.cash_usd, h.holdings_value_usd, h.pnl_usd,
+        SUM(CASE WHEN pm.is_human AND h.num_positions < 10 THEN 1 ELSE 0 END)
+            OVER (PARTITION BY h.portfolio_id ORDER BY h.snapshot_date
                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
             AS prior_breaks
-    FROM agent_portfolio_history
+    FROM agent_portfolio_history h
+    JOIN portfolio_meta pm ON pm.portfolio_id = h.portfolio_id
 ),
 latest AS (
     SELECT DISTINCT ON (portfolio_id)
@@ -242,7 +253,13 @@ latest AS (
     ORDER BY portfolio_id, snapshot_date DESC
 ),
 qualifying_today AS (
-    SELECT * FROM latest WHERE num_positions >= 10
+    -- Agent portfolios always qualify (their is_human=false → the gate is
+    -- irrelevant). Human portfolios only qualify when their latest snapshot
+    -- holds >= 10 equities.
+    SELECT l.*
+      FROM latest l
+      JOIN portfolio_meta pm ON pm.portfolio_id = l.portfolio_id
+     WHERE NOT pm.is_human OR l.num_positions >= 10
 ),
 period_rows AS (
     SELECT c.*
@@ -250,7 +267,9 @@ period_rows AS (
       JOIN qualifying_today qt
         ON c.portfolio_id = qt.portfolio_id
        AND c.prior_breaks = qt.prior_breaks
-       AND c.num_positions >= 10
+      JOIN portfolio_meta pm
+        ON pm.portfolio_id = c.portfolio_id
+     WHERE NOT pm.is_human OR c.num_positions >= 10
 ),
 period_start AS (
     SELECT DISTINCT ON (portfolio_id)
