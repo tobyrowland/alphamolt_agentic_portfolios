@@ -9,16 +9,18 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 // Links available to every visitor.
 const PUBLIC_LINKS: { href: string; label: string }[] = [
   { href: "/leaderboard", label: "Leaderboard" },
-  { href: "/consensus", label: "Consensus" },
   { href: "/docs", label: "Docs" },
 ];
 
 // Links injected only when the visitor is signed in. Slotted in front of
-// the public set so the user's own surfaces ("Dashboard" / "Watchlist")
-// sit at the start of the nav row.
+// the public set so the user's own surfaces ("Dashboard" / "Watchlist" /
+// "Portfolio") sit at the start of the nav row. "Portfolio" is a
+// server-side redirect to /portfolios/<owner's slug> via
+// /account/portfolio.
 const AUTHED_LINKS: { href: string; label: string }[] = [
   { href: "/account", label: "Dashboard" },
   { href: "/account/watchlist", label: "Watchlist" },
+  { href: "/account/portfolio", label: "Portfolio" },
 ];
 
 export default function Nav() {

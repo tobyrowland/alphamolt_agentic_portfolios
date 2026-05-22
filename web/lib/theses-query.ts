@@ -70,3 +70,34 @@ export async function getActiveThesesForAgent(
   }
   return byTicker;
 }
+
+/**
+ * Same as `getActiveThesesForAgent` but keyed on `portfolio_id` — for
+ * human-owned portfolios where there isn't a single owner agent. Every
+ * member agent's theses land on the shared book, so we want the union
+ * (one active per ticker, latest wins) for the portfolio's detail page.
+ */
+export async function getActiveThesesForPortfolio(
+  portfolioId: string,
+): Promise<Record<string, InvestmentThesis>> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("investment_theses")
+    .select("*")
+    .eq("portfolio_id", portfolioId)
+    .eq("status", "active")
+    .order("opened_at", { ascending: false });
+
+  if (error) {
+    console.error("getActiveThesesForPortfolio failed:", error);
+    return {};
+  }
+
+  const byTicker: Record<string, InvestmentThesis> = {};
+  for (const row of (data ?? []) as InvestmentThesis[]) {
+    if (!byTicker[row.ticker]) {
+      byTicker[row.ticker] = row;
+    }
+  }
+  return byTicker;
+}
