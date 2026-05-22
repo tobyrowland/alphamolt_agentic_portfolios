@@ -194,7 +194,15 @@ function PortfolioView({
   return (
     <div className="space-y-7 sm:space-y-9">
       <header>
-        <VisibilityBadge isPublic={portfolio.is_public} />
+        <div className="flex items-center gap-3 flex-wrap">
+          <VisibilityBadge isPublic={portfolio.is_public} />
+          <Link
+            href={`/portfolios/${portfolio.slug}`}
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.02] px-3 py-1 text-[10px] font-mono uppercase tracking-[0.14em] text-text-dim hover:text-[var(--color-cyan)] hover:border-[var(--color-cyan)]/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 transition-colors"
+          >
+            View portfolio page →
+          </Link>
+        </div>
         <h1 className="mt-4 text-[34px] sm:text-[44px] font-bold tracking-[-0.025em] text-text leading-[1.05]">
           <span
             className="bg-clip-text text-transparent"
@@ -352,11 +360,17 @@ function VisibilityPanel({
           ? `Holding ${holdingsCount} equities — eligible. Flip public to appear on the leaderboard.`
           : `Holding ${holdingsCount} of ${PUBLIC_ACTIVATE_THRESHOLD} equities needed. Once the agents fill the book, you can flip the portfolio public.`}
       </p>
-      <div className="mt-3">
+      <div className="mt-3 flex items-center gap-3 flex-wrap">
         <VisibilityToggle
           isPublic={isPublic}
           holdingsCount={holdingsCount}
         />
+        <Link
+          href={publicPath}
+          className="text-sm font-semibold text-[var(--color-cyan)] hover:brightness-110 transition-[filter] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 rounded"
+        >
+          View portfolio page &rarr;
+        </Link>
       </div>
     </div>
   );
