@@ -137,12 +137,36 @@ export default function Nav() {
                 {link.label}
               </Link>
             ))}
-            <div className="pt-1 mt-1 border-t border-white/10">
-              <NavAuth
-                email={email}
-                ready={ready}
-                onNavigate={() => setMenuOpen(false)}
-              />
+            {/* Inline auth on mobile — don't nest sign-out behind a
+                dropdown the way NavAuth does on desktop. The
+                absolutely-positioned dropdown is fiddly inside the menu
+                drawer's stacking context, so on mobile we show the email
+                as a plain label and a top-level Sign-out form. */}
+            <div className="pt-2 mt-2 border-t border-white/10">
+              {ready && email ? (
+                <>
+                  <p className="py-1 text-[11px] font-mono text-text-muted truncate">
+                    Signed in as {email}
+                  </p>
+                  <form action="/auth/signout" method="post">
+                    <button
+                      type="submit"
+                      onClick={() => setMenuOpen(false)}
+                      className="w-full text-left py-2 text-sm text-text-dim hover:text-text transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-text/40 rounded"
+                    >
+                      Sign out
+                    </button>
+                  </form>
+                </>
+              ) : ready && !email ? (
+                <Link
+                  href="/login"
+                  onClick={() => setMenuOpen(false)}
+                  className="block py-2 text-sm text-text-dim hover:text-text transition-colors"
+                >
+                  Sign in
+                </Link>
+              ) : null}
             </div>
           </nav>
         </div>

@@ -51,51 +51,61 @@ export default function HoldingsList({ holdings, thesesByTicker }: Props) {
             <button
               type="button"
               onClick={() => setOpenTicker(isOpen ? null : h.ticker)}
-              className="w-full px-4 py-3 flex items-baseline justify-between gap-3 hover:bg-white/[0.04] transition-colors text-left"
+              className="w-full px-3 sm:px-4 py-3 hover:bg-white/[0.04] transition-colors text-left"
               aria-expanded={isOpen}
               aria-controls={`thesis-panel-${h.ticker}`}
             >
-              <div className="flex items-baseline gap-3 min-w-0">
-                <span
-                  className="font-mono text-sm font-bold text-text-muted shrink-0"
-                  aria-hidden="true"
-                >
-                  {isOpen ? "▼" : "▶"}
-                </span>
-                <Link
-                  href={`/company/${encodeURIComponent(h.ticker)}`}
-                  onClick={(e) => e.stopPropagation()}
-                  className="font-mono text-sm font-bold text-text hover:text-[var(--color-cyan)] hover:underline decoration-1 underline-offset-[3px] shrink-0 transition-colors"
-                >
-                  {h.ticker}
-                </Link>
-                {h.company_name && (
-                  <span className="text-sm text-text-muted truncate min-w-0">
-                    {h.company_name}
+              {/* Two-row stacked layout on mobile; collapses to a single
+                  horizontal row at sm+ so wider viewports see the same
+                  dense tape as before. */}
+              <div className="flex flex-col gap-1.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-3">
+                {/* Row 1 / left block — ticker, company name, badge */}
+                <div className="flex items-baseline gap-2 sm:gap-3 min-w-0">
+                  <span
+                    className="font-mono text-sm font-bold text-text-muted shrink-0"
+                    aria-hidden="true"
+                  >
+                    {isOpen ? "▼" : "▶"}
                   </span>
-                )}
-                <span className="text-sm text-text-dim shrink-0">
-                  {h.quantity.toLocaleString()} @ {formatUsd(h.avg_cost_usd)}
-                </span>
-                {thesis && (
-                  <ThesisBadge thesis={thesis} />
-                )}
-              </div>
-              <div className="text-right shrink-0">
-                <div className="font-mono text-sm text-text">
-                  {formatUsd(h.market_value_usd)}
+                  <Link
+                    href={`/company/${encodeURIComponent(h.ticker)}`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="font-mono text-sm font-bold text-text hover:text-[var(--color-cyan)] hover:underline decoration-1 underline-offset-[3px] shrink-0 transition-colors"
+                  >
+                    {h.ticker}
+                  </Link>
+                  {h.company_name && (
+                    <span className="text-sm text-text-muted truncate min-w-0">
+                      {h.company_name}
+                    </span>
+                  )}
+                  {thesis && <ThesisBadge thesis={thesis} />}
                 </div>
-                <div
-                  className={`text-[11px] font-mono ${
-                    h.unrealized_pnl_usd > 0
-                      ? "text-green"
-                      : h.unrealized_pnl_usd < 0
-                        ? "text-red"
-                        : "text-text-muted"
-                  }`}
-                >
-                  {h.unrealized_pnl_usd >= 0 ? "+" : ""}
-                  {formatUsd(h.unrealized_pnl_usd)}
+
+                {/* Row 2 / right block — qty @ price and market value / P&L.
+                    On mobile we put the cost basis on the left and the
+                    market value on the right of the second row. */}
+                <div className="flex items-baseline justify-between gap-3 sm:gap-3 sm:items-baseline">
+                  <span className="text-[12px] sm:text-sm text-text-dim font-mono sm:order-first">
+                    {h.quantity.toLocaleString()} @ {formatUsd(h.avg_cost_usd)}
+                  </span>
+                  <div className="text-right shrink-0">
+                    <div className="font-mono text-sm text-text">
+                      {formatUsd(h.market_value_usd)}
+                    </div>
+                    <div
+                      className={`text-[11px] font-mono ${
+                        h.unrealized_pnl_usd > 0
+                          ? "text-green"
+                          : h.unrealized_pnl_usd < 0
+                            ? "text-red"
+                            : "text-text-muted"
+                      }`}
+                    >
+                      {h.unrealized_pnl_usd >= 0 ? "+" : ""}
+                      {formatUsd(h.unrealized_pnl_usd)}
+                    </div>
+                  </div>
                 </div>
               </div>
             </button>

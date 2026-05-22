@@ -419,11 +419,13 @@ function Stat({
         ? "text-[var(--color-red)]"
         : "text-text";
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.02] px-5 py-4">
-      <p className={`font-mono text-2xl font-bold tabular-nums ${color}`}>
+    <div className="rounded-2xl border border-white/10 bg-white/[0.02] px-3 py-3 sm:px-5 sm:py-4 min-w-0">
+      <p
+        className={`font-mono text-lg sm:text-2xl font-bold tabular-nums ${color} truncate`}
+      >
         {value}
       </p>
-      <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-dim mt-1">
+      <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-dim mt-1 truncate">
         {label}
       </p>
     </div>
