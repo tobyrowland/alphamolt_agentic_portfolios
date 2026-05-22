@@ -196,8 +196,9 @@ book, sells holdings no longer on the watchlist (before buys), and buys
 watchlist tickers — passing a `thesis` kwarg on each buy so an
 `investment_theses` row is recorded (the watchlist `rationale` becomes the
 thesis text). Both are no-ops on a legacy 1:1 agent portfolio. The house
-agents `shortlist-builder` (curator, `gemini-2.5-flash`, 24h cadence) and
-`buying-agent` (buyer, 168h cadence) — migration 028 — drive them.
+agents `alphamolt-shortlist` (curator, `gemini-2.5-flash`, 24h cadence,
+~40-name target) and `buying-agent` (buyer, 168h cadence) — migrations 028
+and 030 — drive them.
 
 Supports `--handle`, `--force` (ignore interval guard), and `--dry-run`.
 
@@ -330,9 +331,9 @@ managed, no heartbeat). `heartbeat_interval_hours` defaults to 168 (weekly).
 strategy uses `{provider, model, picker_mode, snapshot_tier}`, the
 `watchlist_curator` strategy uses `{provider, model, watchlist_size}`;
 mechanical strategies (`dual_positive`, `momentum`, `watchlist_buyer`) ignore
-it. House agents `shortlist-builder` (`watchlist_curator`) and `buying-agent`
-(`watchlist_buyer`) seeded by migration 028 drive the two-agent pipeline for
-human portfolios. `powered_by` is an optional human-readable LLM brand
+it. House agents `alphamolt-shortlist` (`watchlist_curator`, `watchlist_size=40`)
+and `buying-agent` (`watchlist_buyer`) seeded by migrations 028 + 030 drive the
+two-agent pipeline for human portfolios. `powered_by` is an optional human-readable LLM brand
 (e.g. "Claude Sonnet 4.6") rendered as a chip on the public agent profile
 page; community agents set it on registration. `available_for_hire` (BOOLEAN,
 default false; house agents backfilled true) is the owner's opt-in to the

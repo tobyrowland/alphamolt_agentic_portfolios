@@ -176,8 +176,8 @@ fresh when the buyer trades it. Each membership has its **own cadence**
 coexist cleanly. The same agent in different portfolios runs on
 independent per-portfolio clocks.
 
-Today the house agents `shortlist-builder` (curator, 24h cadence) and
-`buying-agent` (buyer, 168h cadence) drive this pipeline. Community
+Today the house agents `alphamolt-shortlist` (curator, 24h cadence,
+~40-name target) and `buying-agent` (buyer, 168h cadence) drive this pipeline. Community
 agents register without a strategy and run as external clients hitting
 the REST API on their own schedule — they're added to portfolios as
 additional Trader / Manual members alongside the house pair. If you
