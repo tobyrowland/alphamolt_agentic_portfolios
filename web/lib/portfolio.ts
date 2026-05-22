@@ -689,6 +689,109 @@ export async function getPortfolio(
   };
 }
 
+/**
+ * Mark-to-market snapshot of a *human-owned* portfolio (shared-pot
+ * trading model from migration 025 — keyed on `portfolio_id`, not
+ * `agent_id`). Mirrors `getPortfolio` but reads `portfolio_accounts` /
+ * `portfolio_holdings` instead of `agent_accounts` / `agent_holdings`,
+ * so the public detail page can render holdings + cash for human
+ * portfolios.
+ */
+export async function getPortfolioByPortfolioId(
+  portfolioId: string,
+): Promise<PortfolioSnapshot | null> {
+  const supabase = getSupabase();
+
+  const { data: accountData, error: accountError } = await supabase
+    .from("portfolio_accounts")
+    .select("portfolio_id, cash_usd, starting_cash")
+    .eq("portfolio_id", portfolioId)
+    .maybeSingle();
+  if (accountError) {
+    throw new PortfolioError(
+      "db_error",
+      `portfolio_accounts lookup failed: ${accountError.message}`,
+    );
+  }
+  if (!accountData) return null;
+  const account = accountData as {
+    portfolio_id: string;
+    cash_usd: string | number;
+    starting_cash: string | number;
+  };
+  const cash = Number(account.cash_usd);
+  const startingCash = Number(account.starting_cash);
+
+  const { data: holdingsData, error: holdingsError } = await supabase
+    .from("portfolio_holdings")
+    .select("ticker, quantity, avg_cost_usd")
+    .eq("portfolio_id", portfolioId);
+  if (holdingsError) {
+    throw new PortfolioError(
+      "db_error",
+      `portfolio_holdings lookup failed: ${holdingsError.message}`,
+    );
+  }
+  const holdings = (holdingsData ?? []).map((row) => {
+    const r = row as {
+      ticker: string;
+      quantity: string | number;
+      avg_cost_usd: string | number;
+    };
+    return {
+      ticker: r.ticker,
+      quantity: Number(r.quantity),
+      avg_cost_usd: Number(r.avg_cost_usd),
+    };
+  });
+
+  const meta = await getCompaniesMeta(holdings.map((h) => h.ticker));
+
+  const enriched: HoldingWithMtm[] = [];
+  let holdingsValue = 0;
+  for (const h of holdings) {
+    const row = meta.get(h.ticker);
+    const rawPrice = row?.price ?? null;
+    const price =
+      rawPrice != null && Number.isFinite(rawPrice) && rawPrice > 0
+        ? rawPrice
+        : h.avg_cost_usd;
+    const mv = round2(h.quantity * price);
+    holdingsValue += mv;
+    enriched.push({
+      ticker: h.ticker,
+      company_name: row?.company_name ?? null,
+      quantity: h.quantity,
+      avg_cost_usd: h.avg_cost_usd,
+      price_usd: round4(price),
+      market_value_usd: mv,
+      unrealized_pnl_usd: round2((price - h.avg_cost_usd) * h.quantity),
+    });
+  }
+
+  holdingsValue = round2(holdingsValue);
+  const total = round2(cash + holdingsValue);
+  const pnl = round2(total - startingCash);
+  const pnlPct =
+    startingCash > 0
+      ? Math.round((pnl / startingCash) * 1_000_000) / 10_000
+      : 0;
+
+  return {
+    // PortfolioSnapshot's agent_id field is a legacy of the 1:1 shim;
+    // human portfolios have no single agent. Use the portfolio_id so
+    // consumers that key on it (logging, debugging) get a useful value.
+    agent_id: portfolioId,
+    cash_usd: cash,
+    starting_cash: startingCash,
+    holdings: enriched,
+    holdings_value_usd: holdingsValue,
+    total_value_usd: total,
+    pnl_usd: pnl,
+    pnl_pct: pnlPct,
+  };
+}
+
 export async function getLeaderboard(): Promise<LeaderboardRow[]> {
   const supabase = getSupabase();
   const { data, error } = await supabase

@@ -6,7 +6,11 @@ import HoldingsList from "@/components/holdings-list";
 import { AgentMonogram } from "@/components/agent-monogram";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
-import { getPortfolio, type PortfolioSnapshot } from "@/lib/portfolio";
+import {
+  getPortfolio,
+  getPortfolioByPortfolioId,
+  type PortfolioSnapshot,
+} from "@/lib/portfolio";
 import {
   getHoldingsCountForPortfolio,
   getMembersForPortfolio,
@@ -17,6 +21,7 @@ import {
 } from "@/lib/portfolios-query";
 import {
   getActiveThesesForAgent,
+  getActiveThesesForPortfolio,
   type InvestmentThesis,
 } from "@/lib/theses-query";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -123,9 +128,11 @@ async function getPortfolioPageData(slug: string): Promise<{
   }
   const isOwner = await isViewerOwner(portfolio);
 
-  // Human-owned portfolios (owner_agent_id null, migration 024) don't trade
-  // yet — no account, holdings or theses. The snapshot/theses helpers are
-  // keyed on agent_id during the shim period, so skip them entirely.
+  // Two snapshot paths: legacy 1:1 agent portfolios are keyed on agent_id
+  // (the agent_accounts / agent_holdings tables); human-owned portfolios
+  // (migration 024) are keyed on portfolio_id (portfolio_accounts /
+  // portfolio_holdings, the shared-pot trading model from 025). The page
+  // renders the same way for both — only the loader differs.
   let snapshot: PortfolioSnapshot | null = null;
   let thesesByTicker: Record<string, InvestmentThesis> = {};
   if (portfolio.owner_agent_id) {
@@ -135,6 +142,13 @@ async function getPortfolioPageData(slug: string): Promise<{
       console.error("getPortfolio failed for", slug, err);
     }
     thesesByTicker = await getActiveThesesForAgent(portfolio.owner_agent_id);
+  } else if (portfolio.owner_user_id) {
+    try {
+      snapshot = await getPortfolioByPortfolioId(portfolio.id);
+    } catch (err) {
+      console.error("getPortfolioByPortfolioId failed for", slug, err);
+    }
+    thesesByTicker = await getActiveThesesForPortfolio(portfolio.id);
   }
 
   const members = await getMembersForPortfolio(portfolio.id);
@@ -338,8 +352,8 @@ export default async function PortfolioPage({ params }: PageParams) {
           ) : portfolio.owner_agent_id === null ? (
             <section className="mb-12 sm:mb-14">
               <p className="text-sm text-text-muted italic">
-                Not trading yet — this portfolio is being set up by its owner.
-                Agent execution is coming soon.
+                No account yet — the portfolio_accounts row should exist after
+                migration 031. Re-run portfolio_valuation.py or report this.
               </p>
             </section>
           ) : (
