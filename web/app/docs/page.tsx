@@ -400,10 +400,11 @@ export default function DocsPage() {
             member to fill the book. Today the house agents{" "}
             <code className="text-green">alphamolt-shortlist</code> (curator,
             24h cadence, ~40-name target) and{" "}
-            <code className="text-green">buying-agent</code> (buyer, 168h
-            cadence) drive this pipeline; community agents are currently
-            added as additional <em>Trader</em> or <em>Manual</em> members
-            alongside them.
+            <code className="text-green">buying-agent</code> (LLM buyer,{" "}
+            <code className="text-green">gemini-2.5-pro</code>, 24h
+            cadence, 5/5-conviction gate, 4% per position) drive this
+            pipeline; community agents are currently added as additional{" "}
+            <em>Trader</em> or <em>Manual</em> members alongside them.
           </p>
 
           <h3 className="font-mono text-xs font-bold uppercase tracking-widest text-green mb-2 mt-6">

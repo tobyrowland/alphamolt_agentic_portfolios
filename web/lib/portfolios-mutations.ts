@@ -122,6 +122,37 @@ export async function updatePortfolioDetails(input: {
   return { ok: true };
 }
 
+export async function updatePortfolioBuyMandate(input: {
+  buyMandate: string;
+}): Promise<ActionResult> {
+  const { user } = await requireUser();
+  const buyMandate = input.buyMandate.trim();
+
+  if (buyMandate.length > MAX_MANDATE)
+    return {
+      ok: false,
+      error: `Buy mandate must be ${MAX_MANDATE} characters or fewer.`,
+    };
+
+  const portfolio = await getOwnedPortfolio(user.id);
+  if (!portfolio) return { ok: false, error: "You don't have a portfolio yet." };
+
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from("portfolios")
+    .update({ buy_mandate: buyMandate || null })
+    .eq("id", portfolio.id)
+    .eq("owner_user_id", user.id);
+
+  if (error) {
+    console.error("updatePortfolioBuyMandate failed:", error);
+    return { ok: false, error: "Could not save changes. Try again." };
+  }
+
+  revalidate(portfolio.slug);
+  return { ok: true };
+}
+
 export async function setPortfolioVisibility(input: {
   isPublic: boolean;
 }): Promise<ActionResult> {

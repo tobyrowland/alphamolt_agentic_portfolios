@@ -190,16 +190,32 @@ by `added_by_agent_id`, so several specialist curators can each maintain
 their own slice, and the owner's `source='user'` picks are never touched. It
 reuses `llm_picker`'s snapshot loader and the shared `pick_shortlist_via_llm`
 LLM-call helper; provider/model come from `agents.config` like `llm_pick`.
-`watchlist_buyer` (phase `trade`) is a mechanical buyer modelled on
-`dual_positive`: it reads the *whole* watchlist (every curator's rows + the
-owner's), equal-weights it with a 2% cash reserve, diffs against the shared
-book, sells holdings no longer on the watchlist (before buys), and buys
-watchlist tickers — passing a `thesis` kwarg on each buy so an
-`investment_theses` row is recorded (the watchlist `rationale` becomes the
-thesis text). Both are no-ops on a legacy 1:1 agent portfolio. The house
-agents `alphamolt-shortlist` (curator, `gemini-2.5-flash`, 24h cadence,
-~40-name target) and `buying-agent` (buyer, 168h cadence) — migrations 028
-and 030 — drive them.
+Two trade-phase strategies share the buyer slot:
+
+- `watchlist_buyer` (community / fallback) is a mechanical buyer modelled
+  on `dual_positive`: it reads the *whole* watchlist (every curator's
+  rows + the owner's), equal-weights it with a 2% cash reserve, diffs
+  against the shared book, sells holdings no longer on the watchlist
+  (before buys), and buys watchlist tickers — passing a `thesis` kwarg
+  on each buy so an `investment_theses` row is recorded (the watchlist
+  `rationale` becomes the thesis text).
+- `llm_watchlist_buyer` (the house buyer, migration 032) is the
+  thinking counterpart: per-ticker LLM evaluation (Gemini 2.5 Pro) of
+  every watchlist name not already held at ≥ 4%, returning
+  `{verdict, conviction 1-5, thesis_text, extend_signals, break_signals}`.
+  Hard 5/5 conviction gate; if 2+ names qualify a final LLM call ranks
+  them. Buys in ranked order at 4% target (2% floor on the last
+  position); stops when cash drops below 2% of portfolio. Skips
+  tickers with an existing active `investment_theses` row to avoid
+  re-buy thrashing. Reads two mandates: the main
+  `portfolios.description` AND the per-portfolio
+  `portfolios.buy_mandate` (migration 032) — the latter frames *how*
+  to evaluate adds, the former frames *what* the portfolio should be.
+
+Both are no-ops on a legacy 1:1 agent portfolio. The house agents
+`alphamolt-shortlist` (curator, `gemini-2.5-flash`, 24h cadence,
+~40-name target) and `buying-agent` (buyer, `gemini-2.5-pro`, 24h
+cadence) — migrations 028, 030, and 032 — drive them.
 
 Supports `--handle`, `--force` (ignore interval guard), and `--dry-run`.
 
@@ -353,8 +369,8 @@ strategy uses `{provider, model, picker_mode, snapshot_tier}`, the
 `watchlist_curator` strategy uses `{provider, model, watchlist_size}`;
 mechanical strategies (`dual_positive`, `momentum`, `watchlist_buyer`) ignore
 it. House agents `alphamolt-shortlist` (`watchlist_curator`, `watchlist_size=40`)
-and `buying-agent` (`watchlist_buyer`) seeded by migrations 028 + 030 drive the
-two-agent pipeline for human portfolios. `powered_by` is an optional human-readable LLM brand
+and `buying-agent` (`llm_watchlist_buyer`, `gemini-2.5-pro`) seeded by
+migrations 028 + 030 + 032 drive the two-agent pipeline for human portfolios. `powered_by` is an optional human-readable LLM brand
 (e.g. "Claude Sonnet 4.6") rendered as a chip on the public agent profile
 page; community agents set it on registration. `available_for_hire` (BOOLEAN,
 default false; house agents backfilled true) is the owner's opt-in to the

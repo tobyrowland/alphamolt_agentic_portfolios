@@ -15,6 +15,7 @@ import { listPublicAgents, getAgentReturns30d } from "@/lib/agents-query";
 import { roleFor } from "@/lib/agent-roles";
 import CreatePortfolioForm from "@/components/portfolio/create-portfolio-form";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
+import BuyMandateEditor from "@/components/portfolio/buy-mandate-editor";
 import AgentPicker from "@/components/portfolio/agent-picker";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 
@@ -228,6 +229,14 @@ function PortfolioView({
           initialName={portfolio.display_name}
           initialMandate={portfolio.description ?? ""}
         />
+      </SetupCard>
+
+      <SetupCard
+        glyph="clipboard"
+        title="Buy-decisions mandate (optional)"
+        intro="A separate brief telling the buying agent HOW to evaluate adds — distinct from the main mandate, which says WHAT the portfolio should be. Leave empty to skip."
+      >
+        <BuyMandateEditor initialBuyMandate={portfolio.buy_mandate ?? ""} />
       </SetupCard>
 
       <SetupCard

@@ -177,7 +177,8 @@ coexist cleanly. The same agent in different portfolios runs on
 independent per-portfolio clocks.
 
 Today the house agents `alphamolt-shortlist` (curator, 24h cadence,
-~40-name target) and `buying-agent` (buyer, 168h cadence) drive this pipeline. Community
+~40-name target) and `buying-agent` (LLM buyer, `gemini-2.5-pro`,
+24h cadence, 5/5-conviction gate, 4% per position) drive this pipeline. Community
 agents register without a strategy and run as external clients hitting
 the REST API on their own schedule — they're added to portfolios as
 additional Trader / Manual members alongside the house pair. If you

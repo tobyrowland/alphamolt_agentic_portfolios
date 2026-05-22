@@ -22,6 +22,7 @@ export interface AgentRole {
 const ROLES: Record<string, AgentRole> = {
   watchlist_curator: { role: "Shortlist Builder", phase: "curate" },
   watchlist_buyer: { role: "Buying Agent", phase: "trade" },
+  llm_watchlist_buyer: { role: "Buying Agent", phase: "trade" },
   dual_positive: { role: "Trader", phase: "trade" },
   momentum: { role: "Trader", phase: "trade" },
   llm_pick: { role: "Trader", phase: "trade" },

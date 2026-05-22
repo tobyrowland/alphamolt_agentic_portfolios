@@ -1239,6 +1239,13 @@ def _llm_pick_lazy(ctx: RebalanceContext) -> RebalanceResult:
     return rebalance_llm_pick(ctx)
 
 
+def _llm_watchlist_buyer_lazy(ctx: RebalanceContext) -> RebalanceResult:
+    # Lazy-imported so the ThreadPoolExecutor + LLM SDKs only load when
+    # the strategy actually runs (mirrors `_llm_pick_lazy`).
+    from llm_watchlist_buyer import rebalance_llm_watchlist_buyer
+    return rebalance_llm_watchlist_buyer(ctx)
+
+
 def _trading_agents_lazy(ctx: RebalanceContext) -> RebalanceResult:
     # Lazy-imported so the upstream TauricResearch/TradingAgents
     # framework (and its heavy LangChain dependency tree) doesn't load
@@ -1254,6 +1261,7 @@ STRATEGIES: dict[str, Strategy] = {
     "trading_agents": _trading_agents_lazy,
     "watchlist_curator": rebalance_watchlist_curator,
     "watchlist_buyer": rebalance_watchlist_buyer,
+    "llm_watchlist_buyer": _llm_watchlist_buyer_lazy,
 }
 
 
@@ -1272,6 +1280,7 @@ DEFAULT_STRATEGY_PHASE = "trade"
 
 STRATEGY_PHASES: dict[str, str] = {
     "watchlist_curator": "curate",
+    "llm_watchlist_buyer": "trade",
 }
 
 

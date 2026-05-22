@@ -23,6 +23,11 @@ export interface Portfolio {
   /** Null for legacy agent-owned portfolios (migration 024). */
   owner_user_id: string | null;
   is_public: boolean;
+  /** Free-text brief on HOW the buying agent should evaluate adds to
+   *  this portfolio (separate from `description`, which frames WHAT the
+   *  portfolio is meant to be). NULL = no per-buy rules; the buyer
+   *  works to the main mandate alone. See migration 032. */
+  buy_mandate: string | null;
   created_at: string;
   updated_at: string;
 }
