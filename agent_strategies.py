@@ -824,7 +824,12 @@ def rebalance_momentum(ctx: RebalanceContext) -> RebalanceResult:
 
 WATCHLIST_CURATOR_DEFAULTS = {
     "watchlist_size": 20,        # target shortlist length (~15-25)
-    "max_tokens": 16384,
+    # 65536 = Gemini 2.5 Flash's hard output ceiling. Set this high because
+    # 2.5 Flash's "thinking" tokens count toward max_output_tokens — a small
+    # budget (e.g. 16384) leaves ~600 tokens of actual output after thinking,
+    # which truncates a 40-name JSON array mid-stream. Other providers
+    # ignore tokens they don't need; only the actual output is billed.
+    "max_tokens": 65536,
     "temperature": 0.2,
 }
 
