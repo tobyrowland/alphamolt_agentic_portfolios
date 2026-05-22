@@ -4,7 +4,10 @@ import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { runAgent, runAllAgents } from "@/lib/run-agent-mutations";
 
-const COOLDOWN_SECONDS = 60;
+// Matches the server-side throttle in run-agent-mutations.ts. Sized to
+// span a typical heartbeat run (~5 mins for an LLM curator) so the button
+// stays disabled while the previous workflow is likely still running.
+const COOLDOWN_SECONDS = 300;
 
 interface RunNowProps {
   agentHandle: string;
@@ -16,10 +19,13 @@ interface RunNowProps {
  * Per-agent "Run now" button rendered inside the agent-picker member row.
  *
  * Click → calls the `runAgent` server action, which validates ownership +
- * membership and POSTs `workflow_dispatch` to GitHub. While pending the
- * button shows "Running…"; on success the button locks for 60 seconds
- * (same window the server-side throttle enforces) and counts down so
- * the user gets feedback that the dispatch landed.
+ * membership and POSTs `workflow_dispatch` to GitHub. The server action
+ * returns quickly (just the dispatch), but the workflow itself runs on
+ * GitHub Actions and typically takes ~5 mins for an LLM curator. While
+ * the cooldown window is active the button locks and reads "Running…
+ * (5 mins typical)" so the wait is honest rather than implying the
+ * action already completed. The same window matches the server-side
+ * throttle in `run-agent-mutations.ts`.
  */
 export default function RunNowButton({
   agentHandle,
@@ -51,7 +57,7 @@ export default function RunNowButton({
   const disabled = isPending || cooling > 0;
   const title =
     cooling > 0
-      ? `Cooling… ${cooling}s`
+      ? "The workflow runs on GitHub Actions and typically takes ~5 minutes. The button re-enables when the cooldown window expires."
       : isPending
         ? "Dispatching…"
         : "Trigger a one-off rebalance for this agent.";
@@ -69,9 +75,12 @@ export default function RunNowButton({
     });
   }
 
+  // The cooldown window matches a typical workflow runtime, so labelling
+  // it "Running…" is more honest than the previous "Cooling…" countdown —
+  // the previous label suggested the action was already done.
   let label: string;
-  if (isPending) label = "Running…";
-  else if (cooling > 0) label = `Cooling… ${cooling}s`;
+  if (isPending) label = "Dispatching…";
+  else if (cooling > 0) label = "Running… (5 mins typical)";
   else label = "Run now";
 
   return (
@@ -129,7 +138,7 @@ export function RunAllAgentsButton({}: RunAllProps) {
   const disabled = isPending || cooling > 0;
   const title =
     cooling > 0
-      ? `Cooling… ${cooling}s`
+      ? "The workflow runs on GitHub Actions and typically takes ~5 minutes. The button re-enables when the cooldown window expires."
       : isPending
         ? "Dispatching…"
         : "Trigger a one-off rebalance for every agent on this portfolio.";
@@ -148,8 +157,8 @@ export function RunAllAgentsButton({}: RunAllProps) {
   }
 
   let label: string;
-  if (isPending) label = "Running…";
-  else if (cooling > 0) label = `Cooling… ${cooling}s`;
+  if (isPending) label = "Dispatching…";
+  else if (cooling > 0) label = "Running… (5 mins typical)";
   else label = "Run all agents";
 
   return (

@@ -25,8 +25,10 @@ export type ActionResult = { ok: true } | { ok: false; error: string };
 
 // Per-(portfolio, agent) cooldown window. A click while we're still
 // within this window returns a friendly "cool down" error rather than
-// dispatching a duplicate workflow.
-const COOLDOWN_SECONDS = 60;
+// dispatching a duplicate workflow. Sized to span a typical heartbeat run
+// (~5 mins for an LLM curator) so the button stays locked while the
+// previous workflow is likely still running.
+const COOLDOWN_SECONDS = 300;
 
 interface ResolvedAgent {
   id: string;
@@ -173,7 +175,7 @@ async function loadOwnedPortfolio(): Promise<
  *   1. signed in,
  *   2. owns a portfolio,
  *   3. the named agent is a member of THIS portfolio,
- *   4. no run for this (portfolio, agent) in the last 60s.
+ *   4. no run for this (portfolio, agent) in the last cooldown window.
  */
 export async function runAgent(input: {
   agentHandle: string;
@@ -216,8 +218,8 @@ export async function runAgent(input: {
 
 /**
  * Dispatch a full-portfolio rebalance (no handle filter). Throttled on
- * the portfolio as a whole — if *any* member ran in the last 60s the
- * button rejects.
+ * the portfolio as a whole — if *any* member ran in the last cooldown
+ * window the button rejects.
  */
 export async function runAllAgents(): Promise<ActionResult> {
   const loaded = await loadOwnedPortfolio();
