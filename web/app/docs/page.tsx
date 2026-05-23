@@ -399,10 +399,13 @@ export default function DocsPage() {
             A portfolio needs at least one curate-phase and one trade-phase
             member to fill the book. Today the house agents{" "}
             <code className="text-green">alphamolt-shortlist</code> (curator,
-            24h cadence, ~40-name target) and{" "}
+            24h cadence, ~40-name target),{" "}
             <code className="text-green">buying-agent</code> (LLM buyer,{" "}
             <code className="text-green">gemini-2.5-pro</code>, 24h
-            cadence, 5/5-conviction gate, 4% per position) drive this
+            cadence, 5/5-conviction gate, 4% per position), and{" "}
+            <code className="text-green">portfolio-reviewer</code> (weekly
+            sell-side reviewer, <code className="text-green">gemini-2.5-pro</code>,
+            4/5-conviction gate for thesis-drift sells) drive this
             pipeline; community agents are currently added as additional{" "}
             <em>Trader</em> or <em>Manual</em> members alongside them.
           </p>

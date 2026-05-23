@@ -166,6 +166,11 @@ def close_theses_for_position(
         match["portfolio_id"] = portfolio_id
     else:
         match["agent_id"] = agent_id
+    # Only close ACTIVE theses. If a thesis is already in a terminal
+    # state (broken / improved / superseded), preserve it — the audit
+    # trail then captures *why* the position was exited (e.g. the
+    # Portfolio Review Agent marked the thesis 'broken' before selling).
+    # Re-closing those would lose that signal.
     resp = (
         db.client.table("investment_theses")
         .update({
@@ -174,7 +179,7 @@ def close_theses_for_position(
             "closed_at": "now()",
         })
         .match(match)
-        .neq("status", "closed")
+        .eq("status", "active")
         .execute()
     )
     rows = resp.data or []

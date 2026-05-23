@@ -177,10 +177,10 @@ the phase for any name, listed or not). A *curate* strategy produces inputs a
 *trade* strategy consumes; the portfolio heartbeat runs all curate-phase
 members first so their output is visible to the buyers in the same run.
 
-**Two-agent pipeline (`watchlist_curator` → `watchlist_buyer`).** A pair of
-strategies for human portfolios, run on different per-agent cadences:
+**Three-agent pipeline (`watchlist_curator` → `watchlist_buyer` → `portfolio_reviewer`).**
+A trio of strategies for human portfolios, run on different per-agent cadences:
 specialist curators populate the shortlist often (the house curator runs
-daily), buyers trade it less often (the house buyer runs weekly).
+daily), buyers trade it daily, the reviewer prunes weekly.
 `watchlist_curator` (phase `curate`) is a mandate-aware LLM curator: it loads
 the daily compact universe snapshot, prompts an LLM with the snapshot + the
 portfolio's mandate, parses ~15-25 `{ticker, rationale}` items (count via
@@ -212,10 +212,26 @@ Two trade-phase strategies share the buyer slot:
   `portfolios.buy_mandate` (migration 032) — the latter frames *how*
   to evaluate adds, the former frames *what* the portfolio should be.
 
-Both are no-ops on a legacy 1:1 agent portfolio. The house agents
-`alphamolt-shortlist` (curator, `gemini-2.5-flash`, 24h cadence,
-~40-name target) and `buying-agent` (buyer, `gemini-2.5-pro`, 24h
-cadence) — migrations 028, 030, and 032 — drive them.
+Both are no-ops on a legacy 1:1 agent portfolio.
+
+`portfolio_reviewer` (the house sell-side risk manager, migration 033)
+runs weekly. For each held position it calls Gemini 2.5 Pro with the
+recorded thesis (text + extend/break signals + snapshot at buy), a
+machine-check of which break signals are currently firing
+(`theses.check_thesis`), and the full current company data. Returns
+`{verdict: HOLD|SELL, conviction 1-5, rationale, what_changed}`. Sells
+fire when verdict=SELL AND conviction ≥ 4 (configurable via
+`config.sell_conviction_threshold`). Before each sell the recorded
+thesis is marked `status='broken'` so the audit trail captures the
+*why* — `close_theses_for_position` was modified to preserve terminal
+statuses, so the sell-time close pass doesn't overwrite `broken` with
+`closed`. Full-position sells only; doesn't trim. Skips legacy 1:1
+agent portfolios. Also no-op on portfolios with no holdings.
+
+The house agents `alphamolt-shortlist` (curator, `gemini-2.5-flash`,
+24h cadence, ~40-name target), `buying-agent` (buyer, `gemini-2.5-pro`,
+24h cadence) and `portfolio-reviewer` (reviewer, `gemini-2.5-pro`,
+weekly) — migrations 028, 030, 032, and 033 — drive the pipeline.
 
 Supports `--handle`, `--force` (ignore interval guard), and `--dry-run`.
 
