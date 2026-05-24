@@ -33,11 +33,22 @@ export async function proxy(request: NextRequest) {
 
   // getUser() refreshes the access token when it's stale; the rotated
   // session cookie is propagated onto `response` by the setAll adapter
-  // above. Route gating is handled elsewhere: protected pages self-guard.
-  // The marketing homepage is reachable for everyone — signed-in users
-  // get there by clicking the logo; the post-login landing page (/account)
-  // is chosen by the auth callback's default `next` param.
-  await supabase.auth.getUser();
+  // above. Most route gating is handled by the pages themselves —
+  // protected pages self-guard.
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // Send signed-in visitors who land on `/` straight to the dashboard.
+  // The marketing homepage is for logged-out visitors; signed-in users
+  // came back to *use* the product, not read the pitch. /account
+  // handles the redirect to /portfolios/<slug> from there.
+  const pathname = request.nextUrl.pathname;
+  if (user && pathname === "/") {
+    const dest = request.nextUrl.clone();
+    dest.pathname = "/account";
+    return NextResponse.redirect(dest);
+  }
 
   return response;
 }

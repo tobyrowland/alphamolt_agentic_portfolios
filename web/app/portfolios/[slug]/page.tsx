@@ -216,10 +216,18 @@ export default async function PortfolioPage({ params }: PageParams) {
                 Created {created}
               </p>
               {isOwner && (
-                <VisibilityToggle
-                  isPublic={portfolio.is_public}
-                  holdingsCount={holdingsCount}
-                />
+                <>
+                  <VisibilityToggle
+                    isPublic={portfolio.is_public}
+                    holdingsCount={holdingsCount}
+                  />
+                  <Link
+                    href="/account/settings"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.02] px-3 py-1 text-[10px] font-mono uppercase tracking-[0.14em] text-text-dim hover:text-[var(--color-cyan)] hover:border-[var(--color-cyan)]/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 transition-colors"
+                  >
+                    Settings →
+                  </Link>
+                </>
               )}
             </div>
           </header>
