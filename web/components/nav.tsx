@@ -14,14 +14,14 @@ const PUBLIC_LINKS: { href: string; label: string }[] = [
 
 // Links injected only when the visitor is signed in. Slotted in front of
 // the public set so the user's own surfaces sit at the start of the nav
-// row. "Dashboard" lands on /account, which redirects to the user's
-// portfolio detail page (the actual overview). "Settings" hosts the
-// mandate / agent / visibility editors (moved off /account so the
-// dashboard isn't an interim signup-looking page).
+// row. Dashboard and Portfolio currently land on the same page (the
+// user's portfolio detail), via /account → /portfolios/<slug> and
+// /account/portfolio → /portfolios/<slug> respectively. Settings is
+// reachable from the chip on the portfolio header.
 const AUTHED_LINKS: { href: string; label: string }[] = [
   { href: "/account", label: "Dashboard" },
   { href: "/account/watchlist", label: "Watchlist" },
-  { href: "/account/settings", label: "Settings" },
+  { href: "/account/portfolio", label: "Portfolio" },
 ];
 
 export default function Nav() {
