@@ -28,6 +28,11 @@ export interface Portfolio {
    *  portfolio is meant to be). NULL = no per-buy rules; the buyer
    *  works to the main mandate alone. See migration 032. */
   buy_mandate: string | null;
+  /** Free-text brief on WHEN the reviewer agent should exit a position.
+   *  This is the reviewer's PRIMARY directive — without it the agent
+   *  is a no-op (it doesn't carry its own sell discipline). See
+   *  migration 034. */
+  sell_mandate: string | null;
   created_at: string;
   updated_at: string;
 }

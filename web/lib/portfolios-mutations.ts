@@ -153,6 +153,37 @@ export async function updatePortfolioBuyMandate(input: {
   return { ok: true };
 }
 
+export async function updatePortfolioSellMandate(input: {
+  sellMandate: string;
+}): Promise<ActionResult> {
+  const { user } = await requireUser();
+  const sellMandate = input.sellMandate.trim();
+
+  if (sellMandate.length > MAX_MANDATE)
+    return {
+      ok: false,
+      error: `Sell mandate must be ${MAX_MANDATE} characters or fewer.`,
+    };
+
+  const portfolio = await getOwnedPortfolio(user.id);
+  if (!portfolio) return { ok: false, error: "You don't have a portfolio yet." };
+
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from("portfolios")
+    .update({ sell_mandate: sellMandate || null })
+    .eq("id", portfolio.id)
+    .eq("owner_user_id", user.id);
+
+  if (error) {
+    console.error("updatePortfolioSellMandate failed:", error);
+    return { ok: false, error: "Could not save changes. Try again." };
+  }
+
+  revalidate(portfolio.slug);
+  return { ok: true };
+}
+
 export async function setPortfolioVisibility(input: {
   isPublic: boolean;
 }): Promise<ActionResult> {

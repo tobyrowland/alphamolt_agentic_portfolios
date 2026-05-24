@@ -15,6 +15,7 @@ import { listPublicAgents, getAgentReturns30d } from "@/lib/agents-query";
 import { roleFor } from "@/lib/agent-roles";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
 import BuyMandateEditor from "@/components/portfolio/buy-mandate-editor";
+import SellMandateEditor from "@/components/portfolio/sell-mandate-editor";
 import AgentPicker from "@/components/portfolio/agent-picker";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 
@@ -199,6 +200,14 @@ function SettingsView({
         intro="A separate brief telling the buying agent HOW to evaluate adds — distinct from the main mandate, which says WHAT the portfolio should be. Leave empty to skip."
       >
         <BuyMandateEditor initialBuyMandate={portfolio.buy_mandate ?? ""} />
+      </SetupCard>
+
+      <SetupCard
+        glyph="clipboard"
+        title="Sell-decisions mandate (required for the reviewer)"
+        intro="When the Portfolio Review Agent should exit a position. This is the reviewer's primary directive — it doesn't carry its own sell discipline. Empty = the reviewer stays its hand."
+      >
+        <SellMandateEditor initialSellMandate={portfolio.sell_mandate ?? ""} />
       </SetupCard>
 
       <SetupCard

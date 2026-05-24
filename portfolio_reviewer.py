@@ -54,10 +54,11 @@ PORTFOLIO_REVIEWER_DEFAULTS: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 REVIEWER_SYSTEM_PROMPT = """\
-You are a portfolio risk manager reviewing each held equity for THESIS DRIFT.
+You are a portfolio risk manager reviewing each held equity against the owner's SELL-DECISIONS MANDATE.
 
-Your job per call: look at ONE position the portfolio currently holds. You have:
-- The portfolio's investment mandate (what the book should be).
+Your job per call: look at ONE position the portfolio currently holds and decide whether the OWNER'S rules say to exit it. You have:
+- The portfolio's main mandate (what the book is meant to be).
+- The owner's sell-decisions mandate (the rules they want applied — this is the PRIMARY directive for your verdict).
 - The position (ticker, quantity, average cost, current price, P/L).
 - The buy thesis recorded when the position was opened (text + explicit break/extend signals), if any.
 - A machine-check of the recorded break signals against current data — which ones are firing right now.
@@ -65,25 +66,20 @@ Your job per call: look at ONE position the portfolio currently holds. You have:
 
 Render a verdict: HOLD (do nothing) or SELL (close the position at the next available price).
 
-Discipline:
-- Conviction 1-5 only meaningful when verdict="SELL". SELL at conviction >= 4 actually triggers a trade; lower convictions are journal-only.
-- A SELL needs HARD evidence of material deterioration vs the recorded thesis (or vs the portfolio mandate if no thesis on file). Conviction 5 = "the thesis is definitively broken; selling at any cost". Conviction 4 = "high-confidence material deterioration; sell now". 1-3 = noise / temporary moves / valuation concerns alone.
-- Do NOT sell on:
-  * short-term price moves alone (price is not the thesis)
-  * a single missed quarter unless the recorded thesis hinged on that metric
-  * minor margin compression unless the thesis was a margin-expansion story
-- DO sell on:
-  * a recorded break_signal firing on the data
-  * the company changing fundamentally (acquired, segment-divested, business model pivot away from the thesis)
-  * the portfolio mandate now disqualifying this name
-  * sustained, year-on-year deterioration in the metrics the thesis was built on
-- If there is no recorded thesis (source='none' in the payload), judge on current data + mandate only.
+Your job is NOT to apply your own opinion of when to sell. Apply the OWNER'S sell mandate. If the mandate is loose ("only sell on broken thesis"), be conservative. If it's vigilant ("sell on any meaningful deterioration"), be more willing to exit. If the mandate contradicts the recorded buy thesis, follow the SELL mandate — it's the active instruction.
+
+Conviction 1-5 only meaningful when verdict="SELL":
+  5 = the sell mandate is unambiguously triggered; no judgement call
+  4 = the sell mandate is clearly triggered, with one minor qualification
+  3 = the sell mandate is arguably triggered; reasonable people might disagree
+  1-2 = drift exists but doesn't meet the mandate's bar
+SELL at conviction >= 4 actually triggers a trade; lower convictions are journal-only.
 
 Output strict JSON only — no prose, no markdown fences."""
 
 
 REVIEWER_USER_TEMPLATE = """\
-{portfolio_mandate_block}{buy_mandate_block}PORTFOLIO STATE:
+{sell_mandate_block}{portfolio_mandate_block}PORTFOLIO STATE:
 - Total value: ${total_value_usd:,.0f}
 - Cash available: ${cash_usd:,.0f}
 - Number of holdings: {num_holdings}
@@ -126,18 +122,18 @@ Output JSON only."""
 # ---------------------------------------------------------------------------
 
 
-def _buy_mandate_block(buy_mandate: str | None) -> str:
-    """Render the per-portfolio buy-decisions mandate (migration 032) as a
-    prompt preamble. Same shape as the buyer reads — gives the reviewer a
-    coherent view of what 'broken' means relative to the owner's rules.
+def _sell_mandate_block(sell_mandate: str | None) -> str:
+    """Render the per-portfolio sell-decisions mandate (migration 034) as
+    the prompt's primary directive. This is what the reviewer follows —
+    not its own opinion of when to sell.
     """
-    text = (buy_mandate or "").strip()
+    text = (sell_mandate or "").strip()
     if not text:
         return ""
     return (
-        "BUY-DECISIONS MANDATE (the human owner's rules for adds — also "
-        "the bar a position should clear to stay in the book; if a held "
-        "name no longer fits these, that's grounds for SELL):\n"
+        "SELL-DECISIONS MANDATE (the human owner's rules for when to "
+        "exit a position — THIS IS THE RULE YOU APPLY; do not substitute "
+        "your own judgment of when to sell):\n"
         f"{text}\n\n"
     )
 
@@ -218,7 +214,7 @@ def _evaluate_position(
     current_price: float,
     portfolio: dict,
     portfolio_mandate: str | None,
-    buy_mandate: str | None,
+    sell_mandate: str | None,
     thesis: dict | None,
     signal_check: dict | None,
     current_data: dict,
@@ -245,7 +241,7 @@ def _evaluate_position(
 
     user = REVIEWER_USER_TEMPLATE.format(
         portfolio_mandate_block=_mandate_block(portfolio_mandate),
-        buy_mandate_block=_buy_mandate_block(buy_mandate),
+        sell_mandate_block=_sell_mandate_block(sell_mandate),
         total_value_usd=float(portfolio.get("total_value_usd") or 0),
         cash_usd=float(portfolio.get("cash_usd") or 0),
         num_holdings=len(portfolio.get("holdings") or []),
@@ -378,12 +374,22 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
         result.notes["reason"] = "no holdings to review"
         return result
 
-    # Load both mandates from the portfolios row.
+    # Load mandates from the portfolios row. The sell_mandate is the
+    # PRIMARY directive — the reviewer is user-driven, not opinionated.
+    # If it's empty, the agent has nothing to act on; bail before any
+    # LLM work.
     portfolio_mandate = ctx.mandate
-    buy_mandate: str | None = None
+    sell_mandate: str | None = None
     pf_row = ctx.db.get_portfolio_by_id(ctx.portfolio_id)
     if pf_row:
-        buy_mandate = pf_row.get("buy_mandate")
+        sell_mandate = pf_row.get("sell_mandate")
+    if not (sell_mandate or "").strip():
+        result.notes["reason"] = (
+            "no sell mandate set — the reviewer follows the owner's "
+            "sell rules. Set portfolios.sell_mandate via /account/settings "
+            "to enable."
+        )
+        return result
 
     # Theses for context (and to mark broken later).
     active_theses = _active_theses_by_ticker(ctx.db, ctx.portfolio_id)
@@ -488,7 +494,7 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
                 current_price=item["current_price"],
                 portfolio=portfolio,
                 portfolio_mandate=portfolio_mandate,
-                buy_mandate=buy_mandate,
+                sell_mandate=sell_mandate,
                 thesis=item["thesis"],
                 signal_check=item["signal_check"],
                 current_data=item["current_data"],

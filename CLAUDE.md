@@ -215,23 +215,31 @@ Two trade-phase strategies share the buyer slot:
 Both are no-ops on a legacy 1:1 agent portfolio.
 
 `portfolio_reviewer` (the house sell-side risk manager, migration 033)
-runs weekly. For each held position it calls Gemini 2.5 Pro with the
-recorded thesis (text + extend/break signals + snapshot at buy), a
-machine-check of which break signals are currently firing
-(`theses.check_thesis`), and the full current company data. Returns
-`{verdict: HOLD|SELL, conviction 1-5, rationale, what_changed}`. Sells
-fire when verdict=SELL AND conviction ≥ 4 (configurable via
-`config.sell_conviction_threshold`). Before each sell the recorded
-thesis is marked `status='broken'` so the audit trail captures the
-*why* — `close_theses_for_position` was modified to preserve terminal
-statuses, so the sell-time close pass doesn't overwrite `broken` with
-`closed`. Full-position sells only; doesn't trim. Skips legacy 1:1
-agent portfolios. Also no-op on portfolios with no holdings.
+runs weekly. **User-driven, not opinionated**: the reviewer follows the
+owner's `portfolios.sell_mandate` (migration 034) — a free-text brief
+describing when the agent should exit a position. If `sell_mandate`
+is empty, the reviewer is a no-op (it doesn't carry a sell discipline
+of its own; `notes.reason='no sell mandate set'`).
+
+For each held position it calls Gemini 2.5 Pro with the sell mandate
+(the primary directive), the main mandate, the recorded buy thesis
+(text + extend/break signals + snapshot at buy), a machine-check of
+which break signals are currently firing (`theses.check_thesis`), and
+the full current company data. Returns `{verdict: HOLD|SELL, conviction
+1-5, rationale, what_changed}`. Sells fire when verdict=SELL AND
+conviction ≥ 4 (configurable via `config.sell_conviction_threshold`).
+Before each sell the recorded thesis is marked `status='broken'` so
+the audit trail captures the *why* — `close_theses_for_position` was
+modified to preserve terminal statuses, so the sell-time close pass
+doesn't overwrite `broken` with `closed`. Full-position sells only;
+doesn't trim. Skips legacy 1:1 agent portfolios. Also no-op on
+portfolios with no holdings.
 
 The house agents `alphamolt-shortlist` (curator, `gemini-2.5-flash`,
 24h cadence, ~40-name target), `buying-agent` (buyer, `gemini-2.5-pro`,
 24h cadence) and `portfolio-reviewer` (reviewer, `gemini-2.5-pro`,
-weekly) — migrations 028, 030, 032, and 033 — drive the pipeline.
+weekly, user-mandate-driven) — migrations 028, 030, 032, 033, and 034
+— drive the pipeline.
 
 Supports `--handle`, `--force` (ignore interval guard), and `--dry-run`.
 
