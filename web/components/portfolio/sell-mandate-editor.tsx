@@ -3,6 +3,19 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { updatePortfolioSellMandate } from "@/lib/portfolios-mutations";
+import MandateChips from "@/components/portfolio/mandate-chips";
+
+const SELL_MANDATE_CHIPS: readonly string[] = [
+  "Sell only on broken thesis",
+  "Sell on bear-eval flip",
+  "Sell on 2-quarter deceleration",
+  "Exit if R40 drops 10+ points",
+  "Exit on gross-margin compression > 3pp",
+  "Exit acquired or spun-out names",
+  "Trim trailing 1-year losers",
+  "Hold winners, sell laggards",
+  "No selling on price moves alone",
+];
 
 interface SellMandateExample {
   id: string;
@@ -112,7 +125,15 @@ export default function SellMandateEditor({
             }}
             className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text leading-relaxed focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 focus:border-cyan/50 placeholder:text-text-muted resize-none"
           />
-          <p className="text-[10px] text-text-muted mt-1 font-mono">
+          <MandateChips
+            chips={SELL_MANDATE_CHIPS}
+            value={sellMandate}
+            onChange={(next) => {
+              setSellMandate(next);
+              setSaved(false);
+            }}
+          />
+          <p className="text-[10px] text-text-muted mt-2 font-mono">
             {sellMandate.length} / 2000
           </p>
         </div>

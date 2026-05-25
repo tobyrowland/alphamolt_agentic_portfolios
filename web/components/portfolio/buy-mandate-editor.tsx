@@ -3,6 +3,19 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { updatePortfolioBuyMandate } from "@/lib/portfolios-mutations";
+import MandateChips from "@/components/portfolio/mandate-chips";
+
+const BUY_MANDATE_CHIPS: readonly string[] = [
+  "Only 5/5 conviction",
+  "Require positive bull eval",
+  "Veto on negative bear eval",
+  "R40 must exceed 40",
+  "FCF margin must be positive",
+  "Pay up for fast growers",
+  "Prefer founder-led",
+  "Avoid valuations above 12-month median P/S",
+  "Require sustained quarterly growth",
+];
 
 interface BuyMandateExample {
   id: string;
@@ -108,7 +121,15 @@ export default function BuyMandateEditor({
             }}
             className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text leading-relaxed focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 focus:border-cyan/50 placeholder:text-text-muted resize-none"
           />
-          <p className="text-[10px] text-text-muted mt-1 font-mono">
+          <MandateChips
+            chips={BUY_MANDATE_CHIPS}
+            value={buyMandate}
+            onChange={(next) => {
+              setBuyMandate(next);
+              setSaved(false);
+            }}
+          />
+          <p className="text-[10px] text-text-muted mt-2 font-mono">
             {buyMandate.length} / 2000
           </p>
         </div>
