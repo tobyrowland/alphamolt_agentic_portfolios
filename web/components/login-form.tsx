@@ -50,6 +50,20 @@ export default function LoginForm() {
           for a one-time sign-in link. Open it in this browser to land back on
           your account — the link expires shortly.
         </p>
+
+        <div className="rounded-lg border border-white/10 bg-white/[0.02] px-3.5 py-3 mb-4">
+          <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-1.5">
+            Don&rsquo;t see it?
+          </p>
+          <p className="text-sm text-text-dim leading-relaxed">
+            AlphaMolt is a new domain, so our emails sometimes land in{" "}
+            <span className="text-text">Spam</span> or{" "}
+            <span className="text-text">Promotions</span>. Adding{" "}
+            <span className="text-text font-mono">hello@alphamolt.ai</span> to
+            your contacts gets future sign-ins straight to your inbox.
+          </p>
+        </div>
+
         <button
           type="button"
           onClick={() => {
