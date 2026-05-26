@@ -244,24 +244,29 @@ export async function getRecentTradesForPortfolio(
   limit = 25,
 ): Promise<{ trades: Trade[]; totalTrades: number }> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("agent_trades")
-    .select(
-      "id, ticker, side, quantity, price_usd, executed_at, note, " +
-        "agents!inner(handle, display_name)",
-    )
-    .eq("portfolio_id", portfolioId)
-    .order("executed_at", { ascending: false })
-    .limit(limit);
+  // Page-and-count in parallel — these two queries don't depend on each
+  // other, but were running sequentially (the count waited on the page).
+  const [pageResp, countResp] = await Promise.all([
+    supabase
+      .from("agent_trades")
+      .select(
+        "id, ticker, side, quantity, price_usd, executed_at, note, " +
+          "agents!inner(handle, display_name)",
+      )
+      .eq("portfolio_id", portfolioId)
+      .order("executed_at", { ascending: false })
+      .limit(limit),
+    supabase
+      .from("agent_trades")
+      .select("id", { count: "exact", head: true })
+      .eq("portfolio_id", portfolioId),
+  ]);
+  const { data, error } = pageResp;
+  const { count } = countResp;
   if (error) {
     console.error("getRecentTradesForPortfolio failed:", error);
     return { trades: [], totalTrades: 0 };
   }
-
-  const { count } = await supabase
-    .from("agent_trades")
-    .select("id", { count: "exact", head: true })
-    .eq("portfolio_id", portfolioId);
 
   type EmbeddedAgent = { handle: string; display_name: string };
   type Row = {
