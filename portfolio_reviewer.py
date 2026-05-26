@@ -54,11 +54,10 @@ PORTFOLIO_REVIEWER_DEFAULTS: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 REVIEWER_SYSTEM_PROMPT = """\
-You are a portfolio risk manager reviewing each held equity against the owner's SELL-DECISIONS MANDATE.
+You are a portfolio risk manager reviewing each held equity against the OWNER'S PORTFOLIO MANDATE.
 
-Your job per call: look at ONE position the portfolio currently holds and decide whether the OWNER'S rules say to exit it. You have:
-- The portfolio's main mandate (what the book is meant to be).
-- The owner's sell-decisions mandate (the rules they want applied — this is the PRIMARY directive for your verdict).
+Your job per call: look at ONE position the portfolio currently holds and decide whether the owner's mandate says to exit it. You have:
+- The portfolio's mandate (the owner's investment brief — covers what to own AND when to exit).
 - The position (ticker, quantity, average cost, current price, P/L).
 - The buy thesis recorded when the position was opened (text + explicit break/extend signals), if any.
 - A machine-check of the recorded break signals against current data — which ones are firing right now.
@@ -66,12 +65,12 @@ Your job per call: look at ONE position the portfolio currently holds and decide
 
 Render a verdict: HOLD (do nothing) or SELL (close the position at the next available price).
 
-Your job is NOT to apply your own opinion of when to sell. Apply the OWNER'S sell mandate. If the mandate is loose ("only sell on broken thesis"), be conservative. If it's vigilant ("sell on any meaningful deterioration"), be more willing to exit. If the mandate contradicts the recorded buy thesis, follow the SELL mandate — it's the active instruction.
+Your job is NOT to apply your own opinion of when to sell. Apply the OWNER'S mandate. If the mandate is loose, be conservative. If it's vigilant, be more willing to exit. If the mandate is silent on selling, lean toward HOLD unless the recorded buy thesis is materially broken.
 
 Conviction 1-5 only meaningful when verdict="SELL":
-  5 = the sell mandate is unambiguously triggered; no judgement call
-  4 = the sell mandate is clearly triggered, with one minor qualification
-  3 = the sell mandate is arguably triggered; reasonable people might disagree
+  5 = the mandate's exit criteria are unambiguously triggered; no judgement call
+  4 = the mandate's exit criteria are clearly triggered, with one minor qualification
+  3 = the criteria are arguably triggered; reasonable people might disagree
   1-2 = drift exists but doesn't meet the mandate's bar
 SELL at conviction >= 4 actually triggers a trade; lower convictions are journal-only.
 
@@ -79,7 +78,7 @@ Output strict JSON only — no prose, no markdown fences."""
 
 
 REVIEWER_USER_TEMPLATE = """\
-{sell_mandate_block}{portfolio_mandate_block}PORTFOLIO STATE:
+{portfolio_mandate_block}PORTFOLIO STATE:
 - Total value: ${total_value_usd:,.0f}
 - Cash available: ${cash_usd:,.0f}
 - Number of holdings: {num_holdings}
@@ -120,22 +119,6 @@ Output JSON only."""
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _sell_mandate_block(sell_mandate: str | None) -> str:
-    """Render the per-portfolio sell-decisions mandate (migration 034) as
-    the prompt's primary directive. This is what the reviewer follows —
-    not its own opinion of when to sell.
-    """
-    text = (sell_mandate or "").strip()
-    if not text:
-        return ""
-    return (
-        "SELL-DECISIONS MANDATE (the human owner's rules for when to "
-        "exit a position — THIS IS THE RULE YOU APPLY; do not substitute "
-        "your own judgment of when to sell):\n"
-        f"{text}\n\n"
-    )
 
 
 def _truncate(text: str, limit: int = 2000) -> str:
@@ -214,7 +197,6 @@ def _evaluate_position(
     current_price: float,
     portfolio: dict,
     portfolio_mandate: str | None,
-    sell_mandate: str | None,
     thesis: dict | None,
     signal_check: dict | None,
     current_data: dict,
@@ -241,7 +223,6 @@ def _evaluate_position(
 
     user = REVIEWER_USER_TEMPLATE.format(
         portfolio_mandate_block=_mandate_block(portfolio_mandate),
-        sell_mandate_block=_sell_mandate_block(sell_mandate),
         total_value_usd=float(portfolio.get("total_value_usd") or 0),
         cash_usd=float(portfolio.get("cash_usd") or 0),
         num_holdings=len(portfolio.get("holdings") or []),
@@ -374,20 +355,14 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
         result.notes["reason"] = "no holdings to review"
         return result
 
-    # Load mandates from the portfolios row. The sell_mandate is the
-    # PRIMARY directive — the reviewer is user-driven, not opinionated.
-    # If it's empty, the agent has nothing to act on; bail before any
-    # LLM work.
+    # The reviewer is user-driven: it follows the owner's portfolio
+    # mandate (portfolios.description). Without a mandate the agent has
+    # nothing to act on, so bail before any LLM work.
     portfolio_mandate = ctx.mandate
-    sell_mandate: str | None = None
-    pf_row = ctx.db.get_portfolio_by_id(ctx.portfolio_id)
-    if pf_row:
-        sell_mandate = pf_row.get("sell_mandate")
-    if not (sell_mandate or "").strip():
+    if not (portfolio_mandate or "").strip():
         result.notes["reason"] = (
-            "no sell mandate set — the reviewer follows the owner's "
-            "sell rules. Set portfolios.sell_mandate via /account/settings "
-            "to enable."
+            "no mandate set — the reviewer follows the owner's "
+            "portfolio mandate. Write one via /account to enable."
         )
         return result
 
@@ -494,7 +469,6 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
                 current_price=item["current_price"],
                 portfolio=portfolio,
                 portfolio_mandate=portfolio_mandate,
-                sell_mandate=sell_mandate,
                 thesis=item["thesis"],
                 signal_check=item["signal_check"],
                 current_data=item["current_data"],

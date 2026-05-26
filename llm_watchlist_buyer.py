@@ -3,7 +3,7 @@
 The thinking counterpart of `agent_strategies.rebalance_watchlist_buyer`
 (equal-weight, mechanical). For each watchlist ticker the strategy
 calls a frontier model with the full extended-tier data + the
-portfolio's mandate + the new per-portfolio buy-decisions mandate, and
+portfolio's mandate (the single `portfolios.description` brief), and
 expects a per-equity verdict (BUY|PASS, conviction 1-5, thesis_text,
 extend_signals, break_signals). Only ``conviction == 5`` names trade;
 they get ranked by a second LLM call and bought in order at 4% of
@@ -118,7 +118,7 @@ Output strict JSON only — no prose, no markdown fences."""
 
 
 BUYER_USER_TEMPLATE = """\
-{portfolio_mandate_block}{buy_mandate_block}PORTFOLIO STATE:
+{portfolio_mandate_block}PORTFOLIO STATE:
 - Total value: ${total_value_usd:,.0f}
 - Cash available: ${cash_usd:,.0f} ({cash_pct:.1f}% of portfolio)
 - Current holdings: {current_holdings}
@@ -162,7 +162,7 @@ Rules:
 
 
 PRIORITISATION_USER_TEMPLATE = """\
-{portfolio_mandate_block}{buy_mandate_block}PORTFOLIO STATE:
+{portfolio_mandate_block}PORTFOLIO STATE:
 - Total value: ${total_value_usd:,.0f}
 - Cash available: ${cash_usd:,.0f} ({cash_pct:.1f}% of portfolio)
 - Current holdings: {current_holdings}
@@ -182,21 +182,6 @@ ranked MUST contain every candidate exactly once, in priority order
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _buy_mandate_block(buy_mandate: str | None) -> str:
-    """Render the per-portfolio buy-decisions mandate as a prompt preamble,
-    or '' when absent. Parallel of `llm_picker._mandate_block` but framed as
-    a how-to-evaluate brief rather than a what-to-own brief.
-    """
-    text = (buy_mandate or "").strip()
-    if not text:
-        return ""
-    return (
-        "BUY-DECISIONS MANDATE (the human owner's instructions on how to "
-        "evaluate any individual add to this portfolio — honour these):\n"
-        f"{text}\n\n"
-    )
 
 
 def _validate_signals(
@@ -265,7 +250,6 @@ def _evaluate_ticker(
     curator_rationale: str | None,
     portfolio: dict,
     portfolio_mandate: str | None,
-    buy_mandate: str | None,
     max_tokens: int,
     temperature: float,
     max_signals: int,
@@ -281,7 +265,6 @@ def _evaluate_ticker(
 
     user = BUYER_USER_TEMPLATE.format(
         portfolio_mandate_block=_mandate_block(portfolio_mandate),
-        buy_mandate_block=_buy_mandate_block(buy_mandate),
         total_value_usd=pc["total_value_usd"],
         cash_usd=pc["cash_usd"],
         cash_pct=cash_pct,
@@ -356,7 +339,6 @@ def _prioritise(
     candidates: list[dict],
     portfolio: dict,
     portfolio_mandate: str | None,
-    buy_mandate: str | None,
     max_tokens: int,
     temperature: float,
 ) -> tuple[list[str], dict]:
@@ -378,7 +360,6 @@ def _prioritise(
     ]
     user = PRIORITISATION_USER_TEMPLATE.format(
         portfolio_mandate_block=_mandate_block(portfolio_mandate),
-        buy_mandate_block=_buy_mandate_block(buy_mandate),
         total_value_usd=pc["total_value_usd"],
         cash_usd=pc["cash_usd"],
         cash_pct=cash_pct,
@@ -499,14 +480,11 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
         result.notes["min_cash_pct"] = min_cash_pct
         return result
 
-    # 1. Load mandates + watchlist. Read both mandates from the portfolios
-    # row directly — ctx.mandate is the main mandate; the new buy_mandate
-    # column needs a fresh select.
+    # 1. Load mandate + watchlist. There's one mandate per portfolio
+    # (portfolios.description, surfaced as ctx.mandate); the buyer reads
+    # it to understand both *what* the portfolio should be and *how* to
+    # evaluate any add.
     portfolio_mandate = ctx.mandate
-    buy_mandate: str | None = None
-    pf_row = ctx.db.get_portfolio_by_id(ctx.portfolio_id)
-    if pf_row:
-        buy_mandate = pf_row.get("buy_mandate")
 
     watchlist = ctx.db.get_portfolio_watchlist(ctx.portfolio_id)
     # Dedupe by ticker; combine rationales when both source='user' and
@@ -643,7 +621,6 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
                 curator_rationale=combined_rationale.get(ticker) or None,
                 portfolio=portfolio,
                 portfolio_mandate=portfolio_mandate,
-                buy_mandate=buy_mandate,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 max_signals=max_signals,
@@ -696,7 +673,6 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
         candidates=qualifying,
         portfolio=portfolio,
         portfolio_mandate=portfolio_mandate,
-        buy_mandate=buy_mandate,
         max_tokens=int(params["max_tokens_phase2"]),
         temperature=temperature,
     )

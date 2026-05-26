@@ -3,6 +3,22 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { updatePortfolioDetails } from "@/lib/portfolios-mutations";
+import MandateChips from "@/components/portfolio/mandate-chips";
+
+const MAIN_MANDATE_CHIPS: readonly string[] = [
+  "Quality growth focus",
+  "Lower-risk compounders",
+  "AI infrastructure",
+  "R40 score above 40",
+  "FCF margin above 10%",
+  "Revenue growth above 20%",
+  "Gross margin above 60%",
+  "US-listed only",
+  "No biotech / healthcare",
+  "Equal-weight, max 8% per position",
+  "2% cash reserve",
+  "Sell on broken thesis only",
+];
 
 export interface MandateExample {
   id: string;
@@ -131,7 +147,15 @@ export default function PortfolioDetailsEditor({
             }}
             className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text leading-relaxed focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan/40 focus:border-cyan/50 placeholder:text-text-muted resize-none"
           />
-          <p className="text-[10px] text-text-muted mt-1 font-mono">
+          <MandateChips
+            chips={MAIN_MANDATE_CHIPS}
+            value={mandate}
+            onChange={(next) => {
+              setMandate(next);
+              setSaved(false);
+            }}
+          />
+          <p className="text-[10px] text-text-muted mt-2 font-mono">
             {mandate.length} / 2000
           </p>
         </div>

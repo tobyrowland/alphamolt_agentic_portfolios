@@ -35,6 +35,7 @@ type RoleFilter =
   | null
   | "Shortlist Builder"
   | "Buying Agent"
+  | "Reviewer"
   | "Trader"
   | "Manual";
 
@@ -63,6 +64,7 @@ function RoleChipRow({
     { label: "All", value: null },
     { label: "Shortlist Builders", value: "Shortlist Builder" },
     { label: "Buying Agents", value: "Buying Agent" },
+    { label: "Reviewers", value: "Reviewer" },
     { label: "Traders", value: "Trader" },
   ];
   if (showManual) chips.push({ label: "Manual", value: "Manual" });
@@ -118,46 +120,50 @@ function RolePill({ phase, role }: { phase: AgentPhase; role: string }) {
   );
 }
 
-function RoleStatus({
+/**
+ * The three required role slots a portfolio needs filled: Shortlist
+ * Builder, Buying Agent, Reviewer. Each card is either filled (showing
+ * the assigned member's display name + handle + 30d return) or empty
+ * (showing a "no agent assigned" hint encouraging the user to add one
+ * from the picker below). Sitting above the picker, the cards teach
+ * the empty state — at a glance, an unconfigured portfolio shows
+ * three empty slots, which is much clearer than the previous flat
+ * "agents added" checkmark pair.
+ */
+function RoleSlot({
   label,
   hint,
-  satisfied,
+  member,
 }: {
   label: string;
   hint: string;
-  satisfied: boolean;
+  member: PickerAgent | null;
 }) {
-  return (
-    <div
-      className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 ${
-        satisfied
-          ? "border-green/30 bg-green/[0.05]"
-          : "border-white/10 bg-white/[0.02]"
-      }`}
-    >
-      <span
-        aria-hidden
-        className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
-          satisfied
-            ? "bg-green/20 text-green"
-            : "border border-text-muted/40 text-text-muted"
-        }`}
-      >
-        {satisfied ? "✓" : ""}
-      </span>
-      <div className="min-w-0">
-        <p className="text-xs font-mono font-bold text-text">
-          {label}{" "}
-          <span
-            className={`font-normal ${satisfied ? "text-green" : "text-orange"}`}
-          >
-            {satisfied ? "added" : "still needed"}
-          </span>
+  if (member) {
+    const ret = fmtReturn(member.return30d);
+    return (
+      <div className="flex flex-col gap-1.5 rounded-lg border border-green/30 bg-green/[0.05] px-3 py-2.5">
+        <p className="text-[10px] font-mono uppercase tracking-widest text-green">
+          {label}
         </p>
-        <p className="mt-0.5 text-[11px] leading-relaxed text-text-muted">
-          {hint}
+        <p className="text-sm font-semibold text-text truncate">
+          {member.display_name}
+        </p>
+        <p className="font-mono text-[11px] text-text-muted truncate">
+          @{member.handle} · <span className={ret.cls}>{ret.text}</span> 30d
         </p>
       </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-dashed border-white/15 bg-white/[0.02] px-3 py-2.5">
+      <p className="text-[10px] font-mono uppercase tracking-widest text-text-dim">
+        {label}
+      </p>
+      <p className="text-sm text-text-muted italic">No agent assigned</p>
+      <p className="text-[11px] leading-relaxed text-text-muted">
+        {hint}
+      </p>
     </div>
   );
 }
@@ -237,16 +243,30 @@ export default function AgentPicker({
   return (
     <div className="space-y-5">
       {/* Required-roles status */}
-      <div className="grid gap-2.5 sm:grid-cols-2">
-        <RoleStatus
+      <div className="grid gap-2.5 sm:grid-cols-3">
+        <RoleSlot
           label="Shortlist Builder"
-          hint="Curates the watchlist of equities to consider."
-          satisfied={hasCurator}
+          hint="Picks the equities to consider this week."
+          member={
+            members.find((m) => roleFor(m.strategy).role === "Shortlist Builder")
+              ?? null
+          }
         />
-        <RoleStatus
+        <RoleSlot
           label="Buying Agent"
-          hint="Trades the $1M book from the watchlist."
-          satisfied={hasBuyer}
+          hint="Buys names from the shortlist."
+          member={
+            members.find((m) => roleFor(m.strategy).role === "Buying Agent")
+              ?? null
+          }
+        />
+        <RoleSlot
+          label="Reviewer"
+          hint="Sells positions when the thesis breaks."
+          member={
+            members.find((m) => roleFor(m.strategy).role === "Reviewer")
+              ?? null
+          }
         />
       </div>
 

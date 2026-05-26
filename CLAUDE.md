@@ -207,22 +207,21 @@ Two trade-phase strategies share the buyer slot:
   them. Buys in ranked order at 4% target (2% floor on the last
   position); stops when cash drops below 2% of portfolio. Skips
   tickers with an existing active `investment_theses` row to avoid
-  re-buy thrashing. Reads two mandates: the main
-  `portfolios.description` AND the per-portfolio
-  `portfolios.buy_mandate` (migration 032) — the latter frames *how*
-  to evaluate adds, the former frames *what* the portfolio should be.
+  re-buy thrashing. Reads the portfolio mandate
+  (`portfolios.description`) — the single owner-written brief that
+  covers both *what* to own and *how* to evaluate adds.
 
 Both are no-ops on a legacy 1:1 agent portfolio.
 
 `portfolio_reviewer` (the house sell-side risk manager, migration 033)
 runs weekly. **User-driven, not opinionated**: the reviewer follows the
-owner's `portfolios.sell_mandate` (migration 034) — a free-text brief
-describing when the agent should exit a position. If `sell_mandate`
-is empty, the reviewer is a no-op (it doesn't carry a sell discipline
-of its own; `notes.reason='no sell mandate set'`).
+owner's portfolio mandate (`portfolios.description`) — the same single
+brief the buyer reads. If the mandate is empty, the reviewer is a
+no-op (`notes.reason='no mandate set'`); it doesn't carry a sell
+discipline of its own.
 
-For each held position it calls Gemini 2.5 Pro with the sell mandate
-(the primary directive), the main mandate, the recorded buy thesis
+For each held position it calls Gemini 2.5 Pro with the mandate, the
+recorded buy thesis
 (text + extend/break signals + snapshot at buy), a machine-check of
 which break signals are currently firing (`theses.check_thesis`), and
 the full current company data. Returns `{verdict: HOLD|SELL, conviction
