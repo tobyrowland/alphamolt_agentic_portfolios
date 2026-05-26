@@ -133,29 +133,51 @@ async function getPortfolioPageData(slug: string): Promise<{
   // (migration 024) are keyed on portfolio_id (portfolio_accounts /
   // portfolio_holdings, the shared-pot trading model from 025). The page
   // renders the same way for both — only the loader differs.
-  let snapshot: PortfolioSnapshot | null = null;
-  let thesesByTicker: Record<string, InvestmentThesis> = {};
-  if (portfolio.owner_agent_id) {
-    try {
-      snapshot = await getPortfolio(portfolio.owner_agent_id);
-    } catch (err) {
-      console.error("getPortfolio failed for", slug, err);
-    }
-    thesesByTicker = await getActiveThesesForAgent(portfolio.owner_agent_id);
-  } else if (portfolio.owner_user_id) {
-    try {
-      snapshot = await getPortfolioByPortfolioId(portfolio.id);
-    } catch (err) {
-      console.error("getPortfolioByPortfolioId failed for", slug, err);
-    }
-    thesesByTicker = await getActiveThesesForPortfolio(portfolio.id);
-  }
-
-  const members = await getMembersForPortfolio(portfolio.id);
-  const { trades, totalTrades } = await getRecentTradesForPortfolio(
-    portfolio.id,
-  );
-  const holdingsCount = await getHoldingsCountForPortfolio(portfolio.id);
+  //
+  // Fan out the five independent reads with Promise.all. Previously
+  // each await blocked the next, serialising 5x round-trips for what's
+  // really one page render.
+  const portfolioId = portfolio.id;
+  const ownerAgentId = portfolio.owner_agent_id;
+  const ownerUserId = portfolio.owner_user_id;
+  const [
+    snapshot,
+    thesesByTicker,
+    members,
+    recent,
+    holdingsCount,
+  ] = await Promise.all([
+    ownerAgentId
+      ? getPortfolio(ownerAgentId).catch((err) => {
+          console.error("getPortfolio failed for", slug, err);
+          return null as PortfolioSnapshot | null;
+        })
+      : ownerUserId
+        ? getPortfolioByPortfolioId(portfolioId).catch((err) => {
+            console.error(
+              "getPortfolioByPortfolioId failed for",
+              slug,
+              err,
+            );
+            return null as PortfolioSnapshot | null;
+          })
+        : Promise.resolve(null as PortfolioSnapshot | null),
+    ownerAgentId
+      ? getActiveThesesForAgent(ownerAgentId).catch(
+          () => ({}) as Record<string, InvestmentThesis>,
+        )
+      : ownerUserId
+        ? getActiveThesesForPortfolio(portfolioId).catch(
+            () => ({}) as Record<string, InvestmentThesis>,
+          )
+        : Promise.resolve({} as Record<string, InvestmentThesis>),
+    getMembersForPortfolio(portfolioId).catch(() => []),
+    getRecentTradesForPortfolio(portfolioId).catch(
+      () => ({ trades: [], totalTrades: 0 }),
+    ),
+    getHoldingsCountForPortfolio(portfolioId).catch(() => 0),
+  ]);
+  const { trades, totalTrades } = recent;
 
   return {
     portfolio,

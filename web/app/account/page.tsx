@@ -76,26 +76,20 @@ export default async function AccountPage() {
   let returns30d = new Map<string, number | null>();
   let holdingsCount = 0;
   if (portfolio) {
-    try {
-      members = await getMembersForPortfolio(portfolio.id);
-    } catch {
-      members = [];
-    }
-    try {
-      allAgents = await listPublicAgents(1000, true);
-    } catch {
-      allAgents = [];
-    }
-    try {
-      returns30d = await getAgentReturns30d();
-    } catch {
-      returns30d = new Map();
-    }
-    try {
-      holdingsCount = await getHoldingsCountForPortfolio(portfolio.id);
-    } catch {
-      holdingsCount = 0;
-    }
+    // Fan out the four independent queries — these previously ran
+    // sequentially (each blocking the next), turning a ~500ms total
+    // budget into ~2s. `getAgentReturns30d` in particular hits the
+    // heavy `agent_leaderboard` view; running it alongside the others
+    // brings the page well below 1s in practice.
+    const portfolioId = portfolio.id;
+    [members, allAgents, returns30d, holdingsCount] = await Promise.all([
+      getMembersForPortfolio(portfolioId).catch(() => [] as PortfolioMember[]),
+      listPublicAgents(1000, true).catch(
+        () => [] as Awaited<ReturnType<typeof listPublicAgents>>,
+      ),
+      getAgentReturns30d().catch(() => new Map<string, number | null>()),
+      getHoldingsCountForPortfolio(portfolioId).catch(() => 0),
+    ]);
   }
 
   return (
