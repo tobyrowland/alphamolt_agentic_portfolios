@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Suspense, type ReactNode } from "react";
+import { Suspense, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import Nav from "@/components/nav";
 import HeroChart from "@/components/hero-chart";
@@ -322,74 +322,383 @@ function Hero({
 // Strategy card — write the brief, the swarm builds the book.
 // ---------------------------------------------------------------------------
 
-const DELIVERABLES = [
-  "A shortlist by morning, with reasons",
-  "Every buy comes with a written thesis",
-  "Sells fire when the thesis breaks — not on vibes",
+const AGENT_STEPS: {
+  tone: "cyan" | "green" | "red";
+  icon: GlyphName;
+  title: string;
+  body: string;
+  pill: string;
+}[] = [
+  {
+    tone: "cyan",
+    icon: "search",
+    title: "Shortlist",
+    body: "Scans the market and finds candidates.",
+    pill: "1,842 scanned",
+  },
+  {
+    tone: "green",
+    icon: "chart",
+    title: "Buy",
+    body: "Ranks ideas and opens paper positions with written theses.",
+    pill: "20 positions",
+  },
+  {
+    tone: "red",
+    icon: "shield",
+    title: "Sell",
+    body: "Monitors holdings and exits when the thesis breaks.",
+    pill: "Active risk control",
+  },
 ];
+
+// Per-tone colour map. `rgb` is the unsuffixed channel triplet so we can
+// drop it into rgba() literals at arbitrary alpha.
+const TONE_STYLES: Record<
+  (typeof AGENT_STEPS)[number]["tone"],
+  { color: string; rgb: string }
+> = {
+  cyan: { color: "var(--color-cyan)", rgb: "0,242,255" },
+  green: { color: "var(--color-green)", rgb: "0,255,65" },
+  red: { color: "var(--color-red)", rgb: "255,51,51" },
+};
 
 function StrategyCard() {
   return (
     <section className="mt-20 sm:mt-28">
       <div
-        className="rounded-2xl border border-white/10 p-6 sm:p-8"
+        className="rounded-2xl border border-white/10 p-6 sm:p-8 lg:p-10"
         style={{
           background:
             "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.012))",
           boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
         }}
       >
-        <SectionBadge>You give the orders</SectionBadge>
-        <h2 className="mt-4 text-[28px] sm:text-[36px] lg:text-[40px] font-bold tracking-[-0.025em] text-text leading-[1.06] max-w-[22ch]">
-          Run a hedge fund by Tuesday.
-        </h2>
-        <p className="mt-4 text-base sm:text-lg text-text-muted max-w-[640px] leading-relaxed">
-          Write the brief in plain English. A swarm of specialist AI agents
-          argues, picks, and trades against it &mdash; while you watch.
-        </p>
+        {/* Two-column on lg+: pitch + brief on the left, swarm vis on the
+            right, a small connector node + arrow between them. Stacks on
+            mobile (connector hides). */}
+        <div className="grid gap-8 lg:gap-4 lg:grid-cols-[minmax(0,0.92fr)_auto_minmax(0,1.18fr)] lg:items-center">
+          {/* LEFT — pitch + brief */}
+          <div className="min-w-0">
+            <SectionBadge>How it works</SectionBadge>
+            <h2 className="mt-4 text-[28px] sm:text-[34px] lg:text-[40px] font-bold tracking-[-0.025em] text-text leading-[1.06]">
+              One strategy becomes a swarm.
+            </h2>
+            <p className="mt-4 text-base sm:text-[17px] text-text-muted max-w-[480px] leading-relaxed">
+              Write a plain-English investment brief. AlphaMolt breaks it into
+              specialist jobs &mdash; finding candidates, choosing buys,
+              managing sells, and tracking the result.
+            </p>
 
-        <div
-          className="mt-6 rounded-xl border border-white/10 px-5 py-4 font-mono text-[13.5px] sm:text-sm leading-[1.7] text-text-dim"
-          style={{ background: "rgba(0,0,0,0.35)" }}
-        >
-          <span className="text-[var(--color-cyan)] select-none">&ldquo;</span>
-          Find me 20 quality compounders no one&rsquo;s talking about yet. No
-          mega-caps. No hype. Show me your work.
-          <span className="text-[var(--color-cyan)] select-none">&rdquo;</span>
-        </div>
+            <BriefCard />
+          </div>
 
-        <div className="mt-5 grid gap-2.5 sm:grid-cols-3">
-          {DELIVERABLES.map((item) => (
-            <div
-              key={item}
-              className="flex items-center gap-2.5 rounded-lg border border-white/10 bg-white/[0.025] px-3.5 py-2.5 text-sm text-text-dim"
-            >
-              <span
-                aria-hidden
-                className="h-1.5 w-1.5 rounded-full bg-[var(--color-cyan)] shrink-0"
-                style={{ boxShadow: "0 0 6px rgba(0,242,255,0.7)" }}
-              />
-              {item}
-            </div>
-          ))}
-        </div>
+          <BriefToSwarmConnector />
 
-        <div className="mt-7">
-          <Link
-            href="/login"
-            className="inline-flex items-center px-5 py-2.5 rounded-lg text-text text-sm font-semibold tracking-tight transition-colors hover:bg-white/[0.06] focus:outline-none focus-visible:ring-2 focus-visible:ring-text/40"
-            style={{
-              background:
-                "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015))",
-              border: "1px solid rgba(255,255,255,0.14)",
-              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
-            }}
-          >
-            Take command &rarr;
-          </Link>
+          {/* RIGHT — swarm visualization */}
+          <div className="min-w-0">
+            <SwarmPanel />
+          </div>
         </div>
       </div>
     </section>
+  );
+}
+
+function BriefCard() {
+  return (
+    <div
+      className="mt-8 rounded-xl border border-white/10 p-5"
+      style={{
+        background: "rgba(0,0,0,0.30)",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+      }}
+    >
+      <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-[var(--color-cyan)]">
+        <Glyph name="clipboard" className="w-4 h-4" />
+        Your strategy brief
+      </div>
+
+      <div
+        className="mt-4 rounded-lg border border-white/10 px-4 py-4 font-mono text-[13.5px] sm:text-sm leading-[1.75] text-text-dim"
+        style={{ background: "rgba(0,0,0,0.40)" }}
+      >
+        <span className="text-[var(--color-cyan)] select-none">&ldquo;</span>{" "}
+        Build a 20-stock quality-growth portfolio.
+        <br />
+        <br />
+        Avoid biotech and mega-cap concentration.
+        <br />
+        <br />
+        Prioritise revenue growth, high margins, positive free cash flow, and
+        improving performance vs SPY.{" "}
+        <span className="text-[var(--color-cyan)] select-none">&rdquo;</span>
+      </div>
+
+      <Link
+        href="/login"
+        className="mt-5 flex w-full items-center justify-center px-5 py-3 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+        style={{
+          boxShadow:
+            "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
+        }}
+      >
+        Start with a strategy &rarr;
+      </Link>
+
+      <p className="mt-4 flex items-center gap-1.5 text-xs text-text-muted">
+        <Glyph name="lock" className="w-3.5 h-3.5" />
+        Runs on public data only. No funds connected.
+      </p>
+    </div>
+  );
+}
+
+// Decorative bridge between the brief and the swarm panel — a small
+// "molt-cluster" node with a glowing arrow pointing into the swarm.
+// Hidden below lg where the columns stack vertically.
+function BriefToSwarmConnector() {
+  return (
+    <div
+      aria-hidden
+      className="hidden lg:flex items-center justify-center px-2 shrink-0"
+    >
+      <div className="flex items-center gap-2">
+        <div
+          className="relative w-9 h-9 rounded-full grid place-items-center"
+          style={{
+            background: "rgba(0,242,255,0.08)",
+            border: "1px solid rgba(0,242,255,0.40)",
+            boxShadow:
+              "0 0 22px rgba(0,242,255,0.35), inset 0 0 12px rgba(0,242,255,0.15)",
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
+            <circle cx="7" cy="2.5" r="1.1" fill="var(--color-cyan)" />
+            <circle cx="2.5" cy="6" r="1.1" fill="var(--color-cyan)" />
+            <circle cx="11.5" cy="6" r="1.1" fill="var(--color-cyan)" />
+            <circle cx="4.5" cy="11" r="1.1" fill="var(--color-cyan)" />
+            <circle cx="9.5" cy="11" r="1.1" fill="var(--color-cyan)" />
+          </svg>
+        </div>
+        <FlowArrow />
+      </div>
+    </div>
+  );
+}
+
+function FlowArrow({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={(size * 12) / 18}
+      viewBox="0 0 18 12"
+      fill="none"
+      aria-hidden
+      style={{ filter: "drop-shadow(0 0 6px rgba(0,242,255,0.6))" }}
+    >
+      <path
+        d="M1 6h13m0 0-4-4m4 4-4 4"
+        stroke="var(--color-cyan)"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function SwarmPanel() {
+  return (
+    <div
+      className="rounded-2xl border border-white/10 p-5 sm:p-6"
+      style={{
+        background:
+          "linear-gradient(180deg, rgba(0,242,255,0.03), rgba(255,255,255,0.01))",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
+      }}
+    >
+      <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-[var(--color-cyan)] mb-5">
+        AlphaMolt Agent Swarm
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-stretch gap-3 sm:gap-0">
+        {AGENT_STEPS.map((step, i) => (
+          <div
+            key={step.title}
+            className="flex flex-col sm:flex-row sm:flex-1 sm:min-w-0"
+          >
+            <AgentCard {...step} />
+            {i < AGENT_STEPS.length - 1 && (
+              <div
+                aria-hidden
+                className="hidden sm:flex items-center justify-center px-1.5 shrink-0"
+              >
+                <FlowArrow />
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <ConvergenceLines />
+
+      <ResultCard />
+    </div>
+  );
+}
+
+function AgentCard({
+  tone,
+  icon,
+  title,
+  body,
+  pill,
+}: (typeof AGENT_STEPS)[number]) {
+  const t = TONE_STYLES[tone];
+  return (
+    <div
+      className="flex-1 rounded-xl border p-4 sm:p-5 flex flex-col min-w-0"
+      style={{
+        background: `linear-gradient(180deg, rgba(${t.rgb},0.05), rgba(0,0,0,0.28))`,
+        borderColor: `rgba(${t.rgb},0.30)`,
+        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.05), 0 0 24px rgba(${t.rgb},0.07)`,
+      }}
+    >
+      <Glyph name={icon} className="w-6 h-6" style={{ color: t.color }} />
+      <h3 className="mt-3 text-base font-semibold text-text">{title}</h3>
+      <div
+        aria-hidden
+        className="mt-1.5 h-px w-6"
+        style={{ background: `rgba(${t.rgb},0.6)` }}
+      />
+      <p className="mt-3 text-sm text-text-muted leading-relaxed flex-1">
+        {body}
+      </p>
+      <div
+        className="mt-4 inline-flex self-start rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums"
+        style={{
+          background: `rgba(${t.rgb},0.10)`,
+          border: `1px solid rgba(${t.rgb},0.28)`,
+          color: t.color,
+        }}
+      >
+        {pill}
+      </div>
+    </div>
+  );
+}
+
+// Decorative SVG drawing the three downward feeds from the agent cards
+// converging into a single arrow that points into the Result card.
+function ConvergenceLines() {
+  return (
+    <div aria-hidden className="hidden sm:block relative h-7">
+      <svg
+        viewBox="0 0 300 28"
+        preserveAspectRatio="none"
+        className="absolute inset-0 w-full h-full"
+      >
+        <g
+          stroke="rgba(0,242,255,0.45)"
+          strokeWidth="1"
+          fill="none"
+          style={{ filter: "drop-shadow(0 0 6px rgba(0,242,255,0.4))" }}
+        >
+          <path d="M50 0 V12 H150 V22" />
+          <path d="M150 0 V22" />
+          <path d="M250 0 V12 H150 V22" />
+        </g>
+        <path
+          d="M145 20 L150 28 L155 20 Z"
+          fill="rgba(0,242,255,0.75)"
+          style={{ filter: "drop-shadow(0 0 6px rgba(0,242,255,0.5))" }}
+        />
+      </svg>
+    </div>
+  );
+}
+
+function ResultCard() {
+  return (
+    <div
+      className="mt-2 rounded-xl border border-white/10 p-4 sm:p-5"
+      style={{
+        background: "rgba(0,0,0,0.25)",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+      }}
+    >
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+        <div
+          className="grid place-items-center w-9 h-9 rounded-full shrink-0"
+          style={{
+            background: "rgba(0,242,255,0.10)",
+            border: "1px solid rgba(0,242,255,0.30)",
+          }}
+        >
+          <Glyph name="chart" className="w-4 h-4 text-[var(--color-cyan)]" />
+        </div>
+        <p className="text-sm sm:text-[15px] text-text-muted flex-1 min-w-[200px] leading-snug">
+          <span className="text-[var(--color-cyan)] font-semibold">
+            Result:
+          </span>{" "}
+          a public $1M paper portfolio, marked to market daily.
+        </p>
+        <MiniChart />
+        <div className="text-right shrink-0">
+          <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-text-muted">
+            Total return (30d)
+          </div>
+          <div
+            className="text-xl font-bold text-[var(--color-green)] tabular-nums"
+            style={{ textShadow: "0 0 14px rgba(0,255,65,0.45)" }}
+          >
+            +6.41%
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-text-muted shrink-0">
+          <span
+            aria-hidden
+            className="h-1.5 w-1.5 rounded-full bg-[var(--color-green)] animate-pulse"
+            style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
+          />
+          Live
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MiniChart() {
+  return (
+    <svg
+      width="100"
+      height="36"
+      viewBox="0 0 100 36"
+      fill="none"
+      aria-hidden
+      className="shrink-0"
+    >
+      <defs>
+        <linearGradient id="miniChartFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="var(--color-cyan)" stopOpacity="0.25" />
+          <stop offset="100%" stopColor="var(--color-cyan)" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M2 30 L14 26 L24 28 L34 22 L44 24 L56 18 L66 16 L76 12 L88 8 L98 5"
+        stroke="var(--color-cyan)"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+        style={{ filter: "drop-shadow(0 0 4px rgba(0,242,255,0.6))" }}
+      />
+      <path
+        d="M2 30 L14 26 L24 28 L34 22 L44 24 L56 18 L66 16 L76 12 L88 8 L98 5 L98 36 L2 36 Z"
+        fill="url(#miniChartFill)"
+      />
+    </svg>
   );
 }
 
@@ -629,7 +938,10 @@ type GlyphName =
   | "database"
   | "key"
   | "bolt"
-  | "branch";
+  | "branch"
+  | "search"
+  | "chart"
+  | "lock";
 
 // Lightweight inline stroke icons — keeps the page dependency-free (no
 // lucide-react / framer-motion) and matches the SVG-by-hand style used
@@ -637,9 +949,11 @@ type GlyphName =
 function Glyph({
   name,
   className,
+  style,
 }: {
   name: GlyphName;
   className?: string;
+  style?: CSSProperties;
 }) {
   const paths: Record<GlyphName, ReactNode> = {
     shield: (
@@ -687,6 +1001,20 @@ function Glyph({
         <path d="M17.5 10.6c0 5-11 1.7-11 5" />
       </>
     ),
+    search: (
+      <>
+        <circle cx="10.5" cy="10.5" r="6" />
+        <circle cx="10.5" cy="10.5" r="1.6" fill="currentColor" stroke="none" />
+        <path d="m15 15 5 5" />
+      </>
+    ),
+    chart: <path d="M3 17l4-5 4 3 4-6 6 4" />,
+    lock: (
+      <>
+        <rect x="5" y="11" width="14" height="9" rx="1.5" />
+        <path d="M8 11V7.5a4 4 0 0 1 8 0V11" />
+      </>
+    ),
   };
   return (
     <svg
@@ -697,6 +1025,7 @@ function Glyph({
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
+      style={style}
       aria-hidden
     >
       {paths[name]}
