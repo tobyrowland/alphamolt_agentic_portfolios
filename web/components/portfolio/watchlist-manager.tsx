@@ -4,13 +4,10 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  addToWatchlist,
   removeFromWatchlist,
   type ActionResult,
 } from "@/lib/watchlist-mutations";
 import type { WatchlistItem } from "@/lib/watchlist-query";
-
-const ADD_KEY = "__add__";
 
 export default function WatchlistManager({
   items,
@@ -18,18 +15,14 @@ export default function WatchlistManager({
   items: WatchlistItem[];
 }) {
   const router = useRouter();
-  const [ticker, setTicker] = useState("");
-  const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
-  // Holds the key currently mid-action: ADD_KEY for the add form, or a
-  // ticker for a remove. Drives per-control disabled state.
+  // Holds the ticker currently mid-remove. Drives per-row disabled state.
   const [pending, setPending] = useState<string | null>(null);
   const [, startTransition] = useTransition();
 
   function runAction(
     key: string,
     fn: () => Promise<ActionResult>,
-    onOk?: () => void,
   ) {
     setError(null);
     setPending(key);
@@ -40,66 +33,12 @@ export default function WatchlistManager({
         setError(result.error);
         return;
       }
-      onOk?.();
       router.refresh();
     });
   }
 
-  function onAdd(e: React.FormEvent) {
-    e.preventDefault();
-    if (!ticker.trim()) return;
-    runAction(
-      ADD_KEY,
-      () => addToWatchlist({ ticker, rationale: note }),
-      () => {
-        setTicker("");
-        setNote("");
-      },
-    );
-  }
-
   return (
     <div className="space-y-5">
-      <form
-        onSubmit={onAdd}
-        className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 sm:p-6"
-      >
-        <h2 className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted mb-3">
-          Add an equity
-        </h2>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <input
-            type="text"
-            value={ticker}
-            onChange={(e) => setTicker(e.target.value.toUpperCase())}
-            placeholder="Ticker"
-            aria-label="Ticker symbol"
-            maxLength={12}
-            className="sm:w-32 bg-bg-card border border-white/10 rounded-lg px-3 py-2 font-mono text-sm text-text focus:outline-none focus:border-white/20 focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 placeholder:text-text-muted transition-colors"
-          />
-          <input
-            type="text"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="Note — why you're watching it (optional)"
-            aria-label="Note"
-            maxLength={280}
-            className="flex-1 bg-bg-card border border-white/10 rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-white/20 focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 placeholder:text-text-muted transition-colors"
-          />
-          <button
-            type="submit"
-            disabled={pending === ADD_KEY || !ticker.trim()}
-            className="shrink-0 inline-flex items-center justify-center px-4 py-2 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:brightness-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
-            style={{
-              boxShadow:
-                "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
-            }}
-          >
-            {pending === ADD_KEY ? "…" : "Add"}
-          </button>
-        </div>
-      </form>
-
       {error && (
         <div className="text-sm text-[var(--color-red)] font-mono border-l-2 border-[var(--color-red)] pl-3 py-1">
           {error}
@@ -109,9 +48,9 @@ export default function WatchlistManager({
       {items.length === 0 ? (
         <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 sm:p-8">
           <p className="text-sm text-text-muted leading-relaxed">
-            Your watchlist is empty. Add equities above to build a shortlist —
-            agents on this portfolio will be able to populate the list and
-            trade from it.
+            Your watchlist is empty. The Shortlist Builder agent on this
+            portfolio will populate the list — once it has, the Buying Agent
+            trades from it.
           </p>
         </div>
       ) : (
