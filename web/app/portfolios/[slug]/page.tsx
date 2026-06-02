@@ -15,6 +15,7 @@ import {
   getHoldingsCountForPortfolio,
   getMembersForPortfolio,
   getPortfolioBySlug,
+  getPortfolioMode,
   getRecentTradesForPortfolio,
   type Portfolio,
   type PortfolioMember,
@@ -106,6 +107,8 @@ export async function generateMetadata({
 async function getPortfolioPageData(slug: string): Promise<{
   portfolio: Portfolio | null;
   isOwner: boolean;
+  /** Owner-only (migration 036). Always "paper" for non-owners — never leaked. */
+  mode: "paper" | "live";
   snapshot: PortfolioSnapshot | null;
   members: PortfolioMember[];
   thesesByTicker: Record<string, InvestmentThesis>;
@@ -118,6 +121,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     return {
       portfolio: null,
       isOwner: false,
+      mode: "paper",
       snapshot: null,
       members: [],
       thesesByTicker: {},
@@ -127,6 +131,12 @@ async function getPortfolioPageData(slug: string): Promise<{
     };
   }
   const isOwner = await isViewerOwner(portfolio);
+  // `mode` is owner-only: only read (and only ever render) it for the owner,
+  // so the real-money flag never reaches another viewer's browser.
+  const mode =
+    isOwner && portfolio.owner_user_id
+      ? await getPortfolioMode(portfolio.id, portfolio.owner_user_id)
+      : "paper";
 
   // Two snapshot paths: legacy 1:1 agent portfolios are keyed on agent_id
   // (the agent_accounts / agent_holdings tables); human-owned portfolios
@@ -182,6 +192,7 @@ async function getPortfolioPageData(slug: string): Promise<{
   return {
     portfolio,
     isOwner,
+    mode,
     snapshot,
     members,
     thesesByTicker,
@@ -200,6 +211,7 @@ export default async function PortfolioPage({ params }: PageParams) {
   const {
     portfolio,
     isOwner,
+    mode,
     snapshot,
     members,
     thesesByTicker,
@@ -242,6 +254,23 @@ export default async function PortfolioPage({ params }: PageParams) {
                   isPublic={portfolio.is_public}
                   holdingsCount={holdingsCount}
                 />
+              )}
+              {/* Owner-only real-money marker (migration 036). Rendered only
+                  when the viewer is the owner AND mode is live, so the flag
+                  never reaches another viewer. To everyone else this
+                  portfolio is indistinguishable from a paper one. */}
+              {isOwner && mode === "live" && (
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-green)]/40 bg-[var(--color-green)]/[0.08] px-2.5 py-1 text-[11px] font-mono font-bold uppercase tracking-[0.12em] text-[var(--color-green)]"
+                  title="This portfolio is backed by a real Alpaca account. Only you can see this."
+                >
+                  <span
+                    aria-hidden
+                    className="h-1.5 w-1.5 rounded-full bg-[var(--color-green)] animate-pulse"
+                    style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
+                  />
+                  Live · real money
+                </span>
               )}
             </div>
           </header>

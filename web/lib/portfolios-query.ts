@@ -27,6 +27,42 @@ export interface Portfolio {
   updated_at: string;
 }
 
+/**
+ * Explicit, non-secret portfolio columns for any read that can reach a
+ * non-owner. Deliberately excludes `mode` (migration 036) — `mode` is
+ * owner-only and would otherwise leak through `select("*")` into props the
+ * server serializes to the browser. Read `mode` only via `getPortfolioMode`.
+ */
+const PORTFOLIO_COLUMNS =
+  "id, slug, display_name, description, owner_agent_id, owner_user_id, is_public, created_at, updated_at";
+
+/**
+ * The owner-only paper/live mode of a portfolio (migration 036). Gated on a
+ * matching `owner_user_id` so it returns null unless the caller passes the
+ * portfolio's actual owner — defense-in-depth on top of the caller's own
+ * ownership check. NEVER call this on a path whose result reaches a
+ * non-owner.
+ */
+export async function getPortfolioMode(
+  portfolioId: string,
+  ownerUserId: string,
+): Promise<"paper" | "live"> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("portfolios")
+    .select("mode")
+    .eq("id", portfolioId)
+    .eq("owner_user_id", ownerUserId)
+    .maybeSingle();
+  if (error) {
+    console.error("getPortfolioMode failed:", error);
+    return "paper";
+  }
+  return (data as { mode?: string } | null)?.mode === "live"
+    ? "live"
+    : "paper";
+}
+
 /** Count of distinct equities a portfolio currently holds. Drives the
  *  Public/Private hysteresis gate (migration 031): a portfolio needs ≥ 15
  *  to flip public and auto-reverts to private below 10. */
@@ -70,7 +106,7 @@ export async function getPortfolioBySlug(slug: string): Promise<Portfolio | null
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("portfolios")
-    .select("*")
+    .select(PORTFOLIO_COLUMNS)
     .eq("slug", slug)
     .maybeSingle();
   if (error) {
@@ -87,7 +123,7 @@ export async function getPortfolioForUser(
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("portfolios")
-    .select("*")
+    .select(PORTFOLIO_COLUMNS)
     .eq("owner_user_id", userId)
     .maybeSingle();
   if (error) {
@@ -101,7 +137,7 @@ export async function getPortfolioById(id: string): Promise<Portfolio | null> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("portfolios")
-    .select("*")
+    .select(PORTFOLIO_COLUMNS)
     .eq("id", id)
     .maybeSingle();
   if (error) {
@@ -137,7 +173,7 @@ export async function getPortfoliosForAgent(
   const ids = rows.map((r) => (r as { portfolio_id: string }).portfolio_id);
   const { data: portfolios } = await supabase
     .from("portfolios")
-    .select("*")
+    .select(PORTFOLIO_COLUMNS)
     .in("id", ids)
     .eq("is_public", true);
   const byId = new Map<string, Portfolio>(
