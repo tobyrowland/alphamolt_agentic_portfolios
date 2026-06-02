@@ -39,7 +39,7 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from alpaca_client import AlpacaClient, AlpacaError
 from db import SupabaseDB
@@ -226,6 +226,7 @@ class AlpacaExecutionBackend:
         portfolio_slug: str,
         *,
         dry_run: bool = False,
+        reset_baseline: bool = False,
     ) -> None:
         """Mirror the live Alpaca account into the normal portfolio tables.
 
@@ -233,6 +234,13 @@ class AlpacaExecutionBackend:
         ``portfolio_accounts.cash_usd`` to match Alpaca's current positions and
         cash, so the website, MTM snapshot and leaderboard reflect the real
         account. Safe to rerun — it converges, it doesn't accumulate.
+
+        With ``reset_baseline`` (the "go-live" reseed), it also sets
+        ``starting_cash`` to Alpaca's current account **equity** and
+        ``inception_date`` to today — so the portfolio's P/L baseline is the
+        real capital you funded, not the $1M paper default. Run this once when
+        a portfolio first goes live; the buying-power and leaderboard-baseline
+        mismatches both come from a stale $1M baseline.
 
         Refuses unless the portfolio is ``mode='live'`` (migration 036): this
         is destructive to the DB book (Alpaca is the source of truth for a live
@@ -263,6 +271,7 @@ class AlpacaExecutionBackend:
 
         account = self.client.get_account()
         alpaca_cash = float(account.get("cash") or 0)
+        alpaca_equity = float(account.get("equity") or 0)
         alpaca_pos = {
             p["symbol"]: (float(p["qty"]), float(p["avg_entry_price"]))
             for p in self.client.list_positions()
@@ -272,7 +281,8 @@ class AlpacaExecutionBackend:
         now = datetime.now(timezone.utc).isoformat()
 
         tag = "DRY-RUN " if dry_run else ""
-        print(f"\n{tag}sync  portfolio={portfolio_slug}  mode=live  "
+        head = "go-live reseed" if reset_baseline else "sync"
+        print(f"\n{tag}{head}  portfolio={portfolio_slug}  mode=live  "
               f"alpaca={'PAPER' if self.client.is_paper else 'LIVE'}\n")
 
         # Upsert every Alpaca position. Validate the symbol against `companies`
@@ -310,9 +320,15 @@ class AlpacaExecutionBackend:
                 if not dry_run:
                     db.delete_portfolio_holding(pid, ticker)
 
+        account_update: dict = {"cash_usd": alpaca_cash}
+        if reset_baseline:
+            account_update["starting_cash"] = alpaca_equity
+            account_update["inception_date"] = date.today().isoformat()
+            print(f"  baseline starting_cash=${alpaca_equity:,.2f}  "
+                  f"inception={account_update['inception_date']}")
         print(f"  cash    ${alpaca_cash:,.2f}")
         if not dry_run:
-            db.upsert_portfolio_account(pid, {"cash_usd": alpaca_cash})
+            db.upsert_portfolio_account(pid, account_update)
 
         # TODO(trade journal): mirror individual fills into agent_trades by
         # reading Alpaca activities (FILL events) and deduping on order id, so
@@ -333,6 +349,12 @@ def main(argv: list[str] | None = None) -> int:
         "--sync",
         metavar="SLUG",
         help="mirror Alpaca state into a mode='live' portfolio's normal tables",
+    )
+    ap.add_argument(
+        "--go-live",
+        metavar="SLUG",
+        help="one-time reseed: mirror Alpaca state AND set starting_cash + "
+             "inception_date from the real account (fixes the $1M baseline)",
     )
     ap.add_argument(
         "--dry-run",
@@ -405,6 +427,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.sync:
             backend.sync_to_db(SupabaseDB(), args.sync, dry_run=args.dry_run)
+
+        if args.go_live:
+            backend.sync_to_db(
+                SupabaseDB(), args.go_live,
+                dry_run=args.dry_run, reset_baseline=True,
+            )
 
     except AlpacaError as exc:
         logger.error("%s", exc)

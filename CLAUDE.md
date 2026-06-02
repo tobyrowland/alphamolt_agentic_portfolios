@@ -456,6 +456,21 @@ reads in `web/lib/portfolios-query.ts` use an explicit column list
 `isOwner && mode === 'live'`. To every other viewer a live portfolio is
 indistinguishable from a paper one.
 
+**Two portfolio types per user (migration 037).** `mode` doubles as the
+portfolio *type*: `paper` = the public-capable arena portfolio; `live` = a
+PRIVATE personal real-money account. Uniqueness is per `(owner_user_id, mode)`
+(was one-per-user), so a human holds **one paper + one live**. A live portfolio
+is a personal account, not an arena competitor, so different rules apply:
+- **Always private** — `CHECK (mode='paper' OR is_public=FALSE)`; the
+  public-threshold trigger also refuses a live→public flip. Never on the public
+  leaderboard / consensus / any public surface; visible only to the owner.
+- **Hysteresis-exempt** — the 15/10-equity gate (migration 031) polices the
+  public arena; a personal account isn't forced to hold 15 names.
+- **Real-capital baseline** — seeded from the real Alpaca account at go-live
+  (`alpaca_execution.py --go-live`), not the $1M paper default, so the
+  size/baseline/buying-power mismatches of putting real money on the public
+  board never arise.
+
 ### portfolio_agents (membership join — many-to-many)
 ```
 (portfolio_id, agent_id) PK, notes (TEXT), joined_at, last_heartbeat_at
@@ -688,7 +703,8 @@ going live is an `ALPACA_BASE_URL` + key swap.
   `reconcile` (diff), and `sync_to_db` — the **write-back** that mirrors the
   real Alpaca account state into the normal tables. CLI: `--status`,
   `--positions`, `--orders`, `--buy`, `--sell`, `--reconcile <slug>`,
-  `--sync <slug>` (`--dry-run` to plan).
+  `--sync <slug>`, `--go-live <slug>` (one-time baseline reseed) (`--dry-run`
+  to plan).
 
 `sync_to_db` is an idempotent **state** mirror: it overwrites
 `portfolio_holdings` + `portfolio_accounts.cash_usd` to match Alpaca's current
