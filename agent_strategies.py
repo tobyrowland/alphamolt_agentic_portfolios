@@ -146,8 +146,14 @@ class RebalanceContext:
             raise RuntimeError(
                 "refusing to place a live Alpaca order during a dry run"
             )
+        # Intended price = the paper book's price for this ticker; the executor
+        # caps the fill within its price band around it.
+        try:
+            ref_price = self.pm.get_price(ticker)
+        except Exception:  # noqa: BLE001 — no price -> fall back to market order
+            ref_price = None
         res = self.executor.execute_and_wait(
-            ticker, side, quantity, allow_live=True,
+            ticker, side, quantity, allow_live=True, ref_price=ref_price,
         )
         if res.filled_qty <= 0:
             logger.warning(

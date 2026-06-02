@@ -1,0 +1,95 @@
+name: Live Portfolio (Alpaca)
+
+# Operate a private live (Alpaca) follower portfolio from the Actions UI.
+#   - go-live : seed the live book's cash/holdings/baseline from Alpaca (once)
+#   - mirror  : rebalance the live account to match its paper sibling
+#   - sync    : mirror Alpaca state -> DB (drift reconciler: dividends, manual
+#               trades, queued fills)
+#
+# Real orders only fire when the portfolio is mode='live' AND
+# ALPACA_LIVE_EXECUTION_ENABLED is set (secret). Use dry_run to preview.
+# The routine "mirror after rebalance" path runs inside agent-heartbeat;
+# this workflow is for one-off / manual operation plus a daily sync reconcile.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to run"
+        required: true
+        type: choice
+        options: [mirror, sync, go-live]
+        default: mirror
+      slug:
+        description: "Live portfolio slug (e.g. my-arena-live)"
+        required: true
+        type: string
+      dry_run:
+        description: "Preview only — place/write nothing"
+        required: false
+        type: boolean
+        default: true
+  schedule:
+    # Daily drift reconcile (sync) after the close-of-business valuation.
+    - cron: "0 23 * * 1-5"
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run live action
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+          ALPACA_LIVE_EXECUTION_ENABLED: ${{ secrets.ALPACA_LIVE_EXECUTION_ENABLED }}
+          ALPACA_PRICE_BAND_PCT: ${{ secrets.ALPACA_PRICE_BAND_PCT }}
+          # On the scheduled run these inputs are empty; defaults below apply.
+          LIVE_ACTION: ${{ inputs.action }}
+          LIVE_SLUG: ${{ inputs.slug }}
+          LIVE_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -u
+          ACTION="$(printf '%s' "${LIVE_ACTION}" | tr -d '[:space:]')"
+          SLUG="$(printf '%s' "${LIVE_SLUG}" | tr -d '[:space:]')"
+          # Scheduled run (no inputs): reconcile every live portfolio via sync.
+          if [ -z "${ACTION}" ]; then
+            echo "Scheduled drift reconcile across live portfolios"
+            python alpaca_execution.py --sync-all-live
+            exit 0
+          fi
+          if [ -z "${SLUG}" ]; then
+            echo "::error::slug is required for a manual run"; exit 1
+          fi
+          DRY=()
+          if [ "${LIVE_DRY_RUN}" = "true" ]; then DRY+=(--dry-run); fi
+          case "${ACTION}" in
+            mirror)  python alpaca_mirror.py --slug "${SLUG}" ${DRY[@]+"${DRY[@]}"} ;;
+            sync)    python alpaca_execution.py --sync "${SLUG}" ${DRY[@]+"${DRY[@]}"} ;;
+            go-live) python alpaca_execution.py --go-live "${SLUG}" ${DRY[@]+"${DRY[@]}"} ;;
+            *) echo "::error::unknown action '${ACTION}'"; exit 1 ;;
+          esac
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: live-mirror-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30

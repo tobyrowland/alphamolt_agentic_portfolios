@@ -60,6 +60,7 @@ class MirrorOrder:
     qty: float
     target_w: float
     cur_w: float
+    ref_price: float   # intended price — basis for the execution price band
 
 
 def plan_mirror(
@@ -117,6 +118,7 @@ def plan_mirror(
             qty=abs(delta),
             target_w=tw,
             cur_w=cur_w,
+            ref_price=price,
         )
         (buys if delta > 0 else sells).append(order)
 
@@ -175,7 +177,8 @@ def mirror_paper_to_alpaca(
             continue
         try:
             res = executor.execute_and_wait(
-                o.ticker, o.side, o.qty, allow_live=True
+                o.ticker, o.side, o.qty,
+                allow_live=True, ref_price=o.ref_price,
             )
             if res.filled_qty > 0:
                 placed += 1

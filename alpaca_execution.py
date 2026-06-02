@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -92,6 +93,15 @@ class AlpacaExecutionBackend:
 
     def __init__(self, client: AlpacaClient | None = None):
         self.client = client or AlpacaClient()
+        # Price-protection band: a buy won't fill more than this fraction above
+        # the intended price, a sell more than this below (marketable limit
+        # order). Caps slippage in illiquid / volatile / at-the-open conditions
+        # — if the market gaps past the band the order simply doesn't fill and
+        # the next mirror run re-converges. 0 disables (raw market orders).
+        try:
+            self.price_band = float(os.environ.get("ALPACA_PRICE_BAND_PCT", "0.03"))
+        except ValueError:
+            self.price_band = 0.03
 
     def _guard_live(self, allow_live: bool) -> None:
         if not self.client.is_paper and not allow_live:
@@ -114,6 +124,16 @@ class AlpacaExecutionBackend:
                     symbol, qty, order["id"], order["status"])
         return self._to_fill(order)
 
+    def _band_limit_price(self, side: str, ref_price: float) -> float:
+        """Limit price one band away from the intended price, in the safe
+        direction (buy: cap above; sell: floor below)."""
+        if side == "buy":
+            px = ref_price * (1 + self.price_band)
+        else:
+            px = ref_price * (1 - self.price_band)
+        # Alpaca accepts 2 dp for >= $1, finer below; keep it simple and valid.
+        return round(px, 2) if px >= 1 else round(px, 4)
+
     def execute_and_wait(
         self,
         symbol: str,
@@ -121,19 +141,35 @@ class AlpacaExecutionBackend:
         qty: float,
         *,
         allow_live: bool = False,
+        ref_price: float | None = None,
         timeout: float = 30.0,
         poll: float = 2.0,
     ) -> ExecResult:
-        """Submit a market order and poll until it reaches a terminal state.
+        """Submit an order and poll until it reaches a terminal state.
 
-        Returns the *actual* filled quantity and average fill price — the real
-        numbers the caller records in the DB. If the order doesn't fill within
-        ``timeout`` (e.g. submitted while the market is closed, so Alpaca
-        queues it), returns ``status='unfilled'`` with 0 filled; the queued
-        order will fill later and `sync_to_db` reconciles the drift.
+        With ``ref_price`` and a non-zero ``price_band`` it submits a
+        **marketable limit** order capped one band from the intended price (a
+        buy won't pay more than band% above, a sell won't accept more than
+        band% below). Otherwise a plain market order. Returns the *actual*
+        filled quantity and average fill price. If it doesn't fill within
+        ``timeout`` — market closed and the order queued, or the price gapped
+        past the band — returns ``status='unfilled'`` with 0 filled; the next
+        mirror run re-converges and `sync_to_db` reconciles any queued fill.
         """
         self._guard_live(allow_live)
-        order = self.client.submit_order(symbol, side, qty=qty)
+        if ref_price and self.price_band > 0:
+            limit_price = self._band_limit_price(side, ref_price)
+            order = self.client.submit_order(
+                symbol, side, qty=qty,
+                order_type="limit", limit_price=limit_price,
+            )
+            logger.info(
+                "%s %s x%s  limit=$%.4f (ref=$%.4f, band=%.1f%%)",
+                side.upper(), symbol, qty, limit_price, ref_price,
+                self.price_band * 100,
+            )
+        else:
+            order = self.client.submit_order(symbol, side, qty=qty)
         oid = order["id"]
 
         deadline = time.monotonic() + timeout
@@ -357,6 +393,11 @@ def main(argv: list[str] | None = None) -> int:
              "inception_date from the real account (fixes the $1M baseline)",
     )
     ap.add_argument(
+        "--sync-all-live",
+        action="store_true",
+        help="reconcile every mode='live' portfolio via sync (drift reconciler)",
+    )
+    ap.add_argument(
         "--dry-run",
         action="store_true",
         help="with --sync: plan the writes without executing them",
@@ -433,6 +474,20 @@ def main(argv: list[str] | None = None) -> int:
                 SupabaseDB(), args.go_live,
                 dry_run=args.dry_run, reset_baseline=True,
             )
+
+        if args.sync_all_live:
+            db = SupabaseDB()
+            live = [
+                p for p in db.get_human_portfolios()
+                if (p.get("mode") or "paper") == "live"
+            ]
+            if not live:
+                logger.info("no live portfolios to reconcile")
+            for p in live:
+                try:
+                    backend.sync_to_db(db, p["slug"], dry_run=args.dry_run)
+                except AlpacaError as exc:
+                    logger.error("sync %s failed: %s", p["slug"], exc)
 
     except AlpacaError as exc:
         logger.error("%s", exc)

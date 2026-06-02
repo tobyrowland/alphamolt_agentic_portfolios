@@ -686,6 +686,13 @@ ALPACA_LIVE_EXECUTION_ENABLED  Master kill-switch (default off). Even a
                             orders from agent_heartbeat.py when this is truthy
                             in the run environment. Unset = the swarm trades
                             the simulated book regardless of mode.
+ALPACA_PRICE_BAND_PCT       Optional. Slippage cap for live orders (default
+                            0.03 = 3%). Orders are placed as marketable LIMIT
+                            orders one band from the intended price (buy won't
+                            pay more than band% above, sell won't accept more
+                            than band% below); a gap past the band simply
+                            doesn't fill and the next mirror re-converges. 0
+                            disables (raw market orders).
 ```
 
 ## Real-money execution (Alpaca — spike)
@@ -743,6 +750,20 @@ loop (it has none). `bootstrap_live_portfolio.py` creates the follower row;
 `alpaca_execution.py --go-live <slug>` seeds it from the real account. The
 slim owner-only summary lives on `/account` (`LivePortfolioPanel`); the full
 view is the live portfolio's own (private) detail page.
+
+**Price protection.** All live orders (mirror + forward path) are placed as
+marketable **limit** orders one `ALPACA_PRICE_BAND_PCT` band (default 3%) from
+the intended price — a buy never pays more than band% above, a sell never
+accepts more than band% below. If the market gaps past the band (classic
+at-the-open / illiquid risk) the order doesn't fill, and the next mirror run
+re-converges. `execute_and_wait(..., ref_price=)` computes the limit; the
+mirror passes the sizing price, the forward path passes `companies.price`.
+
+**Scheduling.** The routine "mirror after rebalance" runs inside
+`agent-heartbeat` (which now carries the `ALPACA_*` secrets). The
+`live-mirror.yml` workflow adds Actions-UI operation (`workflow_dispatch`:
+`mirror` / `sync` / `go-live` against a slug, `dry_run` default on) plus a
+daily `--sync-all-live` drift reconcile.
 
 The per-decision routing below (`ctx.buy/sell` → Alpaca) is the alternative
 mechanism for a live portfolio that runs *its own* agents; a follower has none,
