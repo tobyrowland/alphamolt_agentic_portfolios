@@ -116,7 +116,14 @@ export async function getPortfolioBySlug(slug: string): Promise<Portfolio | null
   return (data as Portfolio | null) ?? null;
 }
 
-/** The single portfolio owned by a human user (migration 024), or null. */
+/**
+ * The user's **arena (paper)** portfolio (migration 024), or null. Since
+ * migration 037 a user may also hold a separate private *live* follower, so
+ * this is explicitly scoped to `mode='paper'` — every caller (mandate, agents,
+ * watchlist, run-agent) means the arena portfolio, and the live follower must
+ * never satisfy this single-row read. Filtering by `mode` doesn't select it,
+ * so the owner-only column never leaks.
+ */
 export async function getPortfolioForUser(
   userId: string,
 ): Promise<Portfolio | null> {
@@ -125,9 +132,34 @@ export async function getPortfolioForUser(
     .from("portfolios")
     .select(PORTFOLIO_COLUMNS)
     .eq("owner_user_id", userId)
+    .eq("mode", "paper")
     .maybeSingle();
   if (error) {
     console.error("getPortfolioForUser failed:", error);
+    return null;
+  }
+  return (data as Portfolio | null) ?? null;
+}
+
+/**
+ * The user's **live** follower portfolio (migration 037), or null. Private,
+ * mirrors the arena portfolio onto a real Alpaca account. Only ever read on an
+ * owner-authenticated path (the /account live panel). Returns the safe column
+ * set; the `mode='live'` fact is implied by which accessor you called, not
+ * selected.
+ */
+export async function getLivePortfolioForUser(
+  userId: string,
+): Promise<Portfolio | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("portfolios")
+    .select(PORTFOLIO_COLUMNS)
+    .eq("owner_user_id", userId)
+    .eq("mode", "live")
+    .maybeSingle();
+  if (error) {
+    console.error("getLivePortfolioForUser failed:", error);
     return null;
   }
   return (data as Portfolio | null) ?? null;

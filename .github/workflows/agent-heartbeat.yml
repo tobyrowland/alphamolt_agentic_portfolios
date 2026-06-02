@@ -71,6 +71,17 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+          # Alpaca — a live portfolio mirrors its paper sibling onto a real
+          # account right after rebalancing (alpaca_mirror via
+          # _mirror_live_sibling). Real orders only fire when
+          # ALPACA_LIVE_EXECUTION_ENABLED is truthy AND mode='live'; otherwise
+          # the swarm stays paper. ALPACA_BASE_URL empty => paper sandbox;
+          # ALPACA_PRICE_BAND_PCT empty => 3% slippage cap.
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+          ALPACA_LIVE_EXECUTION_ENABLED: ${{ secrets.ALPACA_LIVE_EXECUTION_ENABLED }}
+          ALPACA_PRICE_BAND_PCT: ${{ secrets.ALPACA_PRICE_BAND_PCT }}
           # Workflow-dispatch inputs piped via env so values with
           # whitespace / shell metacharacters can't break the arg list.
           # On scheduled runs these are empty strings — flags below skip.

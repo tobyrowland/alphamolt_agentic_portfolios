@@ -6,11 +6,16 @@ import Nav from "@/components/nav";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
   getPortfolioForUser,
+  getLivePortfolioForUser,
   getMembersForPortfolio,
   getHoldingsCountForPortfolio,
   type Portfolio,
   type PortfolioMember,
 } from "@/lib/portfolios-query";
+import {
+  getPortfolioByPortfolioId,
+  type PortfolioSnapshot,
+} from "@/lib/portfolio";
 import { listPublicAgents, getAgentReturns30d } from "@/lib/agents-query";
 import { roleFor } from "@/lib/agent-roles";
 import CreatePortfolioForm from "@/components/portfolio/create-portfolio-form";
@@ -92,6 +97,21 @@ export default async function AccountPage() {
     ]);
   }
 
+  // Live follower (migration 037) — private, mirrors the arena portfolio onto
+  // a real Alpaca account. Owner-only read; rendered as a slim summary panel.
+  let livePortfolio: Portfolio | null = null;
+  let liveSnapshot: PortfolioSnapshot | null = null;
+  try {
+    livePortfolio = await getLivePortfolioForUser(user.id);
+    if (livePortfolio) {
+      liveSnapshot = await getPortfolioByPortfolioId(livePortfolio.id).catch(
+        () => null,
+      );
+    }
+  } catch {
+    livePortfolio = null;
+  }
+
   return (
     <>
       <Nav />
@@ -106,20 +126,131 @@ export default async function AccountPage() {
         />
         <div className="max-w-[820px] mx-auto w-full px-4 sm:px-6 py-10 sm:py-14">
           {portfolio ? (
-            <DashboardView
-              portfolio={portfolio}
-              members={members}
-              allAgents={allAgents}
-              returns30d={returns30d}
-              holdingsCount={holdingsCount}
-              email={email}
-            />
+            <>
+              <DashboardView
+                portfolio={portfolio}
+                members={members}
+                allAgents={allAgents}
+                returns30d={returns30d}
+                holdingsCount={holdingsCount}
+                email={email}
+              />
+              {livePortfolio && (
+                <LivePortfolioPanel
+                  portfolio={livePortfolio}
+                  snapshot={liveSnapshot}
+                />
+              )}
+            </>
           ) : (
             <NoPortfolioView displayName={displayName} email={email} />
           )}
         </div>
       </main>
     </>
+  );
+}
+
+// Slim, owner-only summary of the private live (Alpaca) follower. The full
+// holdings/trade view lives on the live portfolio's own detail page; this is
+// just a glanceable card with a link through. Rendered only for the owner, so
+// the "real money" fact never reaches anyone else.
+function LivePortfolioPanel({
+  portfolio,
+  snapshot,
+}: {
+  portfolio: Portfolio;
+  snapshot: PortfolioSnapshot | null;
+}) {
+  const value = snapshot?.total_value_usd ?? null;
+  const pnl = snapshot?.pnl_pct ?? null;
+  const positions = snapshot?.holdings.length ?? 0;
+  const pnlPositive = (pnl ?? 0) >= 0;
+
+  return (
+    <section className="mt-12">
+      <div
+        className="rounded-2xl border p-6 sm:p-7"
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(0,255,65,0.05), rgba(255,255,255,0.012))",
+          borderColor: "rgba(0,255,65,0.22)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
+        }}
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-green)]/40 bg-[var(--color-green)]/[0.08] px-2.5 py-1 text-[11px] font-mono font-bold uppercase tracking-[0.12em] text-[var(--color-green)]"
+            title="Backed by a real Alpaca account. Private — only you can see this."
+          >
+            <span
+              aria-hidden
+              className="h-1.5 w-1.5 rounded-full bg-[var(--color-green)] animate-pulse"
+              style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
+            />
+            Personal · live · real money
+          </span>
+          <span className="text-[11px] font-mono uppercase tracking-[0.12em] text-text-muted">
+            Private
+          </span>
+        </div>
+
+        <h2 className="mt-4 text-[20px] sm:text-[24px] font-bold tracking-[-0.02em] text-text">
+          {portfolio.display_name}
+        </h2>
+        <p className="mt-1.5 text-sm text-text-muted leading-relaxed max-w-[60ch]">
+          Mirrors your arena portfolio&rsquo;s positions onto a real Alpaca
+          account, sized to its actual value. It trades automatically with the
+          arena book &mdash; there&rsquo;s nothing to manage here. Only you can
+          see this account.
+        </p>
+
+        <div className="mt-5 flex flex-wrap items-end gap-x-8 gap-y-3">
+          <Stat label="Account value">
+            {value == null
+              ? "—"
+              : `$${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`}
+          </Stat>
+          <Stat label="Return">
+            {pnl == null ? (
+              "—"
+            ) : (
+              <span
+                className="tabular-nums"
+                style={{
+                  color: pnlPositive
+                    ? "var(--color-green)"
+                    : "var(--color-red)",
+                }}
+              >
+                {pnlPositive ? "+" : ""}
+                {pnl.toFixed(2)}%
+              </span>
+            )}
+          </Stat>
+          <Stat label="Positions">{positions}</Stat>
+          <Link
+            href={`/portfolios/${portfolio.slug}`}
+            className="ml-auto inline-flex items-center text-sm font-semibold text-text hover:underline decoration-1 underline-offset-[3px]"
+          >
+            View account &rarr;
+          </Link>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Stat({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <div className="text-[10px] font-mono font-bold uppercase tracking-[0.14em] text-text-muted">
+        {label}
+      </div>
+      <div className="mt-1 text-lg font-bold text-text tabular-nums">
+        {children}
+      </div>
+    </div>
   );
 }
 

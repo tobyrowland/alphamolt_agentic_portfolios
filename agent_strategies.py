@@ -69,6 +69,14 @@ class RebalanceContext:
     portfolio_id: str | None = None
     members: list[dict] | None = None
     mandate: str | None = None
+    # Live execution (migration 036 + Alpaca). When mode == 'live' AND an
+    # executor is wired (by agent_heartbeat, gated on a master env switch),
+    # ctx.buy/sell place the REAL order first and record the ACTUAL fill,
+    # instead of the paper RPC at companies.price. 'paper' (default) is the
+    # unchanged simulated path. `executor` is an AlpacaExecutionBackend (typed
+    # Any to avoid importing the broker layer into the paper path).
+    mode: str = "paper"
+    executor: Any = None
 
     # --- account-model-agnostic trading facade -------------------------
     # Strategies call ctx.buy / ctx.sell / ctx.get_book without caring
@@ -83,6 +91,8 @@ class RebalanceContext:
         *,
         thesis: dict | None = None,
     ) -> dict:
+        if self._is_live():
+            return self._live_trade("buy", ticker, quantity, note, thesis)
         if self.portfolio_id:
             # Atomic RPC: holding-upsert + cash-decrement + trade-journal in
             # one Postgres transaction. The non-atomic `buy_portfolio` path
@@ -99,12 +109,73 @@ class RebalanceContext:
         )
 
     def sell(self, ticker: str, quantity: float, note: str = "") -> dict:
+        if self._is_live():
+            return self._live_trade("sell", ticker, quantity, note, None)
         if self.portfolio_id:
             return self.pm.sell_portfolio_atomic(
                 self.portfolio_id, self.agent["id"], ticker, quantity,
                 note=note,
             )
         return self.pm.sell(self.agent["id"], ticker, quantity, note=note)
+
+    def _is_live(self) -> bool:
+        """Route through the broker only for a live, executor-wired portfolio."""
+        return bool(
+            self.portfolio_id
+            and self.mode == "live"
+            and self.executor is not None
+        )
+
+    def _live_trade(
+        self,
+        side: str,
+        ticker: str,
+        quantity: float,
+        note: str,
+        thesis: dict | None,
+    ) -> dict:
+        """Place a REAL Alpaca order, then record the actual fill in the DB.
+
+        Records the *filled* quantity at the *fill* price so the book matches
+        the broker. If nothing filled (order rejected, or queued because the
+        market is closed) it writes nothing — `sync_to_db` reconciles any
+        queued fill on its next run. Hard-refuses during a dry run: a real
+        order must never be a side effect of a plan-only pass.
+        """
+        if self.dry_run:
+            raise RuntimeError(
+                "refusing to place a live Alpaca order during a dry run"
+            )
+        # Intended price = the paper book's price for this ticker; the executor
+        # caps the fill within its price band around it.
+        try:
+            ref_price = self.pm.get_price(ticker)
+        except Exception:  # noqa: BLE001 — no price -> fall back to market order
+            ref_price = None
+        res = self.executor.execute_and_wait(
+            ticker, side, quantity, allow_live=True, ref_price=ref_price,
+        )
+        if res.filled_qty <= 0:
+            logger.warning(
+                "LIVE %s %s x%s did not fill (%s) — DB unchanged; sync_to_db "
+                "will reconcile any queued fill.",
+                side, ticker, quantity, res.status,
+            )
+            return {
+                "status": f"alpaca_{res.status}",
+                "filled_qty": 0,
+                "order_id": res.order_id,
+            }
+        live_note = f"{note} [alpaca {res.order_id}]".strip()
+        if side == "buy":
+            return self.pm.buy_portfolio_atomic(
+                self.portfolio_id, self.agent["id"], ticker, res.filled_qty,
+                note=live_note, thesis=thesis, price_override=res.avg_price,
+            )
+        return self.pm.sell_portfolio_atomic(
+            self.portfolio_id, self.agent["id"], ticker, res.filled_qty,
+            note=live_note, price_override=res.avg_price,
+        )
 
     def get_book(self) -> dict:
         if self.portfolio_id:
