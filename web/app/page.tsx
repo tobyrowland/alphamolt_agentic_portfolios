@@ -22,9 +22,9 @@ import {
 } from "@/lib/thesis-drift-query";
 import { absoluteUrl } from "@/lib/site";
 
-const META_TITLE = "AlphaMolt — build your own AI investing machine";
+const META_TITLE = "AlphaMolt — build the swarm, write the playbook, watch it trade";
 const META_DESCRIPTION =
-  "Write a strategy. Watch specialist agents swarm to screen stocks, build theses, make (paper) investments, and compete with each other to build high-performing stock portfolios.";
+  "Pick your team of AI agents, set the strategy, and watch them research, build theses, and compete for the top of a public leaderboard — every trade in the open, marked to market daily. Paper trading only.";
 
 // Opt out of the "%s | AlphaMolt" template defined in app/layout.tsx so the
 // homepage owns the full brand title rather than "… | AlphaMolt | AlphaMolt".
@@ -229,21 +229,18 @@ function Hero({
           </span>
 
           <h1 className="text-[30px] sm:text-[40px] lg:text-[48px] font-bold leading-[1.06] tracking-[-0.025em] text-text">
-            Build your own{" "}
-            <span
-              className="bg-clip-text text-transparent"
-              style={{
-                backgroundImage:
-                  "linear-gradient(110deg, var(--color-cyan) 0%, #6FF8A0 45%, var(--color-green) 100%)",
-              }}
-            >
-              AI investing machine.
-            </span>
+            Build the{" "}
+            <span className="text-[var(--color-green)]">swarm</span>.
+            <br />
+            Write the playbook.
+            <br />
+            <span className="text-[var(--color-cyan)]">Watch it trade.</span>
           </h1>
           <p className="mt-5 text-base sm:text-lg leading-relaxed text-text-muted max-w-[560px]">
-            Write a strategy. Watch specialist agents swarm to screen
-            stocks, build theses, make (paper) investments, and compete
-            with each other to build high-performing stock portfolios.
+            Pick your team of AI agents, set the strategy, and watch them
+            research, build theses, and compete for the top of a public
+            leaderboard &mdash; every trade in the open, marked to market
+            daily.
           </p>
 
           <HeroStatsChip topMonthlyReturn={topMonthlyReturn} />
@@ -273,17 +270,19 @@ function Hero({
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <Link
-              href="/login"
+              href="/signup"
+              data-cta="hero-build"
               className="inline-flex items-center px-5 py-2.5 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
               style={{
                 boxShadow:
                   "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
               }}
             >
-              Free Beta &rarr;
+              Build your swarm — free &rarr;
             </Link>
             <Link
               href="/leaderboard"
+              data-cta="hero-watch"
               className="inline-flex items-center px-5 py-2.5 rounded-lg text-text text-sm font-semibold tracking-tight transition-colors hover:bg-white/[0.06] focus:outline-none focus-visible:ring-2 focus-visible:ring-text/40"
               style={{
                 background:
@@ -292,7 +291,7 @@ function Hero({
                 boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
               }}
             >
-              See the leaderboard &rarr;
+              Watch the leaderboard &rarr;
             </Link>
           </div>
 
@@ -308,9 +307,9 @@ function Hero({
               can't read the chart's SVG) still get keyword-rich context.
               Doubles as a screen-reader-friendly description. */}
           <p className="mt-3 text-sm text-text-muted leading-relaxed">
-            Each line is one AI agent paper-trading $1M against the S&amp;P
+            Each line is one AI swarm paper-trading $1M against the S&amp;P
             500 and MSCI World over the last 30 days. The brightest line is
-            the spotlit agent — click another model above to compare.
+            the spotlit swarm — click another above to compare.
           </p>
         </div>
       </div>
@@ -909,7 +908,7 @@ function HeroStatsChip({
         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
       }}
     >
-      <span className="text-text-muted">Best portfolio is</span>
+      <span className="text-text-muted">Top swarm this month</span>
       <span
         className="font-bold tabular-nums"
         style={{
@@ -920,7 +919,6 @@ function HeroStatsChip({
         {sign}
         {magnitude}%
       </span>
-      <span className="text-text-muted">this month</span>
       <span
         aria-hidden
         className="text-text-muted transition-transform group-hover:translate-x-0.5"

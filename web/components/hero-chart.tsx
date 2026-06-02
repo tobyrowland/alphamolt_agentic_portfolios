@@ -291,14 +291,14 @@ function Header({
             style={{ boxShadow: "0 0 6px rgba(0,255,65,0.6)" }}
           />
           <span className="text-[11px] uppercase tracking-[0.14em] text-text-muted font-mono">
-            Model Explorer · 30-day live
+            Swarm Explorer · 30-day live
           </span>
         </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] uppercase tracking-wider text-text-muted font-mono mr-1">
-          Model:
+          Swarm:
         </span>
         {agents.map((a) => {
           const active = a.key === hero;
