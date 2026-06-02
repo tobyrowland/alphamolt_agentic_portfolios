@@ -53,6 +53,39 @@ def _now_utc() -> datetime:
 _LIVE_EXEC_ENV = "ALPACA_LIVE_EXECUTION_ENABLED"
 
 
+def _mirror_live_sibling(db, pm, *, paper: dict, live: dict, dry_run: bool) -> None:
+    """Mirror a paper portfolio's composition onto its live Alpaca follower.
+
+    Gated like all live execution: never on a dry run, and only when the master
+    switch is set. Market-hours and fill handling live in `alpaca_mirror`. Never
+    crashes the heartbeat — a mirror failure is logged and swallowed.
+    """
+    log = logging.getLogger("agent_heartbeat")
+    slug = live.get("slug") or live["id"][:8]
+    if dry_run:
+        log.info("live mirror %s skipped (dry run)", slug)
+        return
+    if os.environ.get(_LIVE_EXEC_ENV, "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        log.warning(
+            "live portfolio %s present but %s not set — skipping mirror "
+            "(no real orders).", slug, _LIVE_EXEC_ENV,
+        )
+        return
+    try:
+        from alpaca_execution import AlpacaExecutionBackend
+        from alpaca_mirror import mirror_paper_to_alpaca
+
+        executor = AlpacaExecutionBackend()
+        summary = mirror_paper_to_alpaca(
+            db, pm, executor, live, paper, dry_run=False,
+        )
+        log.info("live mirror %s: %s", slug, summary)
+    except Exception as exc:  # noqa: BLE001 — never crash the heartbeat on the mirror
+        log.error("live mirror %s failed: %s", slug, exc)
+
+
 def _resolve_live_executor(portfolio: dict, *, dry_run: bool):
     """Decide whether this portfolio's trades route to a real broker.
 
@@ -507,8 +540,23 @@ def main() -> int:
     # `create_portfolio_funded` + draft-portfolio backfill).
     if not args.handle:
         portfolios = db.get_human_portfolios()
-        logger.info("=== human portfolios: %d ===", len(portfolios))
-        for portfolio in portfolios:
+        # A live portfolio is a private FOLLOWER (migration 037): it has no
+        # agents of its own. It doesn't rebalance in the member loop — instead
+        # it mirrors its paper sibling's composition onto Alpaca right after
+        # that sibling rebalances (alpaca_mirror).
+        live_by_owner = {
+            p["owner_user_id"]: p
+            for p in portfolios
+            if (p.get("mode") or "paper") == "live"
+        }
+        paper_pfs = [
+            p for p in portfolios if (p.get("mode") or "paper") != "live"
+        ]
+        logger.info(
+            "=== human portfolios: %d (paper=%d, live-followers=%d) ===",
+            len(portfolios), len(paper_pfs), len(live_by_owner),
+        )
+        for portfolio in paper_pfs:
             pcounts = _run_portfolio(
                 db, pm, portfolio,
                 force=args.force, dry_run=args.dry_run, logger=logger,
@@ -516,6 +564,12 @@ def main() -> int:
             )
             for key, val in pcounts.items():
                 counts[key] = counts.get(key, 0) + val
+            # Mirror the live follower (if the owner has one) onto Alpaca.
+            live = live_by_owner.get(portfolio.get("owner_user_id"))
+            if live:
+                _mirror_live_sibling(
+                    db, pm, paper=portfolio, live=live, dry_run=args.dry_run,
+                )
 
     elapsed = round(time.time() - start, 1)
     logger.info(

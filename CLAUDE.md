@@ -725,6 +725,29 @@ fills rather than paper. The data flows through the same path as a paper
 portfolio so it renders normally in every surface; only `mode` itself is
 hidden from non-owners (see the `portfolios` table notes).
 
+### Live = a private follower that mirrors the paper portfolio (chosen model)
+
+A user's **live** portfolio (migration 037) is a private *follower* of their
+**paper** (arena) portfolio: no mandate, no member agents of its own. The
+swarm runs on the paper book as normal; the live account just holds the same
+names in the same proportions, sized to the **real Alpaca account value**.
+
+`alpaca_mirror.py` implements this as **target-weight replication** (not
+trade-by-trade replay): `target_shares = paper_weight × alpaca_equity ÷ price`,
+diffed against current Alpaca positions, placing orders only for the deltas
+(sells first), and only for names whose weight drifts > `threshold` (default
+1%). Self-correcting — partial fills / drift / a missed run never accumulate.
+`agent_heartbeat` runs the mirror (`_mirror_live_sibling`) right after the
+paper sibling rebalances in Pass 2; the live follower is skipped in the member
+loop (it has none). `bootstrap_live_portfolio.py` creates the follower row;
+`alpaca_execution.py --go-live <slug>` seeds it from the real account. The
+slim owner-only summary lives on `/account` (`LivePortfolioPanel`); the full
+view is the live portfolio's own (private) detail page.
+
+The per-decision routing below (`ctx.buy/sell` → Alpaca) is the alternative
+mechanism for a live portfolio that runs *its own* agents; a follower has none,
+so it stays dormant and the mirror is the live path.
+
 ### Forward execution — swarm decisions → real Alpaca orders
 
 The swarm's trade *decisions* can place real orders. Every decision for a
