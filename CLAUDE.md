@@ -647,7 +647,36 @@ GITHUB_DISPATCH_REPO        Optional. Repo for workflow_dispatch (defaults
                             to "update_ai_analysis").
 GITHUB_DISPATCH_REF         Optional. Git ref to dispatch against (defaults
                             to "main").
+ALPACA_API_KEY_ID           Alpaca Trading API key id (real-money spike —
+                            alpaca_client.py / alpaca_execution.py).
+ALPACA_API_SECRET_KEY       Alpaca Trading API secret.
+ALPACA_BASE_URL             Optional. Alpaca endpoint. Defaults to the PAPER
+                            sandbox (https://paper-api.alpaca.markets). Set to
+                            https://api.alpaca.markets ONLY to go live.
 ```
+
+## Real-money execution (Alpaca — spike)
+
+`alpaca_client.py` + `alpaca_execution.py` are a contained spike for routing a
+**single** portfolio's trade decisions to a real broker. Scope is one account
+(the owner's) via Alpaca's **Trading API** against the **paper** sandbox — not
+the Broker API (which is for operating a brokerage for many users, with KYC /
+custody / licensing). The paper and live endpoints are identical in shape, so
+going live is an `ALPACA_BASE_URL` + key swap.
+
+- `alpaca_client.py` — thin REST wrapper (account, clock, positions, orders).
+- `alpaca_execution.py` — `AlpacaExecutionBackend` mirrors `PortfolioManager`'s
+  buy/sell shape (the seam for a future `live`-flagged portfolio) plus a manual
+  CLI (`--status`, `--positions`, `--orders`, `--buy`, `--sell`, `--reconcile
+  <slug>`).
+
+Safety: **not** wired into `agent_heartbeat.py` — the swarm can't place a real
+order automatically. Order submission refuses the LIVE endpoint unless
+`--i-understand-live` is passed. `reconcile` is read-only (reports the
+Alpaca-vs-AlphaMolt diff; writing real fills back into
+`portfolio_holdings`/`portfolio_accounts` is a TODO gated on the regulatory
+go-live decision — discretionary real-money trading is FCA-regulated activity
+in the UK and must be cleared with the solicitor first).
 
 ## Development Notes
 
