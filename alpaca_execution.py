@@ -38,6 +38,7 @@ import argparse
 import logging
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from alpaca_client import AlpacaClient, AlpacaError
 from db import SupabaseDB
@@ -143,11 +144,111 @@ class AlpacaExecutionBackend:
                 a = alpaca_pos.get(s, 0.0)
                 d = db_pos.get(s, 0.0)
                 print(f"  {s:<10}{d:>12.2f}{a:>12.2f}{a - d:>12.2f}")
-        # TODO(go-live): write actual Alpaca fills/positions/cash back into
-        # portfolio_holdings + portfolio_accounts so the public leaderboard
-        # reflects the real account instead of the paper estimate. Gated on
-        # the regulatory go-live decision.
         print()
+
+    # ------------------------------------------------------------------
+    # Write-back: mirror real Alpaca state into the normal portfolio tables
+    # ------------------------------------------------------------------
+
+    def sync_to_db(
+        self,
+        db: SupabaseDB,
+        portfolio_slug: str,
+        *,
+        dry_run: bool = False,
+    ) -> None:
+        """Mirror the live Alpaca account into the normal portfolio tables.
+
+        Idempotent *state* mirror: it overwrites ``portfolio_holdings`` +
+        ``portfolio_accounts.cash_usd`` to match Alpaca's current positions and
+        cash, so the website, MTM snapshot and leaderboard reflect the real
+        account. Safe to rerun — it converges, it doesn't accumulate.
+
+        Refuses unless the portfolio is ``mode='live'`` (migration 036): this
+        is destructive to the DB book (Alpaca is the source of truth for a live
+        portfolio), and must never clobber a paper portfolio's simulated book.
+
+        The Alpaca endpoint is independent of this flag — for the spike you run
+        ``mode='live'`` against the Alpaca *paper* sandbox, which mirrors a real
+        broker account shape with zero real money.
+
+        Not handled here (state-only mirror): the per-trade journal
+        (``agent_trades``) and MTM snapshot (``agent_portfolio_history``). The
+        snapshot is produced on the next ``portfolio_valuation.py`` run from the
+        mirrored holdings; journaling individual fills (Alpaca activities, deduped
+        by order id) is a follow-up — see TODO below.
+        """
+        portfolio = db.get_portfolio_by_slug(portfolio_slug)
+        if not portfolio:
+            raise AlpacaError(f"portfolio not found: {portfolio_slug!r}")
+        mode = portfolio.get("mode")
+        if mode != "live":
+            raise AlpacaError(
+                f"refusing to sync: portfolio {portfolio_slug!r} is "
+                f"mode={mode!r}, not 'live'. Set portfolios.mode='live' first "
+                "— sync mirrors real Alpaca state into the normal tables and "
+                "must never overwrite a paper book."
+            )
+        pid = portfolio["id"]
+
+        account = self.client.get_account()
+        alpaca_cash = float(account.get("cash") or 0)
+        alpaca_pos = {
+            p["symbol"]: (float(p["qty"]), float(p["avg_entry_price"]))
+            for p in self.client.list_positions()
+        }
+
+        db_holdings = {h["ticker"]: h for h in db.get_portfolio_holdings(pid)}
+        now = datetime.now(timezone.utc).isoformat()
+
+        tag = "DRY-RUN " if dry_run else ""
+        print(f"\n{tag}sync  portfolio={portfolio_slug}  mode=live  "
+              f"alpaca={'PAPER' if self.client.is_paper else 'LIVE'}\n")
+
+        # Upsert every Alpaca position. Validate the symbol against `companies`
+        # first — portfolio_holdings.ticker FKs to companies, and the website
+        # joins through it for price/name, so an unknown symbol must be skipped
+        # rather than written. (US symbols map 1:1; exchange-suffix / FX mapping
+        # for non-US listings is a follow-up.)
+        for symbol, (qty, avg) in sorted(alpaca_pos.items()):
+            if not db.get_company(symbol):
+                logger.warning(
+                    "skip %s: not in companies universe (FK target missing)",
+                    symbol,
+                )
+                continue
+            existing = db_holdings.get(symbol)
+            first_bought = (
+                existing.get("first_bought_at") if existing else now
+            ) or now
+            row = {
+                "portfolio_id": pid,
+                "ticker": symbol,
+                "quantity": qty,
+                "avg_cost_usd": avg,
+                "first_bought_at": first_bought,
+                "updated_at": now,
+            }
+            print(f"  upsert  {symbol:<8} qty={qty:<10.4f} avg=${avg:,.2f}")
+            if not dry_run:
+                db.upsert_portfolio_holding(row)
+
+        # Delete DB holdings Alpaca no longer reports (fully exited positions).
+        for ticker in sorted(db_holdings):
+            if ticker not in alpaca_pos:
+                print(f"  delete  {ticker:<8} (no longer held on Alpaca)")
+                if not dry_run:
+                    db.delete_portfolio_holding(pid, ticker)
+
+        print(f"  cash    ${alpaca_cash:,.2f}")
+        if not dry_run:
+            db.upsert_portfolio_account(pid, {"cash_usd": alpaca_cash})
+
+        # TODO(trade journal): mirror individual fills into agent_trades by
+        # reading Alpaca activities (FILL events) and deduping on order id, so
+        # the public trade tape reflects real trades. State mirror above is
+        # enough for holdings / MTM / leaderboard.
+        print(f"\n{tag}done.\n")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -157,7 +258,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--orders", action="store_true", help="list recent orders")
     ap.add_argument("--buy", nargs=2, metavar=("SYMBOL", "QTY"))
     ap.add_argument("--sell", nargs=2, metavar=("SYMBOL", "QTY"))
-    ap.add_argument("--reconcile", metavar="SLUG", help="diff Alpaca vs portfolio")
+    ap.add_argument("--reconcile", metavar="SLUG", help="diff Alpaca vs portfolio (read-only)")
+    ap.add_argument(
+        "--sync",
+        metavar="SLUG",
+        help="mirror Alpaca state into a mode='live' portfolio's normal tables",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --sync: plan the writes without executing them",
+    )
     ap.add_argument(
         "--i-understand-live",
         action="store_true",
@@ -221,6 +332,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.reconcile:
             backend.reconcile(SupabaseDB(), args.reconcile)
+
+        if args.sync:
+            backend.sync_to_db(SupabaseDB(), args.sync, dry_run=args.dry_run)
 
     except AlpacaError as exc:
         logger.error("%s", exc)

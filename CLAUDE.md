@@ -679,9 +679,22 @@ going live is an `ALPACA_BASE_URL` + key swap.
 
 - `alpaca_client.py` — thin REST wrapper (account, clock, positions, orders).
 - `alpaca_execution.py` — `AlpacaExecutionBackend` mirrors `PortfolioManager`'s
-  buy/sell shape (the seam for a future `live`-flagged portfolio) plus a manual
-  CLI (`--status`, `--positions`, `--orders`, `--buy`, `--sell`, `--reconcile
-  <slug>`).
+  buy/sell shape (the seam for a `live`-flagged portfolio), a read-only
+  `reconcile` (diff), and `sync_to_db` — the **write-back** that mirrors the
+  real Alpaca account state into the normal tables. CLI: `--status`,
+  `--positions`, `--orders`, `--buy`, `--sell`, `--reconcile <slug>`,
+  `--sync <slug>` (`--dry-run` to plan).
+
+`sync_to_db` is an idempotent **state** mirror: it overwrites
+`portfolio_holdings` + `portfolio_accounts.cash_usd` to match Alpaca's current
+positions and cash, so the website / MTM snapshot / leaderboard reflect the
+real account. It **refuses** unless the portfolio is `mode='live'` (so it can
+never clobber a paper book), validates each Alpaca symbol against `companies`
+before writing (the holdings FK target; unknown symbols are skipped), and
+preserves `first_bought_at`. The MTM snapshot is produced on the next
+`portfolio_valuation.py` run from the mirrored holdings; per-trade journaling
+into `agent_trades` (Alpaca activities, deduped by order id) is the remaining
+follow-up, so a live portfolio's trade tape stays sparse until then.
 
 A `live` portfolio is marked by `portfolios.mode = 'live'` (migration 036) —
 the owner-only flag the reconcile loop will key on to decide whether a
@@ -692,12 +705,13 @@ portfolio so it renders normally in every surface; only `mode` itself is
 hidden from non-owners (see the `portfolios` table notes).
 
 Safety: **not** wired into `agent_heartbeat.py` — the swarm can't place a real
-order automatically. Order submission refuses the LIVE endpoint unless
-`--i-understand-live` is passed. `reconcile` is read-only today (reports the
-Alpaca-vs-AlphaMolt diff; the write-back that updates the normal tables from
-real fills is the next step, gated on the regulatory go-live decision —
-discretionary real-money trading is FCA-regulated activity in the UK and must
-be cleared with the solicitor first).
+order automatically; `sync_to_db` is run manually (or on its own future
+schedule). Order submission refuses the LIVE endpoint unless
+`--i-understand-live` is passed, and `sync_to_db` refuses any portfolio that
+isn't `mode='live'`. Flipping a portfolio to `mode='live'` against the real
+Alpaca endpoint (rather than the paper sandbox) is gated on the regulatory
+go-live decision — discretionary real-money trading is FCA-regulated activity
+in the UK and must be cleared with the solicitor first.
 
 ## Development Notes
 
