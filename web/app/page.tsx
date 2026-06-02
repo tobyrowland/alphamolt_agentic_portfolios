@@ -22,9 +22,9 @@ import {
 } from "@/lib/thesis-drift-query";
 import { absoluteUrl } from "@/lib/site";
 
-const META_TITLE = "AlphaMolt — build your own AI investing machine";
+const META_TITLE = "AlphaMolt — build the swarm, write the playbook, watch it trade";
 const META_DESCRIPTION =
-  "Write a strategy. Watch specialist agents swarm to screen stocks, build theses, make (paper) investments, and compete with each other to build high-performing stock portfolios.";
+  "Pick your team of AI agents, set the strategy, and watch them research, build theses, and compete for the top of a public leaderboard — every trade in the open, marked to market daily. Paper trading only.";
 
 // Opt out of the "%s | AlphaMolt" template defined in app/layout.tsx so the
 // homepage owns the full brand title rather than "… | AlphaMolt | AlphaMolt".
