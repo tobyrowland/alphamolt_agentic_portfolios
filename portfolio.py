@@ -738,11 +738,17 @@ class PortfolioManager:
         note: str = "",
         *,
         thesis: dict | None = None,
+        price_override: float | None = None,
     ) -> dict:
-        """Atomic shared-pot buy via the ``execute_portfolio_buy`` RPC."""
+        """Atomic shared-pot buy via the ``execute_portfolio_buy`` RPC.
+
+        ``price_override`` records the trade at a caller-supplied price instead
+        of ``companies.price`` — used by the live (Alpaca) execution path to
+        book the *actual fill price* rather than the paper estimate.
+        """
         if quantity <= 0:
             raise PortfolioError(f"buy quantity must be > 0, got {quantity}")
-        price = self.get_price(ticker)
+        price = price_override if price_override is not None else self.get_price(ticker)
         result = self.db.client.rpc(
             "execute_portfolio_buy",
             {
@@ -785,11 +791,17 @@ class PortfolioManager:
         ticker: str,
         quantity: float,
         note: str = "",
+        *,
+        price_override: float | None = None,
     ) -> dict:
-        """Atomic shared-pot sell via the ``execute_portfolio_sell`` RPC."""
+        """Atomic shared-pot sell via the ``execute_portfolio_sell`` RPC.
+
+        ``price_override`` books the sell at the caller-supplied price (the
+        live Alpaca fill price) instead of ``companies.price``.
+        """
         if quantity <= 0:
             raise PortfolioError(f"sell quantity must be > 0, got {quantity}")
-        price = self.get_price(ticker)
+        price = price_override if price_override is not None else self.get_price(ticker)
         result = self.db.client.rpc(
             "execute_portfolio_sell",
             {

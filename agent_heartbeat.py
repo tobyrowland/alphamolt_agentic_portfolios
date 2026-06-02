@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import re
 import sys
 import time
@@ -43,6 +44,55 @@ from portfolio import PortfolioManager
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Master kill-switch for routing real orders. A portfolio with mode='live'
+# only places real Alpaca orders when this env var is truthy in the run
+# environment — so flipping a portfolio live in the DB is NOT enough on its
+# own; the operator must also enable execution where the heartbeat runs.
+_LIVE_EXEC_ENV = "ALPACA_LIVE_EXECUTION_ENABLED"
+
+
+def _resolve_live_executor(portfolio: dict, *, dry_run: bool):
+    """Decide whether this portfolio's trades route to a real broker.
+
+    Returns ``(mode, executor)``. ``mode='live'`` with a live executor only
+    when ALL of: the portfolio is ``mode='live'``, it's not a dry run, and the
+    master env switch is set. Any miss falls back to ``('paper', None)`` so the
+    swarm trades the simulated book and never places a real order by surprise.
+    """
+    log = logging.getLogger("agent_heartbeat")
+    mode = (portfolio.get("mode") or "paper").lower()
+    slug = portfolio.get("slug") or portfolio["id"][:8]
+    if mode != "live":
+        return "paper", None
+    if dry_run:
+        log.info("portfolio %s is live but this is a dry run — paper.", slug)
+        return "paper", None
+    if os.environ.get(_LIVE_EXEC_ENV, "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        log.warning(
+            "portfolio %s is mode='live' but %s is not set — trading PAPER "
+            "this run (no real orders placed).", slug, _LIVE_EXEC_ENV,
+        )
+        return "paper", None
+    try:
+        from alpaca_execution import AlpacaExecutionBackend
+
+        backend = AlpacaExecutionBackend()
+        log.warning(
+            "LIVE EXECUTION ENABLED for portfolio %s — placing REAL orders "
+            "via Alpaca (%s endpoint).",
+            slug, "paper-sandbox" if backend.client.is_paper else "LIVE",
+        )
+        return "live", backend
+    except Exception as exc:  # noqa: BLE001 — never crash the heartbeat on broker init
+        log.error(
+            "portfolio %s: failed to init Alpaca executor (%s) — trading "
+            "PAPER this run.", slug, exc,
+        )
+        return "paper", None
 
 
 def _parse_ts(s: str | None) -> datetime | None:
@@ -275,12 +325,15 @@ def _run_portfolio(
             counts["error"] += 1
             continue
 
+        mode, executor = _resolve_live_executor(portfolio, dry_run=dry_run)
         ctx = RebalanceContext(
             db=db, pm=pm, agent=member, dry_run=dry_run,
             params=dict(member.get("config") or {}),
             portfolio_id=portfolio["id"],
             members=members,
             mandate=mandate,
+            mode=mode,
+            executor=executor,
         )
         try:
             result = strategy(ctx)

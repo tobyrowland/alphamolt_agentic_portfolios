@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -59,6 +60,27 @@ class Fill:
     side: str
     qty: float
     status: str
+
+
+# Terminal Alpaca order states that mean "this order is done moving".
+_TERMINAL_STATES = {"filled", "canceled", "expired", "rejected", "done_for_day"}
+
+
+@dataclass
+class ExecResult:
+    """Outcome of submit-and-await-fill.
+
+    ``status`` is one of: ``filled`` (fully), ``partial`` (some qty filled),
+    ``unfilled`` (accepted/queued but nothing filled in the window — e.g.
+    market closed), ``rejected``. ``filled_qty`` / ``avg_price`` are the real
+    numbers to record in the DB; both are 0 when nothing filled.
+    """
+
+    status: str
+    filled_qty: float
+    avg_price: float
+    order_id: str | None
+    raw_status: str = ""
 
 
 class AlpacaExecutionBackend:
@@ -91,6 +113,54 @@ class AlpacaExecutionBackend:
         logger.info("SELL %s x%s -> order %s (%s)",
                     symbol, qty, order["id"], order["status"])
         return self._to_fill(order)
+
+    def execute_and_wait(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        *,
+        allow_live: bool = False,
+        timeout: float = 30.0,
+        poll: float = 2.0,
+    ) -> ExecResult:
+        """Submit a market order and poll until it reaches a terminal state.
+
+        Returns the *actual* filled quantity and average fill price — the real
+        numbers the caller records in the DB. If the order doesn't fill within
+        ``timeout`` (e.g. submitted while the market is closed, so Alpaca
+        queues it), returns ``status='unfilled'`` with 0 filled; the queued
+        order will fill later and `sync_to_db` reconciles the drift.
+        """
+        self._guard_live(allow_live)
+        order = self.client.submit_order(symbol, side, qty=qty)
+        oid = order["id"]
+
+        deadline = time.monotonic() + timeout
+        o = order
+        while True:
+            raw = o.get("status", "")
+            if raw in _TERMINAL_STATES or time.monotonic() >= deadline:
+                break
+            time.sleep(poll)
+            o = self.client.get_order(oid)
+
+        filled = float(o.get("filled_qty") or 0)
+        avg = float(o.get("filled_avg_price") or 0)
+        raw = o.get("status", "")
+        if filled >= qty - 1e-9 and filled > 0:
+            status = "filled"
+        elif filled > 0:
+            status = "partial"
+        elif raw == "rejected":
+            status = "rejected"
+        else:
+            status = "unfilled"
+        logger.info(
+            "%s %s x%s -> %s (filled=%s @ $%.4f, alpaca=%s, order=%s)",
+            side.upper(), symbol, qty, status, filled, avg, raw, oid,
+        )
+        return ExecResult(status, filled, avg, oid, raw_status=raw)
 
     @staticmethod
     def _to_fill(order: dict) -> Fill:

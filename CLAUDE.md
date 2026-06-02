@@ -666,6 +666,11 @@ ALPACA_API_SECRET_KEY       Alpaca Trading API secret.
 ALPACA_BASE_URL             Optional. Alpaca endpoint. Defaults to the PAPER
                             sandbox (https://paper-api.alpaca.markets). Set to
                             https://api.alpaca.markets ONLY to go live.
+ALPACA_LIVE_EXECUTION_ENABLED  Master kill-switch (default off). Even a
+                            mode='live' portfolio only places REAL Alpaca
+                            orders from agent_heartbeat.py when this is truthy
+                            in the run environment. Unset = the swarm trades
+                            the simulated book regardless of mode.
 ```
 
 ## Real-money execution (Alpaca — spike)
@@ -704,14 +709,36 @@ fills rather than paper. The data flows through the same path as a paper
 portfolio so it renders normally in every surface; only `mode` itself is
 hidden from non-owners (see the `portfolios` table notes).
 
-Safety: **not** wired into `agent_heartbeat.py` — the swarm can't place a real
-order automatically; `sync_to_db` is run manually (or on its own future
-schedule). Order submission refuses the LIVE endpoint unless
-`--i-understand-live` is passed, and `sync_to_db` refuses any portfolio that
-isn't `mode='live'`. Flipping a portfolio to `mode='live'` against the real
-Alpaca endpoint (rather than the paper sandbox) is gated on the regulatory
+### Forward execution — swarm decisions → real Alpaca orders
+
+The swarm's trade *decisions* can place real orders. Every decision for a
+human portfolio funnels through `RebalanceContext.buy/sell`
+(`agent_strategies.py`) → `PortfolioManager.buy_portfolio_atomic/_sell` → the
+paper RPC. For a **live** portfolio that path is rerouted: `ctx.buy/sell`
+calls `AlpacaExecutionBackend.execute_and_wait` (submit market order, poll to a
+terminal state), then records the **actual filled quantity at the actual fill
+price** via the same atomic RPC (`price_override` books the fill price instead
+of `companies.price`). Nothing fills → nothing is written, and `sync_to_db`
+reconciles any queued fill on its next run. So the live book is built from real
+fills; `sync_to_db` is the drift-reconciler (manual trades, dividends, partial
+fills, market-closed queued orders).
+
+Routing to a real order requires **all** of (else it trades the paper book):
+1. `portfolios.mode = 'live'` (migration 036),
+2. not a `--dry-run` heartbeat (a dry run never places an order — hard-refused
+   in `_live_trade`),
+3. `ALPACA_LIVE_EXECUTION_ENABLED` truthy in the run environment (the master
+   kill-switch checked by `agent_heartbeat._resolve_live_executor`).
+
+So flipping a portfolio live in the DB is **not** enough on its own — the
+operator must also enable execution where the heartbeat runs. `--buy`/`--sell`
+on the CLI still refuse the LIVE endpoint without `--i-understand-live`, and
+`sync_to_db` refuses any portfolio that isn't `mode='live'`. Pointing
+`ALPACA_BASE_URL` at the real (non-sandbox) endpoint is gated on the regulatory
 go-live decision — discretionary real-money trading is FCA-regulated activity
-in the UK and must be cleared with the solicitor first.
+in the UK and must be cleared with the solicitor first. Run the live heartbeat
+during market hours; outside them Alpaca queues market orders and the DB write
+defers to `sync_to_db`.
 
 ## Development Notes
 
