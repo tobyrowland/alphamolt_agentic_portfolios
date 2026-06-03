@@ -260,6 +260,109 @@ def compute_composite_score(row_data, all_rows):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Fundamentals distribution stats (metric_stats — migration 038)
+# ---------------------------------------------------------------------------
+
+# Metrics surfaced as percentile rulers on the /company/{ticker} page
+# (brief §5). gross_margin_pct is clamped to ≤100 before aggregation —
+# the gm_trend source has a spurious 106% point (brief §7).
+METRIC_STATS_FIELDS = [
+    "rev_growth_ttm_pct",
+    "gross_margin_pct",
+    "fcf_margin_pct",
+    "rule_of_40",
+    "net_margin_pct",
+    "ps_now",
+]
+
+
+def _percentile(sorted_vals, pct):
+    """Linear-interpolated percentile over a pre-sorted list (numpy default
+    method), so we don't depend on numpy/scipy being importable here.
+
+    `pct` is a fraction in [0, 1]. Returns None for an empty list.
+    """
+    n = len(sorted_vals)
+    if n == 0:
+        return None
+    if n == 1:
+        return sorted_vals[0]
+    rank = pct * (n - 1)
+    lo = int(math.floor(rank))
+    hi = int(math.ceil(rank))
+    if lo == hi:
+        return sorted_vals[lo]
+    frac = rank - lo
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
+
+
+def _metric_value(entry, field):
+    """Pull a numeric metric off a scored entry, applying the gross-margin
+    clamp. Returns None when the value is missing/non-finite."""
+    v = entry.get(field)
+    if not isinstance(v, (int, float)):
+        v = SupabaseDB.safe_float(v)
+    if v is None or math.isnan(v) or math.isinf(v):
+        return None
+    if field == "gross_margin_pct" and v > 100:
+        v = 100.0  # data-quality clamp (brief §7)
+    return float(v)
+
+
+def compute_metric_stats(entries):
+    """Build metric_stats rows over the screened universe.
+
+    For each metric: one universe-wide row (sector='') with min/p25/p50/
+    p75/max, plus one row per sector carrying that sector's distribution
+    (the page reads its p50 as the sector-median tick). Only includes
+    `in_tv_screen = true` rows, matching the universe the strips compare
+    against.
+    """
+    screened = [e for e in entries if e.get("in_tv_screen")]
+    rows = []
+    for field in METRIC_STATS_FIELDS:
+        universe_vals = []
+        by_sector = {}
+        for e in screened:
+            val = _metric_value(e, field)
+            if val is None:
+                continue
+            universe_vals.append(val)
+            sector = (e.get("sector") or "").strip()
+            if sector:
+                by_sector.setdefault(sector, []).append(val)
+
+        if not universe_vals:
+            continue
+
+        universe_vals.sort()
+        rows.append({
+            "metric": field,
+            "sector": "",
+            "min_val": round(universe_vals[0], 4),
+            "p25": round(_percentile(universe_vals, 0.25), 4),
+            "p50": round(_percentile(universe_vals, 0.50), 4),
+            "p75": round(_percentile(universe_vals, 0.75), 4),
+            "max_val": round(universe_vals[-1], 4),
+            "sample_count": len(universe_vals),
+        })
+
+        for sector, vals in by_sector.items():
+            vals.sort()
+            rows.append({
+                "metric": field,
+                "sector": sector,
+                "min_val": round(vals[0], 4),
+                "p25": round(_percentile(vals, 0.25), 4),
+                "p50": round(_percentile(vals, 0.50), 4),
+                "p75": round(_percentile(vals, 0.75), 4),
+                "max_val": round(vals[-1], 4),
+                "sample_count": len(vals),
+            })
+    return rows
+
+
 def sort_key(entry):
     """Sort by status priority, then composite score descending."""
     status = str(entry.get("status", "")).strip()
@@ -508,6 +611,21 @@ def main():
 
     db.upsert_companies_batch(upsert_rows)
     logger.info("Wrote scoring results for %d tickers", len(upsert_rows))
+
+    # Step 6b: Precompute fundamentals distribution stats for the
+    # /company/{ticker} percentile rulers (migration 038). Best-effort —
+    # a failure here must not abort the scoring run that already wrote.
+    logger.info("Step 6b: Computing fundamentals distribution stats...")
+    try:
+        metric_rows = compute_metric_stats(entries)
+        db.upsert_metric_stats_batch(metric_rows)
+        logger.info(
+            "Wrote metric_stats: %d rows across %d metrics",
+            len(metric_rows),
+            len(METRIC_STATS_FIELDS),
+        )
+    except Exception as exc:  # noqa: BLE001 — never fail the scoring run
+        logger.error("metric_stats precompute failed: %s", exc)
 
     # Summary
     status_counts = {}

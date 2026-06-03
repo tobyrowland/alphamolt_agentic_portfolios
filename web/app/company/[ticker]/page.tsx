@@ -3,42 +3,42 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { Company, PriceSales } from "@/lib/types";
-import {
-  formatAsof,
-  formatPct,
-  formatPrice,
-  formatNumber,
-  parseStatus,
-  parseEval,
-  extractEvalRationale,
-  COLORS,
-} from "@/lib/constants";
+import { formatPrice, formatNumber, formatPct } from "@/lib/constants";
 import { absoluteUrl } from "@/lib/site";
+import { isCompanyIndexable } from "@/lib/company-indexable";
 import Nav from "@/components/nav";
-import PsChart from "@/components/ps-chart";
-import ShareRow from "@/components/share-row";
+import PsValuationChart from "@/components/ps-valuation-chart";
+import DistributionStrips from "@/components/distribution-strips";
 import {
-  bucketAgentsByStance,
-  buildAgentPovs,
-  buildCompanyConsensus,
-  buildSwarmViewLine,
-  countBuysSince,
   getCompanyHolders,
-  getCompanySwarmSnapshot,
   getCompanyTradeTape,
-  getHeartbeatRationales,
-  mostRecentExiter,
-  type AgentPov,
-  type AgentStance,
-  type CompanyConsensus,
-  type CompanySwarmSnapshot,
-  type SwarmViewLine,
+  getCompanySwarmSnapshot,
+  type CompanyHolder,
+  type CompanyTrade,
 } from "@/lib/company-agents-query";
-import { TradeTape } from "@/components/trade-tape";
+import {
+  getActiveThesesForTicker,
+  getWatchlistCount,
+  buildLifecycle,
+  buildBehaviouralStatus,
+  buildSummaryLine,
+  buildBoughtReasons,
+  buildSoldReasons,
+  buildSellTriggerLine,
+  type ActiveThesis,
+  type Lifecycle,
+  type ReasonGroup,
+  type SellTriggerLine,
+} from "@/lib/company-report-query";
+import {
+  getMetricStats,
+  buildStripModels,
+  type StripModel,
+} from "@/lib/metric-stats-query";
 
-// 300s ISR matches the 15-min intraday cadence — readers see fresh
-// prices within 5 min of the next refresh, but we don't re-render
-// on every request.
+// 300s ISR matches the 15-min intraday price cadence — readers see fresh
+// data without re-rendering on every request. Content is fully
+// server-rendered into the initial HTML (brief §8.1).
 export const revalidate = 300;
 
 // ---------------------------------------------------------------------------
@@ -47,32 +47,43 @@ export const revalidate = 300;
 
 async function getData(ticker: string) {
   const supabase = getSupabase();
-  // Trade limit bumped from 25 → 500 so the POV derivation can find each
-  // agent's latest action (including agents that exited months ago).
-  // 500 is well above any plausible per-ticker total; we slice down to
-  // ~8 for the visible "Recent AI Agent Trades" panel near the bottom.
-  const [companyRes, psRes, swarm, holders, trades, rationales] =
-    await Promise.all([
-      supabase.from("companies").select("*").eq("ticker", ticker).single(),
-      supabase.from("price_sales").select("*").eq("ticker", ticker).single(),
-      getCompanySwarmSnapshot(ticker),
-      getCompanyHolders(ticker),
-      getCompanyTradeTape(ticker, 500),
-      getHeartbeatRationales(ticker, 10),
-    ]);
+  const [
+    companyRes,
+    psRes,
+    holders,
+    trades,
+    theses,
+    swarm,
+    watchlisted,
+    metricStats,
+  ] = await Promise.all([
+    supabase.from("companies").select("*").eq("ticker", ticker).single(),
+    supabase.from("price_sales").select("*").eq("ticker", ticker).maybeSingle(),
+    getCompanyHolders(ticker),
+    // Wide window so the lifecycle / ledger derivations see every agent's
+    // latest action, including agents that exited months ago.
+    getCompanyTradeTape(ticker, 500),
+    getActiveThesesForTicker(ticker),
+    getCompanySwarmSnapshot(ticker),
+    getWatchlistCount(ticker),
+    getMetricStats(),
+  ]);
 
   return {
     company: companyRes.data as Company | null,
     priceSales: psRes.data as PriceSales | null,
-    swarm,
     holders,
     trades,
-    rationales,
+    theses,
+    swarm,
+    watchlisted,
+    metricStats,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Metadata
+// Metadata (brief §8.2–§8.5, §8.8, §8.11) — neutral, per-ticker, no
+// recommendation framing, no Review/Rating schema.
 // ---------------------------------------------------------------------------
 
 export async function generateMetadata({
@@ -85,11 +96,17 @@ export async function generateMetadata({
 
   try {
     const supabase = getSupabase();
-    const { data } = await supabase
-      .from("companies")
-      .select("ticker, company_name, sector, country")
-      .eq("ticker", ticker)
-      .single();
+    const [{ data }, tradeCountRes] = await Promise.all([
+      supabase
+        .from("companies")
+        .select("ticker, company_name, sector, short_outlook")
+        .eq("ticker", ticker)
+        .single(),
+      supabase
+        .from("agent_trades")
+        .select("id", { count: "exact", head: true })
+        .eq("ticker", ticker),
+    ]);
 
     if (!data) {
       return {
@@ -99,34 +116,37 @@ export async function generateMetadata({
     }
 
     const name = (data.company_name as string | null) ?? ticker;
-    // SEO framing: lead with the ticker + "Stock AI Analysis" so the
-    // result is clickable for queries like "ARGX stock AI analysis"
-    // rather than competing head-on with Google Finance / Yahoo on
-    // raw quote intent. Kept short so " | AlphaMolt" (12 chars,
-    // appended by the layout template) doesn't push us past Google's
-    // ~60-char truncation point on long company names.
-    const title = `${ticker} Stock AI Analysis · ${name}`;
-    const description = `What ${name} (${ticker}) looks like to AI agents — live consensus, holdings, bull/bear rationales, and recent paper-traded moves.`;
+    const indexable = isCompanyIndexable({
+      hasTrades: (tradeCountRes.count ?? 0) > 0,
+      shortOutlook: data.short_outlook as string | null,
+    });
+
+    // ~55-char title, ticker front-loaded; layout appends " | AlphaMolt".
+    const title = `${ticker} Stock — AI Agent Analysis & Valuation`;
+    const description =
+      `See how AI trading agents are paper-trading ${name} (${ticker}): who's buying ` +
+      `or selling, recorded theses, P/S vs its history, and fundamentals ranked across ` +
+      `the market. Research only — not financial advice.`;
     const canonical = `/company/${encodeURIComponent(ticker)}`;
 
     return {
       title,
       description,
       alternates: { canonical },
+      // §8.8: thin, untraded + data-sparse pages stay out of the index but
+      // remain crawlable for internal links.
+      robots: indexable
+        ? { index: true, follow: true }
+        : { index: false, follow: true },
       openGraph: {
-        title: `${ticker}: What AI Agents Think`,
-        description: `Live AI consensus, agent holdings and bull/bear views on ${name}.`,
-        // Deliberately no `url` — X uses og:url as a cache key, and pinning
-        // it to the bare path makes share-URL cache-bust (?v=N) a no-op
-        // because X resolves back to whatever it cached for the canonical
-        // URL. Letting X use the actually-fetched URL means each ?v= bump
-        // forces a fresh fetch.
-        type: "article",
+        title: `${ticker} — AI agent paper-trading activity & valuation`,
+        description: `Who's buying or selling ${name} (${ticker}) across the AI agent arena, the recorded theses, and P/S vs its 12-month median.`,
+        type: "website",
       },
       twitter: {
         card: "summary_large_image",
-        title: `${ticker}: What AI Agents Think`,
-        description: `Live AI consensus, agent holdings and bull/bear views on ${name}.`,
+        title: `${ticker} — AI agent paper-trading activity & valuation`,
+        description: `Who's buying or selling ${name} (${ticker}) across the AI agent arena.`,
       },
     };
   } catch (err) {
@@ -135,56 +155,11 @@ export async function generateMetadata({
   }
 }
 
-// Article JSON-LD signals "this is editorial content about a corporation"
-// (not a generic data table). Google then has a stronger basis to display
-// it for queries like "ARGX stock analysis" alongside the news/article
-// vertical, instead of bucketing it with the raw-quote pages it has
-// already crowned (Yahoo, Google Finance). datePublished / dateModified
-// come from the scoring + AI-analysis timestamps we already store.
-function articleJsonLd({
-  ticker,
-  name,
-  description,
-  datePublished,
-  dateModified,
-}: {
-  ticker: string;
-  name: string | null;
-  description: string;
-  datePublished: string | null;
-  dateModified: string | null;
-}) {
+// Neutral JSON-LD only (brief §8.5): BreadcrumbList + Dataset. Never
+// Review / Rating / AggregateRating — those assert a recommendation.
+function breadcrumbJsonLd(ticker: string, name: string | null, sector: string | null) {
   const display = name ?? ticker;
-  return {
-    "@context": "https://schema.org",
-    "@type": "Article",
-    headline: `${ticker} Stock AI Analysis — What AI Agents Think About ${display}`,
-    description,
-    url: absoluteUrl(`/company/${encodeURIComponent(ticker)}`),
-    image: absoluteUrl(`/company/${encodeURIComponent(ticker)}/opengraph-image`),
-    author: { "@type": "Organization", name: "AlphaMolt" },
-    publisher: {
-      "@type": "Organization",
-      name: "AlphaMolt",
-      logo: { "@type": "ImageObject", url: absoluteUrl("/opengraph-image") },
-    },
-    datePublished: datePublished ?? dateModified ?? undefined,
-    dateModified: dateModified ?? datePublished ?? undefined,
-    about: {
-      "@type": "Corporation",
-      name: display,
-      tickerSymbol: ticker,
-    },
-  };
-}
-
-function breadcrumbJsonLd(
-  ticker: string,
-  name: string | null,
-  sector: string | null,
-) {
-  const display = name ?? ticker;
-  const items: Array<{ name: string; item: string }> = [
+  const items: Array<{ name: string; item?: string }> = [
     { name: "Home", item: absoluteUrl("/") },
     { name: "Screener", item: absoluteUrl("/screener") },
   ];
@@ -194,10 +169,7 @@ function breadcrumbJsonLd(
       item: absoluteUrl(`/screener?sector=${encodeURIComponent(sector)}`),
     });
   }
-  items.push({
-    name: `${display} (${ticker})`,
-    item: absoluteUrl(`/company/${encodeURIComponent(ticker)}`),
-  });
+  items.push({ name: `${display} (${ticker})` });
   return {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
@@ -205,8 +177,30 @@ function breadcrumbJsonLd(
       "@type": "ListItem",
       position: i + 1,
       name: it.name,
-      item: it.item,
+      ...(it.item ? { item: it.item } : {}),
     })),
+  };
+}
+
+function datasetJsonLd({
+  ticker,
+  name,
+  dateModified,
+}: {
+  ticker: string;
+  name: string | null;
+  dateModified: string | null;
+}) {
+  const display = name ?? ticker;
+  return {
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: `${ticker} — AI agent paper-trading activity and fundamentals`,
+    description: `Paper-trading actions by AI agents on ${display} (${ticker}), with recorded theses, price-to-sales history, and fundamentals ranked across the screened universe.`,
+    ...(dateModified ? { dateModified } : {}),
+    isAccessibleForFree: true,
+    creator: { "@type": "Organization", name: "AlphaMolt" },
+    url: absoluteUrl(`/company/${encodeURIComponent(ticker)}`),
   };
 }
 
@@ -221,103 +215,32 @@ export default async function CompanyPage({
 }) {
   const { ticker } = await params;
   const decoded = decodeURIComponent(ticker);
-  const { company, priceSales, swarm, holders, trades, rationales } =
+  const { company, priceSales, holders, trades, theses, swarm, watchlisted, metricStats } =
     await getData(decoded);
 
   if (!company) notFound();
 
-  const status = parseStatus(company.status);
-  const bull = parseEval(company.bull_eval);
-  const bear = parseEval(company.bear_eval);
-  const bullRationale = extractEvalRationale(company.bull_eval);
-  const bearRationale = extractEvalRationale(company.bear_eval);
+  const lifecycle = buildLifecycle(holders, trades, watchlisted);
+  const behavioural = buildBehaviouralStatus(trades, lifecycle, swarm.total_agents);
+  const summary = buildSummaryLine(company, priceSales, lifecycle);
+  const bought = buildBoughtReasons(trades, theses);
+  const sold = buildSoldReasons(holders, trades);
+  const sellTriggers = buildSellTriggerLine(theses, company);
+  const strips = buildStripModels(company, metricStats);
 
-  // Derived view-models — pure functions on the data we already fetched
-  // above, so no extra DB roundtrips.
-  const consensus = buildCompanyConsensus(
-    swarm.num_agents,
-    swarm.total_agents,
-    trades,
-    holders,
-  );
-  const povs = buildAgentPovs(
-    holders,
-    trades,
-    rationales,
-    swarm.current_price ?? company.price ?? null,
-  );
+  const traded = trades.length > 0;
+  const dataUpdated = company.data_updated_at ?? company.ai_analyzed_at ?? null;
 
-  const buckets = bucketAgentsByStance(povs);
-  const featured = buckets.bullish[0] ?? null;
-  // Counterpoint = strongest bear; fall back to a neutral/cautious agent
-  // if nobody has actually exited so the section still has two voices.
-  const counterpoint = buckets.bearish[0] ?? buckets.neutral[0] ?? null;
-  // The "rest" grid excludes whoever's already shown as featured/
-  // counterpoint so there's no duplication.
-  const remainingPovs = povs.filter(
-    (p) => p.handle !== featured?.handle && p.handle !== counterpoint?.handle,
-  );
-
-  const swarmLine: SwarmViewLine = buildSwarmViewLine({
-    verdict: consensus.verdict,
-    bullPass: bull.passed,
-    bearPass: bear.passed,
-    bullRationale,
-    bearRationale,
-    psNow: company.ps_now ?? null,
-    psMedian: priceSales?.median_12m ?? null,
-    recentExitName: mostRecentExiter(povs),
-  });
-
-  // Defensive: flags may be a dict OR a stringified JSON string (legacy data)
-  let flags: Record<string, string> = {};
-  const rawFlags = company.flags;
-  if (rawFlags) {
-    if (typeof rawFlags === "string") {
-      try {
-        flags = JSON.parse(rawFlags) || {};
-      } catch {
-        flags = {};
-      }
-    } else {
-      flags = rawFlags;
-    }
-  }
-
-  // "Bulls won this week" — count buys since last bull_eval refresh.
-  // Falls back to past 7 days when bull_eval_at is null.
-  const bullSince =
-    company.bull_eval_at ??
-    new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const buysSinceEval = await countBuysSince(decoded, bullSince);
-
-  const breadcrumb = breadcrumbJsonLd(
-    company.ticker,
-    company.company_name,
-    company.sector,
-  );
-  const article = articleJsonLd({
+  const breadcrumb = breadcrumbJsonLd(company.ticker, company.company_name, company.sector);
+  const dataset = datasetJsonLd({
     ticker: company.ticker,
     name: company.company_name,
-    description: `What ${company.company_name ?? company.ticker} (${company.ticker}) looks like to AI agents — live consensus, holdings, bull/bear rationales, and recent paper-traded moves.`,
-    datePublished: company.ai_analyzed_at ?? null,
     dateModified:
-      company.scored_at ?? company.data_updated_at ?? company.ai_analyzed_at ?? null,
+      (company.data_updated_at ?? company.scored_at ?? company.ai_analyzed_at ?? null)?.slice(
+        0,
+        10,
+      ) ?? null,
   });
-
-  // ?v=… is a cache-bust for X.com's per-URL og:image cache — bump when
-  // the OG design changes. Paired with og:url being omitted in the
-  // generateMetadata above.
-  // ?v=5 bumped when the OG card freshness copy changed to
-  // "Quote 15-minute delayed" — forces X.com to re-fetch the new image
-  // for any previously-shared URL.
-  const shareUrl = `${absoluteUrl(`/company/${encodeURIComponent(decoded)}`)}?v=5`;
-  const shareText =
-    consensus.verdict === "bullish"
-      ? `AI agents are bullish on $${decoded} — see who holds it, what they paid, and why on AlphaMolt.`
-      : consensus.verdict === "bearish"
-        ? `AI agents have walked away from $${decoded} — see the bear case and recent exits on AlphaMolt.`
-        : `AlphaMolt's AI agents are split on $${decoded} — see who's holding and who sold.`;
 
   return (
     <>
@@ -327,1094 +250,612 @@ export default async function CompanyPage({
       />
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(article) }}
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(dataset) }}
       />
       <Nav />
-      <main className="flex-1 max-w-[1200px] mx-auto w-full px-4 py-6">
-        <Breadcrumbs
-          ticker={company.ticker}
-          sector={company.sector}
-        />
+      <main className="flex-1 w-full">
+        <div className="max-w-[760px] mx-auto w-full px-4 sm:px-[18px] py-6">
+          <article>
+            <Breadcrumbs ticker={company.ticker} sector={company.sector} />
 
-        <HeroSection
-          company={company}
-          status={status}
-          swarm={swarm}
-          swarmLine={swarmLine}
-        />
+            {/* BLOCK 1 — header */}
+            <Header
+              company={company}
+              behaviourLabel={behavioural.label}
+              behaviourDetail={behavioural.detail}
+              summary={summary}
+              lifecycle={lifecycle}
+              heldBy={`${lifecycle.holding} / ${swarm.total_agents}`}
+              dataUpdated={dataUpdated}
+              traded={traded}
+            />
 
-        <SharePanel
-          ticker={company.ticker}
-          companyName={company.company_name}
-          consensus={consensus}
-          shareUrl={shareUrl}
-          shareText={shareText}
-        />
-
-        <KillerMetricCallout company={company} />
-
-        <DebateSection
-          ticker={company.ticker}
-          companyName={company.company_name}
-          consensus={consensus}
-          numAgents={swarm.num_agents}
-          totalAgents={swarm.total_agents}
-          bullRationale={bullRationale}
-          bearRationale={bearRationale}
-        />
-
-        {povs.length > 0 && (
-          <ConsensusSplitBlock buckets={buckets} ticker={company.ticker} />
-        )}
-
-        <WhyRanksChart
-          ticker={company.ticker}
-          company={company}
-        />
-
-        {povs.length > 0 && (
-          <AgentSplitBlock
-            ticker={company.ticker}
-            buckets={buckets}
-          />
-        )}
-
-        {(featured || counterpoint) && (
-          <FeaturedDebate
-            ticker={company.ticker}
-            featured={featured}
-            counterpoint={counterpoint}
-          />
-        )}
-
-        {remainingPovs.length > 0 && (
-          <AgentPovGrid
-            povs={remainingPovs}
-            ticker={company.ticker}
-            heading={`Other agent views on ${company.ticker}`}
-          />
-        )}
-
-        <Fundamentals
-          ticker={company.ticker}
-          company={company}
-          priceSales={priceSales}
-          flags={flags}
-        />
-
-        <HouseBullBear
-          ticker={company.ticker}
-          bullColor={bull.color}
-          bullLabel={bull.label}
-          bullPassed={bull.passed}
-          bullText={company.full_outlook || bullRationale}
-          bearColor={bear.color}
-          bearLabel={bear.label}
-          bearPassed={bear.passed}
-          bearText={company.key_risks || bearRationale}
-          buysSinceEval={buysSinceEval}
-          totalAgents={swarm.total_agents}
-        />
-
-        {priceSales && <PsHistorySection priceSales={priceSales} />}
-
-        <AiOutlook company={company} />
-
-        <section className="mb-6">
-          <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-            Recent AI Agent Trades in {company.ticker}
-          </h2>
-          <TradeTape
-            trades={trades.slice(0, 8)}
-            totalTrades={trades.length}
-            showTicker={false}
-          />
-        </section>
-
-        <SeoBlock
-          ticker={company.ticker}
-          companyName={company.company_name}
-        />
-
-        <RelatedLinksSection
-          ticker={company.ticker}
-          sector={company.sector}
-        />
-
-        <ResearchContextSection />
-
-        <footer className="mt-10 pt-4 border-t border-white/[0.06] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs font-mono text-text-muted">
-          <div>
-            <span className="mr-3">
-              AI analyzed:{" "}
-              <span className="text-text-dim">
-                {company.ai_analyzed_at ?? "—"}
-              </span>
-            </span>
-            <span className="mr-3">
-              Data updated:{" "}
-              <span className="text-text-dim">
-                {company.data_updated_at ?? "—"}
-              </span>
-            </span>
-            {swarm.snapshot_date && (
-              <span>
-                Swarm snapshot:{" "}
-                <span className="text-text-dim">{swarm.snapshot_date}</span>
-              </span>
+            {/* BLOCK 2 — P/S valuation chart (anchor) */}
+            {priceSales && (
+              <Block heading="Price-to-sales history · 52 weeks">
+                <PsHeader priceSales={priceSales} psNow={company.ps_now} />
+                <PsValuationChart priceSales={priceSales} psNow={company.ps_now} />
+              </Block>
             )}
-          </div>
-          <ShareRow url={shareUrl} text={shareText} />
-        </footer>
+
+            {/* BLOCK 3 — what the agents did (hidden when untraded) */}
+            {traded && (
+              <Block heading="What the agents did">
+                <WhatAgentsDid bought={bought} sold={sold} sellTriggers={sellTriggers} />
+              </Block>
+            )}
+
+            {/* BLOCK 4 — fundamentals distribution strips */}
+            <Block heading={`Fundamentals · where ${company.ticker} sits in the universe`}>
+              <DistributionStrips ticker={company.ticker} strips={strips} />
+              <FundamentalsFootnote company={company} strips={strips} />
+              <FullMetrics company={company} priceSales={priceSales} />
+            </Block>
+
+            {/* BLOCK 5 — position ledger (hidden when untraded) */}
+            {traded && (
+              <Block heading="Position ledger">
+                <PositionLedger
+                  holders={holders}
+                  trades={trades}
+                  theses={theses}
+                  totalTrades={trades.length}
+                />
+              </Block>
+            )}
+
+            {/* Related links — internal crawl paths (brief §8.6) */}
+            <RelatedLinks ticker={company.ticker} sector={company.sector} />
+
+            <footer className="mt-6 pt-4 border-t border-white/[0.09]">
+              <p className="font-mono text-[10.5px] text-text-muted leading-relaxed">
+                A record of paper-trading activity by AI agents · not a recommendation · not
+                financial advice. Prices are 15-minute delayed (EODHD).
+                {dataUpdated && <> Data updated {formatDate(dataUpdated)}.</>}
+              </p>
+            </footer>
+          </article>
+        </div>
       </main>
     </>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Breadcrumbs
+// Shared layout primitives
 // ---------------------------------------------------------------------------
 
-function Breadcrumbs({
-  ticker,
-  sector,
-}: {
-  ticker: string;
-  sector: string | null;
-}) {
+function Block({ heading, children }: { heading: string; children: React.ReactNode }) {
   return (
-    <nav
-      aria-label="Breadcrumb"
-      className="text-xs font-mono text-text-muted mb-4 flex flex-wrap items-center gap-1.5"
-    >
-      <Link href="/screener" className="hover:text-green">
+    <section className="bg-bg-card border border-white/[0.09] rounded-[14px] p-[18px] mt-3.5">
+      <h2 className="font-mono text-[11px] tracking-[0.07em] text-text-muted font-normal uppercase mb-3">
+        {heading}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+function Breadcrumbs({ ticker, sector }: { ticker: string; sector: string | null }) {
+  return (
+    <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-text-muted mb-3.5">
+      <Link href="/screener" className="hover:text-text-dim">
         Screener
       </Link>
       {sector && (
         <>
-          <span aria-hidden>›</span>
+          <span aria-hidden> › </span>
           <Link
             href={`/screener?sector=${encodeURIComponent(sector)}`}
-            className="hover:text-green"
+            className="hover:text-text-dim"
           >
             {sector}
           </Link>
         </>
       )}
-      <span aria-hidden>›</span>
+      <span aria-hidden> › </span>
       <span className="text-text-dim">{ticker}</span>
     </nav>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Hero / Stock Snapshot
+// BLOCK 1 — header
 // ---------------------------------------------------------------------------
 
-function HeroSection({
+function Header({
   company,
-  status,
-  swarm,
-  swarmLine,
+  behaviourLabel,
+  behaviourDetail,
+  summary,
+  lifecycle,
+  heldBy,
+  dataUpdated,
+  traded,
 }: {
   company: Company;
-  status: ReturnType<typeof parseStatus>;
-  swarm: CompanySwarmSnapshot;
-  swarmLine: SwarmViewLine;
+  behaviourLabel: string;
+  behaviourDetail: string;
+  summary: string;
+  lifecycle: Lifecycle;
+  heldBy: string;
+  dataUpdated: string | null;
+  traded: boolean;
 }) {
-  const pnlColor =
-    swarm.swarm_pnl_pct == null
-      ? COLORS.textMuted
-      : swarm.swarm_pnl_pct >= 0
-        ? "#00FF41"
-        : "#FF3333";
-  const verdictColor =
-    swarmLine.verdict_word === "Bullish"
-      ? "#00FF41"
-      : swarmLine.verdict_word === "Bearish"
-        ? "#FF3333"
-        : "#FFD700";
+  const perf = company.perf_52w_vs_spy;
+  const perfLabel =
+    perf != null ? `${perf >= 0 ? "+" : ""}${(perf * 100).toFixed(1)}%` : "—";
 
   return (
-    <section
-      className="rounded-xl p-5 sm:p-6 mb-6 relative overflow-hidden"
-      style={{
-        background:
-          "linear-gradient(140deg, rgba(0,255,65,0.06) 0%, rgba(0,40,20,0.15) 30%, rgba(10,10,10,0.9) 100%)",
-        border: "1px solid rgba(0,255,65,0.18)",
-      }}
-    >
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        {/* Single H1 contains the SEO-rich phrase. The ticker is visually
-            dominant; the rest is small but lives in the same <h1>
-            element so crawlers see "ARGX Stock AI Analysis — argenx SE"
-            as the page headline instead of just "ARGX". */}
-        <h1 className="flex flex-wrap items-baseline gap-x-3 gap-y-1 leading-none">
-          <span className="font-mono text-4xl sm:text-5xl font-bold text-green">
-            {company.ticker}
-          </span>
-          <span className="text-text-dim text-xl sm:text-2xl leading-tight font-sans font-normal">
+    <div>
+      <div className="flex items-baseline gap-3 flex-wrap mb-0.5">
+        {/* Single <h1> contains ticker + company name (brief §8.4). */}
+        <h1 className="text-[26px] font-extrabold tracking-[-0.02em] leading-none">
+          {company.ticker}{" "}
+          <span className="text-[17px] font-semibold text-text-muted">
             {company.company_name}
           </span>
-          <span className="sr-only">
-            {" "}Stock AI Analysis
-          </span>
         </h1>
-        {status.label && (
-          <span
-            className="text-[11px] px-2 py-0.5 rounded font-mono uppercase tracking-wider"
-            title={status.detail ?? status.label ?? ""}
-            style={{
-              color: status.color,
-              backgroundColor: status.color + "1f",
-            }}
-          >
-            {status.label}
-          </span>
-        )}
-      </div>
-      <p className="text-text-muted text-xs mt-1.5 mb-4 font-mono">
-        {company.exchange} · {company.country} · {company.sector}
-      </p>
-
-      {/* Opinionated swarm-view sentence — the page's "so what?". Sits
-          above the metrics row so a cold reader gets the conclusion
-          before the numbers. */}
-      <p className="text-base sm:text-lg leading-snug text-text mb-5">
         <span
-          className="font-mono text-xs uppercase tracking-wider mr-2"
-          style={{ color: verdictColor }}
+          title={behaviourDetail}
+          className="font-mono text-[11px] tracking-wide uppercase px-2.5 py-[3px] rounded-[5px] bg-white/[0.05] text-text-muted"
         >
-          AI swarm view
+          {behaviourLabel}
         </span>
-        <span className="font-bold" style={{ color: verdictColor }}>
-          {swarmLine.verdict_word}
-        </span>
-        <span className="text-text-dim">
-          {derivePostVerdictTail(swarmLine.headline, swarmLine.verdict_word)}
-        </span>
+      </div>
+
+      <p className="font-mono text-[11px] text-text-muted mt-0.5 mb-3.5">
+        {[company.exchange, company.country, company.sector].filter(Boolean).join(" · ")}
+        {dataUpdated && <> · data updated {formatDate(dataUpdated)}</>}
       </p>
 
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 sm:gap-6">
-        <div>
-          <p className="text-[10px] uppercase tracking-wider text-text-muted font-mono mb-1">
-            Current price
-          </p>
-          <p className="font-mono text-base sm:text-lg font-bold text-text">
-            {formatPrice(company.price)}
-          </p>
-          {/* Freshness sits directly under the price (not in a separate
-              tile) so readers know at a glance that this is a delayed
-              quote, not a live tick. price_asof comes from EODHD's
-              /real-time endpoint via intraday_prices.py — 15-min delayed
-              during US market hours, prior-close otherwise. */}
-          <p className="text-[10px] font-mono text-text-muted mt-1 leading-tight">
-            15-min delayed quote
-            <br />
-            <span>last refresh {formatAsof(company.price_asof)}</span>
-          </p>
+      <p className="text-[14px] leading-[1.55] text-text mb-4">{summary}</p>
+
+      {/* Action lifecycle — watchlisted › bought › holding › sold */}
+      {traded && (
+        <div className="flex items-center gap-1.5 flex-wrap mb-4 font-mono text-[11px]">
+          {lifecycle.watchlisted > 0 && (
+            <>
+              <LifecyclePill>{lifecycle.watchlisted} watchlisted</LifecyclePill>
+              <Chevron />
+            </>
+          )}
+          <LifecyclePill accent>{lifecycle.bought} bought</LifecyclePill>
+          <Chevron />
+          <LifecyclePill strong>{lifecycle.holding} holding</LifecyclePill>
+          {lifecycle.sold > 0 && (
+            <>
+              <Chevron />
+              <LifecyclePill>{lifecycle.sold} sold</LifecyclePill>
+            </>
+          )}
         </div>
-        <HeroStat
-          label="Agents holding"
-          value={`${swarm.num_agents} / ${swarm.total_agents}`}
-          accent="text"
-        />
-        <HeroStat
-          label="Swarm P&L"
-          value={formatSignedPct(swarm.swarm_pnl_pct)}
-          accentColor={pnlColor}
-        />
-        <HeroStat
-          label="Rank"
-          value={company.sort_order != null ? `#${company.sort_order}` : "Pending"}
-          accent="text"
-        />
-        <HeroStat
-          label="Score"
+      )}
+
+      {/* Key stats */}
+      <div className="flex flex-wrap gap-x-[18px] gap-y-3 border-t border-b border-white/[0.09] py-3.5">
+        <Stat label="PRICE" value={formatPrice(company.price)} />
+        <Stat label="52W vs SPY" value={perfLabel} />
+        <Stat label="HELD BY" value={heldBy} />
+        <Stat
+          label="SCORE"
           value={
             company.composite_score != null
               ? formatNumber(company.composite_score, { decimals: 0 })
-              : "Pending"
+              : "not yet scored"
           }
-          accent="text"
+          muted={company.composite_score == null}
         />
       </div>
-
-      {/* Trust strip — three short pills under the price block. Says
-          loudly that the price isn't tick-by-tick and the page is
-          research, not advice. Increases trust by being explicit. */}
-      <div className="mt-5 pt-4 border-t border-white/5 flex flex-wrap gap-2 text-[11px] font-mono text-text-muted">
-        <TrustPill>● Quote 15-min delayed (EODHD)</TrustPill>
-        <TrustPill>● Paper-trading only</TrustPill>
-        <TrustPill>● Research aid, not financial advice</TrustPill>
-      </div>
-    </section>
+    </div>
   );
 }
 
-function TrustPill({ children }: { children: React.ReactNode }) {
-  return (
-    <span
-      className="inline-flex items-center px-2 py-0.5 rounded text-text-muted"
-      style={{
-        background: "rgba(255,255,255,0.03)",
-        border: "1px solid rgba(255,255,255,0.06)",
-      }}
-    >
-      {children}
-    </span>
-  );
+function LifecyclePill({
+  children,
+  accent,
+  strong,
+}: {
+  children: React.ReactNode;
+  accent?: boolean;
+  strong?: boolean;
+}) {
+  const cls = accent
+    ? "text-cyan border-cyan/25"
+    : strong
+      ? "text-text border-white/[0.18]"
+      : "text-text-muted border-white/[0.09]";
+  return <span className={`border rounded-md px-[9px] py-1 ${cls}`}>{children}</span>;
 }
 
-// The full headline always starts with the verdict word followed by
-// punctuation (", but..." / " — agents..." / ": bulls cite..."). To
-// colour-style just the verdict, render it separately and use this
-// helper to peel off the part that comes after.
-function derivePostVerdictTail(
-  headline: string,
-  verdict: SwarmViewLine["verdict_word"],
-): string {
-  const word =
-    verdict === "Mixed" ? "Split" : verdict; // "Mixed" verdict still renders sentences starting with "Split"
-  if (headline.startsWith(word)) return headline.slice(word.length);
-  return ` ${headline}`;
+function Chevron() {
+  return <span className="font-mono text-text-muted">›</span>;
 }
 
-function HeroStat({
+function Stat({
   label,
   value,
-  accent,
-  accentColor,
+  muted,
 }: {
   label: string;
   value: React.ReactNode;
-  accent?: "text" | "muted";
-  accentColor?: string;
+  muted?: boolean;
 }) {
-  const cls =
-    accent === "muted"
-      ? "text-text-dim"
-      : "text-text";
   return (
-    <div>
-      <p className="text-[10px] uppercase tracking-wider text-text-muted font-mono mb-1">
-        {label}
-      </p>
-      <p
-        className={`font-mono text-base sm:text-lg font-bold ${cls}`}
-        style={accentColor ? { color: accentColor } : undefined}
+    <div className="min-w-[80px]">
+      <div className="font-mono text-[10px] text-text-muted">{label}</div>
+      <div
+        className={`font-mono ${muted ? "text-[13px] text-text-muted mt-[3px]" : "text-[15px]"}`}
       >
         {value}
-      </p>
+      </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// The TICKER Debate (renamed from "AI Consensus Brief" — editorial,
-// not dashboard. Section now frames the page as a debate up top with
-// the same Bull / Bear / What-changed cards below.)
+// BLOCK 2 — P/S header line
 // ---------------------------------------------------------------------------
 
-function DebateSection({
-  ticker,
-  companyName,
-  consensus,
-  numAgents,
-  totalAgents,
-  bullRationale,
-  bearRationale,
-}: {
-  ticker: string;
-  companyName: string | null;
-  consensus: CompanyConsensus;
-  numAgents: number;
-  totalAgents: number;
-  bullRationale: string | null;
-  bearRationale: string | null;
-}) {
-  const verdictLabel =
-    consensus.verdict === "bullish"
-      ? "Bullish"
-      : consensus.verdict === "bearish"
-        ? "Bearish"
-        : "Mixed";
-  const verdictColor =
-    consensus.verdict === "bullish"
-      ? "#00FF41"
-      : consensus.verdict === "bearish"
-        ? "#FF3333"
-        : "#FFD700";
-  const name = companyName ?? ticker;
+function PsHeader({ priceSales, psNow }: { priceSales: PriceSales; psNow: number | null }) {
+  const ps = psNow ?? priceSales.ps_now;
+  const median = priceSales.median_12m;
+  const high = priceSales.high_52w;
+  const low = priceSales.low_52w;
+  const ath = priceSales.ath;
 
-  // Lead with one sentence framing the actual disagreement, then the
-  // longer SEO-intro paragraph, then the three cards. Order is:
-  // hook → context → drill-down.
-  return (
-    <section className="mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-        The {ticker} Debate
-      </h2>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5">
-        {bullRationale && bearRationale && (
-          <p className="text-base sm:text-lg font-bold text-text leading-snug mb-3">
-            The {ticker} debate is {lowerSentence(bullRationale)} vs{" "}
-            {lowerSentence(bearRationale)}.
-          </p>
-        )}
-        <p className="text-sm sm:text-base text-text-dim leading-relaxed">
-          {ticker} stock is currently rated{" "}
-          <span className="font-bold" style={{ color: verdictColor }}>
-            {verdictLabel}
-          </span>{" "}
-          by AlphaMolt&rsquo;s AI agent swarm. {numAgents} of {totalAgents}{" "}
-          agents hold {name}
-          {bullRationale && (
-            <>
-              , with the bull case focused on {lowerSentence(bullRationale)}
-            </>
-          )}
-          .
-          {bearRationale && (
-            <>
-              {" "}The main bear case is {lowerSentence(bearRationale)}.
-            </>
-          )}
-        </p>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
-        <BriefCard
-          title="Bull case"
-          tone="green"
-          body={bullRationale || "No bull case yet — eval pending."}
-        />
-        <BriefCard
-          title="Bear case"
-          tone="red"
-          body={bearRationale || "No bear case flagged."}
-        />
-        <BriefCard
-          title="What changed"
-          tone="cyan"
-          body={consensus.what_changed || "No agent activity in the last 14 days."}
-        />
-      </div>
-    </section>
-  );
-}
+  const bits: string[] = [];
+  if (ps != null && median != null && median > 0) {
+    const pct = Math.round(((ps - median) / median) * 100);
+    bits.push(`${Math.abs(pct)}% ${pct >= 0 ? "above" : "below"} its 12-month median`);
+  }
+  if (ps != null && ath != null && ath > 0) {
+    bits.push(`${Math.round((ps / ath) * 100)}% of all-time high`);
+  }
+  if (low != null && high != null) {
+    bits.push(`range ${low.toFixed(2)}–${high.toFixed(2)}×`);
+  }
 
-function BriefCard({
-  title,
-  tone,
-  body,
-}: {
-  title: string;
-  tone: "green" | "red" | "cyan";
-  body: string;
-}) {
-  const color =
-    tone === "green" ? "#00FF41" : tone === "red" ? "#FF3333" : "#00F2FF";
   return (
-    <div
-      className="rounded-lg p-4 border"
-      style={{
-        background: `linear-gradient(180deg, ${color}0d 0%, transparent 100%)`,
-        borderColor: color + "30",
-      }}
-    >
-      <p
-        className="text-[10px] uppercase tracking-wider font-mono font-bold mb-2"
-        style={{ color }}
-      >
-        {title}
-      </p>
-      <p className="text-sm text-text-dim leading-relaxed">{body}</p>
+    <div className="flex items-end gap-3 flex-wrap mb-1.5">
+      <span className="font-mono text-[28px] font-semibold leading-none">
+        {ps != null ? ps.toFixed(2) : "—"}
+        <span className="text-[16px] text-text-muted">×</span>
+      </span>
+      {bits.length > 0 && (
+        <span className="font-mono text-[11px] text-text-muted mb-1">{bits.join(" · ")}</span>
+      )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// What AI Agents Think
+// BLOCK 3 — what the agents did
 // ---------------------------------------------------------------------------
 
-function AgentPovGrid({
-  povs,
-  ticker,
-  heading,
+function WhatAgentsDid({
+  bought,
+  sold,
+  sellTriggers,
 }: {
-  povs: AgentPov[];
-  ticker: string;
-  // Optional override — the page passes "Other agent views on TICKER"
-  // when this grid is rendered below FeaturedDebate so the cards aren't
-  // re-shown under the section heading they came from.
-  heading?: string;
+  bought: ReasonGroup;
+  sold: ReasonGroup;
+  sellTriggers: SellTriggerLine;
 }) {
   return (
-    <section className="mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
-        {heading ?? `What AI Agents Think About ${ticker}`}
-      </h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {povs.map((p) => (
-          <AgentPovCard key={p.handle} pov={p} />
-        ))}
+    <div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <ReasonCard
+          badge={`${bought.count} bought — reasons given`}
+          badgeClass="bg-cyan/[0.12] text-cyan"
+          group={bought}
+        />
+        <ReasonCard
+          badge={`${sold.count} sold — reasons given`}
+          badgeClass="bg-white/[0.06] text-text-muted"
+          group={sold}
+        />
       </div>
-    </section>
+      <SellTriggerRow sellTriggers={sellTriggers} />
+    </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Killer Metric callout — pick the single most-impressive number and
-// dramatise it above the fold. "The core reason agents are bullish."
-// Order of preference matches the user's "what's most worth shouting
-// about" instinct: Rule of 40 → FCF margin → revenue growth →
-// composite score. Falls back gracefully when nothing crosses a
-// threshold.
-// ---------------------------------------------------------------------------
-
-function KillerMetricCallout({ company }: { company: Company }) {
-  const callout = pickKillerMetric(company);
-  if (!callout) return null;
+function ReasonCard({
+  badge,
+  badgeClass,
+  group,
+}: {
+  badge: string;
+  badgeClass: string;
+  group: ReasonGroup;
+}) {
   return (
-    <section className="mb-6">
-      <div
-        className="rounded-xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-baseline gap-3 sm:gap-6"
-        style={{
-          background:
-            "linear-gradient(135deg, rgba(0,255,65,0.10) 0%, rgba(0,30,15,0.4) 100%)",
-          border: "1px solid rgba(0,255,65,0.22)",
-        }}
+    <div className="bg-white/[0.03] border border-white/[0.09] rounded-[10px] p-[13px]">
+      <span
+        className={`font-mono text-[10px] tracking-wide uppercase px-[7px] py-0.5 rounded-[5px] ${badgeClass}`}
       >
-        <p
-          className="font-mono font-bold leading-none text-3xl sm:text-5xl"
-          style={{ color: "#00FF41" }}
-        >
-          {callout.value}
-        </p>
-        <div className="min-w-0">
-          <p className="text-[10px] font-mono uppercase tracking-wider text-text-muted mb-1">
-            {callout.label}
-          </p>
-          <p className="text-sm sm:text-base text-text-dim leading-snug">
-            {callout.caption}
-          </p>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function pickKillerMetric(
-  company: Company,
-): { label: string; value: string; caption: string } | null {
-  const r40 = numericOrNull(company.rule_of_40);
-  const fcf = numericOrNull(company.fcf_margin_pct);
-  const rev = numericOrNull(company.rev_growth_ttm_pct);
-  const gm = numericOrNull(company.gross_margin_pct);
-  const score = numericOrNull(company.composite_score);
-
-  if (r40 != null && r40 >= 80) {
-    return {
-      label: "Rule of 40",
-      value: r40.toFixed(1),
-      caption: "Top-tier compounder territory — growth + profitability combined.",
-    };
-  }
-  if (fcf != null && fcf >= 30) {
-    return {
-      label: "FCF margin",
-      value: `${fcf.toFixed(1)}%`,
-      caption: "Exceptional cash conversion — the bull case in one number.",
-    };
-  }
-  if (rev != null && rev >= 50) {
-    return {
-      label: "Revenue growth TTM",
-      value: `+${rev.toFixed(1)}%`,
-      caption: "Well above the screening floor — explosive top-line.",
-    };
-  }
-  if (gm != null && gm >= 75) {
-    return {
-      label: "Gross margin",
-      value: `${gm.toFixed(1)}%`,
-      caption: "Strong pricing power and operating leverage.",
-    };
-  }
-  if (score != null && score >= 80) {
-    return {
-      label: "Composite score",
-      value: score.toFixed(0),
-      caption: "In the top tier of the screened universe.",
-    };
-  }
-  return null;
-}
-
-function numericOrNull(v: unknown): number | null {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Consensus Split — visual vote bar (Bullish/Neutral/Bearish stacked).
-// Makes the swarm vote feel alive at a glance. Sits above the named
-// bucket list, which keeps the per-agent detail.
-// ---------------------------------------------------------------------------
-
-function ConsensusSplitBlock({
-  ticker,
-  buckets,
-}: {
-  ticker: string;
-  buckets: { bullish: AgentPov[]; neutral: AgentPov[]; bearish: AgentPov[] };
-}) {
-  const bullN = buckets.bullish.length;
-  const neuN = buckets.neutral.length;
-  const bearN = buckets.bearish.length;
-  const total = bullN + neuN + bearN;
-  if (total === 0) return null;
-
-  const bullPct = (bullN / total) * 100;
-  const neuPct = (neuN / total) * 100;
-  const bearPct = (bearN / total) * 100;
-
-  return (
-    <section className="mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-        {ticker} Consensus Split
-      </h2>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5">
-        <div className="flex h-2.5 rounded overflow-hidden mb-3">
-          <div
-            style={{
-              width: `${bullPct}%`,
-              background: "#00FF41",
-              boxShadow: "inset 0 0 0 1px rgba(0,255,65,0.4)",
-            }}
-            aria-label={`${bullN} bullish agents`}
-          />
-          <div
-            style={{
-              width: `${neuPct}%`,
-              background: "#FFD700",
-              boxShadow: "inset 0 0 0 1px rgba(255,215,0,0.4)",
-            }}
-            aria-label={`${neuN} cautious agents`}
-          />
-          <div
-            style={{
-              width: `${bearPct}%`,
-              background: "#FF3333",
-              boxShadow: "inset 0 0 0 1px rgba(255,51,51,0.4)",
-            }}
-            aria-label={`${bearN} bearish agents`}
-          />
-        </div>
-        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm font-mono">
-          <SplitTally count={bullN} label="Bullish" color="#00FF41" />
-          <SplitTally count={neuN} label="Cautious" color="#FFD700" />
-          <SplitTally count={bearN} label="Bearish" color="#FF3333" />
-          <span className="text-xs text-text-muted ml-auto">
-            {total} agent{total === 1 ? "" : "s"} with a view on {ticker}
-          </span>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function SplitTally({
-  count,
-  label,
-  color,
-}: {
-  count: number;
-  label: string;
-  color: string;
-}) {
-  return (
-    <span>
-      <span className="font-bold text-base" style={{ color }}>
-        {count}
-      </span>{" "}
-      <span className="text-text-dim">{label}</span>
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Why TICKER Ranks #N — horizontal bar chart of the screened metrics
-// that drive composite_score. Pure CSS bars, no chart library; the
-// per-metric scale is fixed so all six bars are visually comparable
-// (a 95 R40 should look "very full"; a 10% gross margin should look
-// "small"). Caption lifts the most-impressive metric so the reader
-// has a takeaway even without scanning the bars.
-// ---------------------------------------------------------------------------
-
-function WhyRanksChart({
-  ticker,
-  company,
-}: {
-  ticker: string;
-  company: Company;
-}) {
-  const rows = [
-    {
-      label: "Composite score",
-      value: numericOrNull(company.composite_score),
-      display: (v: number) => v.toFixed(1),
-      pct: (v: number) => clampPct((v / 100) * 100),
-    },
-    {
-      label: "Revenue growth TTM",
-      value: numericOrNull(company.rev_growth_ttm_pct),
-      display: (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1)}%`,
-      pct: (v: number) => clampPct((v / 150) * 100), // 150% growth = full bar
-    },
-    {
-      label: "Gross margin",
-      value: numericOrNull(company.gross_margin_pct),
-      display: (v: number) => `${v.toFixed(1)}%`,
-      pct: (v: number) => clampPct(v), // 0–100 maps 1:1
-    },
-    {
-      label: "FCF margin",
-      value: numericOrNull(company.fcf_margin_pct),
-      display: (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1)}%`,
-      pct: (v: number) => clampPct(((v + 50) / 150) * 100), // -50% to +100%
-    },
-    {
-      label: "Rule of 40",
-      value: numericOrNull(company.rule_of_40),
-      display: (v: number) => v.toFixed(1),
-      pct: (v: number) => clampPct((v / 120) * 100), // 120 R40 = full bar
-    },
-    {
-      label: "52w vs SPY",
-      value: numericOrNull(company.perf_52w_vs_spy),
-      display: (v: number) => {
-        const pctValue = v * 100;
-        return `${pctValue > 0 ? "+" : ""}${pctValue.toFixed(1)}%`;
-      },
-      // perf_52w_vs_spy is stored as a fraction (0.32 = +32%). Scale
-      // accordingly: -50% to +100% maps to the bar.
-      pct: (v: number) => clampPct(((v * 100 + 50) / 150) * 100),
-    },
-  ];
-
-  const populated = rows.filter((r) => r.value != null);
-  if (populated.length < 3) return null;
-
-  return (
-    <section className="mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-        Why {ticker} Ranks
-        {company.sort_order != null ? ` #${company.sort_order}` : ""}
-      </h2>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5">
-        <div className="space-y-2.5">
-          {populated.map((r) => (
-            <RankBar
-              key={r.label}
-              label={r.label}
-              displayValue={r.display(r.value as number)}
-              widthPct={r.pct(r.value as number)}
-            />
+        {badge}
+      </span>
+      {group.reasons.length > 0 ? (
+        <ul className="my-[9px] space-y-1.5">
+          {group.reasons.map((r, i) => (
+            <li key={i} className="text-[13px] leading-[1.5] text-text-dim">
+              &ldquo;{r}&rdquo;
+            </li>
           ))}
-        </div>
-        <p className="mt-4 text-xs text-text-muted leading-relaxed">
-          Each bar is scaled against a fixed top-of-universe reference
-          so the metrics are visually comparable. Bars don&rsquo;t reflect
-          peer percentile, just the absolute number against a sensible
-          maximum.
+        </ul>
+      ) : (
+        <p className="my-[9px] text-[13px] text-text-muted italic">No recorded reasons.</p>
+      )}
+      {group.agents.length > 0 && (
+        <p className="font-mono text-[10.5px] text-text-muted">
+          {group.agents.slice(0, 3).join(" · ")}
+          {group.agents.length > 3 && ` +${group.agents.length - 3}`}
         </p>
-      </div>
-    </section>
-  );
-}
-
-function RankBar({
-  label,
-  displayValue,
-  widthPct,
-}: {
-  label: string;
-  displayValue: string;
-  widthPct: number;
-}) {
-  return (
-    <div className="grid grid-cols-[180px_1fr_70px] sm:grid-cols-[200px_1fr_80px] items-center gap-3">
-      <p className="text-xs sm:text-sm text-text-muted font-mono truncate">
-        {label}
-      </p>
-      <div
-        className="relative h-2 rounded-full overflow-hidden"
-        style={{ background: "rgba(255,255,255,0.05)" }}
-      >
-        <div
-          className="absolute inset-y-0 left-0 rounded-full"
-          style={{
-            width: `${widthPct}%`,
-            background: "var(--color-green)",
-            boxShadow:
-              "0 0 8px rgba(0, 255, 65, 0.45), 0 0 2px rgba(0, 255, 65, 0.35)",
-          }}
-        />
-      </div>
-      <p
-        className="text-xs sm:text-sm font-mono font-bold text-text text-right tabular-nums"
-      >
-        {displayValue}
-      </p>
+      )}
     </div>
   );
 }
 
-function clampPct(v: number): number {
-  if (!Number.isFinite(v)) return 0;
-  if (v < 0) return 0;
-  if (v > 100) return 100;
-  return v;
-}
-
-// ---------------------------------------------------------------------------
-// Agent Split — compact bucket list ("Bullish: A, B, C / Cautious: D / Bearish: E")
-// ---------------------------------------------------------------------------
-
-function AgentSplitBlock({
-  ticker,
-  buckets,
-}: {
-  ticker: string;
-  buckets: { bullish: AgentPov[]; neutral: AgentPov[]; bearish: AgentPov[] };
-}) {
-  // No useful split when literally every agent is on one side AND it's
-  // a small swarm — collapse the section so we don't render single-line
-  // noise. Three buckets with two+ entries between them = always show.
-  const total =
-    buckets.bullish.length + buckets.neutral.length + buckets.bearish.length;
-  if (total === 0) return null;
-
-  return (
-    <section className="mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-        Where Agents Disagree on {ticker}
-      </h2>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 space-y-2 text-sm">
-        <SplitRow label="Bullish" tone="green" povs={buckets.bullish} />
-        <SplitRow label="Cautious" tone="yellow" povs={buckets.neutral} />
-        <SplitRow label="Bearish / exited" tone="red" povs={buckets.bearish} />
-      </div>
-    </section>
-  );
-}
-
-function SplitRow({
-  label,
-  tone,
-  povs,
-}: {
-  label: string;
-  tone: "green" | "yellow" | "red";
-  povs: AgentPov[];
-}) {
-  const color =
-    tone === "green" ? "#00FF41" : tone === "yellow" ? "#FFD700" : "#FF3333";
-  if (povs.length === 0) {
+function SellTriggerRow({ sellTriggers }: { sellTriggers: SellTriggerLine }) {
+  if (sellTriggers.triggers.length === 0) {
     return (
-      <p className="font-mono text-xs">
-        <span style={{ color }}>{label}:</span>{" "}
-        <span className="text-text-muted italic">none</span>
+      <p className="font-mono text-[11px] text-text-muted border border-white/[0.09] rounded-lg px-3 py-2.5">
+        <span className="text-text-dim">SELL TRIGGERS MONITORED BY HOLDERS&nbsp;&nbsp;</span>
+        No machine-checked break signals recorded by current holders.
       </p>
     );
   }
+  const list = sellTriggers.triggers.map((t) => t.label).join(" · ");
+  const tripped = sellTriggers.trippedCount;
   return (
-    <p className="font-mono text-xs">
-      <span style={{ color }} className="font-bold">
-        {label}:
-      </span>{" "}
-      {povs.map((p, i) => (
-        <span key={p.handle}>
-          <Link
-            href={`/agents/${p.handle}`}
-            className="text-text-dim hover:text-text"
-          >
-            {p.display_name}
-          </Link>
-          {i < povs.length - 1 && (
-            <span className="text-text-muted">, </span>
-          )}
+    <p className="font-mono text-[11px] text-text-muted border border-white/[0.09] rounded-lg px-3 py-2.5">
+      <span className="text-text-dim">SELL TRIGGERS MONITORED BY HOLDERS&nbsp;&nbsp;</span>
+      {list} —{" "}
+      {tripped === 0 ? (
+        <span className="text-text">none currently tripped</span>
+      ) : (
+        <span className="text-text">
+          {tripped} currently tripped (
+          {sellTriggers.triggers
+            .filter((t) => t.tripped)
+            .map((t) => t.label)
+            .join(", ")}
+          )
         </span>
-      ))}
+      )}
     </p>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Featured Debate — Featured agent (top bull) + Counterpoint (top bear)
+// BLOCK 4 — fundamentals footnote + full-metrics collapsible
 // ---------------------------------------------------------------------------
 
-function FeaturedDebate({
-  ticker,
-  featured,
-  counterpoint,
+function FundamentalsFootnote({
+  company,
+  strips,
 }: {
-  ticker: string;
-  featured: AgentPov | null;
-  counterpoint: AgentPov | null;
+  company: Company;
+  strips: StripModel[];
+}) {
+  const quality = strips.filter(
+    (s) => s.available && s.key !== "ps_now" && s.stockPct != null,
+  );
+  const strong = quality.filter((s) => (s.stockPct ?? 0) >= 60).length;
+  const note =
+    quality.length > 0
+      ? strong >= Math.ceil(quality.length / 2)
+        ? `Ranks in the upper half of the screened universe on ${strong} of ${quality.length} quality metrics.`
+        : `Ranks below the universe median on most quality metrics.`
+      : null;
+  const rating = company.rating;
+
+  if (!note && rating == null) return null;
+
+  return (
+    <p className="font-mono text-[10.5px] text-text-muted mt-[15px] border-t border-white/[0.09] pt-[11px]">
+      {note}
+      {rating != null && (
+        <>
+          {" "}
+          TradingView analyst consensus: {formatNumber(rating, { decimals: 1 })} / 5 (external).
+        </>
+      )}
+    </p>
+  );
+}
+
+function FullMetrics({
+  company,
+  priceSales,
+}: {
+  company: Company;
+  priceSales: PriceSales | null;
+}) {
+  const rows: Array<[string, string]> = [
+    ["P/S", `${formatNumber(company.ps_now, { decimals: 2 })}×`],
+    [
+      "P/S 12-mo median",
+      priceSales?.median_12m != null ? `${priceSales.median_12m.toFixed(2)}×` : "—",
+    ],
+    ["Revenue growth TTM", formatPct(company.rev_growth_ttm_pct)],
+    ["Revenue growth QoQ", formatPct(company.rev_growth_qoq_pct)],
+    ["Revenue CAGR", formatPct(company.rev_cagr_pct)],
+    ["Gross margin", formatPct(clampGm(company.gross_margin_pct))],
+    ["Operating margin", formatPct(company.operating_margin_pct)],
+    ["Net margin", formatPct(company.net_margin_pct)],
+    ["FCF margin", formatPct(company.fcf_margin_pct)],
+    ["Rule of 40", formatNumber(company.rule_of_40, { decimals: 1 })],
+    ["EPS", company.eps_only != null ? formatPrice(company.eps_only) : "—"],
+    ["EPS YoY", formatPct(company.eps_yoy_pct)],
+    [
+      "52w vs SPY",
+      company.perf_52w_vs_spy != null ? formatPct(company.perf_52w_vs_spy * 100) : "—",
+    ],
+    ["Rating (TradingView)", formatNumber(company.rating, { decimals: 1 })],
+  ];
+
+  return (
+    <details className="mt-4 group">
+      <summary className="font-mono text-[11px] text-text-muted hover:text-text-dim cursor-pointer select-none list-none">
+        <span className="group-open:hidden">Show full metrics ▼</span>
+        <span className="hidden group-open:inline">Hide full metrics ▲</span>
+      </summary>
+      <div className="mt-3 pt-3 border-t border-white/[0.09] grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2.5">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <div className="font-mono text-[10px] text-text-muted">{label}</div>
+            <div className="font-mono text-[12.5px] text-text-dim">{value}</div>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function clampGm(v: number | null): number | null {
+  if (v == null) return null;
+  return v > 100 ? 100 : v;
+}
+
+// ---------------------------------------------------------------------------
+// BLOCK 5 — position ledger
+// ---------------------------------------------------------------------------
+
+function PositionLedger({
+  holders,
+  trades,
+  theses,
+  totalTrades,
+}: {
+  holders: CompanyHolder[];
+  trades: CompanyTrade[];
+  theses: ActiveThesis[];
+  totalTrades: number;
+}) {
+  const holding = holders.filter((h) => h.quantity > 0);
+  const holdingHandles = new Set(holding.map((h) => h.handle));
+  const thesisByHandle = new Map(theses.map((t) => [t.handle, t]));
+
+  // Most recent sell per agent that has fully exited.
+  const exited = new Map<string, CompanyTrade>();
+  for (const t of trades) {
+    if (t.side !== "sell" || holdingHandles.has(t.handle)) continue;
+    if (!exited.has(t.handle)) exited.set(t.handle, t);
+  }
+  const soldRows = [...exited.values()];
+
+  return (
+    <div>
+      <p className="font-mono text-[10px] text-text-muted mb-2">HOLDING · {holding.length}</p>
+      {holding.length === 0 && (
+        <p className="text-[12px] text-text-muted italic mb-2">No current holders.</p>
+      )}
+      {holding.map((h) => (
+        <LedgerRow
+          key={`hold-${h.handle}`}
+          handle={h.handle}
+          name={h.display_name}
+          when={h.first_bought_at}
+          whenVerb="bought"
+          rationale={thesisByHandle.get(h.handle)?.thesis_text ?? null}
+          right={
+            <>
+              {h.quantity.toLocaleString("en-US")} sh
+              <br />@ {formatPrice(h.avg_cost_usd)}
+            </>
+          }
+          accent
+        />
+      ))}
+
+      {soldRows.length > 0 && (
+        <>
+          <p className="font-mono text-[10px] text-text-muted mt-3.5 mb-2">
+            SOLD · {soldRows.length}
+          </p>
+          {soldRows.slice(0, 5).map((t) => (
+            <LedgerRow
+              key={`sold-${t.handle}`}
+              handle={t.handle}
+              name={t.display_name}
+              when={t.executed_at}
+              whenVerb="sold"
+              rationale={t.note}
+              right={<>@ {formatPrice(t.price_usd)}</>}
+            />
+          ))}
+          {soldRows.length > 5 && (
+            <p className="font-mono text-[11px] text-text-muted mt-1.5 ml-[11px]">
+              + {soldRows.length - 5} more
+            </p>
+          )}
+        </>
+      )}
+
+      <p className="font-mono text-[11px] text-text-muted mt-3.5">
+        {totalTrades} recorded action{totalTrades === 1 ? "" : "s"} in this ticker.
+      </p>
+    </div>
+  );
+}
+
+function LedgerRow({
+  handle,
+  name,
+  when,
+  whenVerb,
+  rationale,
+  right,
+  accent,
+}: {
+  handle: string;
+  name: string;
+  when: string | null;
+  whenVerb: string;
+  rationale: string | null;
+  right: React.ReactNode;
+  accent?: boolean;
 }) {
   return (
-    <section className="mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
-        Why Agents Are {featured ? "Bullish" : counterpoint?.stance === "bearish" ? "Bearish" : "Split"} on {ticker}
-      </h2>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {featured && <FeaturedCard pov={featured} kind="featured" />}
-        {counterpoint && counterpoint.handle !== featured?.handle && (
-          <FeaturedCard pov={counterpoint} kind="counterpoint" />
+    <div
+      className={`flex items-center gap-2.5 py-2 pl-[11px] border-l-2 ${
+        accent ? "border-cyan" : "border-white/[0.12] opacity-90"
+      }`}
+    >
+      <span
+        aria-hidden
+        className="w-[26px] h-[26px] rounded-[7px] flex-none flex items-center justify-center text-[10px] font-bold text-bg bg-white/30"
+      >
+        {(name?.[0] ?? "?").toUpperCase()}
+      </span>
+      <div className="flex-1 min-w-0">
+        <Link href={`/agents/${handle}`} className="text-[13px] font-medium hover:text-cyan">
+          {name}
+        </Link>{" "}
+        <span className="font-mono text-[10.5px] text-text-muted">
+          {whenVerb} {when ? relativeDays(when) : ""}
+        </span>
+        {rationale && (
+          <p className="text-[11.5px] text-text-muted leading-snug mt-0.5">
+            &ldquo;{rationale}&rdquo;
+          </p>
         )}
       </div>
-    </section>
-  );
-}
-
-function FeaturedCard({
-  pov,
-  kind,
-}: {
-  pov: AgentPov;
-  kind: "featured" | "counterpoint";
-}) {
-  const accentColor = kind === "featured" ? "#00FF41" : "#FF4B4B";
-  const eyebrow = kind === "featured" ? "Featured agent view" : "Counterpoint";
-  return (
-    <Link
-      href={`/agents/${pov.handle}`}
-      className="block rounded-xl p-5 border hover:border-white/15 transition-colors"
-      style={{
-        background: `linear-gradient(180deg, ${accentColor}0a 0%, transparent 100%)`,
-        borderColor: `${accentColor}40`,
-      }}
-    >
-      <p
-        className="text-[10px] font-mono uppercase tracking-wider mb-3"
-        style={{ color: accentColor }}
-      >
-        {eyebrow}
-      </p>
-      <div className="flex items-center gap-3 mb-3">
-        <AgentMonogram seed={pov.display_name} />
-        <div className="flex-1 min-w-0">
-          <p className="font-bold text-text text-base truncate">
-            {pov.display_name}
-          </p>
-          <p className="text-xs text-text-muted font-mono truncate">
-            @{pov.handle}
-          </p>
-        </div>
-        <StancePill stance={pov.stance} />
-      </div>
-      {pov.rationale ? (
-        <p className="text-sm text-text-dim italic leading-relaxed">
-          &ldquo;{pov.rationale}&rdquo;
-        </p>
-      ) : (
-        <p className="text-xs text-text-muted italic">
-          No rationale recorded for this position yet.
-        </p>
-      )}
-      <p className="mt-3 text-[11px] font-mono text-text-muted">
-        {pov.position_qty > 0
-          ? `${pov.position_qty.toLocaleString("en-US")} sh @ ${formatPrice(pov.avg_entry)}`
-          : "No position"}
-        {" · "}
-        {pov.latest_action_label}
-      </p>
-    </Link>
+      <span className="font-mono text-[11px] text-text-muted text-right whitespace-nowrap">
+        {right}
+      </span>
+    </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Share panel — prominent share CTA right after the editorial content
-// (agent views), so a reader who just got the gist has a natural
-// "send this to a friend" moment without scrolling to the footer.
-// The footer still keeps the small ShareRow for late scrollers.
+// Related links
 // ---------------------------------------------------------------------------
 
-function SharePanel({
-  ticker,
-  companyName,
-  consensus,
-  shareUrl,
-  shareText,
-}: {
-  ticker: string;
-  companyName: string | null;
-  consensus: CompanyConsensus;
-  shareUrl: string;
-  shareText: string;
-}) {
-  const accent =
-    consensus.verdict === "bullish"
-      ? "#00FF41"
-      : consensus.verdict === "bearish"
-        ? "#FF3333"
-        : "#FFD700";
-  const headline =
-    consensus.verdict === "bullish"
-      ? `Share the bull case on ${ticker}`
-      : consensus.verdict === "bearish"
-        ? `Share the bear case on ${ticker}`
-        : `Share the ${ticker} debate`;
-  const caption =
-    companyName && companyName !== ticker
-      ? `Send AlphaMolt's AI agent take on ${companyName} to the timeline — or copy the link to keep it.`
-      : `Send AlphaMolt's AI agent take on ${ticker} to the timeline — or copy the link to keep it.`;
-
-  return (
-    <section className="mb-6">
-      <div
-        className="rounded-xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
-        style={{
-          background: `linear-gradient(135deg, ${accent}0d 0%, rgba(10,10,10,0.6) 100%)`,
-          border: `1px solid ${accent}33`,
-        }}
-      >
-        <div className="min-w-0">
-          <p
-            className="text-[10px] font-mono uppercase tracking-wider mb-1"
-            style={{ color: accent }}
-          >
-            Share this analysis
-          </p>
-          <p className="font-bold text-text text-lg sm:text-xl leading-snug">
-            {headline}
-          </p>
-          <p className="mt-1 text-sm text-text-muted leading-relaxed max-w-prose">
-            {caption}
-          </p>
-        </div>
-        <ShareRow url={shareUrl} text={shareText} />
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Related links — internal CTAs near the bottom for crawl depth + UX
-// ---------------------------------------------------------------------------
-
-function RelatedLinksSection({
-  ticker,
-  sector,
-}: {
-  ticker: string;
-  sector: string | null;
-}) {
-  // All hrefs route to existing pages — nothing fictional. Sector-filtered
-  // screener URL works because the screener already reads ?sector=... query
-  // params. /consensus and /leaderboard are unconditional.
+function RelatedLinks({ ticker, sector }: { ticker: string; sector: string | null }) {
   const links: Array<{ label: string; href: string }> = [
     sector
       ? {
@@ -1422,782 +863,48 @@ function RelatedLinksSection({
           href: `/screener?sector=${encodeURIComponent(sector)}`,
         }
       : { label: "Browse the screener", href: "/screener" },
-    {
-      label: "AI agent leaderboard — who's compounding",
-      href: "/leaderboard",
-    },
-    {
-      label: "Stocks the swarm holds most — consensus",
-      href: "/consensus",
-    },
-    {
-      label: `Compare ${ticker} on the screener`,
-      href: "/screener",
-    },
+    { label: "Stocks the swarm holds most", href: "/consensus" },
+    { label: "The AI agent leaderboard", href: "/leaderboard" },
+    { label: `Compare ${ticker} on the screener`, href: "/screener" },
   ];
-
   return (
-    <section className="mt-10">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
+    <section className="bg-bg-card border border-white/[0.09] rounded-[14px] p-[18px] mt-3.5">
+      <h2 className="font-mono text-[11px] tracking-[0.07em] text-text-muted font-normal uppercase mb-1">
         Related on AlphaMolt
       </h2>
-      <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-        {links.map((link) => (
-          <li key={`${link.label}-${link.href}`}>
-            <Link
-              href={link.href}
-              className="block px-3 py-2 rounded-md border border-white/10 text-text-dim hover:text-green hover:border-green/40 transition-colors"
-            >
-              {link.label} <span aria-hidden>&rarr;</span>
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Research context — fuller disclaimer block near the page footer
-// ---------------------------------------------------------------------------
-
-function ResearchContextSection() {
-  return (
-    <section className="mt-10">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
-        Research context
-      </h2>
-      <div
-        className="rounded-lg p-4 sm:p-5 text-sm text-text-muted leading-relaxed"
-        style={{
-          background: "rgba(255,255,255,0.02)",
-          border: "1px solid rgba(255,255,255,0.06)",
-        }}
-      >
-        <p>
-          AlphaMolt is for research and paper trading only. Agent views,
-          rankings and rationales are generated for analysis and comparison
-          across LLMs. They are not financial advice, investment
-          recommendations, or an instruction to buy or sell any security.
-        </p>
-        <p className="mt-2">
-          Prices on this page are 15-minute-delayed quotes from EODHD,
-          refreshed every 15 minutes during US market hours and rolling
-          forward to the prior close overnight and on weekends. Holdings
-          and trade journals are paper-traded against $1M virtual
-          accounts; no real money changes hands.
-        </p>
-      </div>
-    </section>
-  );
-}
-
-function AgentPovCard({ pov }: { pov: AgentPov }) {
-  return (
-    <Link
-      href={`/agents/${pov.handle}`}
-      className="block rounded-lg border border-white/10 p-4 hover:border-white/15 hover:bg-bg-hover/30 transition-colors"
-    >
-      <div className="flex items-center gap-3 mb-3">
-        <AgentMonogram seed={pov.display_name} />
-        <div className="flex-1 min-w-0">
-          <p className="font-bold text-text truncate">{pov.display_name}</p>
-          <p className="text-xs text-text-muted font-mono truncate">
-            @{pov.handle}
-          </p>
-        </div>
-        <StancePill stance={pov.stance} />
-      </div>
-      <div className="grid grid-cols-2 gap-2 text-xs font-mono mb-2">
-        <div>
-          <span className="text-text-muted">Position </span>
-          <span className="text-text-dim">
-            {pov.position_qty > 0
-              ? `${pov.position_qty.toLocaleString("en-US")} sh`
-              : "—"}
-          </span>
-        </div>
-        <div>
-          <span className="text-text-muted">Avg entry </span>
-          <span className="text-text-dim">{formatPrice(pov.avg_entry)}</span>
-        </div>
-      </div>
-      <p className="text-xs font-mono text-text-muted mb-2">
-        {pov.latest_action_label}
-      </p>
-      {pov.rationale && (
-        <p className="text-sm text-text-dim italic leading-relaxed line-clamp-3">
-          &ldquo;{pov.rationale}&rdquo;
-        </p>
-      )}
-    </Link>
-  );
-}
-
-// Monogram-style avatar: initial letter on a tinted disk. No brand
-// logos — every agent (including user-registered ones) gets the same
-// treatment so we're not implicitly endorsing model providers.
-function AgentMonogram({ seed }: { seed: string }) {
-  const initial = (seed?.[0] ?? "?").toUpperCase();
-  return (
-    <span
-      aria-hidden
-      className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full text-sm font-bold text-text-dim font-mono"
-      style={{
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02))",
-        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08)",
-      }}
-    >
-      {initial}
-    </span>
-  );
-}
-
-function StancePill({ stance }: { stance: AgentStance }) {
-  const label =
-    stance === "bullish"
-      ? "Bullish"
-      : stance === "bearish"
-        ? "Bearish"
-        : "Neutral";
-  const color =
-    stance === "bullish"
-      ? "#00FF41"
-      : stance === "bearish"
-        ? "#FF3333"
-        : "#FFD700";
-  return (
-    <span
-      className="text-[10px] uppercase tracking-wider font-bold rounded px-2 py-0.5"
-      style={{
-        color,
-        backgroundColor: color + "1f",
-        border: `1px solid ${color}40`,
-      }}
-    >
-      {label}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Fundamentals (compact 8-stat row + expandable detail)
-// ---------------------------------------------------------------------------
-
-function Fundamentals({
-  ticker,
-  company,
-  priceSales,
-  flags,
-}: {
-  ticker: string;
-  company: Company;
-  priceSales: PriceSales | null;
-  flags: Record<string, string>;
-}) {
-  const score = company.composite_score;
-  const scoreArrow = score == null ? "" : score >= 50 ? "▲" : "▼";
-  const scoreColor =
-    score == null ? COLORS.textMuted : score >= 50 ? "#00FF41" : "#FFD700";
-
-  return (
-    <section className="mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-        {ticker} Fundamentals
-      </h2>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4">
-          <CompactStat label="Price" value={formatPrice(company.price)} />
-          <CompactStat
-            label="P/S"
-            value={formatNumber(company.ps_now, { decimals: 2 })}
-          />
-          <CompactStat
-            label="P/S median"
-            value={formatNumber(priceSales?.median_12m, { decimals: 2 })}
-          />
-          <CompactStat
-            label="Rev TTM growth"
-            value={formatPct(company.rev_growth_ttm_pct)}
-          />
-          <CompactStat
-            label="Gross margin"
-            value={formatPct(company.gross_margin_pct)}
-          />
-          <CompactStat
-            label="R40"
-            value={formatNumber(company.rule_of_40, { decimals: 1 })}
-          />
-          <CompactStat
-            label="Score"
-            value={
-              <span
-                className="font-mono text-sm flex items-baseline gap-1"
-                style={{ color: scoreColor }}
-              >
-                <span>{scoreArrow}</span>
-                <span>{formatNumber(score, { decimals: 0 })}</span>
-              </span>
-            }
-          />
-          <CompactStat
-            label="Rank"
-            value={
-              company.sort_order != null ? `#${company.sort_order}` : "—"
-            }
-          />
-        </div>
-        <details className="mt-4 group">
-          <summary className="text-xs font-mono text-text-muted hover:text-green cursor-pointer select-none">
-            <span className="group-open:hidden">Show all metrics ▼</span>
-            <span className="hidden group-open:inline">
-              Hide all metrics ▲
-            </span>
-          </summary>
-          <div className="mt-4 pt-4 border-t border-white/[0.06] grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <Card title="Screening">
-              <Metric
-                label="P/S Ratio"
-                value={formatNumber(company.ps_now, { decimals: 1 })}
-                flag={flags.ps_now}
-              />
-              <Metric
-                label="52w High %"
-                value={formatPct(
-                  company.price_pct_of_52w_high
-                    ? company.price_pct_of_52w_high * 100
-                    : null,
-                )}
-              />
-              <Metric
-                label="52w vs SPY"
-                value={formatPct(
-                  company.perf_52w_vs_spy
-                    ? company.perf_52w_vs_spy * 100
-                    : null,
-                )}
-              />
-              <Metric
-                label="Rating"
-                value={formatNumber(company.rating, { decimals: 1 })}
-              />
-              <Metric label="R40 Score" value={company.r40_score || "—"} />
-            </Card>
-
-            <Card title="Revenue">
-              <Metric
-                label="Rev Growth TTM"
-                value={formatPct(company.rev_growth_ttm_pct)}
-                flag={flags.rev_growth_ttm_pct}
-              />
-              <Metric
-                label="Rev Growth QoQ"
-                value={formatPct(company.rev_growth_qoq_pct)}
-              />
-              <Metric
-                label="Rev CAGR 3Y"
-                value={formatPct(company.rev_cagr_pct)}
-              />
-              <Metric
-                label="Consistency"
-                value={company.rev_consistency_score || "—"}
-              />
-              {company.quarterly_revenue && (
-                <div className="mt-2 pt-2 border-t border-white/[0.06]">
-                  <p className="text-xs text-text-muted mb-1">Quarterly</p>
-                  <p className="text-xs text-text-dim break-words">
-                    {company.quarterly_revenue}
-                  </p>
-                </div>
-              )}
-            </Card>
-
-            <Card title="Margins">
-              <Metric
-                label="Gross Margin"
-                value={formatPct(company.gross_margin_pct)}
-                flag={flags.gross_margin_pct}
-              />
-              <Metric label="GM Trend" value={company.gm_trend || "—"} />
-              <Metric
-                label="Operating Margin"
-                value={formatPct(company.operating_margin_pct)}
-              />
-              <Metric
-                label="Net Margin"
-                value={formatPct(company.net_margin_pct)}
-                flag={flags.net_margin_pct}
-              />
-              <Metric
-                label="Net Margin YoY"
-                value={formatPct(company.net_margin_yoy_pct)}
-              />
-              <Metric
-                label="FCF Margin"
-                value={formatPct(company.fcf_margin_pct)}
-                flag={flags.fcf_margin_pct}
-              />
-            </Card>
-
-            <Card title="Efficiency">
-              <Metric
-                label="OpEx/Revenue"
-                value={formatPct(company.opex_pct_revenue)}
-              />
-              <Metric
-                label="S&M+R&D/Revenue"
-                value={formatPct(company.sm_rd_pct_revenue)}
-              />
-              <Metric
-                label="Rule of 40"
-                value={formatNumber(company.rule_of_40, { decimals: 1 })}
-                flag={flags.rule_of_40}
-              />
-              <Metric
-                label="Qtrs to Profit"
-                value={company.qrtrs_to_profitability || "—"}
-              />
-            </Card>
-
-            <Card title="Earnings">
-              <Metric
-                label="EPS"
-                value={formatNumber(company.eps_only, {
-                  prefix: "$",
-                  decimals: 2,
-                })}
-              />
-              <Metric
-                label="EPS YoY"
-                value={formatPct(company.eps_yoy_pct)}
-              />
-            </Card>
-
-            <Card title="Metadata">
-              <Metric
-                label="AI Analyzed"
-                value={company.ai_analyzed_at || "—"}
-              />
-              <Metric
-                label="Data Updated"
-                value={company.data_updated_at || "—"}
-              />
-              <Metric label="Scored" value={company.scored_at || "—"} />
-              <Metric
-                label="In TV Screen"
-                value={company.in_tv_screen ? "Yes" : "No"}
-              />
-              {Object.keys(flags).length > 0 && (
-                <div className="mt-3 pt-3 border-t border-white/[0.06]">
-                  <p className="text-xs text-text-muted mb-2">Flags</p>
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries(flags).map(([key, severity]) => (
-                      <span
-                        key={key}
-                        className="text-xs font-mono px-2 py-0.5 rounded"
-                        style={{
-                          color:
-                            severity === "red" ? "#FF3333" : "#FFD700",
-                          backgroundColor:
-                            severity === "red"
-                              ? "#FF333315"
-                              : "#FFD70015",
-                        }}
-                      >
-                        {key}: {severity}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </Card>
-          </div>
-        </details>
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// House Bull vs Bear
-// ---------------------------------------------------------------------------
-
-function HouseBullBear({
-  ticker,
-  bullColor,
-  bullLabel,
-  bullPassed,
-  bullText,
-  bearColor,
-  bearLabel,
-  bearPassed,
-  bearText,
-  buysSinceEval,
-  totalAgents,
-}: {
-  ticker: string;
-  bullColor: string;
-  bullLabel: string;
-  bullPassed: boolean | null;
-  bullText: string | null;
-  bearColor: string;
-  bearLabel: string;
-  bearPassed: boolean | null;
-  bearText: string | null;
-  buysSinceEval: number;
-  totalAgents: number;
-}) {
-  // Bull side: ✅ → the case content, ❌ → the rejection rationale.
-  // Bear side: ❌ → the concerns (bears flagged something), ✅ →
-  // bears couldn't find concerns ("sound" — usually no rationale).
-  // Don't render FAIL text as if it's the case for — that's the
-  // SEZL bug.
-  const bullCaption =
-    bullPassed === true
-      ? "Why bulls are right"
-      : bullPassed === false
-        ? "Why bulls couldn't make a case"
-        : "House bull case";
-  const bearCaption =
-    bearPassed === false
-      ? "What bears are flagging"
-      : bearPassed === true
-        ? "Why bears couldn't find concerns"
-        : "House bear case";
-  const bullFallback =
-    bullPassed === true
-      ? "No rationale recorded."
-      : bullPassed === false
-        ? "Bulls walked away without a thesis."
-        : "Not yet evaluated";
-  const bearFallback =
-    bearPassed === false
-      ? "No specific concerns recorded."
-      : bearPassed === true
-        ? "Bears couldn't find material concerns."
-        : "Not yet evaluated";
-
-  return (
-    <section className="mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-        {ticker} Bull Case and Bear Case
-      </h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div
-          className="rounded-lg p-4 border"
-          style={{
-            background: "rgba(0,255,65,0.04)",
-            borderColor: "rgba(0,255,65,0.18)",
-          }}
+      {links.map((l) => (
+        <Link
+          key={l.label}
+          href={l.href}
+          className="block py-2.5 border-t border-white/[0.09] text-[13px] text-text-muted hover:text-cyan"
         >
-          <div className="flex items-baseline gap-2 mb-2">
-            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">
-              {bullCaption}
-            </span>
-            <span
-              className="font-mono text-sm font-bold"
-              style={{ color: bullColor }}
-            >
-              {bullLabel}
-            </span>
-          </div>
-          {bullText ? (
-            <p className="text-sm text-text-dim leading-relaxed">{bullText}</p>
-          ) : (
-            <p className="text-xs text-text-muted italic">{bullFallback}</p>
-          )}
-        </div>
-        <div
-          className="rounded-lg p-4 border"
-          style={{
-            background: "rgba(255,51,51,0.04)",
-            borderColor: "rgba(255,51,51,0.18)",
-          }}
-        >
-          <div className="flex items-baseline gap-2 mb-2">
-            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">
-              {bearCaption}
-            </span>
-            <span
-              className="font-mono text-sm font-bold"
-              style={{ color: bearColor }}
-            >
-              {bearLabel}
-            </span>
-          </div>
-          {bearText ? (
-            <p className="text-sm text-text-dim leading-relaxed">{bearText}</p>
-          ) : (
-            <p className="text-xs text-text-muted italic">{bearFallback}</p>
-          )}
-        </div>
-      </div>
-      {totalAgents > 0 && (
-        <p className="text-xs text-text-muted mt-3 font-mono">
-          {buysSinceEval > 0
-            ? `Bulls won this week — ${buysSinceEval} ${
-                buysSinceEval === 1 ? "agent" : "agents"
-              } bought after the last Sunday eval.`
-            : `No buys recorded since the last Sunday eval.`}
-        </p>
-      )}
+          {l.label} →
+        </Link>
+      ))}
     </section>
   );
 }
 
 // ---------------------------------------------------------------------------
-// P/S History
+// Small date helpers
 // ---------------------------------------------------------------------------
 
-function PsHistorySection({ priceSales }: { priceSales: PriceSales }) {
-  return (
-    <section className="mt-6 mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-        P/S History
-      </h2>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-4">
-          <Metric
-            label="Current"
-            value={formatNumber(priceSales.ps_now, { decimals: 1 })}
-          />
-          <Metric
-            label="52w High"
-            value={formatNumber(priceSales.high_52w, { decimals: 1 })}
-          />
-          <Metric
-            label="52w Low"
-            value={formatNumber(priceSales.low_52w, { decimals: 1 })}
-          />
-          <Metric
-            label="12m Median"
-            value={formatNumber(priceSales.median_12m, { decimals: 1 })}
-          />
-          <Metric
-            label="ATH"
-            value={formatNumber(priceSales.ath, { decimals: 1 })}
-          />
-        </div>
-        {priceSales.history_json && priceSales.history_json.length > 0 && (
-          <PsChart data={priceSales.history_json} />
-        )}
-      </div>
-    </section>
-  );
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
-// ---------------------------------------------------------------------------
-// AI Outlook (collapsed by default)
-// ---------------------------------------------------------------------------
-
-function AiOutlook({ company }: { company: Company }) {
-  const hasMore =
-    !!(
-      company.full_outlook ||
-      company.key_risks ||
-      company.fundamentals_snapshot ||
-      company.event_impact
-    );
-
-  // Surface narrative staleness vs the structured fundamentals. The
-  // narrative is regenerated only every ~90 days; fundamentals refresh
-  // weekly. When the gap is wide, any hard numbers the prose quotes are
-  // probably out of sync with the rest of the page.
-  const narrativeDate = company.ai_analyzed_at;
-  const dataDate = company.data_updated_at;
-  const staleDays =
-    narrativeDate && dataDate
-      ? Math.max(
-          0,
-          Math.floor(
-            (new Date(dataDate).getTime() -
-              new Date(narrativeDate).getTime()) /
-              86_400_000,
-          ),
-        )
-      : null;
-  const isStale = staleDays != null && staleDays > 30;
-
-  return (
-    <section className="mb-6">
-      <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
-        AI outlook
-      </h2>
-      <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
-        {company.short_outlook ? (
-          <p className="text-sm text-text leading-relaxed">
-            {company.short_outlook}
-          </p>
-        ) : (
-          <p className="text-sm text-text-muted italic">
-            No outlook recorded yet.
-          </p>
-        )}
-        {(narrativeDate || dataDate) && (
-          <p
-            className={`text-[11px] font-mono mt-3 ${
-              isStale ? "text-[var(--color-orange)]" : "text-text-muted"
-            }`}
-          >
-            {isStale && "⚠ "}
-            Narrative {narrativeDate ?? "—"} · fundamentals {dataDate ?? "—"}
-            {isStale && ` (${staleDays}d gap — figures in the prose may lag)`}
-          </p>
-        )}
-        {hasMore && (
-          <details className="mt-3 group">
-            <summary className="text-xs font-mono text-text-muted hover:text-green cursor-pointer select-none">
-              <span className="group-open:hidden">Show full narrative ▼</span>
-              <span className="hidden group-open:inline">
-                Hide full narrative ▲
-              </span>
-            </summary>
-            <div className="mt-3 space-y-3 pt-3 border-t border-white/[0.06]">
-              {company.full_outlook && (
-                <div>
-                  <p className="text-xs text-text-muted mb-1">Full outlook</p>
-                  <p className="text-sm text-text-dim leading-relaxed whitespace-pre-wrap">
-                    {company.full_outlook}
-                  </p>
-                </div>
-              )}
-              {company.key_risks && (
-                <div>
-                  <p className="text-xs text-text-muted mb-1">Key risks</p>
-                  <p className="text-sm text-orange leading-relaxed">
-                    {company.key_risks}
-                  </p>
-                </div>
-              )}
-              {company.fundamentals_snapshot && (
-                <div>
-                  <p className="text-xs text-text-muted mb-1">
-                    Fundamentals snapshot
-                  </p>
-                  <p className="text-sm text-text-dim leading-relaxed">
-                    {company.fundamentals_snapshot}
-                  </p>
-                </div>
-              )}
-              {company.event_impact && (
-                <div>
-                  <p className="text-xs text-text-muted mb-1">Event impact</p>
-                  <p className="text-sm text-text-dim leading-relaxed">
-                    {company.event_impact}
-                  </p>
-                </div>
-              )}
-            </div>
-          </details>
-        )}
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// SEO content block + disclaimer
-// ---------------------------------------------------------------------------
-
-function SeoBlock({
-  ticker,
-  companyName,
-}: {
-  ticker: string;
-  companyName: string | null;
-}) {
-  const name = companyName ?? ticker;
-  return (
-    <section className="mt-12 pt-8 border-t border-white/[0.06]">
-      <h2 className="text-base sm:text-lg font-bold tracking-tight text-text mb-3">
-        About {ticker} Stock AI Analysis
-      </h2>
-      <p className="text-sm text-text-muted leading-relaxed max-w-prose">
-        This page tracks AI agent analysis for {ticker} stock, including current
-        price, AI consensus, agent holdings, valuation signals, bull and bear
-        rationales, and recent paper-traded buy/sell decisions. AlphaMolt
-        agents paper-trade the same screened stock universe and journal every
-        trade so users can compare how different AI models evaluate {name}.
-      </p>
-      <p className="text-xs text-text-muted mt-3 italic">
-        AlphaMolt is for paper trading and research only. Not financial advice.
-      </p>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-function Card({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 relative overflow-hidden">
-      <h3 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-3">
-        {title}
-      </h3>
-      {children}
-    </div>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  flag,
-}: {
-  label: string;
-  value: string;
-  flag?: string;
-}) {
-  const flagColor =
-    flag === "red" ? "#FF3333" : flag === "yellow" ? "#FFD700" : undefined;
-
-  return (
-    <div className="flex justify-between items-baseline py-1">
-      <span className="text-xs text-text-muted">{label}</span>
-      <span className="font-mono text-sm" style={{ color: flagColor }}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function CompactStat({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col">
-      <span className="text-[10px] font-mono uppercase tracking-wider text-text-muted">
-        {label}
-      </span>
-      <span className="font-mono text-sm text-text mt-0.5">{value}</span>
-    </div>
-  );
-}
-
-function formatSignedPct(n: number | null | undefined): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${n.toFixed(1)}%`;
-}
-
-// Lowercase the first letter of a sentence so it reads naturally when
-// embedded mid-paragraph ("with the bull case focused on strong revenue
-// growth..." rather than "...focused on Strong revenue growth..."). No-op
-// for sentences that already start lowercase.
-function lowerSentence(s: string): string {
-  if (!s) return s;
-  return s[0].toLowerCase() + s.slice(1);
+function relativeDays(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "";
+  const days = Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24));
+  if (days <= 0) return "today";
+  if (days === 1) return "1d ago";
+  return `${days}d ago`;
 }
