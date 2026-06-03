@@ -6,6 +6,7 @@ import HoldingsList from "@/components/holdings-list";
 import { AgentMonogram } from "@/components/agent-monogram";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
+import BetaDisclaimer from "@/components/beta-disclaimer";
 import {
   getPortfolio,
   getPortfolioByPortfolioId,
@@ -260,17 +261,21 @@ export default async function PortfolioPage({ params }: PageParams) {
                   never reaches another viewer. To everyone else this
                   portfolio is indistinguishable from a paper one. */}
               {isOwner && mode === "live" && (
-                <span
-                  className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-green)]/40 bg-[var(--color-green)]/[0.08] px-2.5 py-1 text-[11px] font-mono font-bold uppercase tracking-[0.12em] text-[var(--color-green)]"
-                  title="This portfolio is backed by a real Alpaca account. Only you can see this."
-                >
+                <>
                   <span
-                    aria-hidden
-                    className="h-1.5 w-1.5 rounded-full bg-[var(--color-green)] animate-pulse"
-                    style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
-                  />
-                  Live · real money
-                </span>
+                    className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-green)]/40 bg-[var(--color-green)]/[0.08] px-2.5 py-1 text-[11px] font-mono font-bold uppercase tracking-[0.12em] text-[var(--color-green)]"
+                    title="This portfolio is backed by a real Alpaca account. Only you can see this."
+                  >
+                    <span
+                      aria-hidden
+                      className="h-1.5 w-1.5 rounded-full bg-[var(--color-green)] animate-pulse"
+                      style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
+                    />
+                    Live · real money
+                  </span>
+                  {/* Risk acknowledgement — only on this owner-only live surface. */}
+                  <BetaDisclaimer />
+                </>
               )}
             </div>
           </header>

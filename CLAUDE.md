@@ -693,6 +693,17 @@ ALPACA_PRICE_BAND_PCT       Optional. Slippage cap for live orders (default
                             than band% below); a gap past the band simply
                             doesn't fill and the next mirror re-converges. 0
                             disables (raw market orders).
+ALPACA_ACCOUNTS             Optional. JSON object keyed by LIVE portfolio slug
+                            mapping each to its OWN Alpaca account:
+                            {"toby-live": {"key_id": "...", "secret_key": "...",
+                            "base_url": "https://api.alpaca.markets"}, ...}.
+                            Lets several owners each run a live follower against
+                            their own account. When set it is AUTHORITATIVE — a
+                            live portfolio trades only if it has an entry
+                            (unmapped → refused, never the shared account). When
+                            unset, the bare ALPACA_* vars are the single shared
+                            account, but the mirror REFUSES to use them once
+                            more than one live portfolio exists (anti-commingle).
 ```
 
 ## Real-money execution (Alpaca — spike)
@@ -778,6 +789,17 @@ best-effort top-up for any rebalance that happens to land during market hours.
 The per-decision routing below (`ctx.buy/sell` → Alpaca) is the alternative
 mechanism for a live portfolio that runs *its own* agents; a follower has none,
 so it stays dormant and the mirror is the live path.
+
+**Multiple owners, separate accounts.** Each live portfolio trades its **own**
+Alpaca account, resolved by `AlpacaExecutionBackend.for_slug(slug)` from the
+`ALPACA_ACCOUNTS` JSON map (keyed by live slug). The map is authoritative when
+set; unmapped live portfolios are refused rather than routed to anyone else's
+account. The loops (`--mirror-all-live`, `--sync-all-live`) pass
+`allow_shared_fallback` only when exactly one live portfolio exists, so a
+second live portfolio (e.g. a collaborator's) can never land in the shared
+bare-env account by accident — it must be explicitly mapped. NOTE: running real
+trades for *another person* is the "operating for others" activity gated on the
+FCA / solicitor go-live decision; the plumbing existing does not lift that gate.
 
 ### Forward execution — swarm decisions → real Alpaca orders
 
