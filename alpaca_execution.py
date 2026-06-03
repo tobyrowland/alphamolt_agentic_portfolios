@@ -35,6 +35,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -50,6 +51,33 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _alpaca_accounts_map() -> dict[str, dict]:
+    """Per-portfolio Alpaca credentials from the ``ALPACA_ACCOUNTS`` secret.
+
+    A JSON object keyed by **live portfolio slug**::
+
+        {"toby-live":     {"key_id": "...", "secret_key": "...",
+                           "base_url": "https://api.alpaca.markets"},
+         "chuckyegg-live": {"key_id": "...", "secret_key": "...",
+                           "base_url": "https://api.alpaca.markets"}}
+
+    Lets several owners each run a live follower against their **own** Alpaca
+    account. Unset/empty -> ``{}`` (single-account mode via the bare
+    ``ALPACA_*`` env vars). Raises ``AlpacaError`` on malformed JSON rather than
+    silently degrading to the shared account.
+    """
+    raw = os.environ.get("ALPACA_ACCOUNTS", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise AlpacaError(f"ALPACA_ACCOUNTS is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise AlpacaError("ALPACA_ACCOUNTS must be a JSON object keyed by slug")
+    return data
 
 
 @dataclass
@@ -102,6 +130,47 @@ class AlpacaExecutionBackend:
             self.price_band = float(os.environ.get("ALPACA_PRICE_BAND_PCT", "0.03"))
         except ValueError:
             self.price_band = 0.03
+
+    @classmethod
+    def for_slug(
+        cls,
+        slug: str,
+        *,
+        allow_shared_fallback: bool = False,
+    ) -> "AlpacaExecutionBackend":
+        """Build a backend bound to a live portfolio's OWN Alpaca account.
+
+        Resolution + anti-commingle rule:
+
+        - ``ALPACA_ACCOUNTS`` set -> **authoritative**. ``slug`` present uses its
+          credentials; ``slug`` absent raises ``AlpacaError`` (never silently
+          trade one owner's targets through another's account).
+        - ``ALPACA_ACCOUNTS`` unset -> legacy single-account mode (bare
+          ``ALPACA_*`` env), but only when ``allow_shared_fallback`` is True.
+          Callers iterating more than one live portfolio pass False, so a second
+          live portfolio can never land in the shared account by accident.
+        """
+        accounts = _alpaca_accounts_map()
+        if accounts:
+            entry = accounts.get(slug)
+            if not entry:
+                raise AlpacaError(
+                    f"no ALPACA_ACCOUNTS entry for live portfolio {slug!r} — "
+                    f"refusing to trade it against another account"
+                )
+            client = AlpacaClient(
+                key_id=entry.get("key_id"),
+                secret_key=entry.get("secret_key"),
+                base_url=entry.get("base_url"),
+            )
+            return cls(client)
+        if not allow_shared_fallback:
+            raise AlpacaError(
+                f"ALPACA_ACCOUNTS not set and {slug!r} can't use the shared "
+                f"account here (multiple live portfolios) — configure "
+                f"ALPACA_ACCOUNTS with a per-portfolio entry"
+            )
+        return cls()  # single-account legacy mode (bare ALPACA_* env)
 
     def _guard_live(self, allow_live: bool) -> None:
         if not self.client.is_paper and not allow_live:
@@ -409,18 +478,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    try:
-        backend = AlpacaExecutionBackend()
-    except AlpacaError as exc:
-        logger.error("%s", exc)
-        return 1
-
-    client = backend.client
-    logger.info(
-        "Alpaca endpoint: %s (%s)",
-        client.base_url,
-        "PAPER / sandbox" if client.is_paper else "LIVE — real money",
-    )
+    # Account-level commands operate the single account from the bare ALPACA_*
+    # env. Portfolio commands (sync / go-live / sync-all-live) resolve each live
+    # portfolio's OWN account via for_slug, so the shared backend is only built
+    # when actually needed (and won't fail a multi-account-only setup).
+    needs_shared = any([
+        args.status, args.positions, args.orders, args.buy, args.sell,
+        args.reconcile,
+    ])
+    backend = None
+    client = None
+    if needs_shared:
+        try:
+            backend = AlpacaExecutionBackend()
+        except AlpacaError as exc:
+            logger.error("%s", exc)
+            return 1
+        client = backend.client
+        logger.info(
+            "Alpaca endpoint: %s (%s)",
+            client.base_url,
+            "PAPER / sandbox" if client.is_paper else "LIVE — real money",
+        )
 
     try:
         if args.status:
@@ -467,10 +546,12 @@ def main(argv: list[str] | None = None) -> int:
             backend.reconcile(SupabaseDB(), args.reconcile)
 
         if args.sync:
-            backend.sync_to_db(SupabaseDB(), args.sync, dry_run=args.dry_run)
+            be = AlpacaExecutionBackend.for_slug(args.sync, allow_shared_fallback=True)
+            be.sync_to_db(SupabaseDB(), args.sync, dry_run=args.dry_run)
 
         if args.go_live:
-            backend.sync_to_db(
+            be = AlpacaExecutionBackend.for_slug(args.go_live, allow_shared_fallback=True)
+            be.sync_to_db(
                 SupabaseDB(), args.go_live,
                 dry_run=args.dry_run, reset_baseline=True,
             )
@@ -483,9 +564,13 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if not live:
                 logger.info("no live portfolios to reconcile")
+            single = len(live) == 1
             for p in live:
                 try:
-                    backend.sync_to_db(db, p["slug"], dry_run=args.dry_run)
+                    be = AlpacaExecutionBackend.for_slug(
+                        p["slug"], allow_shared_fallback=single,
+                    )
+                    be.sync_to_db(db, p["slug"], dry_run=args.dry_run)
                 except AlpacaError as exc:
                     logger.error("sync %s failed: %s", p["slug"], exc)
 

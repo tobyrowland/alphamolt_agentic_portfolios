@@ -77,7 +77,7 @@ def _mirror_live_sibling(db, pm, *, paper: dict, live: dict, dry_run: bool) -> N
         from alpaca_execution import AlpacaExecutionBackend
         from alpaca_mirror import mirror_paper_to_alpaca
 
-        executor = AlpacaExecutionBackend()
+        executor = AlpacaExecutionBackend.for_slug(slug, allow_shared_fallback=True)
         summary = mirror_paper_to_alpaca(
             db, pm, executor, live, paper, dry_run=False,
         )

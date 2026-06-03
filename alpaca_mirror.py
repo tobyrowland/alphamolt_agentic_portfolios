@@ -242,19 +242,26 @@ def _mirror_all_live(
         logger.info("no live portfolios to mirror")
         return 0
 
-    try:
-        from alpaca_execution import AlpacaExecutionBackend
-        executor = AlpacaExecutionBackend()
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Alpaca init failed: %s", exc)
-        return 1
+    from alpaca_execution import AlpacaError, AlpacaExecutionBackend
 
+    # Each live portfolio trades its OWN Alpaca account (for_slug). With more
+    # than one live portfolio, shared-account fallback is refused so one owner's
+    # targets can never land in another's account.
+    single = len(live) == 1
     rc = 0
     for live_pf in live:
         slug = live_pf.get("slug") or live_pf["id"][:8]
         paper_pf = _sibling_paper_portfolio(db, live_pf)
         if not paper_pf:
             logger.warning("no paper sibling for %s — skipping", slug)
+            continue
+        try:
+            executor = AlpacaExecutionBackend.for_slug(
+                slug, allow_shared_fallback=single,
+            )
+        except AlpacaError as exc:
+            logger.warning("skipping %s: %s", slug, exc)
+            rc = 1
             continue
         try:
             summary = mirror_paper_to_alpaca(
@@ -307,7 +314,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         from alpaca_execution import AlpacaExecutionBackend
-        executor = AlpacaExecutionBackend()
+        executor = AlpacaExecutionBackend.for_slug(
+            args.slug, allow_shared_fallback=True,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error("Alpaca init failed: %s", exc)
         return 1
