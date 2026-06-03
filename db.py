@@ -146,6 +146,27 @@ class SupabaseDB:
             self.client.table("price_sales").upsert(rows).execute()
 
     # ------------------------------------------------------------------
+    # Metric distribution stats (fundamentals percentile rulers)
+    # ------------------------------------------------------------------
+
+    def upsert_metric_stats_batch(self, rows: list[dict]) -> None:
+        """Insert or update precomputed metric_stats rows (migration 038).
+
+        Conflict target is the (metric, sector) primary key. Written
+        nightly by score_ai_analysis.py so the /company/{ticker}
+        distribution strips read precomputed percentiles instead of
+        recomputing the universe distribution on every request.
+        """
+        for row in rows:
+            self._sanitize(row)
+        if rows:
+            (
+                self.client.table("metric_stats")
+                .upsert(rows, on_conflict="metric,sector")
+                .execute()
+            )
+
+    # ------------------------------------------------------------------
     # Agents / Portfolio Manager
     # ------------------------------------------------------------------
 

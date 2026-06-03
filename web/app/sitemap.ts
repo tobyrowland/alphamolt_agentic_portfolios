@@ -1,6 +1,7 @@
 import type { MetadataRoute } from "next";
 import { getSupabase } from "@/lib/supabase";
 import { absoluteUrl } from "@/lib/site";
+import { isCompanyIndexable } from "@/lib/company-indexable";
 
 export const revalidate = 3600;
 
@@ -27,29 +28,44 @@ const STATIC_ROUTES: StaticRoute[] = [
 async function getCompanyEntries(): Promise<MetadataRoute.Sitemap> {
   try {
     const supabase = getSupabase();
-    // Filter to active screen members with an AI narrative — Google was
-    // flagging ~500 of the long-tail thin pages as "Discovered/Crawled —
-    // currently not indexed" because the sitemap exposed every row in
-    // `companies`. Restricting to in_tv_screen + short_outlook concentrates
-    // crawl budget on URLs with substantive content.
-    const { data, error } = await supabase
-      .from("companies")
-      .select("ticker, updated_at")
-      .eq("in_tv_screen", true)
-      .not("short_outlook", "is", null)
-      .order("sort_order", { ascending: true, nullsFirst: false });
+    // §8.8 index rule (shared with the page's robots tag via
+    // isCompanyIndexable): a ticker is indexable when ≥1 agent has ever
+    // traded it OR it has full fundamentals + an AI narrative. Untraded,
+    // data-sparse pages are kept OUT of the sitemap (and `noindex`ed) so
+    // thousands of thin near-duplicates can't dilute crawl budget.
+    const [companiesRes, tradedRes] = await Promise.all([
+      supabase
+        .from("companies")
+        .select("ticker, updated_at, short_outlook")
+        .order("sort_order", { ascending: true, nullsFirst: false }),
+      supabase.from("agent_trades").select("ticker"),
+    ]);
 
-    if (error) {
-      console.error("sitemap: company fetch failed:", error);
+    if (companiesRes.error) {
+      console.error("sitemap: company fetch failed:", companiesRes.error);
       return [];
     }
+    if (tradedRes.error) {
+      console.error("sitemap: agent_trades fetch failed:", tradedRes.error);
+    }
 
-    return (data ?? []).map((row: { ticker: string; updated_at: string | null }) => ({
-      url: absoluteUrl(`/company/${encodeURIComponent(row.ticker)}`),
-      lastModified: row.updated_at ? new Date(row.updated_at) : new Date(),
-      changeFrequency: "daily" as ChangeFreq,
-      priority: 0.6,
-    }));
+    const tradedTickers = new Set(
+      (tradedRes.data ?? []).map((r: { ticker: string }) => r.ticker),
+    );
+
+    return (companiesRes.data ?? [])
+      .filter((row: { ticker: string; short_outlook: string | null }) =>
+        isCompanyIndexable({
+          hasTrades: tradedTickers.has(row.ticker),
+          shortOutlook: row.short_outlook,
+        }),
+      )
+      .map((row: { ticker: string; updated_at: string | null }) => ({
+        url: absoluteUrl(`/company/${encodeURIComponent(row.ticker)}`),
+        lastModified: row.updated_at ? new Date(row.updated_at) : new Date(),
+        changeFrequency: "daily" as ChangeFreq,
+        priority: 0.6,
+      }));
   } catch (err) {
     // Don't blow up the whole sitemap on a DB hiccup — static routes still
     // need to be emitted so core pages stay crawlable.
