@@ -16,6 +16,7 @@ import {
   getPortfolioByPortfolioId,
   type PortfolioSnapshot,
 } from "@/lib/portfolio";
+import BetaDisclaimer from "@/components/beta-disclaimer";
 import { listPublicAgents, getAgentReturns30d } from "@/lib/agents-query";
 import { roleFor } from "@/lib/agent-roles";
 import CreatePortfolioForm from "@/components/portfolio/create-portfolio-form";
@@ -169,6 +170,8 @@ function LivePortfolioPanel({
 
   return (
     <section className="mt-12">
+      {/* Risk acknowledgement — gated to this secret live (real-money) surface. */}
+      <BetaDisclaimer />
       <div
         className="rounded-2xl border p-6 sm:p-7"
         style={{

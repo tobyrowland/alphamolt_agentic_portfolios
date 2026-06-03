@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
-// Bump the version suffix to re-prompt everyone (e.g. after a material change
-// to the terms). Acknowledgement is per-browser via localStorage — deliberately
-// lightweight; it's a beta notice, not a signed agreement.
-const ACK_KEY = "alphamolt_beta_ack_v1";
+// Risk acknowledgement for the SECRET live (real-money / Alpaca) portfolio
+// feature — rendered only on the surfaces that expose it, not site-wide.
+// Bump the version suffix to re-prompt everyone after a material wording
+// change. Per-browser via localStorage — deliberately lightweight; it's an
+// in-group beta notice, not a signed agreement.
+const ACK_KEY = "alphamolt_live_risk_ack_v1";
 
 export default function BetaDisclaimer() {
   // Start "acknowledged" so the server render and first client render both emit
@@ -52,24 +54,25 @@ export default function BetaDisclaimer() {
         }}
       >
         <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-orange)]/40 bg-[var(--color-orange)]/[0.08] px-2.5 py-1 text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-[var(--color-orange)]">
-          Beta
+          Real money · private beta
         </span>
 
         <h2
           id="beta-disclaimer-title"
           className="mt-4 text-[20px] sm:text-[22px] font-bold tracking-[-0.02em] text-text leading-snug"
         >
-          Use entirely at your own risk
+          Live trading — entirely at your own risk
         </h2>
 
         <p className="mt-3 text-sm text-text-muted leading-relaxed">
-          AlphaMolt is a <strong className="text-text-dim">beta product</strong>.
-          Everything here — data, analysis, AI narratives, portfolios and any
-          live trading — is provided <em>as-is</em>, with no guarantee of
-          accuracy or availability. We bear{" "}
-          <strong className="text-text-dim">no responsibility</strong> for data
-          errors, losses, or any decisions made using it. Nothing here is
-          financial advice.
+          This is an <strong className="text-text-dim">experimental, private
+          beta</strong> feature that mirrors your portfolio to a{" "}
+          <strong className="text-text-dim">real brokerage account and places
+          real-money orders</strong>. It&rsquo;s provided <em>as-is</em>, with
+          no guarantee of data accuracy, execution, or availability. You use it{" "}
+          <strong className="text-text-dim">entirely at your own risk</strong>{" "}
+          — we bear no responsibility for any losses. Nothing here is financial
+          advice.
         </p>
 
         <p className="mt-3 text-xs text-text-muted leading-relaxed">
