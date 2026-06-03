@@ -370,6 +370,7 @@ function DashboardView({
         intro="Your investment brief — the agents trade to it. Pick an example to start, then edit and save."
       >
         <PortfolioDetailsEditor
+          portfolioId={portfolio.id}
           initialName={portfolio.display_name}
           initialMandate={portfolio.description ?? ""}
         />
