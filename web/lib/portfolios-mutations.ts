@@ -28,11 +28,18 @@ interface OwnedPortfolio {
 /** The caller's single portfolio, or null. Service-role read. */
 async function getOwnedPortfolio(userId: string): Promise<OwnedPortfolio | null> {
   const supabase = getSupabase();
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("portfolios")
     .select("id, slug")
     .eq("owner_user_id", userId)
     .maybeSingle();
+  if (error) {
+    // Don't swallow — a transient DB error here previously surfaced as
+    // "You don't have a portfolio yet" in the UI, which is wrong and
+    // confusing. Bubble it up via logs so we can tell the two apart.
+    console.error("getOwnedPortfolio lookup failed:", error);
+    return null;
+  }
   return (data as OwnedPortfolio | null) ?? null;
 }
 
@@ -87,6 +94,7 @@ export async function createPortfolio(input: {
 }
 
 export async function updatePortfolioDetails(input: {
+  portfolioId: string;
   name: string;
   mandate: string;
 }): Promise<ActionResult> {
@@ -103,22 +111,31 @@ export async function updatePortfolioDetails(input: {
       error: `Mandate must be ${MAX_MANDATE} characters or fewer.`,
     };
 
-  const portfolio = await getOwnedPortfolio(user.id);
-  if (!portfolio) return { ok: false, error: "You don't have a portfolio yet." };
-
+  // Single update with the ownership check in the WHERE clause — no
+  // separate lookup, no race window. If the row doesn't exist or this
+  // user doesn't own it, `data` comes back null.
   const supabase = getSupabase();
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("portfolios")
     .update({ display_name: name, description: mandate || null })
-    .eq("id", portfolio.id)
-    .eq("owner_user_id", user.id);
+    .eq("id", input.portfolioId)
+    .eq("owner_user_id", user.id)
+    .select("slug")
+    .maybeSingle();
 
   if (error) {
     console.error("updatePortfolioDetails failed:", error);
     return { ok: false, error: "Could not save changes. Try again." };
   }
+  if (!data) {
+    return {
+      ok: false,
+      error:
+        "Couldn't find your portfolio. Refresh the page and try again.",
+    };
+  }
 
-  revalidate(portfolio.slug);
+  revalidate(data.slug);
   return { ok: true };
 }
 

@@ -55,9 +55,11 @@ export const MANDATE_EXAMPLES: MandateExample[] = [
 ];
 
 export default function PortfolioDetailsEditor({
+  portfolioId,
   initialName,
   initialMandate,
 }: {
+  portfolioId: string;
   initialName: string;
   initialMandate: string;
 }) {
@@ -75,7 +77,11 @@ export default function PortfolioDetailsEditor({
     setError(null);
     setSaved(false);
     startTransition(async () => {
-      const result = await updatePortfolioDetails({ name, mandate });
+      const result = await updatePortfolioDetails({
+        portfolioId,
+        name,
+        mandate,
+      });
       if (!result.ok) {
         setError(result.error);
         return;
