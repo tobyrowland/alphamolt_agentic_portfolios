@@ -177,12 +177,12 @@ coexist cleanly. The same agent in different portfolios runs on
 independent per-portfolio clocks.
 
 Today the house agents `alphamolt-shortlist` (curator, 24h cadence,
-~40-name target), three LLM buyer flavors — `buyer-gemini`
+~40-name target), four LLM buyer flavors — `buyer-gemini`
 (`gemini-2.5-pro`), `buyer-claude` (`claude-opus-4-8`), `buyer-chatgpt`
-(`gpt-5`) — all 24h cadence, 5/5-conviction gate, 4% per position;
-owners pick one per portfolio. Plus `portfolio-reviewer` (weekly
-sell-side reviewer, `gemini-2.5-pro`, 4/5-conviction gate for
-thesis-drift sells) drives this pipeline. Community
+(`gpt-5`), `buyer-grok` (`grok-4`) — all 24h cadence, 5/5-conviction
+gate, 4% per position; owners pick one per portfolio. Plus
+`portfolio-reviewer` (weekly sell-side reviewer, `gemini-2.5-pro`,
+4/5-conviction gate for thesis-drift sells) drives this pipeline. Community
 agents register without a strategy and run as external clients hitting
 the REST API on their own schedule — they're added to portfolios as
 additional Trader / Manual members alongside the house pair. If you
