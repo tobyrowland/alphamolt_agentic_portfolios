@@ -406,9 +406,11 @@ export default async function CompanyPage({
           ticker={company.ticker}
           bullColor={bull.color}
           bullLabel={bull.label}
+          bullPassed={bull.passed}
           bullText={company.full_outlook || bullRationale}
           bearColor={bear.color}
           bearLabel={bear.label}
+          bearPassed={bear.passed}
           bearText={company.key_risks || bearRationale}
           buysSinceEval={buysSinceEval}
           totalAgents={swarm.total_agents}
@@ -624,12 +626,16 @@ function HeroSection({
         />
         <HeroStat
           label="Rank"
-          value={company.sort_order != null ? `#${company.sort_order}` : "—"}
+          value={company.sort_order != null ? `#${company.sort_order}` : "Pending"}
           accent="text"
         />
         <HeroStat
           label="Score"
-          value={formatNumber(company.composite_score, { decimals: 0 })}
+          value={
+            company.composite_score != null
+              ? formatNumber(company.composite_score, { decimals: 0 })
+              : "Pending"
+          }
           accent="text"
         />
       </div>
@@ -1821,9 +1827,11 @@ function HouseBullBear({
   ticker,
   bullColor,
   bullLabel,
+  bullPassed,
   bullText,
   bearColor,
   bearLabel,
+  bearPassed,
   bearText,
   buysSinceEval,
   totalAgents,
@@ -1831,13 +1839,45 @@ function HouseBullBear({
   ticker: string;
   bullColor: string;
   bullLabel: string;
+  bullPassed: boolean | null;
   bullText: string | null;
   bearColor: string;
   bearLabel: string;
+  bearPassed: boolean | null;
   bearText: string | null;
   buysSinceEval: number;
   totalAgents: number;
 }) {
+  // Bull side: ✅ → the case content, ❌ → the rejection rationale.
+  // Bear side: ❌ → the concerns (bears flagged something), ✅ →
+  // bears couldn't find concerns ("sound" — usually no rationale).
+  // Don't render FAIL text as if it's the case for — that's the
+  // SEZL bug.
+  const bullCaption =
+    bullPassed === true
+      ? "Why bulls are right"
+      : bullPassed === false
+        ? "Why bulls couldn't make a case"
+        : "House bull case";
+  const bearCaption =
+    bearPassed === false
+      ? "What bears are flagging"
+      : bearPassed === true
+        ? "Why bears couldn't find concerns"
+        : "House bear case";
+  const bullFallback =
+    bullPassed === true
+      ? "No rationale recorded."
+      : bullPassed === false
+        ? "Bulls walked away without a thesis."
+        : "Not yet evaluated";
+  const bearFallback =
+    bearPassed === false
+      ? "No specific concerns recorded."
+      : bearPassed === true
+        ? "Bears couldn't find material concerns."
+        : "Not yet evaluated";
+
   return (
     <section className="mb-6">
       <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
@@ -1853,7 +1893,7 @@ function HouseBullBear({
         >
           <div className="flex items-baseline gap-2 mb-2">
             <span className="font-mono text-xs uppercase tracking-wider text-text-muted">
-              House bull case
+              {bullCaption}
             </span>
             <span
               className="font-mono text-sm font-bold"
@@ -1865,7 +1905,7 @@ function HouseBullBear({
           {bullText ? (
             <p className="text-sm text-text-dim leading-relaxed">{bullText}</p>
           ) : (
-            <p className="text-xs text-text-muted italic">Not yet evaluated</p>
+            <p className="text-xs text-text-muted italic">{bullFallback}</p>
           )}
         </div>
         <div
@@ -1877,7 +1917,7 @@ function HouseBullBear({
         >
           <div className="flex items-baseline gap-2 mb-2">
             <span className="font-mono text-xs uppercase tracking-wider text-text-muted">
-              House bear case
+              {bearCaption}
             </span>
             <span
               className="font-mono text-sm font-bold"
@@ -1889,7 +1929,7 @@ function HouseBullBear({
           {bearText ? (
             <p className="text-sm text-text-dim leading-relaxed">{bearText}</p>
           ) : (
-            <p className="text-xs text-text-muted italic">Not yet evaluated</p>
+            <p className="text-xs text-text-muted italic">{bearFallback}</p>
           )}
         </div>
       </div>
@@ -1960,6 +2000,25 @@ function AiOutlook({ company }: { company: Company }) {
       company.event_impact
     );
 
+  // Surface narrative staleness vs the structured fundamentals. The
+  // narrative is regenerated only every ~90 days; fundamentals refresh
+  // weekly. When the gap is wide, any hard numbers the prose quotes are
+  // probably out of sync with the rest of the page.
+  const narrativeDate = company.ai_analyzed_at;
+  const dataDate = company.data_updated_at;
+  const staleDays =
+    narrativeDate && dataDate
+      ? Math.max(
+          0,
+          Math.floor(
+            (new Date(dataDate).getTime() -
+              new Date(narrativeDate).getTime()) /
+              86_400_000,
+          ),
+        )
+      : null;
+  const isStale = staleDays != null && staleDays > 30;
+
   return (
     <section className="mb-6">
       <h2 className="text-xs font-mono uppercase tracking-wider text-text-muted mb-2">
@@ -1973,6 +2032,17 @@ function AiOutlook({ company }: { company: Company }) {
         ) : (
           <p className="text-sm text-text-muted italic">
             No outlook recorded yet.
+          </p>
+        )}
+        {(narrativeDate || dataDate) && (
+          <p
+            className={`text-[11px] font-mono mt-3 ${
+              isStale ? "text-[var(--color-orange)]" : "text-text-muted"
+            }`}
+          >
+            {isStale && "⚠ "}
+            Narrative {narrativeDate ?? "—"} · fundamentals {dataDate ?? "—"}
+            {isStale && ` (${staleDays}d gap — figures in the prose may lag)`}
           </p>
         )}
         {hasMore && (

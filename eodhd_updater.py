@@ -520,6 +520,20 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
                 gp = rev - cor
         if gp is not None and rev and rev > 0:
             gross_margin_val = (gp / rev) * 100
+    # Reject impossible values (>100%, <-100%). EODHD occasionally
+    # publishes a restated quarter where grossProfit briefly exceeds
+    # revenue (one-time GAAP adjustments, currency translation, etc.).
+    # Better to surface no value than a 106% GM that the UI would
+    # render literally.
+    if gross_margin_val is not None and (
+        gross_margin_val > 100 or gross_margin_val < -100
+    ):
+        logging.getLogger().warning(
+            "%s: discarding implausible gross_margin %.1f%% — "
+            "likely a restated quarter where grossProfit > revenue.",
+            ticker, gross_margin_val,
+        )
+        gross_margin_val = None
     result["gross_margin"] = round(gross_margin_val, 1) if gross_margin_val is not None else None
 
     # ── GM Trend (Qtly) ──────────────────────────────────────────────
@@ -537,7 +551,19 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
                 if cor is not None:
                     gp = rev - cor
             if gp is not None and rev and rev > 0:
-                margins.append((gp / rev) * 100)
+                m = (gp / rev) * 100
+                # Skip impossible quarters (>100% / <-100%) — usually
+                # a one-time restatement where grossProfit briefly
+                # exceeds revenue. Rendering "106%" in the trend
+                # string is misleading.
+                if -100 <= m <= 100:
+                    margins.append(m)
+                else:
+                    logging.getLogger().warning(
+                        "%s: skipping implausible quarterly GM %.1f%% "
+                        "in gm_trend (entry: %s).",
+                        ticker, m, entry[0],
+                    )
         if len(margins) >= 2:
             gm_trend_val = margins[0] - margins[-1]  # pp change newest vs oldest
             arrow = "↑" if gm_trend_val > 1 else ("↓" if gm_trend_val < -1 else "→")

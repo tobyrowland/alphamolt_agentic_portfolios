@@ -690,10 +690,34 @@ export function buildSwarmViewLine({
   const valuationStretched =
     psNow != null && psMedian != null && psMedian > 0 && psNow / psMedian > 1.2;
 
-  if (verdict === "bullish") {
+  // Rationales must be gated on pass/fail. A bull_eval `❌ (X)` row
+  // means "the bull case fails *because* X" — quoting X as if bulls
+  // cite it is the SEZL bug. Only treat rationale as a "case for"
+  // when the eval passed (bulls ✅) or the bear concern was raised
+  // (bears ❌, i.e. they DID flag something).
+  const bullCaseRationale = bullPass === true ? bullRationale : null;
+  const bullRejectionRationale = bullPass === false ? bullRationale : null;
+  const bearFlagRationale = bearPass === false ? bearRationale : null;
+
+  // Override the holdings-based verdict with the eval pair when BOTH
+  // evals are present — they're a stronger signal than current
+  // holdings alone (which can lag a reversal). Mapping matches the
+  // AI multiplier in score_ai_analysis.py:
+  //   bull ✅ + bear ✅ (sound + story)   → Bullish
+  //   bull ❌ + bear ❌ (no case)         → Bearish
+  //   bull ✅ + bear ❌ (story w/ flags)  → Mixed
+  //   bull ❌ + bear ✅ (sound, no edge)  → Mixed
+  let effectiveVerdict: CompanyConsensus["verdict"] = verdict;
+  if (bullPass != null && bearPass != null) {
+    if (bullPass && bearPass) effectiveVerdict = "bullish";
+    else if (!bullPass && !bearPass) effectiveVerdict = "bearish";
+    else effectiveVerdict = "mixed";
+  }
+
+  if (effectiveVerdict === "bullish") {
     let headline: string;
-    if (bearPass === false && bearRationale) {
-      headline = `Bullish, but bears flag ${lowerFirstClause(bearRationale)}.`;
+    if (bearFlagRationale) {
+      headline = `Bullish, but bears flag ${lowerFirstClause(bearFlagRationale)}.`;
     } else if (valuationStretched) {
       headline = "Bullish, but valuation is stretched vs its 12-month median.";
     } else if (recentExitName) {
@@ -704,24 +728,33 @@ export function buildSwarmViewLine({
     return { headline, verdict_word: "Bullish" };
   }
 
-  if (verdict === "bearish") {
+  if (effectiveVerdict === "bearish") {
     let headline: string;
-    if (bullPass === true && bullRationale) {
-      headline = `Bearish, though the bull case still cites ${lowerFirstClause(bullRationale)}.`;
+    if (bullCaseRationale) {
+      headline = `Bearish, though the bull case still cites ${lowerFirstClause(bullCaseRationale)}.`;
+    } else if (bullRejectionRationale) {
+      // bull ❌: rationale explains why bulls couldn't make a case.
+      headline = `Bearish — bulls couldn't make a case (${lowerFirstClause(bullRejectionRationale)}).`;
     } else {
       headline = "Bearish — agents have walked away.";
     }
     return { headline, verdict_word: "Bearish" };
   }
 
-  // mixed
+  // mixed — present only the verified signal on each side. Never
+  // quote a FAIL rationale as if it's the "case for".
   let headline: string;
-  if (bullRationale && bearRationale) {
-    headline = `Split: bulls cite ${lowerFirstClause(bullRationale)}, bears cite ${lowerFirstClause(bearRationale)}.`;
-  } else if (bullRationale) {
-    headline = `Split — bulls still see ${lowerFirstClause(bullRationale)}.`;
-  } else if (bearRationale) {
-    headline = `Split — bears flag ${lowerFirstClause(bearRationale)}.`;
+  if (bullCaseRationale && bearFlagRationale) {
+    headline = `Split: bulls cite ${lowerFirstClause(bullCaseRationale)}, bears flag ${lowerFirstClause(bearFlagRationale)}.`;
+  } else if (bullCaseRationale) {
+    headline = `Split — bulls still see ${lowerFirstClause(bullCaseRationale)}.`;
+  } else if (bearFlagRationale) {
+    headline = `Split — bears flag ${lowerFirstClause(bearFlagRationale)}.`;
+  } else if (bullPass === false && bearPass === true) {
+    // The SEZL shape: sound but no edge. Surface the lack of a thesis
+    // explicitly rather than fishing for content the evals didn't
+    // produce.
+    headline = "Split — sound fundamentals, but no clear bull thesis.";
   } else {
     headline = "Split — no clear thesis yet.";
   }

@@ -9,14 +9,37 @@ import {
   Tooltip,
 } from "recharts";
 
+// History rows on `price_sales.history_json` are stored as
+// `[date, ps_value]` tuples by price_sales_updater.py (see
+// price_sales_updater.py:364). The TS type `Array<{date, ps}>` on
+// lib/types.ts was aspirational — Recharts couldn't find the keys on
+// the tuples, so the chart rendered axis labels only with no plotted
+// series. Accept both shapes here and normalise.
+type PsHistoryRow =
+  | { date: string; ps: number }
+  | [string, number];
+
 interface PsDataPoint {
   date: string;
   ps: number;
 }
 
-export default function PsChart({ data }: { data: PsDataPoint[] }) {
-  const sorted = [...data].sort(
-    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+function normalise(row: PsHistoryRow): PsDataPoint | null {
+  if (Array.isArray(row)) {
+    const [date, ps] = row;
+    if (typeof date !== "string" || typeof ps !== "number") return null;
+    return { date, ps };
+  }
+  if (typeof row?.date !== "string" || typeof row?.ps !== "number") return null;
+  return { date: row.date, ps: row.ps };
+}
+
+export default function PsChart({ data }: { data: PsHistoryRow[] }) {
+  const points = data
+    .map(normalise)
+    .filter((p): p is PsDataPoint => p !== null);
+  const sorted = [...points].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
   );
 
   return (

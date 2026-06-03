@@ -93,7 +93,10 @@ export interface PriceSales {
   median_12m: number | null;
   ath: number | null;
   pct_of_ath: number | null;
-  history_json: Array<{ date: string; ps: number }>;
+  // Stored as `[date, ps]` tuples by price_sales_updater.py — the chart
+  // accepts both shapes via its own normaliser, but this type matches
+  // what actually lands in JSONB.
+  history_json: Array<[string, number] | { date: string; ps: number }>;
   last_updated: string | null;
   first_recorded: string | null;
 }

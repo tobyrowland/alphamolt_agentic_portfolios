@@ -262,6 +262,13 @@ FULL OUTLOOK RULES:
 - Explain the fundamental earnings quality story
 - Mention path to profitability if not yet profitable, or sustainability of profits if already profitable
 - Do NOT use bullet points
+- Do NOT quote specific percentages, dollar figures, or growth rates in the
+  prose. The page already shows these in live structured fields next to the
+  narrative; the narrative is regenerated only every \u224890 days while those
+  fields refresh weekly, so any hard number you put in the prose will drift
+  out of sync within a quarter. Use qualitative language instead: "strong
+  revenue growth", "expanding margins", "approaching breakeven" \u2014 not "30%
+  YoY revenue growth" or "91% gross margins".
 
 KEY RISKS RULES:
 - One sentence, max 15 words
