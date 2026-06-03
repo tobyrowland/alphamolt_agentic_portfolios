@@ -4,12 +4,23 @@ on:
   schedule:
     # Runs at 4:00 AM UTC daily (after EODHD at 3:30)
     - cron: "0 4 * * *"
-  workflow_dispatch: # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force-refresh narratives, ignoring the 90-day staleness gate. Use after a prompt change."
+        type: boolean
+        default: false
+      ticker:
+        description: "Limit to a single ticker (e.g. SEZL). Leave blank to process every company."
+        type: string
+        default: ""
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30m fits the nightly incremental cadence; a global --force sweep
+    # over ~300 tickers can run longer once Gemini latency stacks up.
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -30,7 +41,15 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
-        run: python update_ai_narratives.py
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            ARGS="$ARGS --force"
+          fi
+          if [ -n "${{ github.event.inputs.ticker }}" ]; then
+            ARGS="$ARGS --ticker ${{ github.event.inputs.ticker }}"
+          fi
+          python update_ai_narratives.py $ARGS
 
       - name: Upload logs
         if: always()

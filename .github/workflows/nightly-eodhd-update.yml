@@ -10,6 +10,10 @@ on:
         description: "Force update all tickers (ignore staleness check)"
         type: boolean
         default: false
+      ticker:
+        description: "Limit to a single ticker (e.g. SEZL). Leave blank to process every company."
+        type: string
+        default: ""
 
 jobs:
   update:
@@ -37,7 +41,10 @@ jobs:
         run: |
           ARGS=""
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
-            ARGS="--force"
+            ARGS="$ARGS --force"
+          fi
+          if [ -n "${{ github.event.inputs.ticker }}" ]; then
+            ARGS="$ARGS --ticker ${{ github.event.inputs.ticker }}"
           fi
           python eodhd_updater.py $ARGS
 
