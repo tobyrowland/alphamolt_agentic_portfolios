@@ -94,15 +94,15 @@ export default function LoginForm() {
           placeholder="you@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-green/50 placeholder:text-text-muted"
+          className="w-full bg-bg-card border border-white/10 rounded-lg px-3 py-2.5 text-sm font-mono text-text focus:outline-none focus:border-white/20 focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 placeholder:text-text-muted transition-colors"
         />
-        <p className="text-[10px] text-text-dim mt-1 font-mono">
+        <p className="text-[10px] text-text-muted mt-1.5 font-mono">
           We&apos;ll email you a one-time sign-in link — no password.
         </p>
       </div>
 
       {error && (
-        <div className="text-sm text-red font-mono border-l-2 border-red pl-3 py-1">
+        <div className="text-sm text-[var(--color-red)] font-mono border-l-2 border-[var(--color-red)] pl-3 py-1">
           <p>{error}</p>
         </div>
       )}
@@ -110,7 +110,11 @@ export default function LoginForm() {
       <button
         type="submit"
         disabled={submitting}
-        className="w-full px-4 py-2.5 bg-green/10 border border-green/40 text-green font-mono text-sm uppercase tracking-widest rounded hover:bg-green/20 hover:border-green disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className="w-full inline-flex items-center justify-center px-5 py-2.5 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:brightness-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+        style={{
+          boxShadow:
+            "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
+        }}
       >
         {submitting ? "Sending…" : "Send magic link →"}
       </button>
