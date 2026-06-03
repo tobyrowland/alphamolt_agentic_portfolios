@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
@@ -9,77 +10,29 @@ import { isCompanyIndexable } from "@/lib/company-indexable";
 import Nav from "@/components/nav";
 import PsValuationChart from "@/components/ps-valuation-chart";
 import DistributionStrips from "@/components/distribution-strips";
+import type { CompanyHolder, CompanyTrade } from "@/lib/company-agents-query";
 import {
-  getCompanyHolders,
-  getCompanyTradeTape,
-  getCompanySwarmSnapshot,
-  type CompanyHolder,
-  type CompanyTrade,
-} from "@/lib/company-agents-query";
-import {
-  getActiveThesesForTicker,
-  getWatchlistCount,
-  buildLifecycle,
-  buildBehaviouralStatus,
   buildSummaryLine,
-  buildBoughtReasons,
-  buildSoldReasons,
-  buildSellTriggerLine,
   type ActiveThesis,
   type Lifecycle,
   type ReasonGroup,
   type SellTriggerLine,
 } from "@/lib/company-report-query";
+import { buildStripModels, type StripModel } from "@/lib/metric-stats-query";
 import {
-  getMetricStats,
-  buildStripModels,
-  type StripModel,
-} from "@/lib/metric-stats-query";
+  loadCompany,
+  loadPriceSales,
+  loadMetricStats,
+  loadAgentActivity,
+} from "@/lib/company-page-data";
 
 // 300s ISR matches the 15-min intraday price cadence — readers see fresh
 // data without re-rendering on every request. Content is fully
-// server-rendered into the initial HTML (brief §8.1).
+// server-rendered into the initial HTML (brief §8.1); the agent-activity
+// regions stream behind Suspense so the instant shell (identity, price,
+// chart, fundamentals) paints without waiting on the heavy trade reads
+// (brief §8.10).
 export const revalidate = 300;
-
-// ---------------------------------------------------------------------------
-// Data
-// ---------------------------------------------------------------------------
-
-async function getData(ticker: string) {
-  const supabase = getSupabase();
-  const [
-    companyRes,
-    psRes,
-    holders,
-    trades,
-    theses,
-    swarm,
-    watchlisted,
-    metricStats,
-  ] = await Promise.all([
-    supabase.from("companies").select("*").eq("ticker", ticker).single(),
-    supabase.from("price_sales").select("*").eq("ticker", ticker).maybeSingle(),
-    getCompanyHolders(ticker),
-    // Wide window so the lifecycle / ledger derivations see every agent's
-    // latest action, including agents that exited months ago.
-    getCompanyTradeTape(ticker, 500),
-    getActiveThesesForTicker(ticker),
-    getCompanySwarmSnapshot(ticker),
-    getWatchlistCount(ticker),
-    getMetricStats(),
-  ]);
-
-  return {
-    company: companyRes.data as Company | null,
-    priceSales: psRes.data as PriceSales | null,
-    holders,
-    trades,
-    theses,
-    swarm,
-    watchlisted,
-    metricStats,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Metadata (brief §8.2–§8.5, §8.8, §8.11) — neutral, per-ticker, no
@@ -205,7 +158,7 @@ function datasetJsonLd({
 }
 
 // ---------------------------------------------------------------------------
-// Page
+// Page — instant shell + streamed agent-activity regions
 // ---------------------------------------------------------------------------
 
 export default async function CompanyPage({
@@ -215,20 +168,19 @@ export default async function CompanyPage({
 }) {
   const { ticker } = await params;
   const decoded = decodeURIComponent(ticker);
-  const { company, priceSales, holders, trades, theses, swarm, watchlisted, metricStats } =
-    await getData(decoded);
+
+  // Instant shell: the three fast reads only (companies + price_sales +
+  // metric_stats). Everything that needs the heavy trade/holder/thesis
+  // reads streams in below via <Suspense>.
+  const [company, priceSales, metricStats] = await Promise.all([
+    loadCompany(decoded),
+    loadPriceSales(decoded),
+    loadMetricStats(),
+  ]);
 
   if (!company) notFound();
 
-  const lifecycle = buildLifecycle(holders, trades, watchlisted);
-  const behavioural = buildBehaviouralStatus(trades, lifecycle, swarm.total_agents);
-  const summary = buildSummaryLine(company, priceSales, lifecycle);
-  const bought = buildBoughtReasons(trades, theses);
-  const sold = buildSoldReasons(holders, trades);
-  const sellTriggers = buildSellTriggerLine(theses, company);
   const strips = buildStripModels(company, metricStats);
-
-  const traded = trades.length > 0;
   const dataUpdated = company.data_updated_at ?? company.ai_analyzed_at ?? null;
 
   const breadcrumb = breadcrumbJsonLd(company.ticker, company.company_name, company.sector);
@@ -258,19 +210,34 @@ export default async function CompanyPage({
           <article>
             <Breadcrumbs ticker={company.ticker} sector={company.sector} />
 
-            {/* BLOCK 1 — header */}
+            {/* BLOCK 1 — header (identity + price + score paint instantly;
+                behavioural status, summary, lifecycle, held-by stream in) */}
             <Header
               company={company}
-              behaviourLabel={behavioural.label}
-              behaviourDetail={behavioural.detail}
-              summary={summary}
-              lifecycle={lifecycle}
-              heldBy={`${lifecycle.holding} / ${swarm.total_agents}`}
               dataUpdated={dataUpdated}
-              traded={traded}
+              badge={
+                <Suspense fallback={<BadgeSkeleton />}>
+                  <BehaviouralBadge ticker={decoded} />
+                </Suspense>
+              }
+              summary={
+                <Suspense fallback={<SummarySkeleton />}>
+                  <SummaryParagraph ticker={decoded} company={company} priceSales={priceSales} />
+                </Suspense>
+              }
+              lifecycle={
+                <Suspense fallback={<PillsSkeleton />}>
+                  <LifecyclePillsRow ticker={decoded} />
+                </Suspense>
+              }
+              heldBy={
+                <Suspense fallback={<span className="text-text-muted">—</span>}>
+                  <HeldByValue ticker={decoded} />
+                </Suspense>
+              }
             />
 
-            {/* BLOCK 2 — P/S valuation chart (anchor) */}
+            {/* BLOCK 2 — P/S valuation chart (anchor, instant) */}
             {priceSales && (
               <Block heading="Price-to-sales history · 52 weeks">
                 <PsHeader priceSales={priceSales} psNow={company.ps_now} />
@@ -278,31 +245,22 @@ export default async function CompanyPage({
               </Block>
             )}
 
-            {/* BLOCK 3 — what the agents did (hidden when untraded) */}
-            {traded && (
-              <Block heading="What the agents did">
-                <WhatAgentsDid bought={bought} sold={sold} sellTriggers={sellTriggers} />
-              </Block>
-            )}
+            {/* BLOCK 3 — what the agents did (streamed; hidden when untraded) */}
+            <Suspense fallback={<BlockSkeleton heading="What the agents did" />}>
+              <WhatAgentsDidSection ticker={decoded} />
+            </Suspense>
 
-            {/* BLOCK 4 — fundamentals distribution strips */}
+            {/* BLOCK 4 — fundamentals distribution strips (instant) */}
             <Block heading={`Fundamentals · where ${company.ticker} sits in the universe`}>
               <DistributionStrips ticker={company.ticker} strips={strips} />
               <FundamentalsFootnote company={company} strips={strips} />
               <FullMetrics company={company} priceSales={priceSales} />
             </Block>
 
-            {/* BLOCK 5 — position ledger (hidden when untraded) */}
-            {traded && (
-              <Block heading="Position ledger">
-                <PositionLedger
-                  holders={holders}
-                  trades={trades}
-                  theses={theses}
-                  totalTrades={trades.length}
-                />
-              </Block>
-            )}
+            {/* BLOCK 5 — position ledger (streamed; hidden when untraded) */}
+            <Suspense fallback={<BlockSkeleton heading="Position ledger" />}>
+              <PositionLedgerSection ticker={decoded} />
+            </Suspense>
 
             {/* Related links — internal crawl paths (brief §8.6) */}
             <RelatedLinks ticker={company.ticker} sector={company.sector} />
@@ -318,6 +276,134 @@ export default async function CompanyPage({
         </div>
       </main>
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Streamed agent-activity regions — each awaits the single memoized
+// loadAgentActivity bundle, so the multiple Suspense boundaries share one
+// DB round-trip rather than re-querying.
+// ---------------------------------------------------------------------------
+
+async function BehaviouralBadge({ ticker }: { ticker: string }) {
+  const { behavioural } = await loadAgentActivity(ticker);
+  return (
+    <span
+      title={behavioural.detail}
+      className="font-mono text-[11px] tracking-wide uppercase px-2.5 py-[3px] rounded-[5px] bg-white/[0.05] text-text-muted"
+    >
+      {behavioural.label}
+    </span>
+  );
+}
+
+async function SummaryParagraph({
+  ticker,
+  company,
+  priceSales,
+}: {
+  ticker: string;
+  company: Company;
+  priceSales: PriceSales | null;
+}) {
+  const { lifecycle } = await loadAgentActivity(ticker);
+  return (
+    <p className="text-[14px] leading-[1.55] text-text mb-4">
+      {buildSummaryLine(company, priceSales, lifecycle)}
+    </p>
+  );
+}
+
+async function LifecyclePillsRow({ ticker }: { ticker: string }) {
+  const { lifecycle, traded } = await loadAgentActivity(ticker);
+  if (!traded) return null;
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap mb-4 font-mono text-[11px]">
+      {lifecycle.watchlisted > 0 && (
+        <>
+          <LifecyclePill>{lifecycle.watchlisted} watchlisted</LifecyclePill>
+          <Chevron />
+        </>
+      )}
+      <LifecyclePill accent>{lifecycle.bought} bought</LifecyclePill>
+      <Chevron />
+      <LifecyclePill strong>{lifecycle.holding} holding</LifecyclePill>
+      {lifecycle.sold > 0 && (
+        <>
+          <Chevron />
+          <LifecyclePill>{lifecycle.sold} sold</LifecyclePill>
+        </>
+      )}
+    </div>
+  );
+}
+
+async function HeldByValue({ ticker }: { ticker: string }) {
+  const { lifecycle, totalAgents } = await loadAgentActivity(ticker);
+  return <>{`${lifecycle.holding} / ${totalAgents}`}</>;
+}
+
+async function WhatAgentsDidSection({ ticker }: { ticker: string }) {
+  const { bought, sold, sellTriggers, traded } = await loadAgentActivity(ticker);
+  if (!traded) return null;
+  return (
+    <Block heading="What the agents did">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <ReasonCard
+          badge={`${bought.count} bought — reasons given`}
+          badgeClass="bg-cyan/[0.12] text-cyan"
+          group={bought}
+        />
+        <ReasonCard
+          badge={`${sold.count} sold — reasons given`}
+          badgeClass="bg-white/[0.06] text-text-muted"
+          group={sold}
+        />
+      </div>
+      <SellTriggerRow sellTriggers={sellTriggers} />
+    </Block>
+  );
+}
+
+async function PositionLedgerSection({ ticker }: { ticker: string }) {
+  const { holders, trades, theses, traded } = await loadAgentActivity(ticker);
+  if (!traded) return null;
+  return (
+    <Block heading="Position ledger">
+      <PositionLedger holders={holders} trades={trades} theses={theses} totalTrades={trades.length} />
+    </Block>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Skeletons for the streamed regions (match heights to limit CLS)
+// ---------------------------------------------------------------------------
+
+function BadgeSkeleton() {
+  return <span className="inline-block h-5 w-28 rounded-[5px] bg-white/[0.05] animate-pulse" />;
+}
+
+function SummarySkeleton() {
+  return (
+    <div className="mb-4 space-y-1.5" aria-hidden>
+      <div className="h-3.5 w-full bg-bg-hover rounded animate-pulse" />
+      <div className="h-3.5 w-2/3 bg-bg-hover rounded animate-pulse" />
+    </div>
+  );
+}
+
+function PillsSkeleton() {
+  return <div className="h-7 w-64 mb-4 rounded bg-bg-hover animate-pulse" aria-hidden />;
+}
+
+function BlockSkeleton({ heading }: { heading: string }) {
+  return (
+    <section className="bg-bg-card border border-white/[0.09] rounded-[14px] p-[18px] mt-3.5">
+      <h2 className="font-mono text-[11px] tracking-[0.07em] text-text-muted font-normal uppercase mb-3">
+        {heading}
+      </h2>
+      <div className="h-24 w-full rounded bg-bg-hover animate-pulse" aria-hidden />
+    </section>
   );
 }
 
@@ -365,22 +451,18 @@ function Breadcrumbs({ ticker, sector }: { ticker: string; sector: string | null
 
 function Header({
   company,
-  behaviourLabel,
-  behaviourDetail,
+  dataUpdated,
+  badge,
   summary,
   lifecycle,
   heldBy,
-  dataUpdated,
-  traded,
 }: {
   company: Company;
-  behaviourLabel: string;
-  behaviourDetail: string;
-  summary: string;
-  lifecycle: Lifecycle;
-  heldBy: string;
   dataUpdated: string | null;
-  traded: boolean;
+  badge: React.ReactNode;
+  summary: React.ReactNode;
+  lifecycle: React.ReactNode;
+  heldBy: React.ReactNode;
 }) {
   const perf = company.perf_52w_vs_spy;
   const perfLabel =
@@ -396,12 +478,7 @@ function Header({
             {company.company_name}
           </span>
         </h1>
-        <span
-          title={behaviourDetail}
-          className="font-mono text-[11px] tracking-wide uppercase px-2.5 py-[3px] rounded-[5px] bg-white/[0.05] text-text-muted"
-        >
-          {behaviourLabel}
-        </span>
+        {badge}
       </div>
 
       <p className="font-mono text-[11px] text-text-muted mt-0.5 mb-3.5">
@@ -409,28 +486,8 @@ function Header({
         {dataUpdated && <> · data updated {formatDate(dataUpdated)}</>}
       </p>
 
-      <p className="text-[14px] leading-[1.55] text-text mb-4">{summary}</p>
-
-      {/* Action lifecycle — watchlisted › bought › holding › sold */}
-      {traded && (
-        <div className="flex items-center gap-1.5 flex-wrap mb-4 font-mono text-[11px]">
-          {lifecycle.watchlisted > 0 && (
-            <>
-              <LifecyclePill>{lifecycle.watchlisted} watchlisted</LifecyclePill>
-              <Chevron />
-            </>
-          )}
-          <LifecyclePill accent>{lifecycle.bought} bought</LifecyclePill>
-          <Chevron />
-          <LifecyclePill strong>{lifecycle.holding} holding</LifecyclePill>
-          {lifecycle.sold > 0 && (
-            <>
-              <Chevron />
-              <LifecyclePill>{lifecycle.sold} sold</LifecyclePill>
-            </>
-          )}
-        </div>
-      )}
+      {summary}
+      {lifecycle}
 
       {/* Key stats */}
       <div className="flex flex-wrap gap-x-[18px] gap-y-3 border-t border-b border-white/[0.09] py-3.5">
@@ -530,36 +587,8 @@ function PsHeader({ priceSales, psNow }: { priceSales: PriceSales; psNow: number
 }
 
 // ---------------------------------------------------------------------------
-// BLOCK 3 — what the agents did
+// BLOCK 3 — what the agents did (presentational)
 // ---------------------------------------------------------------------------
-
-function WhatAgentsDid({
-  bought,
-  sold,
-  sellTriggers,
-}: {
-  bought: ReasonGroup;
-  sold: ReasonGroup;
-  sellTriggers: SellTriggerLine;
-}) {
-  return (
-    <div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-        <ReasonCard
-          badge={`${bought.count} bought — reasons given`}
-          badgeClass="bg-cyan/[0.12] text-cyan"
-          group={bought}
-        />
-        <ReasonCard
-          badge={`${sold.count} sold — reasons given`}
-          badgeClass="bg-white/[0.06] text-text-muted"
-          group={sold}
-        />
-      </div>
-      <SellTriggerRow sellTriggers={sellTriggers} />
-    </div>
-  );
-}
 
 function ReasonCard({
   badge,
@@ -721,7 +750,7 @@ function clampGm(v: number | null): number | null {
 }
 
 // ---------------------------------------------------------------------------
-// BLOCK 5 — position ledger
+// BLOCK 5 — position ledger (presentational)
 // ---------------------------------------------------------------------------
 
 function PositionLedger({
