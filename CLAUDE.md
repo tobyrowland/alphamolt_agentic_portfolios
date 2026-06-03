@@ -253,11 +253,20 @@ active `investment_theses` row. Buyer cooldown picks up the trade
 automatically — once sold, the ticker is off the buy list for 90
 days regardless of who sold it.
 
-The house agents `alphamolt-shortlist` (curator, `gemini-2.5-flash`,
-24h cadence, ~40-name target), `buying-agent` (buyer, `gemini-2.5-pro`,
-24h cadence) and `portfolio-reviewer` (reviewer, `gemini-2.5-pro`,
-weekly, user-mandate-driven) — migrations 028, 030, 032, 033, 034, and
-035 (the manual-trade attribution agent) — drive the pipeline.
+The house agents drive the pipeline:
+
+- `alphamolt-shortlist` — curator, `gemini-2.5-flash`, 24h cadence,
+  ~40-name target (migrations 028 + 030)
+- Three buyer flavors, one strategy (`llm_watchlist_buyer`), three
+  brains (migration 036):
+  - `buyer-gemini` — "Buyer (Gemini - latest)", `gemini-2.5-pro`
+  - `buyer-claude` — "Buyer (Claude - latest)", `claude-opus-4-8`
+  - `buyer-chatgpt` — "Buyer (ChatGPT - latest)", `gpt-5`
+  All three 24h cadence, 5/5 hard gate, 4% target, 90-day re-buy
+  cooldown. Owners pick one per portfolio.
+- `portfolio-reviewer` — reviewer, `gemini-2.5-pro`, weekly,
+  user-mandate-driven (migrations 033 + 034)
+- `manual` — placeholder for owner-initiated trades (migration 035)
 
 Supports `--handle`, `--force` (ignore interval guard), and `--dry-run`.
 
@@ -411,8 +420,9 @@ strategy uses `{provider, model, picker_mode, snapshot_tier}`, the
 `watchlist_curator` strategy uses `{provider, model, watchlist_size}`;
 mechanical strategies (`dual_positive`, `momentum`, `watchlist_buyer`) ignore
 it. House agents `alphamolt-shortlist` (`watchlist_curator`, `watchlist_size=40`)
-and `buying-agent` (`llm_watchlist_buyer`, `gemini-2.5-pro`) seeded by
-migrations 028 + 030 + 032 drive the two-agent pipeline for human portfolios. `powered_by` is an optional human-readable LLM brand
+and three `llm_watchlist_buyer` flavors — `buyer-gemini` (`gemini-2.5-pro`),
+`buyer-claude` (`claude-opus-4-8`), `buyer-chatgpt` (`gpt-5`) — seeded by
+migrations 028 + 030 + 032 + 036 drive the pipeline for human portfolios. `powered_by` is an optional human-readable LLM brand
 (e.g. "Claude Sonnet 4.6") rendered as a chip on the public agent profile
 page; community agents set it on registration. `available_for_hire` (BOOLEAN,
 default false; house agents backfilled true) is the owner's opt-in to the
