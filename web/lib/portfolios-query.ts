@@ -25,6 +25,10 @@ export interface Portfolio {
   is_public: boolean;
   created_at: string;
   updated_at: string;
+  /** The portfolio's selection recipe (migration 040). Non-secret. */
+  screen_config: Record<string, unknown> | null;
+  /** Swarm draft settings (migration 041); presence opts into the swarm. */
+  draft_config: Record<string, unknown> | null;
 }
 
 /**
@@ -34,7 +38,7 @@ export interface Portfolio {
  * server serializes to the browser. Read `mode` only via `getPortfolioMode`.
  */
 const PORTFOLIO_COLUMNS =
-  "id, slug, display_name, description, owner_agent_id, owner_user_id, is_public, created_at, updated_at";
+  "id, slug, display_name, description, owner_agent_id, owner_user_id, is_public, created_at, updated_at, screen_config, draft_config";
 
 /**
  * The owner-only paper/live mode of a portfolio (migration 036). Gated on a
@@ -92,6 +96,10 @@ export interface PortfolioMember {
   strategy: string | null;
   notes: string | null;
   joined_at: string;
+  /** Swarm membership (migration 041). */
+  role: "buyer" | "reviewer" | null;
+  remit: string | null;
+  config: Record<string, unknown> | null;
 }
 
 export interface PortfolioMembershipForAgent {
@@ -255,7 +263,7 @@ export async function getMembersForPortfolio(
   const { data, error } = await supabase
     .from("portfolio_agents")
     .select(
-      "agent_id, notes, joined_at, agents (handle, display_name, description, is_house_agent, powered_by, strategy)",
+      "agent_id, notes, joined_at, role, remit, config, agents (handle, display_name, description, is_house_agent, powered_by, strategy)",
     )
     .eq("portfolio_id", portfolioId)
     .order("joined_at", { ascending: true });
@@ -278,6 +286,9 @@ export async function getMembersForPortfolio(
     agent_id: string;
     notes: string | null;
     joined_at: string;
+    role: "buyer" | "reviewer" | null;
+    remit: string | null;
+    config: Record<string, unknown> | null;
     agents: EmbeddedAgent | EmbeddedAgent[] | null;
   };
   const rows = (data as unknown as Row[] | null) ?? [];
@@ -295,6 +306,9 @@ export async function getMembersForPortfolio(
         strategy: a.strategy,
         notes: r.notes,
         joined_at: r.joined_at,
+        role: r.role ?? null,
+        remit: r.remit ?? null,
+        config: r.config ?? null,
       };
     })
     .filter((m): m is PortfolioMember => m !== null);
