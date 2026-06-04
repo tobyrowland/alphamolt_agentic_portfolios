@@ -810,3 +810,42 @@ DROP POLICY IF EXISTS "public read" ON estimates;
 CREATE POLICY "public read" ON estimates    FOR SELECT USING (true);
 DROP POLICY IF EXISTS "public read" ON events;
 CREATE POLICY "public read" ON events       FOR SELECT USING (true);
+
+
+-- ============================================================
+-- Configurable screener / selection stage (migration 040)
+--
+-- The /screener page is the configurable research tool AND the funnel's
+-- selection stage: the ranked top N of a portfolio's screen feed the buyer
+-- directly (the watchlist_curator agent + watchlist page are removed). See
+-- migrations/040_screener_selection.sql for the screen_facts() /
+-- screen_ai_overlay() functions (the deterministic scoring-as-a-function
+-- reads them). saved_screens persists shareable screen recipes.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS saved_screens (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+    slug          TEXT UNIQUE NOT NULL,
+    name          TEXT NOT NULL,
+    config        JSONB NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_saved_screens_owner ON saved_screens (owner_user_id);
+DROP TRIGGER IF EXISTS saved_screens_updated_at ON saved_screens;
+CREATE TRIGGER saved_screens_updated_at BEFORE UPDATE ON saved_screens
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+ALTER TABLE saved_screens ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "public read" ON saved_screens;
+CREATE POLICY "public read" ON saved_screens FOR SELECT USING (true);
+DROP POLICY IF EXISTS "owner insert" ON saved_screens;
+CREATE POLICY "owner insert" ON saved_screens FOR INSERT WITH CHECK (auth.uid() = owner_user_id);
+DROP POLICY IF EXISTS "owner update" ON saved_screens;
+CREATE POLICY "owner update" ON saved_screens FOR UPDATE USING (auth.uid() = owner_user_id) WITH CHECK (auth.uid() = owner_user_id);
+DROP POLICY IF EXISTS "owner delete" ON saved_screens;
+CREATE POLICY "owner delete" ON saved_screens FOR DELETE USING (auth.uid() = owner_user_id);
+
+-- A portfolio's selection recipe (filters + weights + topN). Replaces the
+-- removed watchlist: the buyer ranks Level 0 via screen_facts() against this
+-- and buys the top N.
+ALTER TABLE portfolios ADD COLUMN IF NOT EXISTS screen_config JSONB;

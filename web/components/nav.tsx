@@ -6,8 +6,11 @@ import Logo from "@/components/logo";
 import NavAuth from "@/components/nav-auth";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
-// Links available to every visitor.
+// Links available to every visitor. The screener is now a public, top-nav
+// product surface (screener brief v2 §7) — viewable logged-out, and the
+// funnel's selection stage.
 const PUBLIC_LINKS: { href: string; label: string }[] = [
+  { href: "/screener", label: "Screener" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/docs", label: "Docs" },
 ];
@@ -18,9 +21,11 @@ const PUBLIC_LINKS: { href: string; label: string }[] = [
 // user's portfolio detail), via /account → /portfolios/<slug> and
 // /account/portfolio → /portfolios/<slug> respectively. Settings is
 // reachable from the chip on the portfolio header.
+//
+// The standalone Watchlist link is gone: the screener's top N IS the
+// selection now (curator/watchlist removed, brief v2 §3).
 const AUTHED_LINKS: { href: string; label: string }[] = [
   { href: "/account", label: "Dashboard" },
-  { href: "/account/watchlist", label: "Watchlist" },
   { href: "/account/portfolio", label: "Portfolio" },
 ];
 
