@@ -6,7 +6,10 @@ import HoldingsList from "@/components/holdings-list";
 import { AgentMonogram } from "@/components/agent-monogram";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
-import SwarmConfig from "@/components/portfolio/swarm-config";
+import SwarmConfig, {
+  type AgentCatalogEntry,
+} from "@/components/portfolio/swarm-config";
+import { listPublicAgents, getAgentReturns30d } from "@/lib/agents-query";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import {
   getPortfolio,
@@ -117,6 +120,9 @@ async function getPortfolioPageData(slug: string): Promise<{
   trades: Trade[];
   totalTrades: number;
   holdingsCount: number;
+  /** Registry of hireable agents + 30d track record — owner-only (the swarm
+   *  picker). Empty for non-owners. */
+  catalog: AgentCatalogEntry[];
 }> {
   const portfolio = await resolveVisiblePortfolio(slug);
   if (!portfolio) {
@@ -130,6 +136,7 @@ async function getPortfolioPageData(slug: string): Promise<{
       trades: [],
       totalTrades: 0,
       holdingsCount: 0,
+      catalog: [],
     };
   }
   const isOwner = await isViewerOwner(portfolio);
@@ -191,6 +198,24 @@ async function getPortfolioPageData(slug: string): Promise<{
   ]);
   const { trades, totalTrades } = recent;
 
+  // Agent catalog for the owner's swarm picker: every hireable agent + its 30d
+  // track record. Owner-only — skipped entirely for non-owners.
+  let catalog: AgentCatalogEntry[] = [];
+  if (isOwner) {
+    const [agents, returns] = await Promise.all([
+      listPublicAgents(1000, true).catch(() => []),
+      getAgentReturns30d().catch(() => new Map<string, number | null>()),
+    ]);
+    catalog = agents.map((a) => ({
+      handle: a.handle,
+      displayName: a.display_name,
+      poweredBy: a.powered_by,
+      isHouse: a.is_house_agent,
+      strategy: a.strategy,
+      return30d: returns.get(a.handle) ?? null,
+    }));
+  }
+
   return {
     portfolio,
     isOwner,
@@ -201,6 +226,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     trades,
     totalTrades,
     holdingsCount,
+    catalog,
   };
 }
 
@@ -220,6 +246,7 @@ export default async function PortfolioPage({ params }: PageParams) {
     trades,
     totalTrades,
     holdingsCount,
+    catalog,
   } = await getPortfolioPageData(slug);
   if (!portfolio) notFound();
 
@@ -297,10 +324,12 @@ export default async function PortfolioPage({ params }: PageParams) {
                   handle: m.handle,
                   display_name: m.display_name,
                   powered_by: m.powered_by,
+                  strategy: m.strategy,
                   role: m.role,
                   remit: m.remit,
                   config: m.config,
                 }))}
+                catalog={catalog}
                 screenConfig={portfolio.screen_config}
                 draftEnabled={!!portfolio.draft_config}
               />
