@@ -67,7 +67,73 @@ extend/break signals. Exposes `build_snapshot`, `record_thesis`,
 `mark_thesis_status`. Signal operators: `>`, `>=`, `<`, `<=`, `==`, `!=`,
 `change_pct_lt`, `change_pct_gt`. See migration 020.
 
+### eodhd.py
+Thin, reusable EODHD REST client for the Level 0 fact store. Wraps the three
+universe endpoints the legacy scripts don't use — `exchange-symbol-list/{EX}`
+(full ticker list + security type), `eod/{SYMBOL}` (daily OHLCV history) and
+`eod-bulk-last-day/{EX}` (all tickers for one trading day) — plus a
+`fundamentals` passthrough, behind one rate-limited, retrying `get()`
+(`EODHDClient`). `EODHD_API_KEY` env var.
+
+### level0.py
+The **§9 contract** Level 0 exposes upward — a read-only `FactStore` facade
+over the fact tables, the single seam every visible surface reads through.
+`get_tier1_universe()` (candidate scan), `get_facts(ticker)` /
+`get_facts_bulk()` (identity + latest fundamentals/valuation/price + events +
+estimates, each stamped with its as-of date), `get_distribution(metric,
+sector)` / `get_all_distributions()` (percentile strips off `metric_stats`).
+Holds NO strategy — returns facts + distributions, callers decide.
+
+## Level 0 — strategy-neutral universe & fact store
+
+A single store of **facts, never strategy**, about all liquid US equities
+(spec: alphamolt Level 0). It sits *underneath* the existing pipeline: the old
+opinionated TradingView screen becomes one *lens* applied on top of Tier 1,
+downstream — it no longer *defines* the universe. The legacy
+`companies` / `price_sales` pipeline is untouched and runs alongside.
+
+**Two tiers.** *Tier 0* (`securities`) is identity-level reference data for
+every US-listed common stock + ADR + REIT (units/warrants/preferreds/SPACs
+excluded), status-tracked, soft-deleted on delisting. *Tier 1* is the subset
+passing the **affordability gate** (`securities.is_tier1`) that receives full
+enrichment (prices, fundamentals, valuation).
+
+**The affordability gate is the only gate** (`universe_sync.passes_gate`) and
+carries no strategy: trailing-30d ADDV ≥ $5M, last close ≥ $1, enough price
+history, active US listing of an included security type. No margin/growth/
+valuation/sector views — those are lenses downstream.
+
+**Three clocks** (per data type): membership/identity weekly
+(`universe_sync.py`), prices daily (`prices_daily_updater.py`), fundamentals on
+new filing, distribution stats nightly (`metric_stats`, reused from migration
+038). See migration 039. Backend foundation only — the configurable screener
+over the wider universe (the spec's step-6 "visible win") is a follow-up.
+
 ## Scripts
+
+### universe_sync.py (02:00 UTC Sundays — weekly)
+Level 0 membership/identity + affordability gate. Ingests the full EODHD US
+`exchange-symbol-list` into `securities` (Tier 0): keeps common stock / ADR /
+REIT, drops funds / preferreds / warrants / units / SPACs (`classify_security`),
+adds new listings, soft-deletes names that fell off the list (`status=
+'delisted'`). Then computes the trailing-30d ADDV for the whole universe from
+~30 `eod-bulk-last-day` calls and sets `is_tier1` via `passes_gate`. Flags:
+`--dry-run`, `--skip-gate`, `--limit N`.
+
+### prices_daily_updater.py (04:15 UTC daily)
+Level 0 price layer. One `eod-bulk-last-day` call writes the latest trading
+day's OHLCV for every Tier 1 ticker (idempotent on `(ticker, date)`); any Tier 1
+name with no recent row (a fresh gate promotion) gets a full 2y per-ticker
+backfill. Stores `dollar_volume` + `adj_close`. Flags: `--backfill` (force 2y
+for all Tier 1), `--tickers`, `--years`, `--dry-run`.
+
+### migrate_companies_to_level0.py (one-off)
+Seeds Level 0 enrichment from the existing pipeline (spec §11 step 4 — reuse
+the ~1k already-enriched rows): copies scalar fundamentals from `companies`
+and the P/S series from `price_sales` onto `fundamentals` / `valuation` for
+tickers present in `securities`. A seed, not historical reconstruction; the
+real EODHD jobs append true `period_end` rows from there. Flags: `--dry-run`,
+`--tier1-only`.
 
 ### nightly_screen.py (03:00 UTC daily)
 TradingView screener over the US-listed universe (NYSE/NASDAQ/AMEX/NYSEARCA/
@@ -381,6 +447,43 @@ the schema for backward compat but are no longer read anywhere; a later
 cleanup migration will drop them.
 
 ## Database Tables
+
+### Level 0 fact store (migration 039 — facts, never strategy)
+
+**`securities`** (Tier 0 identity — every liquid US equity)
+```
+ticker (PK), name, exchange, cik, figi, isin, security_type (Common Stock|ADR|REIT),
+gics_sector, gics_industry, country, share_class, status (active|delisted),
+ipo_date, first_seen, last_seen, is_tier1, addv_30d, last_close,
+tier1_evaluated_at, created_at, updated_at
+```
+`is_tier1` is set by the affordability gate; `addv_30d` / `last_close` are the
+gate inputs, stamped for transparency. Soft-delete only (`status='delisted'`).
+
+**`prices_daily`** (2y daily OHLCV per Tier 1 ticker)
+```
+ticker (FK), date, open, high, low, close, adj_close, volume, dollar_volume — PK (ticker, date)
+```
+
+**`fundamentals`** (append-only history)
+```
+ticker (FK), period_end, fetched_at, source, revenue, rev_growth_ttm, rev_growth_qoq,
+rev_cagr, gross_margin, operating_margin, net_margin, fcf_margin, rule_of_40,
+cash, debt, shares_out, eps, opex_pct_rev — PK (ticker, period_end)
+```
+
+**`valuation`** (multiples + P/S series)
+```
+ticker (FK), date, ps, pe, ev_sales, p_fcf, ps_high_52w, ps_low_52w, ps_median_12m,
+ps_ath, ps_pct_of_ath, history_json, source, fetched_at — PK (ticker, date)
+```
+
+**`estimates`** (optional, latest per ticker) `ticker (PK), consensus_rating, price_target, eps_revisions_4w, source, fetched_at`
+
+**`events`** `ticker (FK), type (earnings|split|dividend), date, value, source, fetched_at — PK (ticker, type, date)`
+
+All Level 0 tables: public-read RLS, service-role writes. `metric_stats`
+(distribution percentiles) is reused from migration 038.
 
 ### companies (primary — replaces AI Analysis sheet)
 ```
@@ -873,6 +976,16 @@ python intraday_prices.py --dry-run
 python intraday_prices.py --tickers NVDA AAPL META
 python build_universe_snapshot.py           # daily 3-tier JSON snapshot
 python build_universe_snapshot.py --tier compact --dry-run
+
+# Level 0 universe & fact store
+python universe_sync.py                      # weekly: Tier 0 ingest + affordability gate
+python universe_sync.py --dry-run
+python universe_sync.py --skip-gate          # identity refresh only
+python prices_daily_updater.py               # daily: Tier 1 EOD prices + 2y backfill for new names
+python prices_daily_updater.py --backfill    # force full 2y for all Tier 1
+python prices_daily_updater.py --tickers NVDA AAPL
+python migrate_companies_to_level0.py        # one-off: seed Level 0 from companies/price_sales
+python test_level0.py                        # Level 0 unit tests
 
 # Portfolio manager
 python bootstrap_portfolios.py              # open $1M accounts for all agents

@@ -666,3 +666,147 @@ DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW EXECUTE FUNCTION handle_new_user();
+
+
+-- ============================================================
+-- Level 0 — strategy-neutral universe & fact store (migration 039)
+--
+-- A single store of FACTS (never strategy) about all liquid US equities. The
+-- old opinionated TradingView screen becomes one lens applied on top of Tier 1,
+-- downstream. The only gate here is strategy-neutral affordability (securities
+-- .is_tier1 — liquidity + has-data + valid listing). See the alphamolt Level 0
+-- spec and migrations/039_level0_universe.sql for full notes.
+-- ============================================================
+
+-- securities — Tier 0 identity (every US common stock + ADR + REIT).
+CREATE TABLE IF NOT EXISTS securities (
+    ticker              TEXT PRIMARY KEY,
+    name                TEXT,
+    exchange            TEXT,
+    cik                 TEXT,
+    figi                TEXT,
+    isin                TEXT,
+    security_type       TEXT,          -- 'Common Stock' | 'ADR' | 'REIT'
+    gics_sector         TEXT,
+    gics_industry       TEXT,
+    country             TEXT,
+    share_class         TEXT,
+    status              TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'delisted'
+    ipo_date            DATE,
+    first_seen          DATE NOT NULL DEFAULT CURRENT_DATE,
+    last_seen           DATE NOT NULL DEFAULT CURRENT_DATE,
+    is_tier1            BOOLEAN NOT NULL DEFAULT FALSE,
+    addv_30d            NUMERIC,
+    last_close          NUMERIC,
+    tier1_evaluated_at  TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_securities_status ON securities (status);
+CREATE INDEX IF NOT EXISTS idx_securities_tier1  ON securities (is_tier1) WHERE is_tier1;
+CREATE INDEX IF NOT EXISTS idx_securities_sector ON securities (gics_sector);
+CREATE INDEX IF NOT EXISTS idx_securities_type   ON securities (security_type);
+DROP TRIGGER IF EXISTS securities_updated_at ON securities;
+CREATE TRIGGER securities_updated_at BEFORE UPDATE ON securities
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- prices_daily — 2y daily OHLCV per Tier 1 ticker (the Pareto king).
+CREATE TABLE IF NOT EXISTS prices_daily (
+    ticker          TEXT NOT NULL REFERENCES securities(ticker) ON DELETE CASCADE,
+    date            DATE NOT NULL,
+    open            NUMERIC,
+    high            NUMERIC,
+    low             NUMERIC,
+    close           NUMERIC,
+    adj_close       NUMERIC,
+    volume          BIGINT,
+    dollar_volume   NUMERIC,
+    PRIMARY KEY (ticker, date)
+);
+CREATE INDEX IF NOT EXISTS idx_prices_daily_date ON prices_daily (date);
+
+-- fundamentals — append-only history, one row per (ticker, period_end).
+CREATE TABLE IF NOT EXISTS fundamentals (
+    ticker              TEXT NOT NULL REFERENCES securities(ticker) ON DELETE CASCADE,
+    period_end          DATE NOT NULL,
+    fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source              TEXT,
+    revenue             NUMERIC,
+    rev_growth_ttm      NUMERIC,
+    rev_growth_qoq      NUMERIC,
+    rev_cagr            NUMERIC,
+    gross_margin        NUMERIC,
+    operating_margin    NUMERIC,
+    net_margin          NUMERIC,
+    fcf_margin          NUMERIC,
+    rule_of_40          NUMERIC,
+    cash                NUMERIC,
+    debt                NUMERIC,
+    shares_out          NUMERIC,
+    eps                 NUMERIC,
+    opex_pct_rev        NUMERIC,
+    PRIMARY KEY (ticker, period_end)
+);
+CREATE INDEX IF NOT EXISTS idx_fundamentals_period ON fundamentals (period_end);
+
+-- valuation — multiples + P/S series, one row per (ticker, date).
+CREATE TABLE IF NOT EXISTS valuation (
+    ticker          TEXT NOT NULL REFERENCES securities(ticker) ON DELETE CASCADE,
+    date            DATE NOT NULL,
+    ps              NUMERIC,
+    pe              NUMERIC,
+    ev_sales        NUMERIC,
+    p_fcf           NUMERIC,
+    ps_high_52w     NUMERIC,
+    ps_low_52w      NUMERIC,
+    ps_median_12m   NUMERIC,
+    ps_ath          NUMERIC,
+    ps_pct_of_ath   NUMERIC,
+    history_json    JSONB,
+    source          TEXT,
+    fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, date)
+);
+CREATE INDEX IF NOT EXISTS idx_valuation_date ON valuation (date);
+
+-- estimates — optional latest snapshot per ticker.
+CREATE TABLE IF NOT EXISTS estimates (
+    ticker              TEXT PRIMARY KEY REFERENCES securities(ticker) ON DELETE CASCADE,
+    consensus_rating    TEXT,
+    price_target        NUMERIC,
+    eps_revisions_4w    NUMERIC,
+    source              TEXT,
+    fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- events — earnings / split / dividend.
+CREATE TABLE IF NOT EXISTS events (
+    ticker          TEXT NOT NULL REFERENCES securities(ticker) ON DELETE CASCADE,
+    type            TEXT NOT NULL,
+    date            DATE NOT NULL,
+    value           NUMERIC,
+    source          TEXT,
+    fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, type, date)
+);
+CREATE INDEX IF NOT EXISTS idx_events_ticker_date ON events (ticker, date);
+CREATE INDEX IF NOT EXISTS idx_events_type_date   ON events (type, date);
+
+ALTER TABLE securities   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE prices_daily ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fundamentals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE valuation    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE estimates    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE events       ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "public read" ON securities;
+CREATE POLICY "public read" ON securities   FOR SELECT USING (true);
+DROP POLICY IF EXISTS "public read" ON prices_daily;
+CREATE POLICY "public read" ON prices_daily FOR SELECT USING (true);
+DROP POLICY IF EXISTS "public read" ON fundamentals;
+CREATE POLICY "public read" ON fundamentals FOR SELECT USING (true);
+DROP POLICY IF EXISTS "public read" ON valuation;
+CREATE POLICY "public read" ON valuation    FOR SELECT USING (true);
+DROP POLICY IF EXISTS "public read" ON estimates;
+CREATE POLICY "public read" ON estimates    FOR SELECT USING (true);
+DROP POLICY IF EXISTS "public read" ON events;
+CREATE POLICY "public read" ON events       FOR SELECT USING (true);

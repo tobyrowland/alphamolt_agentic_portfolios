@@ -166,6 +166,232 @@ class SupabaseDB:
                 .execute()
             )
 
+    def get_metric_stats(self, metric: str | None = None,
+                         sector: str | None = None) -> list[dict]:
+        """Read precomputed metric_stats rows (migration 038).
+
+        Powers the §9 query contract's distribution stats (percentile strips
+        on the company page, lens-relative percentiles). `sector=''` is the
+        universe-wide row; a named sector is that sector's distribution.
+        """
+        q = self.client.table("metric_stats").select("*")
+        if metric is not None:
+            q = q.eq("metric", metric)
+        if sector is not None:
+            q = q.eq("sector", sector)
+        return q.execute().data or []
+
+    # ------------------------------------------------------------------
+    # Level 0 — strategy-neutral universe & fact store (migration 039)
+    #
+    # securities (Tier 0 identity) + prices_daily / fundamentals / valuation /
+    # estimates / events (Tier 1 enrichment). These are FACTS only — no
+    # strategy lives here. See the alphamolt Level 0 spec.
+    # ------------------------------------------------------------------
+
+    # --- securities (Tier 0) ---
+
+    def get_security(self, ticker: str) -> dict | None:
+        """Return a single securities row, or None."""
+        resp = (
+            self.client.table("securities")
+            .select("*")
+            .eq("ticker", ticker)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+
+    def get_all_securities(self, columns: str = "*",
+                           status: str | None = None) -> list[dict]:
+        """Return securities rows, optionally filtered by status.
+
+        Paginates so the full ~5-7k-row Tier 0 universe comes back (Supabase
+        caps a single select at 1000 rows).
+        """
+        rows: list[dict] = []
+        page = 0
+        page_size = 1000
+        while True:
+            q = self.client.table("securities").select(columns)
+            if status is not None:
+                q = q.eq("status", status)
+            resp = q.range(page * page_size, (page + 1) * page_size - 1).execute()
+            batch = resp.data or []
+            rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            page += 1
+        return rows
+
+    def get_tier1_tickers(self) -> set[str]:
+        """Return the set of tickers currently flagged is_tier1."""
+        tickers: set[str] = set()
+        page = 0
+        page_size = 1000
+        while True:
+            resp = (
+                self.client.table("securities")
+                .select("ticker")
+                .eq("is_tier1", True)
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            batch = resp.data or []
+            tickers.update(r["ticker"] for r in batch)
+            if len(batch) < page_size:
+                break
+            page += 1
+        return tickers
+
+    def upsert_securities_batch(self, rows: list[dict]) -> None:
+        """Insert or update many securities rows (conflict on ticker PK)."""
+        for row in rows:
+            self._sanitize(row)
+        if rows:
+            self.client.table("securities").upsert(rows).execute()
+
+    # --- prices_daily ---
+
+    def upsert_prices_daily_batch(self, rows: list[dict]) -> None:
+        """Insert or update many prices_daily rows (conflict on ticker,date).
+
+        Chunks large batches (a 2y backfill is ~500 rows/ticker) so a single
+        request stays a sane size.
+        """
+        cleaned = [r for r in rows if r.get("ticker") and r.get("date")]
+        for row in cleaned:
+            self._sanitize(row)
+        for i in range(0, len(cleaned), 1000):
+            chunk = cleaned[i:i + 1000]
+            (
+                self.client.table("prices_daily")
+                .upsert(chunk, on_conflict="ticker,date")
+                .execute()
+            )
+
+    def get_prices_daily(self, ticker: str, since: str | None = None) -> list[dict]:
+        """Return a ticker's daily prices ascending by date (optional since)."""
+        q = self.client.table("prices_daily").select("*").eq("ticker", ticker)
+        if since:
+            q = q.gte("date", since)
+        resp = q.order("date").execute()
+        return resp.data or []
+
+    def get_tickers_with_recent_prices(self, since: str) -> set[str]:
+        """Return tickers that have a prices_daily row on/after `since`.
+
+        Used to tell which Tier 1 names still need a 2y backfill (absent here)
+        vs. just a daily increment (present here)."""
+        tickers: set[str] = set()
+        page = 0
+        page_size = 1000
+        while True:
+            resp = (
+                self.client.table("prices_daily")
+                .select("ticker")
+                .gte("date", since)
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            batch = resp.data or []
+            tickers.update(r["ticker"] for r in batch)
+            if len(batch) < page_size:
+                break
+            page += 1
+        return tickers
+
+    def get_latest_price_date(self, ticker: str) -> str | None:
+        """Return the most-recent prices_daily date for a ticker, or None."""
+        resp = (
+            self.client.table("prices_daily")
+            .select("date")
+            .eq("ticker", ticker)
+            .order("date", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0]["date"] if resp.data else None
+
+    # --- fundamentals (history) ---
+
+    def upsert_fundamentals_batch(self, rows: list[dict]) -> None:
+        """Insert or update fundamentals rows (conflict on ticker,period_end).
+
+        Append-only by design — each new filing is a fresh period_end row;
+        existing periods are corrected in place but never collapsed.
+        """
+        for row in rows:
+            self._sanitize(row)
+        if rows:
+            (
+                self.client.table("fundamentals")
+                .upsert(rows, on_conflict="ticker,period_end")
+                .execute()
+            )
+
+    def get_fundamentals(self, ticker: str, latest_only: bool = False) -> list[dict]:
+        """Return a ticker's fundamentals history (newest first).
+
+        latest_only=True returns just the most-recent period as a 1-list.
+        """
+        q = (
+            self.client.table("fundamentals")
+            .select("*")
+            .eq("ticker", ticker)
+            .order("period_end", desc=True)
+        )
+        if latest_only:
+            q = q.limit(1)
+        resp = q.execute()
+        return resp.data or []
+
+    # --- valuation ---
+
+    def upsert_valuation_batch(self, rows: list[dict]) -> None:
+        """Insert or update valuation rows (conflict on ticker,date)."""
+        for row in rows:
+            self._sanitize(row)
+        if rows:
+            (
+                self.client.table("valuation")
+                .upsert(rows, on_conflict="ticker,date")
+                .execute()
+            )
+
+    def get_valuation(self, ticker: str, latest_only: bool = True) -> list[dict]:
+        """Return a ticker's valuation rows (newest first)."""
+        q = (
+            self.client.table("valuation")
+            .select("*")
+            .eq("ticker", ticker)
+            .order("date", desc=True)
+        )
+        if latest_only:
+            q = q.limit(1)
+        resp = q.execute()
+        return resp.data or []
+
+    # --- estimates / events ---
+
+    def upsert_estimates_batch(self, rows: list[dict]) -> None:
+        """Insert or update estimates rows (conflict on ticker PK)."""
+        for row in rows:
+            self._sanitize(row)
+        if rows:
+            self.client.table("estimates").upsert(rows).execute()
+
+    def upsert_events_batch(self, rows: list[dict]) -> None:
+        """Insert or update events rows (conflict on ticker,type,date)."""
+        cleaned = [r for r in rows if r.get("ticker") and r.get("type") and r.get("date")]
+        for row in cleaned:
+            self._sanitize(row)
+        if cleaned:
+            (
+                self.client.table("events")
+                .upsert(cleaned, on_conflict="ticker,type,date")
+                .execute()
+            )
+
     # ------------------------------------------------------------------
     # Agents / Portfolio Manager
     # ------------------------------------------------------------------
