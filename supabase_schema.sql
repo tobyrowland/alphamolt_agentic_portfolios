@@ -849,3 +849,19 @@ CREATE POLICY "owner delete" ON saved_screens FOR DELETE USING (auth.uid() = own
 -- removed watchlist: the buyer ranks Level 0 via screen_facts() against this
 -- and buys the top N.
 ALTER TABLE portfolios ADD COLUMN IF NOT EXISTS screen_config JSONB;
+
+
+-- ============================================================
+-- Portfolio swarm (migration 041 — portfolio page brief §3/§4)
+--
+-- A portfolio runs a swarm: multiple specialist buyers + reviewers coordinated
+-- per cycle (snake-draft buying, first-valid-sell — see swarm.py +
+-- agent_heartbeat._run_portfolio_swarm). Per-membership role/remit/knobs;
+-- per-portfolio draft settings (opt-in switch for the swarm path); per-position
+-- buyer attribution. Backward compatible (NULL role = legacy member).
+-- ============================================================
+ALTER TABLE portfolio_agents  ADD COLUMN IF NOT EXISTS role   TEXT;   -- 'buyer' | 'reviewer'
+ALTER TABLE portfolio_agents  ADD COLUMN IF NOT EXISTS remit  TEXT;   -- free-text specialty/focus
+ALTER TABLE portfolio_agents  ADD COLUMN IF NOT EXISTS config JSONB;  -- {convictionGate,maxPerName,cadence,sellRules,brain}
+ALTER TABLE portfolios        ADD COLUMN IF NOT EXISTS draft_config JSONB;  -- {order:'snake',cycle:'daily'}
+ALTER TABLE portfolio_holdings ADD COLUMN IF NOT EXISTS opened_by_agent_id UUID REFERENCES agents(id);
