@@ -148,6 +148,35 @@ Deterministic scoring-as-a-function (Python mirror of
 candidates(db, portfolio_id)` returns the top N `{ticker: rationale}` that both
 buyers (`watchlist_buyer`, `llm_watchlist_buyer`) now trade from. Pure, no LLM.
 
+## Portfolio swarm — multi-buyer / multi-reviewer coordination
+
+A portfolio runs a **swarm**: multiple specialist buyers + reviewers over one
+shared cash pool (portfolio page brief). Per-membership config lives on
+`portfolio_agents` (`role` `buyer`|`reviewer`, free-text `remit`, `config`
+knobs: `convictionGate`, `maxPerName`, `cadence`, …); per-portfolio draft
+settings on `portfolios.draft_config`; per-position attribution on
+`portfolio_holdings.opened_by_agent_id`. See migration 041.
+
+**Coordination is opt-in.** `agent_heartbeat._run_portfolio_swarm` runs only
+when a portfolio has a `draft_config` set **and** role-tagged buyers; otherwise
+the legacy independent per-member loop runs unchanged.
+
+- **Buy — snake draft** (`swarm.snake_draft_plan`): buyers draft from the
+  shared top-N screen candidates one name at a time, order rotating/reversing
+  each round; a buyer only drafts a name clearing **its own** conviction gate,
+  sized by its `maxPerName` against shared cash; a drafted name is taken (no
+  double-buying); each opened position is attributed to its buyer. Conviction
+  source is a deterministic screen-rank baseline (`swarm.rank_to_conviction`) —
+  per-brain LLM conviction can replace it by populating the convictions map; the
+  draft mechanics don't change.
+- **Sell — first valid sell** (`swarm.first_valid_sell_plan` semantics):
+  reviewers run their existing sell strategy in order on the shared book, so the
+  first to close a name wins.
+
+### swarm.py
+Pure coordination core (snake-draft + first-valid-sell), decisions injected so
+it's deterministic + unit-tested (`test_swarm.py`). No DB, no LLM.
+
 ## Scripts
 
 ### universe_sync.py (02:00 UTC Sundays — weekly)

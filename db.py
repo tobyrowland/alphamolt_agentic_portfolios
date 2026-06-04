@@ -529,6 +529,11 @@ class SupabaseDB:
                     "agent": agent.data[0],
                     "notes": m.get("notes"),
                     "joined_at": m.get("joined_at"),
+                    # Swarm membership (migration 041): role ('buyer'|'reviewer'),
+                    # free-text remit/focus, and per-member knobs (config).
+                    "role": m.get("role"),
+                    "remit": m.get("remit"),
+                    "config": m.get("config"),
                     # Per-membership heartbeat clock (migration 029) — each
                     # member rebalances on its own cadence in every
                     # portfolio it joins.

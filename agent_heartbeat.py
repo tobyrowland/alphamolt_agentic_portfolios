@@ -293,6 +293,177 @@ def _portfolio_is_due(portfolio: dict, now: datetime) -> bool:
     return now >= last + timedelta(hours=PORTFOLIO_HEARTBEAT_INTERVAL_HOURS)
 
 
+def _run_portfolio_swarm(
+    db: SupabaseDB,
+    pm: PortfolioManager,
+    portfolio: dict,
+    member_rows: list[dict],
+    *,
+    dry_run: bool,
+    logger: logging.Logger,
+    triggered_by: str | None = None,
+) -> dict[str, int]:
+    """Coordinate a portfolio's swarm for one cycle (portfolio brief §4).
+
+    BUY — snake draft: the buyers draft from the shared top-N screen
+    candidates one name at a time (rotating/reversing order), each only
+    drafting names that clear its own conviction gate, sized by its
+    max-per-name against the shared cash. A drafted name is taken (no
+    double-buying) and the opened position is attributed to the buyer.
+
+    SELL — first valid sell: each reviewer runs its existing sell strategy
+    sequentially against the shared book, so the first reviewer to close a
+    name removes it before the next sees it (first-valid-sell by construction;
+    each sell is tagged with the acting reviewer via agent_trades.agent_id).
+
+    Conviction source: a deterministic screen-rank baseline (swarm.rank_to_
+    conviction). Per-brain LLM conviction can replace it by populating the
+    convictions map — the draft mechanics are unchanged.
+    """
+    import screen as _screen
+    import swarm as _swarm
+
+    counts = {"ok": 0, "dry-run": 0, "skipped": 0, "error": 0}
+    pid = portfolio["id"]
+    slug = portfolio.get("slug") or pid[:8]
+    mandate = portfolio.get("description")
+    members = [m["agent"] for m in member_rows]
+    agent_by_id = {m["agent"]["id"]: m for m in member_rows}
+    buyers_m = [m for m in member_rows if (m.get("role") == "buyer")]
+    reviewers_m = [m for m in member_rows if (m.get("role") == "reviewer")]
+    mode, executor = _resolve_live_executor(portfolio, dry_run=dry_run)
+
+    # ---- BUY: snake draft over the screen's top-N candidates ----
+    cand_map = _screen.portfolio_screen_candidates(db, pid)  # {ticker: rationale}
+    book = pm.get_portfolio_book(pid)
+    held = {h.get("ticker") for h in (book.get("holdings") or [])}
+    recently_sold = db.get_recently_sold_tickers(pid, days=90)
+    prices: dict[str, float] = {}
+    for t in cand_map:
+        if t in held or t in recently_sold:
+            continue
+        try:
+            prices[t] = pm.get_price(t)
+        except Exception:  # noqa: BLE001 — unpriced names just aren't draftable
+            continue
+    draftable = [t for t in cand_map if t in prices]
+
+    total_value = float(book.get("total_value_usd") or 0)
+    cash = float(book.get("cash_usd") or 0)
+    n = len(draftable)
+    rank_conv = {t: _swarm.rank_to_conviction(i, n) for i, t in enumerate(draftable)}
+
+    sw_buyers: list = []
+    convictions: dict[str, dict[str, int]] = {}
+    for m in buyers_m:
+        aid = m["agent"]["id"]
+        cfg = m.get("config") or {}
+        sw_buyers.append(
+            _swarm.Buyer(
+                aid,
+                gate=int(cfg.get("convictionGate", 1) or 1),
+                max_per_name=float(cfg.get("maxPerName", 0.08) or 0.08),
+            )
+        )
+        convictions[aid] = dict(rank_conv)
+
+    plan = _swarm.snake_draft_plan(
+        sw_buyers, draftable, prices, total_value, cash, convictions=convictions
+    )
+    logger.info(
+        "  portfolio %-22s swarm: %d buyer(s), %d candidate(s), %d draft pick(s)%s",
+        slug, len(sw_buyers), n, len(plan.picks), " [dry-run]" if dry_run else "",
+    )
+
+    buy_counts: dict[str, int] = {}
+    for pick in plan.picks:
+        m = agent_by_id.get(pick.agent_id)
+        if not m:
+            continue
+        buy_counts[pick.agent_id] = buy_counts.get(pick.agent_id, 0)
+        if dry_run:
+            buy_counts[pick.agent_id] += 1
+            continue
+        ctx = RebalanceContext(
+            db=db, pm=pm, agent=m["agent"], dry_run=False,
+            params=dict(m.get("config") or {}), portfolio_id=pid,
+            members=members, mandate=mandate, mode=mode, executor=executor,
+        )
+        rationale = cand_map.get(pick.ticker)
+        note = f"swarm draft (conviction {pick.conviction}/5): {rationale or ''}".strip()
+        thesis = {"thesis_text": rationale} if rationale else None
+        try:
+            ctx.buy(pick.ticker, pick.qty, note=note, thesis=thesis)
+            buy_counts[pick.agent_id] += 1
+            # Attribution — stamp the opener (only if unset, to preserve the
+            # original buyer across later top-ups).
+            try:
+                db.client.table("portfolio_holdings").update(
+                    {"opened_by_agent_id": pick.agent_id}
+                ).eq("portfolio_id", pid).eq("ticker", pick.ticker).is_(
+                    "opened_by_agent_id", "null"
+                ).execute()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("attribution stamp failed for %s: %s", pick.ticker, exc)
+        except Exception as exc:  # noqa: BLE001 — one bad buy must not abort
+            logger.warning("swarm buy %s x%s failed: %s", pick.ticker, pick.qty, exc)
+
+    for m in buyers_m:
+        aid = m["agent"]["id"]
+        res = RebalanceResult()
+        res.buys = buy_counts.get(aid, 0)
+        res.notes["role"] = "buyer"
+        res.notes["remit"] = m.get("remit")
+        status = "dry-run" if dry_run else "ok"
+        _journal(
+            db, agent_id=aid, strategy=m["agent"].get("strategy") or "swarm_buyer",
+            started_at=_now_utc(), status=status, result=res, portfolio_id=pid,
+            advance_agent=False, dry_run=dry_run, triggered_by=triggered_by,
+        )
+        counts[status] = counts.get(status, 0) + 1
+
+    # ---- SELL: each reviewer runs its strategy in order (first-valid-sell) ----
+    for m in reviewers_m:
+        agent = m["agent"]
+        strategy_name = agent.get("strategy")
+        strategy = get_strategy(strategy_name) if strategy_name else None
+        started = _now_utc()
+        if strategy is None:
+            counts["skipped"] += 1
+            continue
+        ctx = RebalanceContext(
+            db=db, pm=pm, agent=agent, dry_run=dry_run,
+            params=dict(m.get("config") or {}), portfolio_id=pid,
+            members=members, mandate=mandate, mode=mode, executor=executor,
+        )
+        try:
+            result = strategy(ctx)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("    reviewer %s crashed", agent.get("handle"))
+            _journal(
+                db, agent_id=agent["id"], strategy=strategy_name or "reviewer",
+                started_at=started, status="error",
+                error_message=f"{exc}\n{traceback.format_exc()}",
+                portfolio_id=pid, advance_agent=False, dry_run=dry_run,
+                triggered_by=triggered_by,
+            )
+            counts["error"] += 1
+            continue
+        status = "dry-run" if dry_run else ("ok" if not result.errors else "error")
+        _journal(
+            db, agent_id=agent["id"], strategy=strategy_name or "reviewer",
+            started_at=started, status=status, result=result,
+            error_message="; ".join(result.errors) if result.errors else None,
+            portfolio_id=pid, advance_agent=False, dry_run=dry_run,
+            triggered_by=triggered_by,
+        )
+        counts[status] = counts.get(status, 0) + 1
+
+    if not dry_run:
+        db.update_portfolio_last_heartbeat(pid, _now_utc().isoformat())
+    return counts
+
+
 def _run_portfolio(
     db: SupabaseDB,
     pm: PortfolioManager,
@@ -322,7 +493,25 @@ def _run_portfolio(
         counts["skipped"] += 1
         return counts
 
-    members = [m["agent"] for m in db.get_portfolio_members(portfolio["id"])]
+    member_rows = db.get_portfolio_members(portfolio["id"])
+
+    # Swarm path (portfolio brief §4): when the owner has configured a draft
+    # (portfolios.draft_config) and there are role-tagged buyers, coordinate
+    # the members as a swarm — snake-draft buys + first-valid-sell — instead of
+    # the legacy independent per-member loop. Opt-in, so portfolios without a
+    # draft_config are completely unaffected. Skipped for a single-member
+    # "Run now" (handle_filter) so targeted runs keep the per-member behaviour.
+    if (
+        portfolio.get("draft_config")
+        and not handle_filter
+        and any(m.get("role") == "buyer" for m in member_rows)
+    ):
+        return _run_portfolio_swarm(
+            db, pm, portfolio, member_rows,
+            dry_run=dry_run, logger=logger, triggered_by=triggered_by,
+        )
+
+    members = [m["agent"] for m in member_rows]
     mandate = portfolio.get("description")
     if handle_filter:
         members = [m for m in members if m.get("handle") == handle_filter]
