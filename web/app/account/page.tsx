@@ -1,680 +1,362 @@
 import type { Metadata } from "next";
-import type { ReactNode } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import Nav from "@/components/nav";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
-import {
-  getPortfolioForUser,
-  getLivePortfolioForUser,
-  getMembersForPortfolio,
-  getHoldingsCountForPortfolio,
-  type Portfolio,
-  type PortfolioMember,
-} from "@/lib/portfolios-query";
-import {
-  getPortfolioByPortfolioId,
-  type PortfolioSnapshot,
-} from "@/lib/portfolio";
+import Sparkline from "@/components/sparkline";
 import BetaDisclaimer from "@/components/beta-disclaimer";
-import { listPublicAgents, getAgentReturns30d } from "@/lib/agents-query";
-import { roleFor } from "@/lib/agent-roles";
 import CreatePortfolioForm from "@/components/portfolio/create-portfolio-form";
-import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
-import AgentPicker from "@/components/portfolio/agent-picker";
-import VisibilityToggle from "@/components/portfolio/visibility-toggle";
+import PulseSection from "@/components/dashboard/pulse-section";
+import NeedsAttention, {
+  type AttentionItem,
+} from "@/components/dashboard/needs-attention";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { getDashboardData, type DashPortfolio, type DashTrade } from "@/lib/dashboard-query";
 
 export const metadata: Metadata = {
+  // Private surface — never indexed, never in the sitemap (dashboard brief §6).
   title: "Dashboard — AlphaMolt",
   robots: { index: false, follow: false },
 };
 
 export const dynamic = "force-dynamic";
 
-const PUBLIC_ACTIVATE_THRESHOLD = 15;
-const PUBLIC_FLOOR_THRESHOLD = 10;
+const PUBLIC_THRESHOLD = 15;
 
 /**
- * Dashboard — the owner's control room for their portfolio. Editors for
- * the mandate, buy-mandate, sell-mandate, agent membership, and
- * visibility live here, inline. The actual portfolio view (holdings,
- * trade tape, performance) lives at `/portfolios/<slug>` — reached via
- * the "Portfolio" link in the top nav, or "View portfolio →" in this
- * header.
- *
- * Onboarding (no portfolio yet) falls back to CreatePortfolioForm.
+ * Dashboard — the pulse + map of the account (dashboard brief). Read + route:
+ * every element reports state or links to the page that owns an action. NOTHING
+ * here edits config — mandate / screen / agents / knobs all live on the
+ * portfolio + screener pages. Onboarding falls back to CreatePortfolioForm.
  */
 export default async function AccountPage() {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  if (!user) redirect("/login?next=/account");
 
-  if (!user) {
-    redirect("/login?next=/account");
-  }
-
-  let profile: { email: string | null; display_name: string | null } | null =
-    null;
+  let displayName = user.email?.split("@")[0] ?? "there";
   try {
     const { data } = await supabase
       .from("profiles")
-      .select("email, display_name")
+      .select("display_name")
       .eq("id", user.id)
       .maybeSingle();
-    profile = data ?? null;
+    if (data?.display_name) displayName = data.display_name;
   } catch {
-    profile = null;
+    /* ignore — greeting falls back to the email local-part */
   }
 
-  const email = profile?.email ?? user.email ?? "";
-  const displayName = profile?.display_name || email.split("@")[0] || "there";
-
-  let portfolio: Portfolio | null = null;
-  try {
-    portfolio = await getPortfolioForUser(user.id);
-  } catch {
-    portfolio = null;
-  }
-
-  let members: PortfolioMember[] = [];
-  let allAgents: Awaited<ReturnType<typeof listPublicAgents>> = [];
-  let returns30d = new Map<string, number | null>();
-  let holdingsCount = 0;
-  if (portfolio) {
-    // Fan out the four independent queries — these previously ran
-    // sequentially (each blocking the next), turning a ~500ms total
-    // budget into ~2s. `getAgentReturns30d` in particular hits the
-    // heavy `agent_leaderboard` view; running it alongside the others
-    // brings the page well below 1s in practice.
-    const portfolioId = portfolio.id;
-    [members, allAgents, returns30d, holdingsCount] = await Promise.all([
-      getMembersForPortfolio(portfolioId).catch(() => [] as PortfolioMember[]),
-      listPublicAgents(1000, true).catch(
-        () => [] as Awaited<ReturnType<typeof listPublicAgents>>,
-      ),
-      getAgentReturns30d().catch(() => new Map<string, number | null>()),
-      getHoldingsCountForPortfolio(portfolioId).catch(() => 0),
-    ]);
-  }
-
-  // Live follower (migration 037) — private, mirrors the arena portfolio onto
-  // a real Alpaca account. Owner-only read; rendered as a slim summary panel.
-  let livePortfolio: Portfolio | null = null;
-  let liveSnapshot: PortfolioSnapshot | null = null;
-  try {
-    livePortfolio = await getLivePortfolioForUser(user.id);
-    if (livePortfolio) {
-      liveSnapshot = await getPortfolioByPortfolioId(livePortfolio.id).catch(
-        () => null,
-      );
-    }
-  } catch {
-    livePortfolio = null;
-  }
+  const { portfolios, activity, spySeries } = await getDashboardData(user.id);
 
   return (
     <>
       <Nav />
-      <main className="flex-1 w-full relative">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 h-[440px] -z-10 opacity-80"
-          style={{
-            background:
-              "radial-gradient(60% 65% at 16% 8%, rgba(0,255,65,0.05), transparent 70%), radial-gradient(48% 55% at 86% 4%, rgba(0,242,255,0.06), transparent 70%)",
-          }}
-        />
-        <div className="max-w-[820px] mx-auto w-full px-4 sm:px-6 py-10 sm:py-14">
-          {portfolio ? (
-            <>
-              <DashboardView
-                portfolio={portfolio}
-                members={members}
-                allAgents={allAgents}
-                returns30d={returns30d}
-                holdingsCount={holdingsCount}
-                email={email}
-              />
-              {livePortfolio && (
-                <LivePortfolioPanel
-                  portfolio={livePortfolio}
-                  snapshot={liveSnapshot}
-                />
-              )}
-            </>
+      <main className="flex-1 w-full">
+        <div className="max-w-[1100px] mx-auto w-full px-4 sm:px-6 py-8 sm:py-10">
+          {portfolios.length === 0 ? (
+            <EmptyState displayName={displayName} />
           ) : (
-            <NoPortfolioView displayName={displayName} email={email} />
+            <Dashboard
+              displayName={displayName}
+              portfolios={portfolios}
+              activity={activity}
+              spySeries={spySeries}
+            />
           )}
+          <div className="mt-10">
+            <BetaDisclaimer />
+          </div>
         </div>
       </main>
     </>
   );
 }
 
-// Slim, owner-only summary of the private live (Alpaca) follower. The full
-// holdings/trade view lives on the live portfolio's own detail page; this is
-// just a glanceable card with a link through. Rendered only for the owner, so
-// the "real money" fact never reaches anyone else.
-function LivePortfolioPanel({
-  portfolio,
-  snapshot,
-}: {
-  portfolio: Portfolio;
-  snapshot: PortfolioSnapshot | null;
-}) {
-  const value = snapshot?.total_value_usd ?? null;
-  const pnl = snapshot?.pnl_pct ?? null;
-  const positions = snapshot?.holdings.length ?? 0;
-  const pnlPositive = (pnl ?? 0) >= 0;
-
-  return (
-    <section className="mt-12">
-      {/* Risk acknowledgement — gated to this secret live (real-money) surface. */}
-      <BetaDisclaimer />
-      <div
-        className="rounded-2xl border p-6 sm:p-7"
-        style={{
-          background:
-            "linear-gradient(180deg, rgba(0,255,65,0.05), rgba(255,255,255,0.012))",
-          borderColor: "rgba(0,255,65,0.22)",
-          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
-        }}
-      >
-        <div className="flex flex-wrap items-center gap-3">
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-green)]/40 bg-[var(--color-green)]/[0.08] px-2.5 py-1 text-[11px] font-mono font-bold uppercase tracking-[0.12em] text-[var(--color-green)]"
-            title="Backed by a real Alpaca account. Private — only you can see this."
-          >
-            <span
-              aria-hidden
-              className="h-1.5 w-1.5 rounded-full bg-[var(--color-green)] animate-pulse"
-              style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
-            />
-            Personal · live · real money
-          </span>
-          <span className="text-[11px] font-mono uppercase tracking-[0.12em] text-text-muted">
-            Private
-          </span>
-        </div>
-
-        <h2 className="mt-4 text-[20px] sm:text-[24px] font-bold tracking-[-0.02em] text-text">
-          {portfolio.display_name}
-        </h2>
-        <p className="mt-1.5 text-sm text-text-muted leading-relaxed max-w-[60ch]">
-          Mirrors your arena portfolio&rsquo;s positions onto a real Alpaca
-          account, sized to its actual value. It trades automatically with the
-          arena book &mdash; there&rsquo;s nothing to manage here. Only you can
-          see this account.
-        </p>
-
-        <div className="mt-5 flex flex-wrap items-end gap-x-8 gap-y-3">
-          <Stat label="Account value">
-            {value == null
-              ? "—"
-              : `$${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`}
-          </Stat>
-          <Stat label="Return">
-            {pnl == null ? (
-              "—"
-            ) : (
-              <span
-                className="tabular-nums"
-                style={{
-                  color: pnlPositive
-                    ? "var(--color-green)"
-                    : "var(--color-red)",
-                }}
-              >
-                {pnlPositive ? "+" : ""}
-                {pnl.toFixed(2)}%
-              </span>
-            )}
-          </Stat>
-          <Stat label="Positions">{positions}</Stat>
-          <Link
-            href={`/portfolios/${portfolio.slug}`}
-            className="ml-auto inline-flex items-center text-sm font-semibold text-text hover:underline decoration-1 underline-offset-[3px]"
-          >
-            View account &rarr;
-          </Link>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function Stat({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <div className="text-[10px] font-mono font-bold uppercase tracking-[0.14em] text-text-muted">
-        {label}
-      </div>
-      <div className="mt-1 text-lg font-bold text-text tabular-nums">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function NoPortfolioView({
+function Dashboard({
   displayName,
-  email,
+  portfolios,
+  activity,
+  spySeries,
 }: {
   displayName: string;
-  email: string;
+  portfolios: DashPortfolio[];
+  activity: DashTrade[];
+  spySeries: { date: string; pct: number }[];
 }) {
-  return (
-    <div className="max-w-[640px] mx-auto">
-      <SectionBadge>Get started</SectionBadge>
-      <h1 className="mt-4 text-[28px] sm:text-[34px] font-bold tracking-[-0.025em] text-text leading-[1.1]">
-        Welcome, {displayName}.
-      </h1>
-      <p className="mt-3 text-base text-text-muted leading-relaxed">
-        Create your portfolio: give it a name and write the mandate your team
-        of AI agents will trade a $1M paper account to. It starts Private —
-        flip it to Public once it holds {PUBLIC_ACTIVATE_THRESHOLD}+ equities.
-      </p>
-      <div className="mt-7 rounded-2xl border border-white/10 bg-white/[0.02] p-5 sm:p-6">
-        <CreatePortfolioForm />
-      </div>
-      <SignOutRow email={email} />
-    </div>
-  );
-}
-
-function DashboardView({
-  portfolio,
-  members,
-  allAgents,
-  returns30d,
-  holdingsCount,
-  email,
-}: {
-  portfolio: Portfolio;
-  members: PortfolioMember[];
-  allAgents: Awaited<ReturnType<typeof listPublicAgents>>;
-  returns30d: Map<string, number | null>;
-  holdingsCount: number;
-  email: string;
-}) {
-  const phases = members.map((m) => roleFor(m.strategy).phase);
-  const hasCurator = phases.includes("curate");
-  const hasBuyer = phases.includes("trade");
-  const hasMandate = (portfolio.description ?? "").trim().length > 0;
-
-  const step1 = hasMandate;
-  const step2 = hasCurator && hasBuyer;
-
-  const pickerMembers = members.map((m) => ({
-    handle: m.handle,
-    agentId: m.agent_id,
-    display_name: m.display_name,
-    is_house_agent: m.is_house_agent,
-    strategy: m.strategy,
-    return30d: returns30d.get(m.handle) ?? null,
-    powered_by: m.powered_by,
-    description: m.description,
-  }));
-  const pickerAll = allAgents.map((a) => ({
-    handle: a.handle,
-    agentId: a.id,
-    display_name: a.display_name,
-    is_house_agent: a.is_house_agent,
-    strategy: a.strategy,
-    return30d: returns30d.get(a.handle) ?? null,
-    powered_by: a.powered_by,
-    description: a.description,
-  }));
+  const best = [...portfolios].sort(
+    (a, b) => (b.pnlPct ?? -1e9) - (a.pnlPct ?? -1e9),
+  )[0];
+  const items = buildAttention(portfolios, activity);
 
   return (
-    <div className="space-y-7 sm:space-y-9">
+    <div className="space-y-8">
+      {/* Header + standing line */}
       <header>
-        <div className="flex items-center gap-3 flex-wrap">
-          <VisibilityBadge isPublic={portfolio.is_public} />
-          <Link
-            href={`/portfolios/${portfolio.slug}`}
-            className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.02] px-3 py-1 text-[10px] font-mono uppercase tracking-[0.14em] text-text-dim hover:text-[var(--color-cyan)] hover:border-[var(--color-cyan)]/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 transition-colors"
-          >
-            View portfolio →
-          </Link>
-        </div>
-        <h1 className="mt-4 text-[34px] sm:text-[44px] font-bold tracking-[-0.025em] text-text leading-[1.05]">
-          <span
-            className="bg-clip-text text-transparent"
-            style={{
-              backgroundImage:
-                "linear-gradient(110deg, var(--color-cyan) 0%, #6FF8A0 45%, var(--color-green) 100%)",
-            }}
-          >
-            {portfolio.display_name}
-          </span>
+        <h1 className="text-[26px] sm:text-[30px] font-bold tracking-[-0.02em] text-text">
+          Hi {displayName}
         </h1>
-        <p className="mt-4 text-base sm:text-lg text-text-muted leading-relaxed max-w-[60ch]">
-          Your team of agents trades a $1M paper book to your mandate. Tune
-          the mandate, agent membership or visibility below. Hits public
-          eligibility at {PUBLIC_ACTIVATE_THRESHOLD} equities.
+        <p className="mt-1 text-sm text-text-muted">
+          Your agents trade while you&apos;re away. Here&apos;s how the swarm is
+          doing, what it did, and what wants you.{" "}
+          {best && (
+            <>
+              Best book:{" "}
+              <span className={best.pnlPct != null && best.pnlPct < 0 ? "text-[var(--color-red,#FF3333)]" : "text-[var(--color-green,#00FF41)]"}>
+                {best.name} {best.pnlPct == null ? "" : `${best.pnlPct >= 0 ? "+" : ""}${best.pnlPct.toFixed(1)}%`}
+              </span>{" "}
+              ·{" "}
+              <Link href="/leaderboard" className="text-text-dim underline hover:text-text">
+                see where you rank
+              </Link>
+            </>
+          )}
         </p>
-        <ProgressSteps
-          steps={[
-            { label: "Write mandate", done: step1 },
-            { label: "Add agents", done: step2 },
-          ]}
-        />
       </header>
 
-      <SetupCard
-        step={1}
-        glyph="clipboard"
-        title="Write the mandate"
-        intro="Your investment brief — the agents trade to it. Pick an example to start, then edit and save."
+      {/* Pulse */}
+      <PulseSection portfolios={portfolios} spy={spySeries} />
+
+      {/* Needs attention */}
+      {items.length > 0 && <NeedsAttention items={items} />}
+
+      {/* Portfolio cards */}
+      <section aria-label="Your portfolios">
+        <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
+          Portfolios
+        </h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {portfolios.map((p) => (
+            <PortfolioCard key={p.id} p={p} />
+          ))}
+        </div>
+      </section>
+
+      {/* Recent swarm activity */}
+      <section aria-label="Recent swarm activity">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim">
+            Recent swarm activity
+          </h2>
+          {best && (
+            <Link
+              href={`/portfolios/${best.slug}`}
+              className="text-[11px] font-mono text-text-muted hover:text-text"
+            >
+              View all →
+            </Link>
+          )}
+        </div>
+        {activity.length > 0 ? (
+          <ul className="divide-y divide-white/5 rounded-xl border border-white/10 bg-white/[0.02]">
+            {activity.slice(0, 12).map((t) => (
+              <ActivityRow key={String(t.id)} t={t} />
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-text-muted">
+            No trades yet — your agents act on their next cadence.
+          </p>
+        )}
+      </section>
+
+      {/* Doors out */}
+      <nav
+        aria-label="Explore"
+        className="flex flex-wrap gap-4 text-sm text-text-muted border-t border-white/10 pt-5"
       >
-        <PortfolioDetailsEditor
-          portfolioId={portfolio.id}
-          initialName={portfolio.display_name}
-          initialMandate={portfolio.description ?? ""}
-        />
-      </SetupCard>
-
-      <SetupCard
-        step={2}
-        glyph="branch"
-        title="Add your agents"
-        intro="A portfolio needs a Shortlist Builder to curate the watchlist and a Buying Agent to trade it. The 30-day return is each agent's live track record."
-      >
-        <AgentPicker
-          members={pickerMembers}
-          allAgents={pickerAll}
-          portfolioId={portfolio.id}
-        />
-      </SetupCard>
-
-      <VisibilityPanel
-        portfolioId={portfolio.id}
-        isPublic={portfolio.is_public}
-        holdingsCount={holdingsCount}
-        publicPath={`/portfolios/${portfolio.slug}`}
-      />
-
-      <SignOutRow email={email} />
+        <Link href="/screener" className="hover:text-text">
+          Screeners →
+        </Link>
+        <Link href="/leaderboard" className="hover:text-text">
+          Leaderboard →
+        </Link>
+        <Link href="/agents" className="hover:text-text">
+          Agents →
+        </Link>
+      </nav>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function VisibilityBadge({ isPublic }: { isPublic: boolean }) {
-  if (isPublic) {
-    return (
-      <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-green)]/30 bg-[var(--color-green)]/[0.08] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--color-green)]">
-        <span
-          aria-hidden
-          className="h-1.5 w-1.5 rounded-full bg-[var(--color-green)] animate-pulse"
-          style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
-        />
-        Public
-      </span>
-    );
-  }
+function PortfolioCard({ p }: { p: DashPortfolio }) {
+  const down = p.pnlPct != null && p.pnlPct < 0;
+  const color = down ? "var(--color-red,#FF3333)" : "var(--color-green,#00FF41)";
+  const status = p.isPublic
+    ? "Public"
+    : p.numPositions >= PUBLIC_THRESHOLD
+      ? "Eligible"
+      : "Private";
   return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-cyan)]/30 bg-[var(--color-cyan)]/[0.07] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--color-cyan)]">
-      <span
-        aria-hidden
-        className="h-1.5 w-1.5 rounded-full bg-[var(--color-cyan)]"
-        style={{ boxShadow: "0 0 6px rgba(0,242,255,0.8)" }}
-      />
-      Private
-    </span>
+    <Link
+      href={`/portfolios/${p.slug}`}
+      className="block rounded-xl border border-white/10 bg-white/[0.02] p-4 hover:bg-white/[0.04] transition-colors"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="font-semibold text-text truncate">{p.name}</span>
+        <span className="text-[10px] font-mono uppercase tracking-[0.1em] text-text-muted shrink-0">
+          {status}
+        </span>
+      </div>
+      <div className="mt-2 flex items-baseline gap-2">
+        <span className="text-lg font-semibold text-text">
+          {p.value == null ? "—" : `$${p.value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`}
+        </span>
+        <span className="text-sm font-mono" style={{ color }}>
+          {p.pnlPct == null ? "" : `${p.pnlPct >= 0 ? "▲" : "▼"} ${Math.abs(p.pnlPct).toFixed(2)}%`}
+        </span>
+      </div>
+      <div className="mt-2">
+        <Sparkline
+          data={p.series.map((pt, i) => ({ x: i, y: pt.pct }))}
+          color={color}
+        />
+      </div>
+      <div className="mt-1 text-[11px] text-text-muted">
+        {p.numPositions} position{p.numPositions === 1 ? "" : "s"}
+      </div>
+    </Link>
   );
 }
 
-function VisibilityPanel({
-  portfolioId,
-  isPublic,
-  holdingsCount,
-  publicPath,
-}: {
-  portfolioId: string;
-  isPublic: boolean;
-  holdingsCount: number;
-  publicPath: string;
-}) {
-  const eligible = holdingsCount >= PUBLIC_ACTIVATE_THRESHOLD;
-
-  if (isPublic) {
-    return (
-      <div className="rounded-2xl border border-[var(--color-green)]/30 bg-[var(--color-green)]/[0.05] px-5 py-4 sm:px-6 sm:py-5">
-        <p className="text-[11px] font-mono uppercase tracking-[0.16em] text-[var(--color-green)] flex items-center gap-2">
-          <span
-            aria-hidden
-            className="h-1.5 w-1.5 rounded-full bg-[var(--color-green)] animate-pulse"
-            style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
-          />
-          Visible on the leaderboard
-        </p>
-        <p className="mt-2 text-sm text-text-dim leading-relaxed">
-          Holding {holdingsCount} equities. Drops to fewer than{" "}
-          {PUBLIC_FLOOR_THRESHOLD} → auto-reverts to Private, and
-          performance for the current period resets when it climbs back.
-        </p>
-        <div className="mt-3 flex items-center gap-3 flex-wrap">
-          <VisibilityToggle
-            portfolioId={portfolioId}
-            isPublic={isPublic}
-            holdingsCount={holdingsCount}
-          />
-          <Link
-            href={publicPath}
-            className="text-sm font-semibold text-[var(--color-cyan)] hover:brightness-110 transition-[filter] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 rounded"
-          >
-            View portfolio →
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
+function ActivityRow({ t }: { t: DashTrade }) {
+  const sell = t.side.toLowerCase() === "sell";
   return (
-    <div
-      className="rounded-2xl border p-5 sm:p-6"
-      style={{
-        background: eligible
-          ? "linear-gradient(135deg, rgba(0,242,255,0.07), rgba(0,255,65,0.03) 48%, rgba(255,255,255,0.02))"
-          : "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.012))",
-        borderColor: eligible
-          ? "rgba(0,242,255,0.2)"
-          : "rgba(255,255,255,0.10)",
-        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
-      }}
-    >
-      <p className="text-[10px] font-mono font-bold uppercase tracking-[0.16em] text-[var(--color-cyan)] mb-1">
-        {eligible ? "Ready to go public" : "Private"}
-      </p>
-      <p className="text-sm sm:text-[15px] text-text-dim leading-relaxed max-w-[480px]">
-        {eligible
-          ? `Holding ${holdingsCount} equities — eligible. Flip public to appear on the leaderboard.`
-          : `Holding ${holdingsCount} of ${PUBLIC_ACTIVATE_THRESHOLD} equities needed. Once the agents fill the book, you can flip the portfolio public.`}
-      </p>
-      <div className="mt-3 flex items-center gap-3 flex-wrap">
-        <VisibilityToggle
-          portfolioId={portfolioId}
-          isPublic={isPublic}
-          holdingsCount={holdingsCount}
-        />
+    <li className="flex items-center gap-3 px-3 py-2.5 text-sm">
+      <span
+        className={`font-mono text-[10px] uppercase px-1.5 py-0.5 rounded shrink-0 ${
+          sell
+            ? "text-[var(--color-red,#FF3333)] border border-[var(--color-red,#FF3333)]/30"
+            : "text-[var(--color-green,#00FF41)] border border-[var(--color-green,#00FF41)]/30"
+        }`}
+      >
+        {sell ? "SELL" : "BUY"}
+      </span>
+      <div className="min-w-0 flex-1">
+        <span className="text-text">
+          <Link href={`/company/${t.ticker}`} className="font-mono hover:text-[var(--color-green,#00FF41)]">
+            {t.ticker}
+          </Link>{" "}
+          <span className="text-text-muted">
+            ×{t.qty} @ ${t.price.toFixed(2)}
+          </span>
+        </span>
+        {t.reason && (
+          <p className="text-xs text-text-muted truncate">{t.reason}</p>
+        )}
+      </div>
+      <div className="text-right shrink-0">
+        <div className="text-[11px] text-text-muted">
+          {t.agentName}
+          {t.role ? ` · ${t.role}` : ""}
+        </div>
         <Link
-          href={publicPath}
-          className="text-sm font-semibold text-[var(--color-cyan)] hover:brightness-110 transition-[filter] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40 rounded"
+          href={`/portfolios/${t.portfolioSlug}`}
+          className="text-[11px] font-mono text-text-muted hover:text-text"
         >
-          View portfolio →
+          {t.portfolioName}
         </Link>
       </div>
-    </div>
+    </li>
   );
 }
 
-function ProgressSteps({
-  steps,
-}: {
-  steps: { label: string; done: boolean }[];
-}) {
-  return (
-    <ol className="mt-6 grid gap-2.5 sm:grid-cols-2">
-      {steps.map((s, i) => (
-        <li
-          key={s.label}
-          className={`flex items-center gap-2.5 rounded-xl border px-3.5 py-2.5 ${
-            s.done
-              ? "border-[var(--color-green)]/30 bg-[var(--color-green)]/[0.05]"
-              : "border-white/10 bg-white/[0.02]"
-          }`}
-        >
-          <span
-            aria-hidden
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold font-mono ${
-              s.done
-                ? "bg-[var(--color-green)]/20 text-[var(--color-green)]"
-                : "border border-[var(--color-cyan)]/30 bg-[var(--color-cyan)]/[0.08] text-[var(--color-cyan)]"
-            }`}
-          >
-            {s.done ? "✓" : i + 1}
-          </span>
-          <span
-            className={`text-sm font-semibold ${
-              s.done ? "text-text" : "text-text-dim"
-            }`}
-          >
-            {s.label}
-          </span>
-        </li>
-      ))}
-    </ol>
-  );
+function buildAttention(
+  portfolios: DashPortfolio[],
+  activity: DashTrade[],
+): AttentionItem[] {
+  const items: AttentionItem[] = [];
+
+  // High: a recent thesis-break / forced sell.
+  for (const t of activity) {
+    if (
+      t.side.toLowerCase() === "sell" &&
+      t.reason &&
+      /brok|thesis/i.test(t.reason)
+    ) {
+      items.push({
+        id: `sell-${t.id}`,
+        urgency: "high",
+        text: `${t.ticker} sold on a broken thesis — review ${t.portfolioName}'s mandate.`,
+        href: `/portfolios/${t.portfolioSlug}`,
+        actionLabel: "Review mandate",
+      });
+    }
+  }
+
+  for (const p of portfolios) {
+    const href = `/portfolios/${p.slug}`;
+    if (p.mandateEmpty) {
+      items.push({
+        id: `mandate-${p.id}`,
+        urgency: "med",
+        text: `${p.name} has no mandate set.`,
+        href,
+        actionLabel: "Write a brief",
+      });
+    }
+    if (!p.hasBuyer) {
+      items.push({
+        id: `buyer-${p.id}`,
+        urgency: "med",
+        text: `${p.name} has no buyer assigned.`,
+        href,
+        actionLabel: "Add a buyer",
+      });
+    }
+    if (!p.hasReviewer) {
+      items.push({
+        id: `reviewer-${p.id}`,
+        urgency: "med",
+        text: `${p.name} has no reviewer assigned.`,
+        href,
+        actionLabel: "Add a reviewer",
+      });
+    }
+    if (!p.isPublic && p.numPositions >= 10 && p.numPositions < PUBLIC_THRESHOLD) {
+      items.push({
+        id: `public-${p.id}`,
+        urgency: "low",
+        text: `${p.name} is ${PUBLIC_THRESHOLD - p.numPositions} holdings from going public.`,
+        href,
+        actionLabel: "View portfolio",
+      });
+    }
+  }
+
+  // Sparse: high first, capped.
+  const order = { high: 0, med: 1, low: 2 } as const;
+  return items.sort((a, b) => order[a.urgency] - order[b.urgency]).slice(0, 5);
 }
 
-function SetupCard({
-  step,
-  glyph,
-  title,
-  intro,
-  children,
-}: {
-  step?: number;
-  glyph: GlyphName;
-  title: string;
-  intro: string;
-  children: ReactNode;
-}) {
+function EmptyState({ displayName }: { displayName: string }) {
   return (
-    <section
-      className="group rounded-2xl border border-white/10 p-5 sm:p-6 transition-colors hover:border-white/15"
-      style={{
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.012))",
-        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
-      }}
-    >
-      <div className="flex items-start gap-3 mb-4">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--color-cyan)]/25 bg-[var(--color-cyan)]/[0.07]">
-          <Glyph
-            name={glyph}
-            className="w-[18px] h-[18px] text-[var(--color-cyan)]"
-          />
-        </span>
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            {step != null && (
-              <span className="text-[10px] font-mono font-bold uppercase tracking-[0.14em] text-[var(--color-cyan)]">
-                Step {step}
-              </span>
-            )}
-            <h2 className="text-base sm:text-lg font-bold tracking-[-0.01em] text-text">
-              {title}
-            </h2>
-          </div>
-          <p className="mt-1 text-[13px] text-text-muted leading-relaxed">
-            {intro}
-          </p>
-        </div>
+    <div className="max-w-xl">
+      <h1 className="text-[26px] sm:text-[30px] font-bold tracking-[-0.02em] text-text">
+        Welcome, {displayName}
+      </h1>
+      <p className="mt-2 text-sm text-text-muted">
+        Set up your first portfolio — a team of agents working to a brief you
+        write. Then watch them trade while you&apos;re away.
+      </p>
+
+      <ol className="mt-5 mb-6 space-y-1.5 text-sm text-text-muted list-decimal list-inside">
+        <li>Create a portfolio</li>
+        <li>Write its mandate (its constitution)</li>
+        <li>Add buyer + reviewer agents</li>
+      </ol>
+
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+        <CreatePortfolioForm />
       </div>
-      {children}
-    </section>
-  );
-}
 
-function SignOutRow({ email }: { email: string }) {
-  return (
-    <form
-      action="/auth/signout"
-      method="post"
-      className="flex items-center justify-between gap-3 pt-2"
-    >
-      <span className="text-[11px] font-mono text-text-muted truncate">
-        Signed in as {email}
-      </span>
-      <button
-        type="submit"
-        className="text-[11px] font-mono text-text-muted hover:text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-text/40 rounded px-1"
-      >
-        Sign out →
-      </button>
-    </form>
-  );
-}
-
-type GlyphName = "clipboard" | "branch";
-
-function SectionBadge({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-cyan)]/25 bg-[var(--color-cyan)]/[0.07] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--color-cyan)]">
-      <span
-        aria-hidden
-        className="h-1.5 w-1.5 rounded-full bg-[var(--color-cyan)]"
-        style={{ boxShadow: "0 0 6px rgba(0,242,255,0.8)" }}
-      />
-      {children}
-    </span>
-  );
-}
-
-function Glyph({
-  name,
-  className,
-}: {
-  name: GlyphName;
-  className?: string;
-}) {
-  const paths: Record<GlyphName, ReactNode> = {
-    clipboard: (
-      <>
-        <rect x="8" y="2.5" width="8" height="4" rx="1.2" />
-        <path d="M8 4.5H6.2A1.2 1.2 0 0 0 5 5.7v14.6a1.2 1.2 0 0 0 1.2 1.2h11.6a1.2 1.2 0 0 0 1.2-1.2V5.7a1.2 1.2 0 0 0-1.2-1.2H16" />
-        <path d="m8.7 13.2 2.3 2.3 4.3-4.7" />
-      </>
-    ),
-    branch: (
-      <>
-        <circle cx="6.5" cy="6" r="2.6" />
-        <circle cx="6.5" cy="18" r="2.6" />
-        <circle cx="17.5" cy="8" r="2.6" />
-        <path d="M6.5 8.6v6.8" />
-        <path d="M17.5 10.6c0 5-11 1.7-11 5" />
-      </>
-    ),
-  };
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.6}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden
-    >
-      {paths[name]}
-    </svg>
+      <p className="mt-4 text-sm text-text-muted">
+        Not ready?{" "}
+        <Link href="/screener" className="text-[var(--color-green,#00FF41)] hover:underline">
+          Explore a screen
+        </Link>{" "}
+        to see how the universe ranks.
+      </p>
+    </div>
   );
 }
