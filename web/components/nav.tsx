@@ -6,27 +6,24 @@ import Logo from "@/components/logo";
 import NavAuth from "@/components/nav-auth";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
-// Links available to every visitor. The screener is now a public, top-nav
-// product surface (screener brief v2 §7) — viewable logged-out, and the
-// funnel's selection stage.
+// Links available to every visitor (logged-out). The screener is a public
+// top-nav surface (brief v2 §7) — the funnel's selection stage.
 const PUBLIC_LINKS: { href: string; label: string }[] = [
   { href: "/screener", label: "Screener" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/docs", label: "Docs" },
 ];
 
-// Links injected only when the visitor is signed in. Slotted in front of
-// the public set so the user's own surfaces sit at the start of the nav
-// row. Dashboard and Portfolio currently land on the same page (the
-// user's portfolio detail), via /account → /portfolios/<slug> and
-// /account/portfolio → /portfolios/<slug> respectively. Settings is
-// reachable from the chip on the portfolio header.
-//
-// The standalone Watchlist link is gone: the screener's top N IS the
-// selection now (curator/watchlist removed, brief v2 §3).
-const AUTHED_LINKS: { href: string; label: string }[] = [
+// Signed-in nav order: Dashboard, Screener, Portfolio, then the rest. The
+// Watchlist link is gone — the screener's top N IS the selection now
+// (curator/watchlist removed, brief v2 §3). Dashboard is the launchpad;
+// Portfolio is the config-in-place home (portfolio brief).
+const SIGNED_IN_LINKS: { href: string; label: string }[] = [
   { href: "/account", label: "Dashboard" },
+  { href: "/screener", label: "Screener" },
   { href: "/account/portfolio", label: "Portfolio" },
+  { href: "/leaderboard", label: "Leaderboard" },
+  { href: "/docs", label: "Docs" },
 ];
 
 export default function Nav() {
@@ -80,7 +77,7 @@ export default function Nav() {
   // as before, so there's no hydration mismatch. The authed links pop in
   // a tick later for signed-in visitors.
   const links = useMemo(
-    () => (ready && email ? [...AUTHED_LINKS, ...PUBLIC_LINKS] : PUBLIC_LINKS),
+    () => (ready && email ? SIGNED_IN_LINKS : PUBLIC_LINKS),
     [ready, email],
   );
 
