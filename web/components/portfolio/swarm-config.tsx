@@ -1,14 +1,21 @@
 "use client";
 
 /**
- * Config-in-place home for a portfolio (portfolio page brief). Owner-only:
- * the mandate (brief + building blocks), the swarm roster (buyers + reviewers
- * with per-member remit/knobs), the snake-draft toggle, and a thin link to the
- * portfolio's screen. Nothing here lives on the Dashboard.
+ * Config-in-place home for a portfolio (portfolio page brief + agent-selection
+ * follow-up). Owner-only: the mandate (brief + building blocks), the swarm
+ * roster (buyers + reviewers as rich cards), the snake-draft toggle, and a thin
+ * link to the portfolio's screen.
+ *
+ * Agent selection is a registry-backed GALLERY — you pick a real registered
+ * agent by its track record; you never type a "brain". remit + knobs are
+ * membership config set on top, per portfolio. Every mutation calls
+ * router.refresh() so the roster updates immediately.
  */
 
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { roleFor } from "@/lib/agent-roles";
 import {
   updatePortfolioDetails,
   addAgentToPortfolio,
@@ -17,14 +24,26 @@ import {
   setDraftConfig,
 } from "@/lib/portfolios-mutations";
 
+type Role = "buyer" | "reviewer";
+
 interface Member {
   agent_id: string;
   handle: string;
   display_name: string;
   powered_by: string | null;
-  role: "buyer" | "reviewer" | null;
+  strategy: string | null;
+  role: Role | null;
   remit: string | null;
   config: Record<string, unknown> | null;
+}
+
+export interface AgentCatalogEntry {
+  handle: string;
+  displayName: string;
+  poweredBy: string | null;
+  isHouse: boolean;
+  strategy: string | null;
+  return30d: number | null;
 }
 
 interface Props {
@@ -33,17 +52,16 @@ interface Props {
   name: string;
   mandate: string;
   members: Member[];
+  catalog: AgentCatalogEntry[];
   screenConfig: Record<string, unknown> | null;
   draftEnabled: boolean;
 }
 
-// Curated building blocks (brief §2). Clicking inserts the phrase into the
-// brief; popular ones marked ★. A data-driven popularity list can come later.
-const BLOCKS: { group: string; items: { label: string; text: string; star?: boolean }[] }[] = [
+const BLOCKS: { group: string; items: { label: string; text: string }[] }[] = [
   {
     group: "Quality",
     items: [
-      { label: "★ Rule of 40 winners", text: "Rule of 40 winners", star: true },
+      { label: "★ Rule of 40 winners", text: "Rule of 40 winners" },
       { label: "Fat gross margins", text: "gross margin > 60%" },
       { label: "Strong FCF", text: "FCF margin > 10%" },
     ],
@@ -51,14 +69,14 @@ const BLOCKS: { group: string; items: { label: string; text: string; star?: bool
   {
     group: "Value",
     items: [
-      { label: "★ Cheap on sales", text: "P/S below its own 12-month median", star: true },
+      { label: "★ Cheap on sales", text: "P/S below its own 12-month median" },
       { label: "P/S < 15", text: "P/S < 15" },
     ],
   },
   {
     group: "Exclude",
     items: [
-      { label: "★ No biotech", text: "exclude Health Technology", star: true },
+      { label: "★ No biotech", text: "exclude Health Technology" },
       { label: "No finance", text: "exclude Finance" },
     ],
   },
@@ -76,21 +94,42 @@ function b64url(s: string): string {
   return b.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/** The role a registered agent can fill, from its strategy (registry truth). */
+function strategyRole(strategy: string | null): Role | null {
+  const r = roleFor(strategy).role;
+  if (r === "Buying Agent") return "buyer";
+  if (r === "Reviewer") return "reviewer";
+  return null;
+}
+
+/** A seated member's effective role — explicit role, else inferred from
+ *  strategy so a buyer is never hidden just because role wasn't stamped. */
+function memberRole(m: Member): Role | null {
+  return m.role ?? strategyRole(m.strategy);
+}
+
+function fmtReturn(v: number | null): string {
+  if (v == null) return "—";
+  return `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+}
+
 export default function SwarmConfig({
   portfolioId,
   slug,
   name,
   mandate,
   members,
+  catalog,
   screenConfig,
   draftEnabled,
 }: Props) {
+  const router = useRouter();
   const [brief, setBrief] = useState(mandate);
   const [msg, setMsg] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
-  const buyers = members.filter((m) => m.role === "buyer");
-  const reviewers = members.filter((m) => m.role === "reviewer");
+  const buyers = members.filter((m) => memberRole(m) === "buyer");
+  const reviewers = members.filter((m) => memberRole(m) === "reviewer");
   const topN = Number((screenConfig as { topN?: number } | null)?.topN ?? 40);
   const screenHref = screenConfig
     ? `/screener?config=${b64url(JSON.stringify(screenConfig))}`
@@ -100,11 +139,15 @@ export default function SwarmConfig({
     setMsg(m);
     setTimeout(() => setMsg(null), 2500);
   }
+  function refresh() {
+    router.refresh();
+  }
 
   function saveBrief() {
     start(async () => {
       const r = await updatePortfolioDetails({ portfolioId, name, mandate: brief });
       flash(r.ok ? "Mandate saved" : r.error);
+      if (r.ok) refresh();
     });
   }
   function insertBlock(text: string) {
@@ -117,8 +160,14 @@ export default function SwarmConfig({
         draftConfig: on ? { order: "snake", cycle: "daily" } : null,
       });
       flash(r.ok ? (on ? "Swarm coordination on" : "Swarm coordination off") : r.error);
+      if (r.ok) refresh();
     });
   }
+
+  const seatedHandles = useMemo(
+    () => new Set(members.map((m) => m.handle)),
+    [members],
+  );
 
   return (
     <section className="space-y-6" aria-label="Portfolio configuration">
@@ -158,7 +207,7 @@ export default function SwarmConfig({
             </div>
           ))}
         </div>
-        <div className="mt-3 flex items-center gap-3">
+        <div className="mt-3 flex items-center gap-3 flex-wrap">
           <button
             type="button"
             onClick={saveBrief}
@@ -175,74 +224,111 @@ export default function SwarmConfig({
       </div>
 
       {/* Draft toggle */}
-      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 flex items-center justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-text">Swarm coordination</h2>
-          <p className="text-xs text-text-muted">
-            Snake-draft buying across your buyers (one name per turn, rotating
-            order, shared cash) + first-valid-sell across reviewers. Off = each
-            agent runs independently.
-          </p>
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-text">Swarm coordination</h2>
+            <p className="text-xs text-text-muted">
+              Snake-draft buying across your buyers (one name per turn, rotating
+              order, shared cash) + first-valid-sell across reviewers. Off = each
+              agent runs independently.
+            </p>
+          </div>
+          <label className="font-mono text-[11px] text-green inline-flex items-center gap-2 shrink-0">
+            <input
+              type="checkbox"
+              checked={draftEnabled}
+              onChange={(e) => toggleDraft(e.target.checked)}
+            />
+            Run as a swarm
+          </label>
         </div>
-        <label className="font-mono text-[11px] text-green inline-flex items-center gap-2 shrink-0">
-          <input
-            type="checkbox"
-            checked={draftEnabled}
-            onChange={(e) => toggleDraft(e.target.checked)}
-          />
-          Run as a swarm
-        </label>
+        {draftEnabled && buyers.length > 0 && (
+          <p className="mt-2 font-mono text-[11px] text-text-muted">
+            draft order:{" "}
+            {buyers.map((b, i) => (
+              <span key={b.agent_id}>
+                {i > 0 && " → "}
+                <span className="text-text">{b.display_name}</span>
+              </span>
+            ))}{" "}
+            <span className="text-text-muted/60">(reverses each round)</span>
+          </p>
+        )}
       </div>
 
-      {/* Buyers */}
+      {/* Rosters */}
       <RosterEditor
         title="Buyers"
         role="buyer"
-        members={buyers}
+        seated={buyers}
+        catalog={catalog}
+        seatedHandles={seatedHandles}
         portfolioId={portfolioId}
-        slug={slug}
         onFlash={flash}
+        onRefresh={refresh}
       />
-
-      {/* Reviewers */}
       <RosterEditor
         title="Reviewers"
         role="reviewer"
-        members={reviewers}
+        seated={reviewers}
+        catalog={catalog}
+        seatedHandles={seatedHandles}
         portfolioId={portfolioId}
-        slug={slug}
         onFlash={flash}
+        onRefresh={refresh}
       />
     </section>
+  );
+}
+
+function BrainBadge({ label }: { label: string | null }) {
+  if (!label) return null;
+  return (
+    <span className="text-[9px] font-mono uppercase tracking-[0.1em] text-green border border-green/30 rounded px-1.5 py-0.5">
+      {label}
+    </span>
   );
 }
 
 function RosterEditor({
   title,
   role,
-  members,
+  seated,
+  catalog,
+  seatedHandles,
   portfolioId,
   onFlash,
+  onRefresh,
 }: {
   title: string;
-  role: "buyer" | "reviewer";
-  members: Member[];
+  role: Role;
+  seated: Member[];
+  catalog: AgentCatalogEntry[];
+  seatedHandles: Set<string>;
   portfolioId: string;
-  slug: string;
   onFlash: (m: string) => void;
+  onRefresh: () => void;
 }) {
-  const [handle, setHandle] = useState("");
-  const [remit, setRemit] = useState("");
+  const [picking, setPicking] = useState(false);
   const [, start] = useTransition();
 
-  function add() {
-    if (!handle.trim()) return;
+  // Registry agents that can fill this role and aren't already seated, best
+  // track record first (the hero metric — people pick the winner).
+  const available = useMemo(
+    () =>
+      catalog
+        .filter((a) => strategyRole(a.strategy) === role && !seatedHandles.has(a.handle))
+        .sort((x, y) => (y.return30d ?? -1e9) - (x.return30d ?? -1e9)),
+    [catalog, role, seatedHandles],
+  );
+
+  function addAgent(handle: string) {
     start(async () => {
       const r = await addAgentToPortfolio({
         portfolioId,
-        handle: handle.trim(),
+        handle,
         role,
-        remit: remit.trim() || undefined,
         config:
           role === "buyer"
             ? { convictionGate: 1, maxPerName: 0.08, cadence: "daily" }
@@ -250,74 +336,234 @@ function RosterEditor({
       });
       onFlash(r.ok ? `Added ${handle}` : r.error);
       if (r.ok) {
-        setHandle("");
-        setRemit("");
+        setPicking(false);
+        onRefresh();
       }
     });
   }
 
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-      <h2 className="text-sm font-semibold text-text mb-2">
-        {title}{" "}
-        <span className="text-text-muted font-normal">({members.length})</span>
-      </h2>
-      <div className="grid gap-2 sm:grid-cols-2">
-        {members.map((m) => (
-          <AgentCard
-            key={m.agent_id}
-            member={m}
-            role={role}
-            portfolioId={portfolioId}
-            onFlash={onFlash}
-          />
-        ))}
-        {members.length === 0 && (
-          <p className="text-xs text-text-muted">No {title.toLowerCase()} yet.</p>
-        )}
-      </div>
-
-      <div className="mt-3 flex items-end gap-2 flex-wrap">
-        <label className="text-[11px] text-text-muted">
-          Add a {role}
-          <input
-            value={handle}
-            onChange={(e) => setHandle(e.target.value)}
-            placeholder="agent handle"
-            className="block mt-1 w-40 bg-black/30 border border-white/10 rounded-md px-2 py-1 text-sm text-text"
-          />
-        </label>
-        <label className="text-[11px] text-text-muted">
-          Remit
-          <input
-            value={remit}
-            onChange={(e) => setRemit(e.target.value)}
-            placeholder={role === "buyer" ? "e.g. deep value" : "e.g. thesis-strict"}
-            className="block mt-1 w-44 bg-black/30 border border-white/10 rounded-md px-2 py-1 text-sm text-text"
-          />
-        </label>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-text">
+          {title} <span className="text-text-muted font-normal">({seated.length})</span>
+        </h2>
         <button
           type="button"
-          onClick={add}
+          onClick={() => setPicking((v) => !v)}
           className="font-mono text-[11px] rounded-md border border-white/10 text-text-muted px-3 py-1.5 hover:text-text"
         >
-          + add
+          {picking ? "Close" : `+ Add a ${role}`}
         </button>
       </div>
+
+      {/* Seated roster */}
+      {seated.length > 0 ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {seated.map((m) => (
+            <SeatedCard
+              key={m.agent_id}
+              member={m}
+              role={role}
+              return30d={catalog.find((c) => c.handle === m.handle)?.return30d ?? null}
+              portfolioId={portfolioId}
+              onFlash={onFlash}
+              onRefresh={onRefresh}
+            />
+          ))}
+        </div>
+      ) : (
+        !picking && (
+          <EmptyRoster
+            role={role}
+            recommended={available.slice(0, 4)}
+            onAdd={addAgent}
+            onBrowse={() => setPicking(true)}
+          />
+        )
+      )}
+
+      {/* Gallery picker */}
+      {picking && (
+        <AgentGallery role={role} agents={available} onAdd={addAgent} />
+      )}
     </div>
   );
 }
 
-function AgentCard({
+function EmptyRoster({
+  role,
+  recommended,
+  onAdd,
+  onBrowse,
+}: {
+  role: Role;
+  recommended: AgentCatalogEntry[];
+  onAdd: (handle: string) => void;
+  onBrowse: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-dashed border-white/15 p-4">
+      <p className="text-sm text-text-muted mb-3">
+        No {role}s yet. {role === "buyer" ? "Buyers draft names from your screen." : "Reviewers decide what to sell."}{" "}
+        Add one to get started:
+      </p>
+      {recommended.length > 0 ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {recommended.map((a) => (
+            <GalleryCard key={a.handle} agent={a} onAdd={onAdd} />
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-text-muted">No agents available to add.</p>
+      )}
+      <button
+        type="button"
+        onClick={onBrowse}
+        className="mt-3 font-mono text-[11px] text-green hover:underline"
+      >
+        Browse all {role}s →
+      </button>
+    </div>
+  );
+}
+
+function AgentGallery({
+  role,
+  agents,
+  onAdd,
+}: {
+  role: Role;
+  agents: AgentCatalogEntry[];
+  onAdd: (handle: string) => void;
+}) {
+  const [tab, setTab] = useState<"all" | "house" | "community">("all");
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"return" | "handle">("return");
+
+  const shown = useMemo(() => {
+    let list = agents;
+    if (tab === "house") list = list.filter((a) => a.isHouse);
+    if (tab === "community") list = list.filter((a) => !a.isHouse);
+    const q = query.trim().toLowerCase();
+    if (q) list = list.filter((a) => a.handle.toLowerCase().includes(q) || a.displayName.toLowerCase().includes(q));
+    return [...list].sort((x, y) =>
+      sort === "return"
+        ? (y.return30d ?? -1e9) - (x.return30d ?? -1e9)
+        : x.handle.localeCompare(y.handle),
+    );
+  }, [agents, tab, query, sort]);
+
+  return (
+    <div className="mt-3 rounded-lg border border-white/10 bg-black/20 p-3" role="dialog" aria-label={`Choose a ${role}`}>
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        <div className="flex gap-1" role="tablist" aria-label="Source">
+          {(["all", "house", "community"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={tab === t}
+              onClick={() => setTab(t)}
+              className={`font-mono text-[10px] uppercase tracking-[0.1em] rounded px-2 py-1 border ${
+                tab === t ? "text-green border-green/50 bg-green/10" : "text-text-muted border-white/10"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="search handle…"
+          aria-label="Search agents"
+          className="flex-1 min-w-[120px] bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-text"
+        />
+        <label className="text-[10px] font-mono text-text-muted inline-flex items-center gap-1">
+          sort
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as "return" | "handle")}
+            className="bg-black/40 border border-white/10 rounded px-1 text-text"
+          >
+            <option value="return" className="bg-black">30d return</option>
+            <option value="handle" className="bg-black">handle</option>
+          </select>
+        </label>
+      </div>
+      {shown.length > 0 ? (
+        <div className="grid gap-2 sm:grid-cols-2 max-h-[360px] overflow-y-auto">
+          {shown.map((a) => (
+            <GalleryCard key={a.handle} agent={a} onAdd={onAdd} />
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-text-muted py-3 text-center">No matching agents.</p>
+      )}
+    </div>
+  );
+}
+
+function GalleryCard({
+  agent,
+  onAdd,
+}: {
+  agent: AgentCatalogEntry;
+  onAdd: (handle: string) => void;
+}) {
+  const up = (agent.return30d ?? 0) >= 0;
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/30 p-3 flex flex-col gap-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm text-text font-medium truncate">{agent.displayName}</span>
+            <BrainBadge label={agent.poweredBy} />
+          </div>
+          <span className="font-mono text-[11px] text-text-muted">@{agent.handle}</span>
+        </div>
+        <span className="text-[9px] font-mono uppercase tracking-[0.1em] text-text-muted shrink-0">
+          {agent.isHouse ? "House" : "Community"}
+        </span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-mono uppercase tracking-[0.1em] text-text-muted">
+          30d return
+        </span>
+        <span
+          className="text-sm font-mono"
+          style={{ color: up ? "var(--color-green,#00FF41)" : "var(--color-red,#FF3333)" }}
+          aria-label={`30-day return ${fmtReturn(agent.return30d)}`}
+        >
+          {fmtReturn(agent.return30d)}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={() => onAdd(agent.handle)}
+        className="font-mono text-[11px] rounded-md bg-green text-black px-3 py-1.5 hover:opacity-90"
+      >
+        Add
+      </button>
+    </div>
+  );
+}
+
+function SeatedCard({
   member,
   role,
+  return30d,
   portfolioId,
   onFlash,
+  onRefresh,
 }: {
   member: Member;
-  role: "buyer" | "reviewer";
+  role: Role;
+  return30d: number | null;
   portfolioId: string;
   onFlash: (m: string) => void;
+  onRefresh: () => void;
 }) {
   const cfg = (member.config ?? {}) as {
     convictionGate?: number;
@@ -329,6 +575,7 @@ function AgentCard({
   const [cadence, setCadence] = useState(String(cfg.cadence ?? (role === "buyer" ? "daily" : "weekly")));
   const [remit, setRemit] = useState(member.remit ?? "");
   const [, start] = useTransition();
+  const up = (return30d ?? 0) >= 0;
 
   function save() {
     start(async () => {
@@ -342,55 +589,57 @@ function AgentCard({
             : { cadence },
       });
       onFlash(r.ok ? `Saved ${member.handle}` : r.error);
+      if (r.ok) onRefresh();
     });
   }
   function remove() {
     start(async () => {
       const r = await removeAgentFromPortfolio({ portfolioId, handle: member.handle });
       onFlash(r.ok ? `Removed ${member.handle}` : r.error);
+      if (r.ok) onRefresh();
     });
   }
 
   return (
     <div className="rounded-lg border border-white/10 bg-black/20 p-3">
-      <div className="flex items-center justify-between">
-        <div>
-          <span className="text-sm text-text font-medium">{member.display_name}</span>
-          {member.powered_by && (
-            <span className="ml-2 text-[10px] font-mono text-green border border-green/30 rounded px-1.5 py-0.5">
-              {member.powered_by}
-            </span>
-          )}
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm text-text font-medium truncate">{member.display_name}</span>
+            <BrainBadge label={member.powered_by} />
+          </div>
+          <span className="font-mono text-[11px] text-text-muted">@{member.handle}</span>
         </div>
-        <button
-          type="button"
-          onClick={remove}
-          aria-label={`Remove ${member.handle}`}
-          className="text-text-muted hover:text-text text-xs"
-        >
-          remove
-        </button>
+        <div className="text-right shrink-0">
+          <div className="text-[9px] font-mono uppercase tracking-[0.1em] text-text-muted">30d</div>
+          <div
+            className="text-sm font-mono"
+            style={{ color: up ? "var(--color-green,#00FF41)" : "var(--color-red,#FF3333)" }}
+          >
+            {fmtReturn(return30d)}
+          </div>
+        </div>
       </div>
       <input
         value={remit}
         onChange={(e) => setRemit(e.target.value)}
         placeholder={role === "buyer" ? "remit (e.g. deep value)" : "focus (e.g. drawdown)"}
+        aria-label="Remit"
         className="mt-2 w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-text"
       />
       <div className="mt-2 flex items-center gap-3 flex-wrap text-[11px] text-text-muted">
         {role === "buyer" && (
           <>
             <label className="inline-flex items-center gap-1">
-              conviction ≥
+              conv ≥
               <select
                 value={gate}
                 onChange={(e) => setGate(Number(e.target.value))}
+                aria-label="Conviction gate"
                 className="bg-black/40 border border-white/10 rounded px-1 text-text"
               >
                 {[1, 2, 3, 4, 5].map((n) => (
-                  <option key={n} value={n} className="bg-black">
-                    {n}
-                  </option>
+                  <option key={n} value={n} className="bg-black">{n}</option>
                 ))}
               </select>
             </label>
@@ -402,6 +651,7 @@ function AgentCard({
                 max={100}
                 value={Math.round(maxPct)}
                 onChange={(e) => setMaxPct(Number(e.target.value))}
+                aria-label="Max percent per name"
                 className="w-14 bg-black/40 border border-white/10 rounded px-1 text-text"
               />
             </label>
@@ -412,22 +662,31 @@ function AgentCard({
           <select
             value={cadence}
             onChange={(e) => setCadence(e.target.value)}
+            aria-label="Cadence"
             className="bg-black/40 border border-white/10 rounded px-1 text-text"
           >
             {["daily", "weekly", "monthly"].map((c) => (
-              <option key={c} value={c} className="bg-black">
-                {c}
-              </option>
+              <option key={c} value={c} className="bg-black">{c}</option>
             ))}
           </select>
         </label>
-        <button
-          type="button"
-          onClick={save}
-          className="font-mono text-[11px] rounded border border-white/10 text-text-muted px-2 py-0.5 hover:text-text"
-        >
-          save
-        </button>
+        <div className="ml-auto flex gap-2">
+          <button
+            type="button"
+            onClick={save}
+            className="font-mono text-[11px] rounded border border-white/10 text-text-muted px-2 py-0.5 hover:text-text"
+          >
+            save
+          </button>
+          <button
+            type="button"
+            onClick={remove}
+            aria-label={`Remove ${member.handle}`}
+            className="font-mono text-[11px] rounded border border-white/10 text-text-muted px-2 py-0.5 hover:text-[var(--color-red,#FF3333)]"
+          >
+            remove
+          </button>
+        </div>
       </div>
     </div>
   );
