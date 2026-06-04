@@ -1129,8 +1129,21 @@ WATCHLIST_BUYER_DEFAULTS = {
 }
 
 
+def _portfolio_screen_candidates(ctx: RebalanceContext) -> dict[str, str | None]:
+    """The buyer's candidate set: the top N of the portfolio's screen.
+
+    The configurable screener is the funnel's selection stage (screener brief
+    v2 §3) — the curator/watchlist is removed. Delegates to
+    ``screen.portfolio_screen_candidates`` so the mechanical and LLM buyers
+    share one selection path.
+    """
+    import screen as _screen
+
+    return _screen.portfolio_screen_candidates(ctx.db, ctx.portfolio_id)
+
+
 def _format_watchlist_sell_note(ticker: str) -> str:
-    return f"Sold {ticker} — no longer on the portfolio watchlist."
+    return f"Sold {ticker} — no longer in the portfolio's screen top N."
 
 
 def _format_watchlist_buy_note(ticker: str, rationale: str | None) -> str:
@@ -1165,24 +1178,13 @@ def rebalance_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
         result.notes["reason"] = "watchlist_buyer only runs on a human portfolio"
         return result
 
-    watchlist = ctx.db.get_portfolio_watchlist(ctx.portfolio_id)
-    # Dedupe by ticker (a ticker could in principle appear once per source);
-    # the (portfolio_id, ticker) PK makes that impossible today, but keep the
-    # buyer robust. Prefer a row that carries a rationale.
-    rationale_for: dict[str, str | None] = {}
-    for row in watchlist:
-        ticker = str(row.get("ticker") or "").strip().upper()
-        if not ticker:
-            continue
-        rationale = (row.get("rationale") or "").strip() or None
-        if ticker not in rationale_for or (
-            rationale and not rationale_for.get(ticker)
-        ):
-            rationale_for[ticker] = rationale
+    # Candidate set is the top N of the portfolio's screen (the screener IS
+    # the selection now — curator/watchlist removed, brief v2 §3).
+    rationale_for = _portfolio_screen_candidates(ctx)
     watchlist_tickers = list(rationale_for.keys())
 
     if not watchlist_tickers:
-        result.notes["reason"] = "portfolio watchlist is empty"
+        result.notes["reason"] = "portfolio has no screen configured or screen is empty"
         return result
 
     # 90-day re-buy cooldown — drop tickers the portfolio sold recently.
@@ -1355,12 +1357,17 @@ def _trading_agents_lazy(ctx: RebalanceContext) -> RebalanceResult:
     return rebalance_trading_agents(ctx)
 
 
+# NOTE: `watchlist_curator` is intentionally NOT registered. The configurable
+# screener is the funnel's selection stage now (screener brief v2 §3) — a
+# portfolio's candidate set is the top N of its `screen_config`, read directly
+# by the buyers via `screen.run_screen`. The curator no longer runs; its
+# function body is retained below only as a reference until the watchlist UI is
+# fully removed in a follow-up cleanup.
 STRATEGIES: dict[str, Strategy] = {
     "dual_positive": rebalance_dual_positive,
     "momentum": rebalance_momentum,
     "llm_pick": _llm_pick_lazy,
     "trading_agents": _trading_agents_lazy,
-    "watchlist_curator": rebalance_watchlist_curator,
     "watchlist_buyer": rebalance_watchlist_buyer,
     "llm_watchlist_buyer": _llm_watchlist_buyer_lazy,
     "portfolio_reviewer": _portfolio_reviewer_lazy,
@@ -1380,8 +1387,9 @@ STRATEGIES: dict[str, Strategy] = {
 
 DEFAULT_STRATEGY_PHASE = "trade"
 
+# With the curator removed, no strategy is currently 'curate' phase. The
+# phase machinery stays (cheap, and a future curate-phase strategy may return).
 STRATEGY_PHASES: dict[str, str] = {
-    "watchlist_curator": "curate",
     "llm_watchlist_buyer": "trade",
     "portfolio_reviewer": "trade",
 }

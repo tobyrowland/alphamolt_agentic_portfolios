@@ -486,45 +486,20 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
     # evaluate any add.
     portfolio_mandate = ctx.mandate
 
-    watchlist = ctx.db.get_portfolio_watchlist(ctx.portfolio_id)
-    # Dedupe by ticker; combine rationales when both source='user' and
-    # source='agent' rows exist (PK is (portfolio_id, ticker, source)? No —
-    # see migration 027: PK is (portfolio_id, ticker); only one source per
-    # row possible. But we tolerate either schema defensively.)
-    rationales: dict[str, list[tuple[str, str]]] = {}
-    for row in watchlist:
-        ticker = str(row.get("ticker") or "").strip().upper()
-        if not ticker:
-            continue
-        source = str(row.get("source") or "").lower()
-        rationale = (row.get("rationale") or "").strip()
-        if not rationale:
-            continue
-        rationales.setdefault(ticker, []).append((source, rationale))
+    # Candidate set is the top N of the portfolio's screen — the screener IS
+    # the selection now (curator/watchlist removed, brief v2 §3). The screen
+    # rank + score is the per-ticker rationale handed to the LLM evaluator.
+    import screen as _screen
 
-    watchlist_tickers = sorted({
-        str(row.get("ticker") or "").strip().upper()
-        for row in watchlist
-        if row.get("ticker")
-    })
+    screen_candidates = _screen.portfolio_screen_candidates(ctx.db, ctx.portfolio_id)
+    watchlist_tickers = sorted(screen_candidates.keys())
     if not watchlist_tickers:
-        result.notes["reason"] = "portfolio watchlist is empty"
+        result.notes["reason"] = "portfolio has no screen configured or screen is empty"
         return result
 
-    # Combine rationales into a single string per ticker for the prompt.
-    combined_rationale: dict[str, str] = {}
-    for ticker in watchlist_tickers:
-        pairs = rationales.get(ticker) or []
-        if not pairs:
-            combined_rationale[ticker] = ""
-            continue
-        # Prefer USER first, then AGENT/CURATOR; label both when present.
-        user_text = next((r for s, r in pairs if s == "user"), None)
-        agent_text = next((r for s, r in pairs if s != "user"), None)
-        if user_text and agent_text:
-            combined_rationale[ticker] = f"USER: {user_text} | CURATOR: {agent_text}"
-        else:
-            combined_rationale[ticker] = user_text or agent_text or ""
+    combined_rationale: dict[str, str] = {
+        t: (screen_candidates[t] or "") for t in watchlist_tickers
+    }
 
     # Filter: already-held at >= target weight (concentration cap).
     target_pct = float(params["target_position_pct"])

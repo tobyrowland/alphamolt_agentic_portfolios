@@ -106,8 +106,47 @@ valuation/sector views — those are lenses downstream.
 **Three clocks** (per data type): membership/identity weekly
 (`universe_sync.py`), prices daily (`prices_daily_updater.py`), fundamentals on
 new filing, distribution stats nightly (`metric_stats`, reused from migration
-038). See migration 039. Backend foundation only — the configurable screener
-over the wider universe (the spec's step-6 "visible win") is a follow-up.
+038). See migration 039. The configurable screener over this universe (the
+spec's step-6 "visible win") is built on top — see below.
+
+## Configurable Screener — the funnel's selection stage
+
+The public `/screener` page (top-nav, viewable logged-out) is both the
+configurable research tool **and** the selection stage of the funnel: the
+ranked **top N** of a portfolio's screen feed the buyer directly. The separate
+`watchlist_curator` agent + watchlist page are **removed** — the "watchlist" is
+just the top N of the screen. Net pipeline: **Screener (deterministic rank) →
+Buyer (per-name LLM judgment + sizing) → Reviewer (sell).** See migration 040
+and the screener brief v2.
+
+**Two config layers.** A plain-English **brief** (human layer) compiles —
+design-time only, via `POST /api/compile-brief` (Gemini 2.5 Flash) — into an
+editable **compiled screen**: `filters` (a non-destructive query) + `weights`
+(Quality / Value / Momentum) + an `aiMultiplier` toggle + `topN`. Agents read
+the compiled config, **never** the prose. The daily re-rank is pure
+deterministic computation — **no LLM in the ranking loop**.
+
+**Scoring is a parameterised read, not a pipeline.** `GET /api/screen?config=`
+ranks the whole Tier 1 universe for a given config. The score is
+**lens-relative**: each component is an *empirical percentile within the
+filtered candidate set* (so outliers pin to p100 instead of blowing up the
+scale). Composite = weighted blend of Quality (0.60·R40 + 0.25·FCF + 0.15·GM),
+Value (inverse P/S ÷ 12-mo median) and Momentum (collared 52-week return),
+×optional AI bull/bear multiplier. Implemented once in TS
+(`web/lib/screen/score.ts`) and mirrored in Python (`screen.py`) so the buyer's
+top N is identical to the page's.
+
+Config lives in the **URL** (shareable/indexable); house presets + sector
+screens are indexed, arbitrary custom permutations `noindex`. **Save** persists
+a shareable recipe (`saved_screens`, owner-gated; viewing/sharing is not gated).
+A portfolio's selection recipe lives in `portfolios.screen_config`.
+
+### screen.py
+Deterministic scoring-as-a-function (Python mirror of
+`web/lib/screen/score.ts`). Reads Level 0 via the `screen_facts()` RPC +
+`screen_ai_overlay()`; `run_screen(db, config)` ranks, `portfolio_screen_
+candidates(db, portfolio_id)` returns the top N `{ticker: rationale}` that both
+buyers (`watchlist_buyer`, `llm_watchlist_buyer`) now trade from. Pure, no LLM.
 
 ## Scripts
 
