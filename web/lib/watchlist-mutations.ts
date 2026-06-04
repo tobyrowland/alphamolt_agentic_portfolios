@@ -10,21 +10,27 @@
 
 import { revalidatePath } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
+import { getPortfolioForUser } from "@/lib/portfolios-query";
 import { requireUser } from "@/lib/auth/require-user";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
 const MAX_RATIONALE = 280;
 
-/** The caller's single portfolio id, or null. Service-role read. */
+/**
+ * The caller's arena (paper) portfolio id, or null.
+ *
+ * Since migration 037 a user may own a second, private *live* follower in
+ * addition to their paper portfolio, so resolving "the user's portfolio"
+ * with a bare `owner_user_id` + `.maybeSingle()` matches two rows and
+ * errors — which previously surfaced as "You don't have a portfolio yet."
+ * when deleting a watchlist item. The watchlist always belongs to the
+ * arena book, so reuse the canonical paper-scoped resolver (which can't
+ * drift again).
+ */
 async function getOwnedPortfolioId(userId: string): Promise<string | null> {
-  const supabase = getSupabase();
-  const { data } = await supabase
-    .from("portfolios")
-    .select("id")
-    .eq("owner_user_id", userId)
-    .maybeSingle();
-  return (data as { id: string } | null)?.id ?? null;
+  const portfolio = await getPortfolioForUser(userId);
+  return portfolio?.id ?? null;
 }
 
 export async function addToWatchlist(input: {

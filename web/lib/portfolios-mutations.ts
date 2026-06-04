@@ -24,13 +24,19 @@ interface OwnedPortfolio {
   slug: string;
 }
 
-/** The caller's single portfolio, or null. Service-role read. */
+/** The caller's arena (paper) portfolio, or null. Service-role read.
+ *
+ * Scoped to `mode='paper'` because since migration 037 a user may also own
+ * a private live follower; a bare `owner_user_id` lookup would match two
+ * rows and make `.maybeSingle()` error. Used as the "you already have a
+ * portfolio" guard in createPortfolio, which creates the paper book. */
 async function getOwnedPortfolio(userId: string): Promise<OwnedPortfolio | null> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("portfolios")
     .select("id, slug")
     .eq("owner_user_id", userId)
+    .eq("mode", "paper")
     .maybeSingle();
   if (error) {
     // Don't swallow — a transient DB error here previously surfaced as
