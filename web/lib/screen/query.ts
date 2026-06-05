@@ -14,8 +14,13 @@
  * Next 16 when the wrapped function performs a dynamic fetch, and supabase-js
  * issues exactly such a fetch internally ("a server error occurred" with an
  * error digest). A plain module-level cache gives the same per-instance benefit
- * with none of that fragility. screen_facts returns the rankable set (~900
- * rows, one PostgREST page), so there's no pagination cost either.
+ * with none of that fragility.
+ *
+ * PERF: screen_facts() reads the precomputed materialized view screen_facts_mv
+ * (migration 044), not live LATERAL joins. Once the Tier 1 universe tripled the
+ * live query hit ~7s; the matview makes it ~5ms. The set is now ~3.1k rows, so
+ * the paginated fetch below spans a few PostgREST pages — each a cheap indexed
+ * read of the matview.
  */
 
 import { getSupabase } from "@/lib/supabase";
@@ -31,8 +36,8 @@ let inflight: Promise<ScreenFacts[]> | null = null;
 async function fetchFacts(): Promise<ScreenFacts[]> {
   const supabase = getSupabase();
   const rows: Record<string, unknown>[] = [];
-  // One page in practice (screen_facts returns the rankable set, < PAGE). The
-  // loop is just a safety net should the universe ever exceed a page.
+  // ~3.1k rows across a few PostgREST pages; each page is a cheap indexed read
+  // of screen_facts_mv (the function reads the matview — migration 044).
   for (let page = 0; ; page++) {
     const { data, error } = await supabase
       .rpc("screen_facts")

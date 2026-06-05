@@ -153,6 +153,15 @@ def main() -> None:
     logger.info("Done: %s", stats["details"])
     if not args.dry_run:
         db.log_run("prices_daily", stats)
+        # Rebuild the screener's materialized facts view (migration 044) so it
+        # picks up today's fresh prices + any new fundamentals/valuation. The
+        # screener reads screen_facts_mv, not the live LATERAL joins, so it must
+        # be refreshed once the daily data has settled.
+        try:
+            db.refresh_screen_facts()
+            logger.info("Refreshed screen_facts_mv")
+        except Exception as exc:  # noqa: BLE001 — non-fatal
+            logger.warning("Could not refresh screen_facts_mv: %s", exc)
 
 
 if __name__ == "__main__":

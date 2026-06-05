@@ -394,6 +394,18 @@ class SupabaseDB:
         resp = q.execute()
         return resp.data or []
 
+    # --- derived views ---
+
+    def refresh_screen_facts(self) -> None:
+        """Rebuild the screener's materialized facts view (migration 044).
+
+        screen_facts_mv precomputes the per-ticker latest fundamentals /
+        valuation / price the screener ranks over, so page loads read a cheap
+        indexed table instead of recomputing ~3k LATERAL lookups each time.
+        Call after the daily Level 0 data has settled to pick up fresh rows.
+        """
+        self.client.rpc("refresh_screen_facts").execute()
+
     # --- estimates / events ---
 
     def upsert_estimates_batch(self, rows: list[dict]) -> None:
