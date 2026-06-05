@@ -237,9 +237,10 @@ export default function ScreenerClient({
   const usedFields = useMemo(() => new Set(config.filters.map((f) => f.field)), [config.filters]);
   const cols = useMemo(() => [...BASE_COLS, ...EXTRA_COLS.filter((c) => extraCols.has(c.key))], [extraCols]);
   const metricColCount = 1 + cols.length; // Score + metric cols
-  // "Run as a portfolio" carries the current screen config into the portfolio
-  // home, where it becomes the portfolio's selection recipe (screen_config).
-  const runHref = `/account?from=screen&config=${encodeConfig(config)}`;
+  // "Run as a portfolio" applies this screen as the portfolio's selection
+  // recipe (screen_config) and lands on the portfolio page — see
+  // app/screener/run/route.ts.
+  const runHref = `/screener/run?config=${encodeConfig(config)}`;
 
   const card = "rounded-xl border border-white/10 bg-white/[0.02]";
 
