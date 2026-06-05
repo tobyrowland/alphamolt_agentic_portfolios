@@ -223,7 +223,7 @@ function SvgGraphic({
           <path d="M0,0 L6,3 L0,6 Z" style={{ fill: CYAN }} />
         </marker>
         <linearGradient id="swarm-grad" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0" style={{ stopColor: DIM }} />
+          <stop offset="0" style={{ stopColor: MUTED }} />
           <stop offset="1" style={{ stopColor: CYAN }} />
         </linearGradient>
       </defs>
@@ -244,7 +244,7 @@ function SvgGraphic({
       <text x={176} y={86} textAnchor="middle" fontFamily={mono} fontSize="9.5" fill={MUTED}>
         top {candidates}
       </text>
-      <path d="M132,95 L218,95" stroke="url(#swarm-grad)" strokeWidth="1.6" fill="none" markerEnd="url(#swarm-ahc)" />
+      <path d="M132,95 L218,95" stroke="url(#swarm-grad)" strokeWidth="2.4" fill="none" markerEnd="url(#swarm-ahc)" />
 
       {/* THIS PORTFOLIO — the lit, current container holding the swarm engine. */}
       <rect x={198} y={12} width={550} height={176} rx={13} style={{ fill: tint(CYAN, 5), stroke: tint(CYAN, 50) }} />
@@ -255,25 +255,25 @@ function SvgGraphic({
         YOU ARE HERE
       </text>
 
-      {/* inner loop */}
+      {/* inner loop — centered within the container (24px inset each side). */}
       <a href={rosterHref} aria-label="Buyers — jump to the roster">
-        <SvgNode x={224} y={70} w={132} h={50} role="buyers" mono={mono} title={buyersLabel} sub="draft · snake" />
+        <SvgNode x={222} y={70} w={132} h={50} role="buyers" mono={mono} title={buyersLabel} sub="draft · snake" />
       </a>
       <a href={holdingsHref} aria-label="Your book — jump to holdings">
-        <SvgNode x={388} y={70} w={120} h={50} role="book" mono={mono} title={bookLabel} sub="holdings" solid />
+        <SvgNode x={409} y={70} w={120} h={50} role="book" mono={mono} title={bookLabel} sub="holdings" solid />
       </a>
       <a href={rosterHref} aria-label="Reviewers — jump to the roster">
-        <SvgNode x={540} y={70} w={140} h={50} role="reviewers" mono={mono} title={reviewersLabel} sub="sell broken theses" />
+        <SvgNode x={584} y={70} w={140} h={50} role="reviewers" mono={mono} title={reviewersLabel} sub="sell broken theses" />
       </a>
 
       {/* inner forward arrows */}
-      <path d="M356,95 L386,95" stroke={DIM} strokeWidth="1.4" fill="none" markerEnd="url(#swarm-ah)" />
-      <path d="M508,95 L538,95" stroke={DIM} strokeWidth="1.4" fill="none" markerEnd="url(#swarm-ah)" />
+      <path d="M356,95 L407,95" stroke={DIM} strokeWidth="1.4" fill="none" markerEnd="url(#swarm-ah)" />
+      <path d="M531,95 L582,95" stroke={DIM} strokeWidth="1.4" fill="none" markerEnd="url(#swarm-ah)" />
 
       {/* recycle: reviewers → buyers */}
-      <path d="M610,120 L610,158 L290,158 L290,122" stroke={DIM} strokeWidth="1.3" strokeDasharray="4 4" fill="none" markerEnd="url(#swarm-ah)" />
-      <rect x={406} y={150} width={88} height={16} rx={4} style={{ fill: "var(--color-bg-card)" }} />
-      <text x={450} y={162} textAnchor="middle" fontFamily={mono} fontSize="9" fill={MUTED}>
+      <path d="M654,120 L654,158 L288,158 L288,122" stroke={DIM} strokeWidth="1.3" strokeDasharray="4 4" fill="none" markerEnd="url(#swarm-ah)" />
+      <rect x={427} y={150} width={88} height={16} rx={4} style={{ fill: "var(--color-bg-card)" }} />
+      <text x={471} y={162} textAnchor="middle" fontFamily={mono} fontSize="9" fill={MUTED}>
         cash recycles
       </text>
     </svg>
