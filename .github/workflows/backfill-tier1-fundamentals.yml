@@ -1,0 +1,76 @@
+name: Backfill Tier 1 Fundamentals
+
+# One-shot (manual) backfill of the Level 0 `fundamentals` table for Tier 1
+# securities that have no fundamentals row yet. The daily eodhd_updater only
+# enriches the legacy `companies` table; Level 0 fundamentals were only ever
+# seeded from companies. This fans EODHD fundamentals out to the rest of the
+# Tier 1 universe so those names become visible to the screener (screen_facts()
+# INNER JOINs fundamentals). manual-only — no schedule.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Fetch + log, but write nothing"
+        type: boolean
+        default: true
+      limit:
+        description: "Only process the first N missing tickers (blank = all)"
+        type: string
+        default: ""
+      tickers:
+        description: "Explicit space-separated tickers (blank = all missing)"
+        type: string
+        default: ""
+      delay:
+        description: "Seconds between EODHD calls"
+        type: string
+        default: "1.0"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Tier 1 fundamentals backfill
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ -n "${{ github.event.inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
+          fi
+          if [ -n "${{ github.event.inputs.tickers }}" ]; then
+            ARGS="$ARGS --tickers ${{ github.event.inputs.tickers }}"
+          fi
+          if [ -n "${{ github.event.inputs.delay }}" ]; then
+            ARGS="$ARGS --delay ${{ github.event.inputs.delay }}"
+          fi
+          python backfill_tier1_fundamentals.py $ARGS
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: backfill-tier1-fundamentals-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30

@@ -345,6 +345,29 @@ class SupabaseDB:
         resp = q.execute()
         return resp.data or []
 
+    def get_fundamentals_tickers(self) -> set[str]:
+        """Return the set of tickers that have at least one fundamentals row.
+
+        Paginated — the table is one row per (ticker, period_end), so distinct
+        tickers come back across pages.
+        """
+        tickers: set[str] = set()
+        page = 0
+        page_size = 1000
+        while True:
+            resp = (
+                self.client.table("fundamentals")
+                .select("ticker")
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            batch = resp.data or []
+            tickers.update(r["ticker"] for r in batch)
+            if len(batch) < page_size:
+                break
+            page += 1
+        return tickers
+
     # --- valuation ---
 
     def upsert_valuation_batch(self, rows: list[dict]) -> None:
