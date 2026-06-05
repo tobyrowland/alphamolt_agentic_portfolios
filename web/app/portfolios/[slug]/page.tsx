@@ -7,7 +7,7 @@ import { AgentMonogram } from "@/components/agent-monogram";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import SwarmConfig from "@/components/portfolio/swarm-config";
-import SwarmLoop from "@/components/portfolio/swarm-loop";
+import SwarmGraphic from "@/components/portfolio/swarm-graphic";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import {
   getPortfolio,
@@ -240,6 +240,11 @@ export default async function PortfolioPage({ params }: PageParams) {
     typeof portfolio.screen_config?.topN === "number"
       ? (portfolio.screen_config.topN as number)
       : 40;
+  // SCREEN node links to this portfolio's own compiled screen (same encoding
+  // as SwarmConfig's "→ your screen" link), or the bare screener as fallback.
+  const screenHref = portfolio.screen_config
+    ? `/screener?config=${b64url(JSON.stringify(portfolio.screen_config))}`
+    : "/screener";
 
   return (
     <>
@@ -294,15 +299,17 @@ export default async function PortfolioPage({ params }: PageParams) {
             </div>
           </header>
 
-          {/* Orientation: how this portfolio's swarm turns screen candidates
-              into a managed book (swarm graphic brief). Explainer only — it
-              links into the roster/holdings below but configures nothing. */}
+          {/* The portfolio's single "how this works" top graphic (swarm graphic
+              brief): mirrors the screener signpost with the cyan "you are here"
+              marker on the portfolio, the swarm loop nested inside. Explainer
+              only — links to the screen / roster / holdings, configures nothing. */}
           {isSwarmPortfolio && (
-            <SwarmLoop
+            <SwarmGraphic
               buyers={buyerCount}
               reviewers={reviewerCount}
               bookCount={bookCount}
               candidates={candidateCount}
+              screenHref={screenHref}
             />
           )}
 
@@ -541,6 +548,16 @@ function Stat({
       </p>
     </div>
   );
+}
+
+// URL-safe base64 of the screen config — same encoding as SwarmConfig's
+// "→ your screen" link, so the graphic's SCREEN node opens the same screen.
+function b64url(s: string): string {
+  const b =
+    typeof btoa === "function"
+      ? btoa(s)
+      : Buffer.from(s, "utf8").toString("base64");
+  return b.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function formatUsd(n: number): string {
