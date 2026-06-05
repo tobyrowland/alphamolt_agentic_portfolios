@@ -16,6 +16,7 @@ import {
   setMemberSwarmConfig,
   setDraftConfig,
 } from "@/lib/portfolios-mutations";
+import { b64urlEncode } from "@/lib/screen/config";
 
 interface Member {
   agent_id: string;
@@ -71,11 +72,6 @@ const BLOCKS: { group: string; items: { label: string; text: string; star?: bool
   },
 ];
 
-function b64url(s: string): string {
-  const b = typeof btoa === "function" ? btoa(s) : Buffer.from(s, "utf8").toString("base64");
-  return b.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 export default function SwarmConfig({
   portfolioId,
   slug,
@@ -93,7 +89,7 @@ export default function SwarmConfig({
   const reviewers = members.filter((m) => m.role === "reviewer");
   const topN = Number((screenConfig as { topN?: number } | null)?.topN ?? 40);
   const screenHref = screenConfig
-    ? `/screener?config=${b64url(JSON.stringify(screenConfig))}`
+    ? `/screener?config=${b64urlEncode(JSON.stringify(screenConfig))}`
     : "/screener";
 
   function flash(m: string) {

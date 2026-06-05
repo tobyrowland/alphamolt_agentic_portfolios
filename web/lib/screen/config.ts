@@ -150,7 +150,7 @@ export function presetConfig(id: string): ScreenConfig {
 // (InvalidCharacterError) on any non-ASCII char — and a brief routinely
 // contains an em-dash, "≤", curly quotes, etc. Use Buffer on the server (UTF-8
 // native) and TextEncoder/TextDecoder on the browser.
-function b64urlEncode(s: string): string {
+export function b64urlEncode(s: string): string {
   let b: string;
   if (typeof Buffer !== "undefined") {
     b = Buffer.from(s, "utf8").toString("base64");
