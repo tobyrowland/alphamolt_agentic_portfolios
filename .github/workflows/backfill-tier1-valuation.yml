@@ -1,0 +1,75 @@
+name: Backfill Tier 1 Valuation (P/S)
+
+# One-shot (manual) backfill of the Level 0 `valuation` (P/S) table for Tier 1
+# securities that have no valuation row yet — the companion to
+# backfill-tier1-fundamentals. Gives the screener's Value lens a real P/S +
+# 12-month median for the full Tier 1 universe (history built from the existing
+# Level 0 prices_daily, no Yahoo round-trip). manual-only — no schedule.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Fetch + compute + log, but write nothing"
+        type: boolean
+        default: true
+      limit:
+        description: "Only process the first N missing tickers (blank = all)"
+        type: string
+        default: ""
+      tickers:
+        description: "Explicit space-separated tickers (blank = all missing)"
+        type: string
+        default: ""
+      delay:
+        description: "Seconds between EODHD calls"
+        type: string
+        default: "1.0"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Tier 1 valuation backfill
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ -n "${{ github.event.inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
+          fi
+          if [ -n "${{ github.event.inputs.tickers }}" ]; then
+            ARGS="$ARGS --tickers ${{ github.event.inputs.tickers }}"
+          fi
+          if [ -n "${{ github.event.inputs.delay }}" ]; then
+            ARGS="$ARGS --delay ${{ github.event.inputs.delay }}"
+          fi
+          python backfill_tier1_valuation.py $ARGS
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: backfill-tier1-valuation-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30
