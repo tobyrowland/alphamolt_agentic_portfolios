@@ -1,117 +1,45 @@
 /**
- * Shared Supabase query logic for equities.
+ * Shared equity query logic for the REST v1 API routes and the MCP tool
+ * handlers, so the two surfaces return identical shapes.
  *
- * Used by both the REST v1 API routes and the MCP tool handlers so the
- * two surfaces return identical shapes and respect identical limits.
+ * As of migration 043 these read **Level 0** (the full ~3.2k Tier 1 universe of
+ * liquid US equities, incl. mega-caps) via `level0-query`, NOT the legacy
+ * curated `companies` table. This is what fixed the public-API/UI mismatch:
+ * `/api/v1/equities` now lists the same universe the screener shows, and
+ * `/equities/{ticker}` resolves names like NVDA/AAPL/MSFT that never existed in
+ * `companies`. The function names are kept for back-compat with existing
+ * importers; the row shape is `Level0Equity`.
  */
 
-import { getSupabase } from "@/lib/supabase";
-import { Company, PriceSales, SCREENER_COLUMNS } from "@/lib/types";
+import {
+  listEquitiesL0,
+  getEquityL0,
+  searchEquitiesL0,
+  type Level0Equity,
+  type Level0ListResult,
+  type Level0ListFilters,
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
+} from "@/lib/level0-query";
 
-export interface EquityListFilters {
-  status?: string | null;
-  sector?: string | null;
-  country?: string | null;
-  limit?: number | null;
-  offset?: number | null;
-}
+export type Equity = Level0Equity;
+export type EquityListFilters = Level0ListFilters;
+export type EquityListResult = Level0ListResult;
+export { DEFAULT_LIMIT, MAX_LIMIT };
 
-export const DEFAULT_LIMIT = 1000;
-export const MAX_LIMIT = 1000;
-
-export interface EquityListResult {
-  equities: Partial<Company>[];
-  count: number;
-  limit: number;
-  offset: number;
-}
-
-export async function listEquities(
+export function listEquities(
   filters: EquityListFilters = {},
 ): Promise<EquityListResult> {
-  const limit = Math.min(
-    Math.max(Number(filters.limit ?? DEFAULT_LIMIT) || DEFAULT_LIMIT, 1),
-    MAX_LIMIT,
-  );
-  const offset = Math.max(Number(filters.offset ?? 0) || 0, 0);
-
-  const supabase = getSupabase();
-  let query = supabase
-    .from("companies")
-    .select(SCREENER_COLUMNS)
-    .order("sort_order", { ascending: true, nullsFirst: false });
-
-  if (filters.status) {
-    query = query.ilike("status", `%${filters.status}%`);
-  }
-  if (filters.sector) {
-    query = query.eq("sector", filters.sector);
-  }
-  if (filters.country) {
-    query = query.eq("country", filters.country);
-  }
-
-  query = query.range(offset, offset + limit - 1);
-
-  const { data, error } = await query;
-  if (error) {
-    throw new Error(`Supabase query failed: ${error.message}`);
-  }
-
-  const rows = (data ?? []) as unknown as Partial<Company>[];
-  return {
-    equities: rows,
-    count: rows.length,
-    limit,
-    offset,
-  };
+  return listEquitiesL0(filters);
 }
 
-export interface EquityDetailResult {
-  company: Company;
-  price_sales: PriceSales | null;
+export function getEquity(ticker: string): Promise<Equity | null> {
+  return getEquityL0(ticker);
 }
 
-export async function getEquity(
-  ticker: string,
-): Promise<EquityDetailResult | null> {
-  const normalized = ticker.trim().toUpperCase();
-  if (!normalized) return null;
-
-  const supabase = getSupabase();
-  const [companyRes, psRes] = await Promise.all([
-    supabase.from("companies").select("*").eq("ticker", normalized).maybeSingle(),
-    supabase.from("price_sales").select("*").eq("ticker", normalized).maybeSingle(),
-  ]);
-
-  if (companyRes.error) {
-    throw new Error(`Supabase query failed: ${companyRes.error.message}`);
-  }
-  if (!companyRes.data) return null;
-
-  return {
-    company: companyRes.data as Company,
-    price_sales: (psRes.data as PriceSales | null) ?? null,
-  };
-}
-
-export async function searchEquities(
+export function searchEquities(
   query: string,
   limit = 25,
-): Promise<Partial<Company>[]> {
-  const q = query.trim();
-  if (!q) return [];
-
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("companies")
-    .select(SCREENER_COLUMNS)
-    .or(`ticker.ilike.%${q}%,company_name.ilike.%${q}%`)
-    .order("sort_order", { ascending: true, nullsFirst: false })
-    .limit(Math.min(Math.max(limit, 1), 100));
-
-  if (error) {
-    throw new Error(`Supabase query failed: ${error.message}`);
-  }
-  return (data ?? []) as unknown as Partial<Company>[];
+): Promise<Equity[]> {
+  return searchEquitiesL0(query, limit);
 }
