@@ -394,6 +394,25 @@ class SupabaseDB:
         resp = q.execute()
         return resp.data or []
 
+    def get_valuation_tickers(self) -> set[str]:
+        """Return the set of tickers that have at least one valuation row."""
+        tickers: set[str] = set()
+        page = 0
+        page_size = 1000
+        while True:
+            resp = (
+                self.client.table("valuation")
+                .select("ticker")
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            batch = resp.data or []
+            tickers.update(r["ticker"] for r in batch)
+            if len(batch) < page_size:
+                break
+            page += 1
+        return tickers
+
     # --- estimates / events ---
 
     def upsert_estimates_batch(self, rows: list[dict]) -> None:
