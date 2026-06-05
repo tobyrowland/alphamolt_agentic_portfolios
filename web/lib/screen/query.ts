@@ -1,23 +1,32 @@
 /**
  * Server-side data load for the screener (brief v2 §6 contract).
  *
- * Pulls the Level 0 facts (screen_facts(), which now folds in the AI bull/bear
+ * Pulls the Level 0 facts (screen_facts(), which folds in the AI bull/bear
  * overlay — migration 042) and hands them to the pure scoring function. No
  * scoring lives here — this module only fetches; scoreScreen() ranks.
  *
  * PERF: the facts are identical for every config (only filtering/scoring
- * differs), so the fetch is wrapped in unstable_cache with a 5-minute window.
- * That turns every page load + every /api/screen re-rank into a cheap cache
- * read + in-memory scoring, instead of re-hitting Postgres each time. The
- * function returns ~900 rankable rows (one PostgREST page) — no pagination.
+ * differs), so they're held in a small process-level cache with a 5-minute TTL
+ * (the data refreshes on the daily/intraday cadence). A page load / re-rank is
+ * then a cache read + in-memory scoring instead of hitting Postgres each time.
+ *
+ * NOTE: we deliberately do NOT use Next's `unstable_cache` here — it throws in
+ * Next 16 when the wrapped function performs a dynamic fetch, and supabase-js
+ * issues exactly such a fetch internally ("a server error occurred" with an
+ * error digest). A plain module-level cache gives the same per-instance benefit
+ * with none of that fragility. screen_facts returns the rankable set (~900
+ * rows, one PostgREST page), so there's no pagination cost either.
  */
 
-import { unstable_cache } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 import { scoreScreen, type ScreenFacts, type ScreenResult } from "@/lib/screen/score";
 import type { ScreenConfig } from "@/lib/screen/config";
 
 const PAGE = 1000;
+const TTL_MS = 5 * 60 * 1000;
+
+let cache: { at: number; data: ScreenFacts[] } | null = null;
+let inflight: Promise<ScreenFacts[]> | null = null;
 
 async function fetchFacts(): Promise<ScreenFacts[]> {
   const supabase = getSupabase();
@@ -59,12 +68,27 @@ async function fetchFacts(): Promise<ScreenFacts[]> {
   }) satisfies ScreenFacts);
 }
 
-// Shared across all configs + all requests for 5 minutes — the data refreshes
-// on the daily/intraday cadence, so a 5-minute window is well inside it.
-export const loadFacts = unstable_cache(fetchFacts, ["screen-facts-v2"], {
-  revalidate: 300,
-  tags: ["screen-facts"],
-});
+/** Cached facts load — fresh within TTL, otherwise refetched. Concurrent calls
+ *  share one in-flight fetch. */
+export async function loadFacts(): Promise<ScreenFacts[]> {
+  if (cache && Date.now() - cache.at < TTL_MS) return cache.data;
+  if (inflight) return inflight;
+  inflight = (async () => {
+    try {
+      const data = await fetchFacts();
+      cache = { at: Date.now(), data };
+      return data;
+    } catch (err) {
+      // Never let a transient fetch failure throw the whole page; serve the
+      // last good snapshot if we have one, else an empty set.
+      console.error("loadFacts failed:", err);
+      return cache?.data ?? [];
+    } finally {
+      inflight = null;
+    }
+  })();
+  return inflight;
+}
 
 export interface ScreenResponse extends ScreenResult {
   data_asof: string | null;
