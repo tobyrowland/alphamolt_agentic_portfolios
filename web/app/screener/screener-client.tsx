@@ -246,6 +246,48 @@ export default function ScreenerClient({
 
   return (
     <div>
+      {/* How this works — at the top, under the h1: the screen ranks the whole
+          universe, the top N flow to a portfolio. Screen → top N → Portfolio. */}
+      <div className="mb-4">
+        <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mb-2">
+          How this works
+        </div>
+        <div className="flex items-stretch gap-0 flex-wrap">
+          <div className="flex-1 min-w-[200px] rounded-xl border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] p-3.5">
+            <div className="font-mono text-[12px] text-[var(--color-cyan)]">
+              ● THIS SCREEN{" "}
+              <span className="text-[9px] text-text-muted tracking-[0.05em]">YOU ARE HERE</span>
+            </div>
+            <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">
+              Ranks every US equity by your config. Re-ranks live.
+            </div>
+          </div>
+          <div className="flex-[0_0_130px] min-w-[120px] flex flex-col items-center justify-center px-1">
+            <div className="font-mono text-[10px] text-green">top {config.topN}</div>
+            <div
+              className="w-full h-px my-1.5 relative"
+              style={{ background: "linear-gradient(90deg,rgba(38,224,240,.5),rgba(55,219,128,.5))" }}
+            >
+              <span className="absolute -right-0.5 -top-[5px] text-green text-[11px]">▶</span>
+            </div>
+            <div className="font-mono text-[9px] text-text-muted">candidates</div>
+          </div>
+          <Link
+            href={runHref}
+            className="flex-1 min-w-[200px] rounded-xl border border-green/45 bg-green/[0.06] p-3.5 hover:bg-green/[0.1] transition-colors"
+          >
+            <div className="font-mono text-[12px] text-green">PORTFOLIO →</div>
+            <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">
+              Your <span className="text-text">swarm</span> drafts &amp; trades them — marked to
+              market, daily.
+            </div>
+            <div className="font-mono text-[10px] text-green mt-2">
+              Run this screen as a portfolio →
+            </div>
+          </Link>
+        </div>
+      </div>
+
       {/* Preset chips */}
       <div className="flex items-center gap-1.5 flex-wrap mb-2.5">
         <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mr-1">
@@ -560,48 +602,6 @@ export default function ScreenerClient({
           </span>
         </div>
       )}
-
-      {/* How this works — below the table so the graphic doesn't separate the
-          controls from the list they drive. Screen → top N → Portfolio. */}
-      <div className="mt-6 mb-2">
-        <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mb-2">
-          How this works
-        </div>
-        <div className="flex items-stretch gap-0 flex-wrap">
-          <div className="flex-1 min-w-[200px] rounded-xl border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] p-3.5">
-            <div className="font-mono text-[12px] text-[var(--color-cyan)]">
-              ● THIS SCREEN{" "}
-              <span className="text-[9px] text-text-muted tracking-[0.05em]">YOU ARE HERE</span>
-            </div>
-            <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">
-              Ranks every US equity by your config. Re-ranks live.
-            </div>
-          </div>
-          <div className="flex-[0_0_130px] min-w-[120px] flex flex-col items-center justify-center px-1">
-            <div className="font-mono text-[10px] text-green">top {config.topN}</div>
-            <div
-              className="w-full h-px my-1.5 relative"
-              style={{ background: "linear-gradient(90deg,rgba(38,224,240,.5),rgba(55,219,128,.5))" }}
-            >
-              <span className="absolute -right-0.5 -top-[5px] text-green text-[11px]">▶</span>
-            </div>
-            <div className="font-mono text-[9px] text-text-muted">candidates</div>
-          </div>
-          <Link
-            href={runHref}
-            className="flex-1 min-w-[200px] rounded-xl border border-green/45 bg-green/[0.06] p-3.5 hover:bg-green/[0.1] transition-colors"
-          >
-            <div className="font-mono text-[12px] text-green">PORTFOLIO →</div>
-            <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">
-              Your <span className="text-text">swarm</span> drafts &amp; trades them — marked to
-              market, daily.
-            </div>
-            <div className="font-mono text-[10px] text-green mt-2">
-              Run this screen as a portfolio →
-            </div>
-          </Link>
-        </div>
-      </div>
 
       {/* Related screens */}
       <nav className="mt-5 flex gap-4 flex-wrap text-[12px] text-text-muted" aria-label="Related screens">
