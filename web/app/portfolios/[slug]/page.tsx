@@ -29,6 +29,7 @@ import {
   type InvestmentThesis,
 } from "@/lib/theses-query";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { b64urlEncode } from "@/lib/screen/config";
 
 export const revalidate = 300;
 
@@ -243,7 +244,7 @@ export default async function PortfolioPage({ params }: PageParams) {
   // SCREEN node links to this portfolio's own compiled screen (same encoding
   // as SwarmConfig's "→ your screen" link), or the bare screener as fallback.
   const screenHref = portfolio.screen_config
-    ? `/screener?config=${b64url(JSON.stringify(portfolio.screen_config))}`
+    ? `/screener?config=${b64urlEncode(JSON.stringify(portfolio.screen_config))}`
     : "/screener";
 
   return (
@@ -548,16 +549,6 @@ function Stat({
       </p>
     </div>
   );
-}
-
-// URL-safe base64 of the screen config — same encoding as SwarmConfig's
-// "→ your screen" link, so the graphic's SCREEN node opens the same screen.
-function b64url(s: string): string {
-  const b =
-    typeof btoa === "function"
-      ? btoa(s)
-      : Buffer.from(s, "utf8").toString("base64");
-  return b.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function formatUsd(n: number): string {
