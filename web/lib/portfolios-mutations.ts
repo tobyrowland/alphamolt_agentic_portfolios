@@ -13,11 +13,19 @@ import { revalidatePath } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 import { requireUser } from "@/lib/auth/require-user";
 import { uniquePortfolioSlug } from "@/lib/slug";
+import { PRESETS, DEFAULT_PRESET, presetConfig } from "@/lib/screen/config";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
 const MAX_NAME = 80;
 const MAX_MANDATE = 2000;
+
+// The team rostered onto a brand-new portfolio (onboarding brief §3 — agents
+// pre-rostered, not required). A buyer picks names from the universe; a
+// reviewer sells on a broken thesis. Both are house agents (available_for_hire
+// by default); a missing one just leaves that seat open for the owner to fill.
+const DEFAULT_BUYER_HANDLE = "buyer-gemini";
+const DEFAULT_REVIEWER_HANDLE = "portfolio-reviewer";
 
 interface OwnedPortfolio {
   id: string;
@@ -85,6 +93,8 @@ function revalidate(slug: string): void {
 export async function createPortfolio(input: {
   displayName: string;
   mandate: string;
+  /** House universe preset (onboarding brief §3). Defaults, never blocks. */
+  presetId?: string;
 }): Promise<ActionResult> {
   const { user } = await requireUser();
   const displayName = input.displayName.trim();
@@ -93,6 +103,13 @@ export async function createPortfolio(input: {
   if (!displayName) return { ok: false, error: "Portfolio name is required." };
   if (displayName.length > MAX_NAME)
     return { ok: false, error: `Name must be ${MAX_NAME} characters or fewer.` };
+  // The mandate is the one real decision onboarding asks for (brief §2): it's
+  // the brief the team trades to, so it's required — no silent empty portfolio.
+  if (!mandate)
+    return {
+      ok: false,
+      error: "Write a one-line mandate — it's the brief your team trades to.",
+    };
   if (mandate.length > MAX_MANDATE)
     return {
       ok: false,
@@ -124,8 +141,59 @@ export async function createPortfolio(input: {
     return { ok: false, error: "Could not create the portfolio. Try again." };
   }
 
+  // Attach the universe + pre-roster the team (brief §3). Both are
+  // best-effort follow-ups: the portfolio (and its $1M book) already exists,
+  // so a hiccup here leaves an editable default, never a failed creation.
+  const created = await getOwnedPortfolio(user.id);
+  if (created) {
+    const presetId =
+      input.presetId && PRESETS[input.presetId] ? input.presetId : DEFAULT_PRESET;
+    const { error: cfgErr } = await supabase
+      .from("portfolios")
+      .update({ screen_config: presetConfig(presetId) })
+      .eq("id", created.id);
+    if (cfgErr) console.error("createPortfolio: set universe failed:", cfgErr);
+
+    await rosterDefaultTeam(created.id);
+  }
+
   revalidate(slug);
   return { ok: true };
+}
+
+/**
+ * Pre-roster a buyer + reviewer onto a new portfolio so the swarm can act on
+ * the next heartbeat without the owner hand-picking agents first (brief §3).
+ * Best-effort: a house agent that's missing / not for hire simply leaves its
+ * seat empty rather than failing the whole onboarding.
+ */
+async function rosterDefaultTeam(portfolioId: string): Promise<void> {
+  const seats: { handle: string; role: "buyer" | "reviewer" }[] = [
+    { handle: DEFAULT_BUYER_HANDLE, role: "buyer" },
+    { handle: DEFAULT_REVIEWER_HANDLE, role: "reviewer" },
+  ];
+  const rows: Record<string, unknown>[] = [];
+  for (const seat of seats) {
+    const agent = await resolveAgent(seat.handle);
+    if (agent && agent.available_for_hire) {
+      rows.push({
+        portfolio_id: portfolioId,
+        agent_id: agent.id,
+        role: seat.role,
+      });
+    } else {
+      console.warn(
+        `rosterDefaultTeam: house agent '${seat.handle}' unavailable; ` +
+          `leaving the ${seat.role} seat open.`,
+      );
+    }
+  }
+  if (rows.length === 0) return;
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from("portfolio_agents")
+    .upsert(rows, { onConflict: "portfolio_id,agent_id" });
+  if (error) console.error("rosterDefaultTeam upsert failed:", error);
 }
 
 export async function updatePortfolioDetails(input: {
