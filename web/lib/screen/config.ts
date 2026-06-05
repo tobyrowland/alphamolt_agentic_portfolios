@@ -146,14 +146,31 @@ export function presetConfig(id: string): ScreenConfig {
 // arbitrary custom screen round-trips losslessly and shareably. A bare
 // `?preset=` or `?sector=` shortcut yields the clean, indexable URLs.
 
+// UTF-8 safe base64url. NOTE: `btoa`/`atob` only handle Latin1, so they THROW
+// (InvalidCharacterError) on any non-ASCII char — and a brief routinely
+// contains an em-dash, "≤", curly quotes, etc. Use Buffer on the server (UTF-8
+// native) and TextEncoder/TextDecoder on the browser.
 function b64urlEncode(s: string): string {
-  const b = typeof btoa === "function" ? btoa(s) : Buffer.from(s, "utf8").toString("base64");
+  let b: string;
+  if (typeof Buffer !== "undefined") {
+    b = Buffer.from(s, "utf8").toString("base64");
+  } else {
+    const bytes = new TextEncoder().encode(s);
+    let bin = "";
+    for (const byte of bytes) bin += String.fromCharCode(byte);
+    b = btoa(bin);
+  }
   return b.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 function b64urlDecode(s: string): string {
   const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
   const b = s.replace(/-/g, "+").replace(/_/g, "/") + pad;
-  return typeof atob === "function" ? atob(b) : Buffer.from(b, "base64").toString("utf8");
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(b, "base64").toString("utf8");
+  }
+  const bin = atob(b);
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
 }
 
 export function encodeConfig(config: ScreenConfig): string {
