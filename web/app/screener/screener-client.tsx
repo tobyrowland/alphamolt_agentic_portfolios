@@ -55,6 +55,8 @@ function fmt(v: number | null, opts?: { pct?: boolean; mult?: boolean; dp?: numb
   if (opts?.mult) return `${s}×`;
   return s;
 }
+const PAGE_SIZE = 250;
+
 function topWeight(w: { quality: number; value: number; momentum: number }): string {
   const e = Object.entries(w) as [string, number][];
   e.sort((a, b) => b[1] - a[1]);
@@ -100,7 +102,12 @@ export default function ScreenerClient({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [colsOpen, setColsOpen] = useState(false);
   const [extraCols, setExtraCols] = useState<Set<string>>(new Set());
+  const [visible, setVisible] = useState(PAGE_SIZE);
   const firstRender = useRef(true);
+
+  // Render only the first chunk; "Load more" reveals more from memory. Reset to
+  // the first page whenever the ranking changes.
+  useEffect(() => setVisible(PAGE_SIZE), [data]);
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
@@ -471,7 +478,7 @@ export default function ScreenerClient({
             </tr>
           </thead>
           <tbody>
-            {data.rows.map((r, i) => (
+            {data.rows.slice(0, visible).map((r, i) => (
               <RowView
                 key={r.ticker}
                 r={r}
@@ -491,6 +498,21 @@ export default function ScreenerClient({
           </tbody>
         </table>
       </div>
+
+      {data.rows.length > visible && (
+        <div className="mt-3 flex items-center justify-center gap-3">
+          <button
+            type="button"
+            onClick={() => setVisible((v) => v + PAGE_SIZE)}
+            className="font-mono text-[11px] rounded-md border border-white/10 text-text-muted px-4 py-2 hover:text-text hover:border-white/25"
+          >
+            Load {Math.min(PAGE_SIZE, data.rows.length - visible)} more
+          </button>
+          <span className="font-mono text-[10.5px] text-text-muted">
+            showing {visible} of {data.rows.length}
+          </span>
+        </div>
+      )}
 
       {/* Related screens */}
       <nav className="mt-5 flex gap-4 flex-wrap text-[12px] text-text-muted" aria-label="Related screens">
