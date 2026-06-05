@@ -270,7 +270,7 @@ function Hero({
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <Link
-              href="/signup"
+              href="/login"
               data-cta="hero-build"
               className="inline-flex items-center px-5 py-2.5 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
               style={{
