@@ -303,7 +303,7 @@ export default function ScreenerClient({
           {compiling ? "Compiling…" : briefDirty ? "Recompile ↻" : "Compile to screen"}
         </button>
         <span className="font-mono text-[10.5px] text-text-muted" aria-live="polite">
-          {compileStatus ?? "the brief is for humans; the compiled knobs are what the buyer reads"}
+          {compileStatus ?? "the brief is for humans; the compiled filters & weights are what drive the screener"}
         </span>
       </div>
 
@@ -357,84 +357,6 @@ export default function ScreenerClient({
           </div>
         </details>
 
-        {/* Tune ranking — pushed right, collapsed */}
-        <details
-          className={`ml-auto min-w-[280px] ${card}`}
-        >
-          <summary
-            title="Adjust how the Score is computed — the balance of Quality, Value and Momentum, the AI multiplier, and how many top names feed your buyer."
-            className="list-none cursor-pointer font-mono text-[11px] text-[var(--color-cyan)] px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden"
-          >
-            ⚙ Tune ranking ▸
-          </summary>
-          <div className="px-3 pb-3">
-            <div className="flex items-center justify-between mt-1.5 gap-2">
-              <span
-                title={RANKING_HELP}
-                className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
-              >
-                This screen&apos;s own ranking{" "}
-                <span aria-hidden className="text-text-muted/50 no-underline">ⓘ</span>
-              </span>
-              <label
-                title={AI_HELP}
-                className="font-mono text-[10.5px] text-[var(--color-cyan)] inline-flex items-center gap-1.5 cursor-help shrink-0"
-              >
-                <input
-                  type="checkbox"
-                  checked={config.aiMultiplier}
-                  onChange={(e) => patch({ aiMultiplier: e.target.checked })}
-                  className="accent-[var(--color-cyan)]"
-                />
-                AI bull/bear ×
-              </label>
-            </div>
-            {(["quality", "value", "momentum"] as const).map((k) => (
-              <div key={k} className="mt-2.5">
-                <div className="flex justify-between font-mono text-[11px] text-text-muted capitalize">
-                  <span
-                    title={WEIGHT_HELP[k]}
-                    className="cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
-                  >
-                    {k} <span aria-hidden className="text-text-muted/50 no-underline">ⓘ</span>
-                  </span>
-                  <span className="text-text">{config.weights[k]}</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={config.weights[k]}
-                  onChange={(e) => patch({ weights: { ...config.weights, [k]: Number(e.target.value) } })}
-                  className="w-full accent-[var(--color-cyan)]"
-                  aria-label={`${k} weight, ${config.weights[k]} of 100`}
-                  title={WEIGHT_HELP[k]}
-                />
-              </div>
-            ))}
-            <div className="mt-3">
-              <div className="flex justify-between font-mono text-[11px] text-text-muted">
-                <span
-                  title={TOPN_HELP}
-                  className="cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
-                >
-                  Top N → buyer <span aria-hidden className="text-text-muted/50 no-underline">ⓘ</span>
-                </span>
-                <span className="text-[var(--color-cyan)]">{config.topN}</span>
-              </div>
-              <input
-                type="range"
-                min={10}
-                max={100}
-                value={config.topN}
-                onChange={(e) => patch({ topN: Math.max(1, Math.min(200, Number(e.target.value))) })}
-                className="w-full accent-[var(--color-cyan)]"
-                aria-label={`Top N candidates, ${config.topN}`}
-                title={TOPN_HELP}
-              />
-            </div>
-          </div>
-        </details>
       </div>
 
       {/* Advanced raw add row */}
@@ -446,47 +368,6 @@ export default function ScreenerClient({
           }}
         />
       )}
-
-      {/* How this works — Screen → top N → Portfolio (one bridge, not a pipeline) */}
-      <div className="mt-4 mb-4">
-        <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mb-2">
-          How this works
-        </div>
-        <div className="flex items-stretch gap-0 flex-wrap">
-          <div className="flex-1 min-w-[200px] rounded-xl border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] p-3.5">
-            <div className="font-mono text-[12px] text-[var(--color-cyan)]">
-              ● THIS SCREEN{" "}
-              <span className="text-[9px] text-text-muted tracking-[0.05em]">YOU ARE HERE</span>
-            </div>
-            <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">
-              Ranks every US equity by your config. Re-ranks live.
-            </div>
-          </div>
-          <div className="flex-[0_0_130px] min-w-[120px] flex flex-col items-center justify-center px-1">
-            <div className="font-mono text-[10px] text-green">top {config.topN}</div>
-            <div
-              className="w-full h-px my-1.5 relative"
-              style={{ background: "linear-gradient(90deg,rgba(38,224,240,.5),rgba(55,219,128,.5))" }}
-            >
-              <span className="absolute -right-0.5 -top-[5px] text-green text-[11px]">▶</span>
-            </div>
-            <div className="font-mono text-[9px] text-text-muted">candidates</div>
-          </div>
-          <Link
-            href={runHref}
-            className="flex-1 min-w-[200px] rounded-xl border border-green/45 bg-green/[0.06] p-3.5 hover:bg-green/[0.1] transition-colors"
-          >
-            <div className="font-mono text-[12px] text-green">PORTFOLIO →</div>
-            <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">
-              Your <span className="text-text">swarm</span> drafts &amp; trades them — marked to
-              market, daily.
-            </div>
-            <div className="font-mono text-[10px] text-green mt-2">
-              Run this screen as a portfolio →
-            </div>
-          </Link>
-        </div>
-      </div>
 
       {/* Count + actions */}
       <div className="font-mono text-[10.5px] text-text-muted flex justify-between flex-wrap gap-1.5 mb-2">
@@ -511,6 +392,87 @@ export default function ScreenerClient({
           )}
         </span>
       </div>
+
+      {/* Configure scoring — sits right above the table it drives */}
+      <details className={`mb-2 ${card}`}>
+        <summary
+          title="Configure how the Score is computed — the balance of Quality, Value and Momentum, the AI multiplier, and how many top names flow to a portfolio."
+          className="list-none cursor-pointer font-mono text-[11px] text-[var(--color-cyan)] px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden flex items-center justify-between"
+        >
+          <span>⚙ Configure scoring</span>
+          <span className="text-text-muted/60">
+            Q {config.weights.quality} · V {config.weights.value} · M {config.weights.momentum}
+            {config.aiMultiplier ? " · AI×" : ""} · top {config.topN} ▾
+          </span>
+        </summary>
+        <div className="px-3 pb-3 sm:max-w-[520px]">
+          <div className="flex items-center justify-between mt-1.5 gap-2">
+            <span
+              title={RANKING_HELP}
+              className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
+            >
+              This screen&apos;s own ranking{" "}
+              <span aria-hidden className="text-text-muted/50 no-underline">ⓘ</span>
+            </span>
+            <label
+              title={AI_HELP}
+              className="font-mono text-[10.5px] text-[var(--color-cyan)] inline-flex items-center gap-1.5 cursor-help shrink-0"
+            >
+              <input
+                type="checkbox"
+                checked={config.aiMultiplier}
+                onChange={(e) => patch({ aiMultiplier: e.target.checked })}
+                className="accent-[var(--color-cyan)]"
+              />
+              AI bull/bear ×
+            </label>
+          </div>
+          {(["quality", "value", "momentum"] as const).map((k) => (
+            <div key={k} className="mt-2.5">
+              <div className="flex justify-between font-mono text-[11px] text-text-muted capitalize">
+                <span
+                  title={WEIGHT_HELP[k]}
+                  className="cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
+                >
+                  {k} <span aria-hidden className="text-text-muted/50 no-underline">ⓘ</span>
+                </span>
+                <span className="text-text">{config.weights[k]}</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={config.weights[k]}
+                onChange={(e) => patch({ weights: { ...config.weights, [k]: Number(e.target.value) } })}
+                className="w-full accent-[var(--color-cyan)]"
+                aria-label={`${k} weight, ${config.weights[k]} of 100`}
+                title={WEIGHT_HELP[k]}
+              />
+            </div>
+          ))}
+          <div className="mt-3">
+            <div className="flex justify-between font-mono text-[11px] text-text-muted">
+              <span
+                title={TOPN_HELP}
+                className="cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
+              >
+                Top N → portfolio <span aria-hidden className="text-text-muted/50 no-underline">ⓘ</span>
+              </span>
+              <span className="text-[var(--color-cyan)]">{config.topN}</span>
+            </div>
+            <input
+              type="range"
+              min={10}
+              max={100}
+              value={config.topN}
+              onChange={(e) => patch({ topN: Math.max(1, Math.min(200, Number(e.target.value))) })}
+              className="w-full accent-[var(--color-cyan)]"
+              aria-label={`Top N candidates, ${config.topN}`}
+              title={TOPN_HELP}
+            />
+          </div>
+        </div>
+      </details>
 
       {/* Results */}
       <div className={`${card} overflow-hidden`}>
@@ -598,6 +560,48 @@ export default function ScreenerClient({
           </span>
         </div>
       )}
+
+      {/* How this works — below the table so the graphic doesn't separate the
+          controls from the list they drive. Screen → top N → Portfolio. */}
+      <div className="mt-6 mb-2">
+        <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mb-2">
+          How this works
+        </div>
+        <div className="flex items-stretch gap-0 flex-wrap">
+          <div className="flex-1 min-w-[200px] rounded-xl border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] p-3.5">
+            <div className="font-mono text-[12px] text-[var(--color-cyan)]">
+              ● THIS SCREEN{" "}
+              <span className="text-[9px] text-text-muted tracking-[0.05em]">YOU ARE HERE</span>
+            </div>
+            <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">
+              Ranks every US equity by your config. Re-ranks live.
+            </div>
+          </div>
+          <div className="flex-[0_0_130px] min-w-[120px] flex flex-col items-center justify-center px-1">
+            <div className="font-mono text-[10px] text-green">top {config.topN}</div>
+            <div
+              className="w-full h-px my-1.5 relative"
+              style={{ background: "linear-gradient(90deg,rgba(38,224,240,.5),rgba(55,219,128,.5))" }}
+            >
+              <span className="absolute -right-0.5 -top-[5px] text-green text-[11px]">▶</span>
+            </div>
+            <div className="font-mono text-[9px] text-text-muted">candidates</div>
+          </div>
+          <Link
+            href={runHref}
+            className="flex-1 min-w-[200px] rounded-xl border border-green/45 bg-green/[0.06] p-3.5 hover:bg-green/[0.1] transition-colors"
+          >
+            <div className="font-mono text-[12px] text-green">PORTFOLIO →</div>
+            <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">
+              Your <span className="text-text">swarm</span> drafts &amp; trades them — marked to
+              market, daily.
+            </div>
+            <div className="font-mono text-[10px] text-green mt-2">
+              Run this screen as a portfolio →
+            </div>
+          </Link>
+        </div>
+      </div>
 
       {/* Related screens */}
       <nav className="mt-5 flex gap-4 flex-wrap text-[12px] text-text-muted" aria-label="Related screens">
