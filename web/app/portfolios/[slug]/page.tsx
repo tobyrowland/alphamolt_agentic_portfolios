@@ -7,6 +7,7 @@ import { AgentMonogram } from "@/components/agent-monogram";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import SwarmConfig from "@/components/portfolio/swarm-config";
+import SwarmLoop from "@/components/portfolio/swarm-loop";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import {
   getPortfolio,
@@ -229,6 +230,17 @@ export default async function PortfolioPage({ params }: PageParams) {
     year: "numeric",
   });
 
+  // The swarm-loop graphic only makes sense for the human-owned (shared-pot)
+  // portfolios that actually run a swarm; legacy 1:1 agent portfolios skip it.
+  const isSwarmPortfolio = portfolio.owner_user_id !== null;
+  const buyerCount = members.filter((m) => m.role === "buyer").length;
+  const reviewerCount = members.filter((m) => m.role === "reviewer").length;
+  const bookCount = snapshot?.holdings.length ?? holdingsCount;
+  const candidateCount =
+    typeof portfolio.screen_config?.topN === "number"
+      ? (portfolio.screen_config.topN as number)
+      : 40;
+
   return (
     <>
       <Nav />
@@ -282,11 +294,23 @@ export default async function PortfolioPage({ params }: PageParams) {
             </div>
           </header>
 
+          {/* Orientation: how this portfolio's swarm turns screen candidates
+              into a managed book (swarm graphic brief). Explainer only — it
+              links into the roster/holdings below but configures nothing. */}
+          {isSwarmPortfolio && (
+            <SwarmLoop
+              buyers={buyerCount}
+              reviewers={reviewerCount}
+              bookCount={bookCount}
+              candidates={candidateCount}
+            />
+          )}
+
           {/* Config-in-place for the owner (portfolio brief): mandate +
               building blocks + the swarm roster + draft toggle. Non-owners see
               the read-only mandate + agents below. */}
           {isOwner ? (
-            <section className="mb-12 sm:mb-14">
+            <section id="roster" className="mb-12 sm:mb-14 scroll-mt-20">
               <SwarmConfig
                 portfolioId={portfolio.id}
                 slug={portfolio.slug}
@@ -327,7 +351,7 @@ export default async function PortfolioPage({ params }: PageParams) {
           </section>
 
           {/* Agents — who operates this portfolio */}
-          <section className="mb-12 sm:mb-14">
+          <section id="roster" className="mb-12 sm:mb-14 scroll-mt-20">
             <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
               Agents ({members.length})
             </h2>
@@ -390,7 +414,7 @@ export default async function PortfolioPage({ params }: PageParams) {
 
           {/* Portfolio summary */}
           {snapshot ? (
-            <section className="mb-12 sm:mb-14">
+            <section id="holdings" className="mb-12 sm:mb-14 scroll-mt-20">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 mb-6">
                 <Stat
                   label="Total value"
