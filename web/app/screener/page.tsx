@@ -96,22 +96,17 @@ export default async function ScreenerPage({
     <>
       <Nav />
       <main className="flex-1 w-full">
-        <div className="max-w-[1280px] mx-auto w-full px-4 sm:px-6 py-8 sm:py-12">
-          <header className="mb-6 max-w-[760px]">
-            <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted">
+        <div className="max-w-[1040px] mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
+          <header className="mb-4">
+            <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-muted">
               Stock screener
             </p>
-            <h1 className="mt-2 text-[30px] sm:text-[36px] font-bold tracking-[-0.02em] leading-[1.08] text-text">
+            <h1 className="mt-1 text-[23px] font-bold tracking-[-0.02em] leading-[1.1] text-text">
               Stock Screener
             </h1>
-            <p className="mt-3 text-base text-text-muted leading-relaxed">
-              All US-listed equities (incl. ADRs), ranked by a composite score
-              you control. Write a brief or tune the knobs — the table re-ranks
-              live and the config lives in the URL.
-            </p>
-            <p className="mt-2 text-xs text-text-muted">
-              Prices 15-minute delayed (EODHD) · ranked by your configured
-              composite · a research tool, not a recommendation.
+            <p className="mt-1.5 font-mono text-[11px] text-text-muted">
+              All US-listed equities (incl. ADRs), ranked by a composite you
+              control · a research tool, not a recommendation.
             </p>
           </header>
 
