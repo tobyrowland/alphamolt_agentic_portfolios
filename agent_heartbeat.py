@@ -495,15 +495,14 @@ def _run_portfolio(
 
     member_rows = db.get_portfolio_members(portfolio["id"])
 
-    # Swarm path (portfolio brief §4): when the owner has configured a draft
-    # (portfolios.draft_config) and there are role-tagged buyers, coordinate
-    # the members as a swarm — snake-draft buys + first-valid-sell — instead of
-    # the legacy independent per-member loop. Opt-in, so portfolios without a
-    # draft_config are completely unaffected. Skipped for a single-member
-    # "Run now" (handle_filter) so targeted runs keep the per-member behaviour.
+    # Swarm path (portfolio brief §4): snake-draft buys + first-valid-sell is
+    # the STANDARD coordination for any portfolio with role-tagged buyers — no
+    # opt-in. Skipped for a single-member "Run now" (handle_filter) so targeted
+    # runs keep per-member behaviour, and for portfolios with no buyer-role
+    # members (legacy 1:1 agents / other strategies) which fall through to the
+    # independent per-member loop below.
     if (
-        portfolio.get("draft_config")
-        and not handle_filter
+        not handle_filter
         and any(m.get("role") == "buyer" for m in member_rows)
     ):
         return _run_portfolio_swarm(

@@ -16,14 +16,12 @@
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import SwarmLoop from "@/components/portfolio/swarm-loop";
 import { roleFor } from "@/lib/agent-roles";
 import {
   updatePortfolioDetails,
   addAgentToPortfolio,
   removeAgentFromPortfolio,
   setMemberSwarmConfig,
-  setDraftConfig,
 } from "@/lib/portfolios-mutations";
 import { b64urlEncode } from "@/lib/screen/config";
 
@@ -61,9 +59,6 @@ interface Props {
   members: Member[];
   catalog: AgentCatalogEntry[];
   screenConfig: Record<string, unknown> | null;
-  draftEnabled: boolean;
-  /** Current holdings count — feeds the swarm-loop "YOUR BOOK" live count. */
-  bookCount: number;
 }
 
 const BLOCKS: { group: string; items: { label: string; text: string }[] }[] = [
@@ -161,8 +156,6 @@ export default function SwarmConfig({
   members,
   catalog,
   screenConfig,
-  draftEnabled,
-  bookCount,
 }: Props) {
   const router = useRouter();
   const [brief, setBrief] = useState(mandate);
@@ -193,16 +186,6 @@ export default function SwarmConfig({
   }
   function insertBlock(text: string) {
     setBrief((b) => (b.trim() ? `${b.trim()}, ${text}` : text));
-  }
-  function toggleDraft(on: boolean) {
-    start(async () => {
-      const r = await setDraftConfig({
-        portfolioId,
-        draftConfig: on ? { order: "snake", cycle: "daily" } : null,
-      });
-      flash(r.ok ? (on ? "Swarm coordination on" : "Swarm coordination off") : r.error);
-      if (r.ok) refresh();
-    });
   }
 
   const seatedHandles = useMemo(
@@ -264,49 +247,23 @@ export default function SwarmConfig({
         </div>
       </div>
 
-      {/* Draft toggle */}
-      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold text-text">Swarm coordination</h2>
-            <p className="text-xs text-text-muted">
-              Snake-draft buying across your buyers (one name per turn, rotating
-              order, shared cash) + first-valid-sell across reviewers. Off = each
-              agent runs independently.
-            </p>
-          </div>
-          <label className="font-mono text-[11px] text-green inline-flex items-center gap-2 shrink-0">
-            <input
-              type="checkbox"
-              checked={draftEnabled}
-              onChange={(e) => toggleDraft(e.target.checked)}
-            />
-            Run as a swarm
-          </label>
-        </div>
-        {draftEnabled && buyers.length > 0 && (
-          <p className="mt-2 font-mono text-[11px] text-text-muted">
-            draft order:{" "}
-            {buyers.map((b, i) => (
-              <span key={b.agent_id}>
-                {i > 0 && " → "}
-                <span className="text-text">{b.display_name}</span>
-              </span>
-            ))}{" "}
-            <span className="text-text-muted/60">(reverses each round)</span>
-          </p>
-        )}
-      </div>
-
-      {/* How the swarm runs — the engine loop, right above the roster you
-          configure (brief §3). Spacing handled by the parent space-y-6. */}
-      <SwarmLoop
-        buyers={buyers.length}
-        reviewers={reviewers.length}
-        bookCount={bookCount}
-        candidates={topN}
-        className=""
-      />
+      {/* Snake-draft coordination is standard now (no toggle): buyers draft
+          from the shared screen one name at a time + reviewers first-valid-sell.
+          Show the draft order when more than one buyer makes it meaningful. */}
+      {buyers.length > 1 && (
+        <p className="font-mono text-[11px] text-text-muted px-1">
+          Buyers draft in snake order:{" "}
+          {buyers.map((b, i) => (
+            <span key={b.agent_id}>
+              {i > 0 && " → "}
+              <span className="text-text">{b.display_name}</span>
+            </span>
+          ))}{" "}
+          <span className="text-text-muted/60">
+            (one name per turn, rotates each round, shared cash)
+          </span>
+        </p>
+      )}
 
       {/* Rosters — registry-backed gallery, no free-text brain. */}
       <RosterEditor

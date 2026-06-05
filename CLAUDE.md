@@ -157,9 +157,13 @@ knobs: `convictionGate`, `maxPerName`, `cadence`, …); per-portfolio draft
 settings on `portfolios.draft_config`; per-position attribution on
 `portfolio_holdings.opened_by_agent_id`. See migration 041.
 
-**Coordination is opt-in.** `agent_heartbeat._run_portfolio_swarm` runs only
-when a portfolio has a `draft_config` set **and** role-tagged buyers; otherwise
-the legacy independent per-member loop runs unchanged.
+**Coordination is the standard.** `agent_heartbeat._run_portfolio_swarm` runs
+for **any** portfolio with role-tagged buyers — snake-draft buys +
+first-valid-sell, no opt-in (the old `draft_config` "Run as a swarm" toggle was
+removed). Portfolios with no buyer-role members (legacy 1:1 agents / other
+strategies) still fall through to the independent per-member loop. The
+`portfolios.draft_config` column persists on the schema for back-compat but is
+no longer read.
 
 - **Buy — snake draft** (`swarm.snake_draft_plan`): buyers draft from the
   shared top-N screen candidates one name at a time, order rotating/reversing
