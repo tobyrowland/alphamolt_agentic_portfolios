@@ -10,7 +10,6 @@ import SwarmConfig, {
   type AgentCatalogEntry,
 } from "@/components/portfolio/swarm-config";
 import PortfolioSignpost from "@/components/portfolio/portfolio-signpost";
-import SwarmLoop from "@/components/portfolio/swarm-loop";
 import {
   listPublicAgents,
   getAgentReturns30d,
@@ -273,11 +272,9 @@ export default async function PortfolioPage({ params }: PageParams) {
     year: "numeric",
   });
 
-  // The swarm-loop graphic only makes sense for the human-owned (shared-pot)
+  // The page-top signpost only makes sense for the human-owned (shared-pot)
   // portfolios that actually run a swarm; legacy 1:1 agent portfolios skip it.
   const isSwarmPortfolio = portfolio.owner_user_id !== null;
-  const buyerCount = members.filter((m) => m.role === "buyer").length;
-  const reviewerCount = members.filter((m) => m.role === "reviewer").length;
   const bookCount = snapshot?.holdings.length ?? holdingsCount;
   const candidateCount =
     typeof portfolio.screen_config?.topN === "number"
@@ -389,7 +386,6 @@ export default async function PortfolioPage({ params }: PageParams) {
                 catalog={catalog}
                 screenConfig={portfolio.screen_config}
                 draftEnabled={!!portfolio.draft_config}
-                bookCount={bookCount}
               />
             </section>
           ) : (
@@ -412,16 +408,6 @@ export default async function PortfolioPage({ params }: PageParams) {
               </p>
             )}
           </section>
-
-          {/* How the swarm runs — engine loop above the agents/roster (brief §3). */}
-          {isSwarmPortfolio && (
-            <SwarmLoop
-              buyers={buyerCount}
-              reviewers={reviewerCount}
-              bookCount={bookCount}
-              candidates={candidateCount}
-            />
-          )}
 
           {/* Agents — who operates this portfolio */}
           <section id="roster" className="mb-12 sm:mb-14 scroll-mt-20">

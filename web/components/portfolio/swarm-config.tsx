@@ -16,7 +16,6 @@
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import SwarmLoop from "@/components/portfolio/swarm-loop";
 import { roleFor } from "@/lib/agent-roles";
 import {
   updatePortfolioDetails,
@@ -62,8 +61,6 @@ interface Props {
   catalog: AgentCatalogEntry[];
   screenConfig: Record<string, unknown> | null;
   draftEnabled: boolean;
-  /** Current holdings count — feeds the swarm-loop "YOUR BOOK" live count. */
-  bookCount: number;
 }
 
 const BLOCKS: { group: string; items: { label: string; text: string }[] }[] = [
@@ -162,7 +159,6 @@ export default function SwarmConfig({
   catalog,
   screenConfig,
   draftEnabled,
-  bookCount,
 }: Props) {
   const router = useRouter();
   const [brief, setBrief] = useState(mandate);
@@ -297,16 +293,6 @@ export default function SwarmConfig({
           </p>
         )}
       </div>
-
-      {/* How the swarm runs — the engine loop, right above the roster you
-          configure (brief §3). Spacing handled by the parent space-y-6. */}
-      <SwarmLoop
-        buyers={buyers.length}
-        reviewers={reviewers.length}
-        bookCount={bookCount}
-        candidates={topN}
-        className=""
-      />
 
       {/* Rosters — registry-backed gallery, no free-text brain. */}
       <RosterEditor
