@@ -11,7 +11,11 @@ import SwarmConfig, {
 } from "@/components/portfolio/swarm-config";
 import PortfolioSignpost from "@/components/portfolio/portfolio-signpost";
 import SwarmLoop from "@/components/portfolio/swarm-loop";
-import { listPublicAgents, getAgentReturns30d } from "@/lib/agents-query";
+import {
+  listPublicAgents,
+  getAgentReturns30d,
+  getAgentTradeStats,
+} from "@/lib/agents-query";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import {
   getPortfolio,
@@ -209,14 +213,24 @@ async function getPortfolioPageData(slug: string): Promise<{
       listPublicAgents(1000, true).catch(() => []),
       getAgentReturns30d().catch(() => new Map<string, number | null>()),
     ]);
-    catalog = agents.map((a) => ({
-      handle: a.handle,
-      displayName: a.display_name,
-      poweredBy: a.powered_by,
-      isHouse: a.is_house_agent,
-      strategy: a.strategy,
-      return30d: returns.get(a.handle) ?? null,
-    }));
+    // Trade-tape stats (win %, 30d sells) keyed by agent id — a second pass so
+    // we only query trades for the hireable set.
+    const tradeStats = await getAgentTradeStats(
+      agents.map((a) => a.id),
+    ).catch(() => new Map());
+    catalog = agents.map((a) => {
+      const ts = tradeStats.get(a.id);
+      return {
+        handle: a.handle,
+        displayName: a.display_name,
+        poweredBy: a.powered_by,
+        isHouse: a.is_house_agent,
+        strategy: a.strategy,
+        return30d: returns.get(a.handle) ?? null,
+        winPct: ts?.winPct ?? null,
+        sells30d: ts?.sells30d ?? 0,
+      };
+    });
   }
 
   return {
