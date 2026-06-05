@@ -172,7 +172,7 @@ export default function ScreenerClient({
   async function compile() {
     if (!brief.trim()) return;
     setCompiling(true);
-    setCompileStatus("Compiling…");
+    setCompileStatus("Building your screen…");
     try {
       const res = await fetch("/api/compile-brief", {
         method: "POST",
@@ -180,7 +180,7 @@ export default function ScreenerClient({
         body: JSON.stringify({ brief }),
       });
       if (!res.ok) {
-        setCompileStatus("Compile failed — tune the knobs directly.");
+        setCompileStatus("Couldn’t build the screen — tune the knobs directly.");
         return;
       }
       const { compiled } = await res.json();
@@ -194,7 +194,7 @@ export default function ScreenerClient({
       }));
       setBriefDirty(false);
       const fc = compiled.filters.length;
-      setCompileStatus(`compiled — ${fc} filter${fc === 1 ? "" : "s"} + a ${topWeight(compiled.weights)}-tilted weighting`);
+      setCompileStatus(`Built — ${fc} filter${fc === 1 ? "" : "s"} + a ${topWeight(compiled.weights)}-tilted weighting`);
     } finally {
       setCompiling(false);
     }
@@ -342,10 +342,10 @@ export default function ScreenerClient({
           disabled={compiling || !brief.trim()}
           className="font-mono text-[11px] rounded-md px-3 py-1.5 bg-green text-black disabled:opacity-40"
         >
-          {compiling ? "Compiling…" : briefDirty ? "Recompile ↻" : "Compile to screen"}
+          {compiling ? "Building…" : briefDirty ? "Update screen ↻" : "Build screen from brief"}
         </button>
         <span className="font-mono text-[10.5px] text-text-muted" aria-live="polite">
-          {compileStatus ?? "the brief is for humans; the compiled filters & weights are what drive the screener"}
+          {compileStatus ?? "turns your plain-English brief into the filters & weights that drive the screener below"}
         </span>
       </div>
 

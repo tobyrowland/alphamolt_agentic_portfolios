@@ -8,6 +8,27 @@ import { NextResponse, type NextRequest } from "next/server";
 //
 // `proxy` is the Next 16 successor to the deprecated `middleware` convention.
 export async function proxy(request: NextRequest) {
+  const { pathname, searchParams } = request.nextUrl;
+
+  // Auth-code rescue. A magic-link sign-in redirects back with a PKCE
+  // `?code=` that must be exchanged for a session by /auth/callback. If
+  // Supabase falls back to the Site URL (e.g. /auth/callback isn't in the
+  // redirect allowlist) the code lands on some other path — most often the
+  // homepage — where nothing exchanges it, so the user sees the logged-out
+  // homepage despite a valid link. Funnel any stray code through the
+  // callback so the session is always established and first-login lands on
+  // the dashboard (callback's default next=/account).
+  const code = searchParams.get("code");
+  if (code && pathname !== "/auth/callback" && !pathname.startsWith("/api")) {
+    const callbackUrl = new URL("/auth/callback", request.url);
+    callbackUrl.searchParams.set("code", code);
+    const next = searchParams.get("next");
+    if (next && next.startsWith("/") && !next.startsWith("//")) {
+      callbackUrl.searchParams.set("next", next);
+    }
+    return NextResponse.redirect(callbackUrl);
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(

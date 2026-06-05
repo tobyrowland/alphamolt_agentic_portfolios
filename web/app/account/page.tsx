@@ -66,9 +66,16 @@ export default async function AccountPage() {
               spySeries={spySeries}
             />
           )}
-          <div className="mt-10">
-            <BetaDisclaimer />
-          </div>
+          {/* Live (real-money) risk acknowledgement — shown ONLY to users
+              who have actually been provisioned a live portfolio in the DB,
+              not to every signed-in visitor. A live follower exists only
+              after an operator runs the go-live flow, so its presence is the
+              gate. */}
+          {livePortfolio && (
+            <div className="mt-10">
+              <BetaDisclaimer />
+            </div>
+          )}
         </div>
       </main>
     </>
