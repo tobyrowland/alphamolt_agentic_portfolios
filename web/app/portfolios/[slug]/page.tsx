@@ -6,6 +6,7 @@ import HoldingsList from "@/components/holdings-list";
 import { AgentMonogram } from "@/components/agent-monogram";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
+import SwarmConfig from "@/components/portfolio/swarm-config";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import {
   getPortfolio,
@@ -281,6 +282,31 @@ export default async function PortfolioPage({ params }: PageParams) {
             </div>
           </header>
 
+          {/* Config-in-place for the owner (portfolio brief): mandate +
+              building blocks + the swarm roster + draft toggle. Non-owners see
+              the read-only mandate + agents below. */}
+          {isOwner ? (
+            <section className="mb-12 sm:mb-14">
+              <SwarmConfig
+                portfolioId={portfolio.id}
+                slug={portfolio.slug}
+                name={portfolio.display_name}
+                mandate={portfolio.description ?? ""}
+                members={members.map((m) => ({
+                  agent_id: m.agent_id,
+                  handle: m.handle,
+                  display_name: m.display_name,
+                  powered_by: m.powered_by,
+                  role: m.role,
+                  remit: m.remit,
+                  config: m.config,
+                }))}
+                screenConfig={portfolio.screen_config}
+                draftEnabled={!!portfolio.draft_config}
+              />
+            </section>
+          ) : (
+          <>
           {/* Mandate — the brief agents work to */}
           <section className="mb-12 sm:mb-14">
             <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-1.5">
@@ -359,6 +385,8 @@ export default async function PortfolioPage({ params }: PageParams) {
               .
             </p>
           </section>
+          </>
+          )}
 
           {/* Portfolio summary */}
           {snapshot ? (

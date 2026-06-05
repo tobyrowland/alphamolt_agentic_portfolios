@@ -359,6 +359,11 @@ async function resolveAgent(handle: string): Promise<ResolvedAgent | null> {
 export async function addAgentToPortfolio(input: {
   portfolioId: string;
   handle: string;
+  // Swarm membership (migration 041): scout an agent in as a buyer or
+  // reviewer with a free-text remit + per-member knobs.
+  role?: "buyer" | "reviewer";
+  remit?: string;
+  config?: Record<string, unknown>;
 }): Promise<ActionResult> {
   const { user } = await requireUser();
   const portfolio = await resolveOwnedPortfolio(input.portfolioId, user.id);
@@ -373,19 +378,83 @@ export async function addAgentToPortfolio(input: {
     };
   }
 
+  const row: Record<string, unknown> = {
+    portfolio_id: input.portfolioId,
+    agent_id: agent.id,
+  };
+  if (input.role) row.role = input.role;
+  if (input.remit !== undefined) row.remit = input.remit;
+  if (input.config !== undefined) row.config = input.config;
+
   const supabase = getSupabase();
+  // upsert (not ignoreDuplicates) so re-adding updates the role/remit/knobs.
   const { error } = await supabase
     .from("portfolio_agents")
-    .upsert(
-      { portfolio_id: input.portfolioId, agent_id: agent.id },
-      { onConflict: "portfolio_id,agent_id", ignoreDuplicates: true },
-    );
+    .upsert(row, { onConflict: "portfolio_id,agent_id" });
 
   if (error) {
     console.error("addAgentToPortfolio failed:", error);
     return { ok: false, error: "Could not add the agent. Try again." };
   }
 
+  revalidate(portfolio.slug);
+  return { ok: true };
+}
+
+/** Update a member's swarm role / remit / knobs (config-in-place). */
+export async function setMemberSwarmConfig(input: {
+  portfolioId: string;
+  handle: string;
+  role?: "buyer" | "reviewer" | null;
+  remit?: string | null;
+  config?: Record<string, unknown> | null;
+}): Promise<ActionResult> {
+  const { user } = await requireUser();
+  const portfolio = await resolveOwnedPortfolio(input.portfolioId, user.id);
+  if (!portfolio) return { ok: false, error: NOT_FOUND_ERROR };
+
+  const agent = await resolveAgent(input.handle);
+  if (!agent) return { ok: false, error: "That agent no longer exists." };
+
+  const patch: Record<string, unknown> = {};
+  if (input.role !== undefined) patch.role = input.role;
+  if (input.remit !== undefined) patch.remit = input.remit;
+  if (input.config !== undefined) patch.config = input.config;
+  if (Object.keys(patch).length === 0) return { ok: true };
+
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from("portfolio_agents")
+    .update(patch)
+    .eq("portfolio_id", input.portfolioId)
+    .eq("agent_id", agent.id);
+  if (error) {
+    console.error("setMemberSwarmConfig failed:", error);
+    return { ok: false, error: "Could not update the agent. Try again." };
+  }
+  revalidate(portfolio.slug);
+  return { ok: true };
+}
+
+/** Set (or clear) a portfolio's draft settings — the opt-in switch that turns
+ *  the swarm coordination engine on for this portfolio. */
+export async function setDraftConfig(input: {
+  portfolioId: string;
+  draftConfig: Record<string, unknown> | null;
+}): Promise<ActionResult> {
+  const { user } = await requireUser();
+  const portfolio = await resolveOwnedPortfolio(input.portfolioId, user.id);
+  if (!portfolio) return { ok: false, error: NOT_FOUND_ERROR };
+
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from("portfolios")
+    .update({ draft_config: input.draftConfig })
+    .eq("id", input.portfolioId);
+  if (error) {
+    console.error("setDraftConfig failed:", error);
+    return { ok: false, error: "Could not update draft settings. Try again." };
+  }
   revalidate(portfolio.slug);
   return { ok: true };
 }
