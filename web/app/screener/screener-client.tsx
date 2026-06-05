@@ -55,9 +55,14 @@ function fmt(v: number | null, opts?: { pct?: boolean; mult?: boolean; dp?: numb
   if (opts?.mult) return `${s}×`;
   return s;
 }
+const PAGE_SIZE = 250;
 
-// Default + optional table columns (UX follow-up §4): lead with ~5, the rest
-// behind "columns ▾".
+function topWeight(w: { quality: number; value: number; momentum: number }): string {
+  const e = Object.entries(w) as [string, number][];
+  e.sort((a, b) => b[1] - a[1]);
+  return e[0][0];
+}
+
 interface Col {
   key: string;
   label: string;
@@ -65,7 +70,6 @@ interface Col {
   render: (r: Row) => string;
 }
 const BASE_COLS: Col[] = [
-  { key: "score", label: "Score", green: true, render: (r) => fmt(r.score, { dp: 1 }) },
   { key: "ps", label: "P/S", render: (r) => fmt(r.ps, { mult: true }) },
   { key: "rev_growth_ttm", label: "Rev gr%", green: true, render: (r) => fmt(r.rev_growth_ttm, { pct: true }) },
   { key: "gross_margin", label: "GM%", green: true, render: (r) => fmt(r.gross_margin, { pct: true }) },
@@ -94,13 +98,16 @@ export default function ScreenerClient({
   const [signedIn, setSignedIn] = useState(false);
   const [saveLink, setSaveLink] = useState<string | null>(null);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
-  const [editingFilter, setEditingFilter] = useState<number | null>(null);
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [colMenuOpen, setColMenuOpen] = useState(false);
-  const [extraCols, setExtraCols] = useState<Set<string>>(new Set());
-  const [tuneOpen, setTuneOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [colsOpen, setColsOpen] = useState(false);
+  const [extraCols, setExtraCols] = useState<Set<string>>(new Set());
+  const [visible, setVisible] = useState(PAGE_SIZE);
   const firstRender = useRef(true);
+
+  // Render only the first chunk; "Load more" reveals more from memory. Reset to
+  // the first page whenever the ranking changes.
+  useEffect(() => setVisible(PAGE_SIZE), [data]);
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
@@ -140,7 +147,7 @@ export default function ScreenerClient({
   function selectPreset(id: string) {
     const c = presetConfig(id);
     setConfig(c);
-    setBrief(c.brief ?? ""); // preset fills the brief (UX §2)
+    setBrief(c.brief ?? "");
     setBriefDirty(false);
     setCompileStatus(null);
     setSaveLink(null);
@@ -204,25 +211,23 @@ export default function ScreenerClient({
     patch({ filters: config.filters.map((f, idx) => (idx === i ? { ...f, ...p } : f)) as Filter[] });
   }
   function removeFilter(i: number) {
-    setEditingFilter(null);
     patch({ filters: config.filters.filter((_, idx) => idx !== i) });
   }
   function addNamedFilter(field: FilterField) {
-    setAddMenuOpen(false);
+    setAddOpen(false);
     patch({ filters: [...config.filters, newFilterFor(field)] });
-    setEditingFilter(config.filters.length); // open the new chip's slider
   }
 
   const usedFields = useMemo(() => new Set(config.filters.map((f) => f.field)), [config.filters]);
-  const cols = useMemo(
-    () => [...BASE_COLS, ...EXTRA_COLS.filter((c) => extraCols.has(c.key))],
-    [extraCols],
-  );
+  const cols = useMemo(() => [...BASE_COLS, ...EXTRA_COLS.filter((c) => extraCols.has(c.key))], [extraCols]);
+  const metricColCount = 1 + cols.length; // Score + metric cols
+
+  const card = "rounded-xl border border-white/10 bg-white/[0.02]";
 
   return (
     <div>
       {/* Preset chips */}
-      <div className="flex items-center gap-2 flex-wrap mb-3">
+      <div className="flex items-center gap-1.5 flex-wrap mb-2.5">
         <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mr-1">
           Preset
         </span>
@@ -233,208 +238,259 @@ export default function ScreenerClient({
             onClick={() => selectPreset(p.id)}
             aria-pressed={config.preset === p.id}
             title={p.description}
-            className={`font-mono text-[11px] rounded-full px-3 py-1.5 border transition-colors ${
+            className={`font-mono text-[10.5px] rounded-md px-2.5 py-1.5 border transition-colors ${
               config.preset === p.id
-                ? "text-green border-green/50 bg-green/10"
-                : "text-text-muted border-white/10 hover:text-text hover:border-white/25"
+                ? "text-[var(--color-cyan)] border-[var(--color-cyan)]/50 bg-[var(--color-cyan)]/[0.08]"
+                : "text-text-muted border-white/10 hover:text-text"
             }`}
           >
             {p.label}
           </button>
         ))}
-        {config.preset === "custom" && (
-          <span className="font-mono text-[11px] rounded-full px-3 py-1.5 border text-green border-green/50 bg-green/10">
-            Custom
-          </span>
-        )}
+        <span
+          className={`font-mono text-[10.5px] rounded-md px-2.5 py-1.5 border ${
+            config.preset === "custom"
+              ? "text-[var(--color-cyan)] border-[var(--color-cyan)]/50 bg-[var(--color-cyan)]/[0.08]"
+              : "text-text-muted/50 border-white/10"
+          }`}
+        >
+          Custom
+        </span>
       </div>
 
-      {/* Compact brief */}
-      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 mb-3">
-        <label htmlFor="brief" className="sr-only">
-          Plain-English screen brief
-        </label>
-        <textarea
-          id="brief"
-          value={brief}
-          onChange={(e) => {
-            setBrief(e.target.value);
-            setBriefDirty(true);
-          }}
-          rows={2}
-          placeholder="Describe the stocks you want — e.g. Rule of 40 winners, no biotech, P/S under 15…"
-          className="w-full resize-none rounded-md bg-black/30 border border-white/10 px-3 py-2 text-sm text-text placeholder:text-text-muted/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-green/40"
-        />
-        <div className="flex items-center gap-3 mt-2 flex-wrap">
-          <button
-            type="button"
-            onClick={compile}
-            disabled={compiling || !brief.trim()}
-            className="font-mono text-[11px] rounded-md px-3 py-1.5 bg-green text-black disabled:opacity-40"
-          >
-            {compiling ? "Compiling…" : briefDirty ? "Recompile ↻" : "Compile to screen"}
-          </button>
-          {compileStatus && (
-            <span className="font-mono text-[11px] text-text-muted" aria-live="polite">
-              {compileStatus}
-            </span>
-          )}
-        </div>
+      {/* Compact, pre-filled brief */}
+      <label htmlFor="brief" className="sr-only">
+        Strategy brief
+      </label>
+      <textarea
+        id="brief"
+        value={brief}
+        onChange={(e) => {
+          setBrief(e.target.value);
+          setBriefDirty(true);
+        }}
+        rows={2}
+        placeholder="Describe the stocks you want — e.g. Rule of 40 winners, no biotech, P/S under 15…"
+        className="w-full resize-y rounded-lg bg-white/[0.02] border border-white/10 px-3 py-2.5 text-[12.5px] leading-relaxed text-text placeholder:text-text-muted/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40"
+      />
+      <div className="flex items-center gap-3 mt-2 mb-1 flex-wrap">
+        <button
+          type="button"
+          onClick={compile}
+          disabled={compiling || !brief.trim()}
+          className="font-mono text-[11px] rounded-md px-3 py-1.5 bg-green text-black disabled:opacity-40"
+        >
+          {compiling ? "Compiling…" : briefDirty ? "Recompile ↻" : "Compile to screen"}
+        </button>
+        <span className="font-mono text-[10.5px] text-text-muted" aria-live="polite">
+          {compileStatus ?? "the brief is for humans; the compiled knobs are what the buyer reads"}
+        </span>
       </div>
 
-      {/* Friendly filter bar */}
-      <div className="flex items-center gap-2 flex-wrap mb-2">
-        <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mr-1">
+      {/* Screen bar: friendly filter chips + collapsed weighting on the right */}
+      <div className="flex items-start gap-2 flex-wrap mt-3.5 mb-2">
+        <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mt-2">
           Filters
         </span>
+
         {config.filters.map((f, i) => (
-          <button
+          <FilterChip
             key={`${f.field}-${i}`}
-            type="button"
-            onClick={() => setEditingFilter(editingFilter === i ? null : i)}
-            aria-expanded={editingFilter === i}
-            className={`inline-flex items-center gap-1.5 font-mono text-[11px] rounded-full px-3 py-1.5 border transition-colors ${
-              editingFilter === i
-                ? "text-green border-green/50 bg-green/10"
-                : "text-text border-green/25 bg-black/20 hover:border-green/40"
-            }`}
-          >
-            {filterChipLabel(f)}
-            <span
-              role="button"
-              tabIndex={0}
-              aria-label="Remove filter"
-              onClick={(e) => {
-                e.stopPropagation();
-                removeFilter(i);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.stopPropagation();
-                  removeFilter(i);
-                }
-              }}
-              className="text-text-muted hover:text-text"
-            >
-              ✕
-            </span>
-          </button>
+            filter={f}
+            onChange={(p) => setFilter(i, p)}
+            onRemove={() => removeFilter(i)}
+          />
         ))}
 
-        {/* + add filter (named-filter menu) */}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setAddMenuOpen((v) => !v)}
-            aria-expanded={addMenuOpen}
-            className="font-mono text-[11px] rounded-full border border-dashed border-white/25 text-text-muted px-3 py-1.5 hover:text-text"
-          >
+        {/* + add filter menu */}
+        <details
+          className="relative"
+          open={addOpen}
+          onToggle={(e) => setAddOpen((e.target as HTMLDetailsElement).open)}
+        >
+          <summary className="list-none cursor-pointer font-mono text-[10.5px] text-text-muted border border-dashed border-white/20 rounded-md px-2.5 py-1.5 hover:text-text marker:hidden [&::-webkit-details-marker]:hidden">
             + add filter
-          </button>
-          {addMenuOpen && (
-            <div className="absolute z-20 mt-1 w-52 rounded-lg border border-white/10 bg-[#0b0b0b] p-1 shadow-xl">
-              {NAMED_FILTERS.filter((nf) => !usedFields.has(nf.field)).map((nf) => (
-                <button
-                  key={nf.field}
-                  type="button"
-                  onClick={() => addNamedFilter(nf.field)}
-                  className="block w-full text-left text-sm text-text-dim hover:text-text hover:bg-white/5 rounded px-2 py-1.5"
-                >
-                  {nf.label}
-                </button>
-              ))}
-              {NAMED_FILTERS.every((nf) => usedFields.has(nf.field)) && (
-                <p className="text-xs text-text-muted px-2 py-1.5">All filters added.</p>
-              )}
-            </div>
-          )}
-        </div>
+          </summary>
+          <div className={`absolute z-20 mt-1.5 w-52 ${card} p-1.5`}>
+            {NAMED_FILTERS.filter((nf) => !usedFields.has(nf.field)).map((nf) => (
+              <button
+                key={nf.field}
+                type="button"
+                onClick={() => addNamedFilter(nf.field)}
+                className="block w-full text-left font-mono text-[11px] text-text-dim hover:text-text hover:bg-white/5 rounded px-2 py-1.5"
+              >
+                {METRIC_META[nf.field]
+                  ? `${nf.label} ${METRIC_META[nf.field].op === "<=" ? "below" : "above"}…`
+                  : `${nf.label}…`}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => {
+                setAddOpen(false);
+                setAdvancedOpen((v) => !v);
+              }}
+              className="block w-full text-left font-mono text-[11px] text-text-muted/70 hover:text-text hover:bg-white/5 rounded px-2 py-1.5 border-t border-white/10 mt-1 pt-2"
+            >
+              Advanced (field · operator · value)…
+            </button>
+          </div>
+        </details>
 
-        <span className="font-mono text-[11px] text-text-muted ml-auto" aria-live="polite">
-          {data.match_count} match{data.match_count === 1 ? "" : "es"}
-          {loading ? " · …" : ""}
-        </span>
+        {/* Tune ranking — pushed right, collapsed */}
+        <details
+          className={`ml-auto min-w-[280px] ${card}`}
+        >
+          <summary className="list-none cursor-pointer font-mono text-[11px] text-[var(--color-cyan)] px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden">
+            ⚙ Tune ranking ▸
+          </summary>
+          <div className="px-3 pb-3">
+            <div className="flex items-center justify-between mt-1.5">
+              <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted">
+                This screen&apos;s own ranking
+              </span>
+              <label className="font-mono text-[10.5px] text-[var(--color-cyan)] inline-flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={config.aiMultiplier}
+                  onChange={(e) => patch({ aiMultiplier: e.target.checked })}
+                  className="accent-[var(--color-cyan)]"
+                />
+                AI bull/bear ×
+              </label>
+            </div>
+            {(["quality", "value", "momentum"] as const).map((k) => (
+              <div key={k} className="mt-2.5">
+                <div className="flex justify-between font-mono text-[11px] text-text-muted capitalize">
+                  <span>{k}</span>
+                  <span className="text-text">{config.weights[k]}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={config.weights[k]}
+                  onChange={(e) => patch({ weights: { ...config.weights, [k]: Number(e.target.value) } })}
+                  className="w-full accent-[var(--color-cyan)]"
+                  aria-label={`${k} weight, ${config.weights[k]} of 100`}
+                />
+              </div>
+            ))}
+            <div className="mt-3">
+              <div className="flex justify-between font-mono text-[11px] text-text-muted">
+                <span>Top N → buyer</span>
+                <span className="text-[var(--color-cyan)]">{config.topN}</span>
+              </div>
+              <input
+                type="range"
+                min={10}
+                max={100}
+                value={config.topN}
+                onChange={(e) => patch({ topN: Math.max(1, Math.min(200, Number(e.target.value))) })}
+                className="w-full accent-[var(--color-cyan)]"
+                aria-label={`Top N candidates, ${config.topN}`}
+              />
+            </div>
+          </div>
+        </details>
       </div>
 
-      {/* Inline chip adjuster (slider / value) */}
-      {editingFilter != null && config.filters[editingFilter] && (
-        <FilterAdjuster
-          filter={config.filters[editingFilter]}
-          onChange={(p) => setFilter(editingFilter, p)}
-          onClose={() => setEditingFilter(null)}
+      {/* Advanced raw add row */}
+      {advancedOpen && (
+        <AdvancedAdd
+          onAdd={(f) => {
+            setAdvancedOpen(false);
+            patch({ filters: [...config.filters, f] });
+          }}
         />
       )}
 
-      <div className="font-mono text-[10.5px] text-text-muted my-2 flex justify-between flex-wrap gap-1.5">
+      {/* Count + actions */}
+      <div className="font-mono text-[10.5px] text-text-muted flex justify-between flex-wrap gap-1.5 mb-2">
         <span>
-          {data.match_count} companies · top {Math.min(config.topN, data.match_count)} feed the
-          buyer · {data.total_universe} in universe
+          {data.match_count} of {data.total_universe} · top {Math.min(config.topN, data.match_count)} feed your
+          buyer · re-ranks live{loading ? " · …" : ""}
         </span>
-        <span className="text-green">filters &amp; weights live in this URL</span>
-      </div>
-
-      {/* Results — lead with the table */}
-      <div className="flex items-center justify-end mb-1.5">
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setColMenuOpen((v) => !v)}
-            aria-expanded={colMenuOpen}
-            className="font-mono text-[11px] text-text-muted hover:text-text border border-white/10 rounded-md px-2 py-1"
-          >
-            columns ▾
+        <span className="flex gap-3 items-center" aria-live="polite">
+          <button type="button" onClick={onShare} className="text-[var(--color-cyan)] hover:underline">
+            Share ↗
           </button>
-          {colMenuOpen && (
-            <div className="absolute right-0 z-20 mt-1 w-44 rounded-lg border border-white/10 bg-[#0b0b0b] p-1 shadow-xl">
-              {EXTRA_COLS.map((c) => (
-                <label
-                  key={c.key}
-                  className="flex items-center gap-2 text-sm text-text-dim hover:bg-white/5 rounded px-2 py-1.5 cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={extraCols.has(c.key)}
-                    onChange={(e) =>
-                      setExtraCols((prev) => {
-                        const next = new Set(prev);
-                        if (e.target.checked) next.add(c.key);
-                        else next.delete(c.key);
-                        return next;
-                      })
-                    }
-                  />
-                  {c.label}
-                </label>
-              ))}
-            </div>
+          <button type="button" onClick={onSave} className="text-text-muted hover:text-text">
+            Save
+          </button>
+          {saveLink ? (
+            <Link href={saveLink} className="text-[var(--color-cyan)] underline">
+              saved
+            </Link>
+          ) : shareMsg ? (
+            <span className="text-text-muted">{shareMsg}</span>
+          ) : (
+            <span className="text-[var(--color-cyan)]">in this URL</span>
           )}
-        </div>
+        </span>
       </div>
 
-      <div className="rounded-xl border border-white/10 overflow-hidden">
-        <table className="w-full border-collapse" aria-label="Screened equities, ranked by your composite score">
+      {/* Results */}
+      <div className={`${card} overflow-hidden`}>
+        <table className="w-full border-collapse" aria-label="Screened equities ranked by your composite">
           <thead>
             <tr className="bg-white/[0.02]">
-              <Th className="text-left w-8">#</Th>
+              <Th className="text-left w-7">#</Th>
               <Th className="text-left">Ticker</Th>
+              <Th>Score</Th>
               {cols.map((c) => (
                 <Th key={c.key}>{c.label}</Th>
               ))}
+              <th className="relative font-mono text-[10px] text-text-muted font-normal px-2 py-2.5 text-right">
+                <button
+                  type="button"
+                  onClick={() => setColsOpen((v) => !v)}
+                  aria-expanded={colsOpen}
+                  className="hover:text-text"
+                >
+                  cols ▾
+                </button>
+                {colsOpen && (
+                  <div className={`absolute right-0 z-20 mt-1 w-40 ${card} p-1 text-left`}>
+                    {EXTRA_COLS.map((c) => (
+                      <label
+                        key={c.key}
+                        className="flex items-center gap-2 text-[11px] font-mono text-text-dim hover:bg-white/5 rounded px-2 py-1.5 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={extraCols.has(c.key)}
+                          onChange={(e) =>
+                            setExtraCols((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(c.key);
+                              else next.delete(c.key);
+                              return next;
+                            })
+                          }
+                        />
+                        {c.label}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </th>
             </tr>
           </thead>
           <tbody>
-            {data.rows.map((r, i) => (
+            {data.rows.slice(0, visible).map((r, i) => (
               <RowView
                 key={r.ticker}
                 r={r}
                 cols={cols}
                 cut={i === data.cut_index && data.cut_index < data.rows.length}
                 dim={i >= data.cut_index}
+                spanCols={metricColCount + 3}
               />
             ))}
             {data.rows.length === 0 && (
               <tr>
-                <td colSpan={2 + cols.length} className="p-6 text-center text-sm text-text-muted">
+                <td colSpan={metricColCount + 3} className="p-6 text-center text-sm text-text-muted">
                   No matches — loosen your filters.
                 </td>
               </tr>
@@ -443,162 +499,33 @@ export default function ScreenerClient({
         </table>
       </div>
 
-      {/* Tune ranking — collapsed by default */}
-      <details
-        className="mt-3 rounded-xl border border-white/10 bg-white/[0.02]"
-        open={tuneOpen}
-        onToggle={(e) => setTuneOpen((e.target as HTMLDetailsElement).open)}
-      >
-        <summary className="cursor-pointer select-none px-4 py-3 text-sm text-text font-medium list-none flex items-center gap-2">
-          <span className="text-green">⚙</span> Tune ranking
-          <span className="text-text-muted font-normal text-xs">
-            — weighting, AI multiplier, top N
-          </span>
-        </summary>
-        <div className="px-4 pb-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted">
-              Score weighting
-            </span>
-            <label className="font-mono text-[11px] text-green inline-flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={config.aiMultiplier}
-                onChange={(e) => patch({ aiMultiplier: e.target.checked })}
-              />
-              AI bull/bear ×
-            </label>
-          </div>
-          <div className="flex gap-5 flex-wrap">
-            {(["quality", "value", "momentum"] as const).map((k) => (
-              <label key={k} className="flex-1 min-w-[150px]">
-                <span className="font-mono text-[11px] text-text-muted flex justify-between capitalize">
-                  <span>{k}</span>
-                  <span className="text-text">{config.weights[k]}</span>
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={config.weights[k]}
-                  onChange={(e) => patch({ weights: { ...config.weights, [k]: Number(e.target.value) } })}
-                  className="w-full accent-green"
-                  aria-label={`${k} weight, ${config.weights[k]} of 100`}
-                />
-              </label>
-            ))}
-            <label className="min-w-[110px]">
-              <span className="font-mono text-[11px] text-text-muted flex justify-between">
-                <span>Top N → buyer</span>
-                <span className="text-text">{config.topN}</span>
-              </span>
-              <input
-                type="number"
-                min={1}
-                max={200}
-                value={config.topN}
-                onChange={(e) => patch({ topN: Math.max(1, Math.min(200, Number(e.target.value))) })}
-                className="w-full bg-black/30 border border-white/10 rounded-md px-2 py-1 text-sm text-text mt-1"
-              />
-            </label>
-          </div>
-
-          <div className="flex gap-2 mt-4 flex-wrap items-center">
-            <button
-              type="button"
-              onClick={onShare}
-              className="font-mono text-[11px] rounded-md border border-white/10 text-text-muted px-3 py-1.5 hover:text-text"
-            >
-              Share ↗
-            </button>
-            <button
-              type="button"
-              onClick={onSave}
-              className="font-mono text-[11px] rounded-md border border-white/10 text-text-muted px-3 py-1.5 hover:text-text"
-            >
-              Save
-            </button>
-            {saveLink && (
-              <Link href={saveLink} className="font-mono text-[11px] text-green underline">
-                saved → {saveLink}
-              </Link>
-            )}
-            {shareMsg && (
-              <span className="font-mono text-[11px] text-text-muted" aria-live="polite">
-                {shareMsg}
-              </span>
-            )}
-          </div>
-
-          {/* Advanced raw filter editor (power users) */}
-          <details
-            className="mt-4 border-t border-white/10 pt-3"
-            open={advancedOpen}
-            onToggle={(e) => setAdvancedOpen((e.target as HTMLDetailsElement).open)}
+      {data.rows.length > visible && (
+        <div className="mt-3 flex items-center justify-center gap-3">
+          <button
+            type="button"
+            onClick={() => setVisible((v) => v + PAGE_SIZE)}
+            className="font-mono text-[11px] rounded-md border border-white/10 text-text-muted px-4 py-2 hover:text-text hover:border-white/25"
           >
-            <summary className="cursor-pointer select-none text-[11px] font-mono text-text-muted">
-              Advanced filters (field · operator · value)
-            </summary>
-            <div className="mt-2 space-y-2">
-              {config.filters.map((f, i) => (
-                <div key={`adv-${i}`} className="flex items-center gap-2 flex-wrap">
-                  <select
-                    aria-label="Filter field"
-                    value={f.field}
-                    onChange={(e) => {
-                      const field = e.target.value as FilterField;
-                      const isText = TEXT_FIELDS.has(field);
-                      setFilter(i, {
-                        field,
-                        op: isText ? "==" : f.op,
-                        value: isText ? String(f.value ?? "") : Number(f.value) || 0,
-                      });
-                    }}
-                    className="bg-black/40 border border-white/10 rounded px-1.5 py-1 text-xs text-text"
-                  >
-                    {FILTER_FIELDS.map((ff) => (
-                      <option key={ff} value={ff} className="bg-black">{ff}</option>
-                    ))}
-                  </select>
-                  <select
-                    aria-label="Filter operator"
-                    value={f.op}
-                    onChange={(e) => setFilter(i, { op: e.target.value as FilterOp })}
-                    className="bg-black/40 border border-white/10 rounded px-1.5 py-1 text-xs text-text"
-                  >
-                    {FILTER_OPS.map((op) => (
-                      <option key={op} value={op} className="bg-black">{op}</option>
-                    ))}
-                  </select>
-                  {TEXT_FIELDS.has(f.field) ? (
-                    <input
-                      aria-label="Filter value"
-                      value={String(f.value ?? "")}
-                      onChange={(e) => setFilter(i, { value: e.target.value })}
-                      className="w-32 bg-black/40 border border-white/10 rounded px-1.5 py-1 text-xs text-text"
-                    />
-                  ) : (
-                    <input
-                      aria-label="Filter value"
-                      type="number"
-                      value={Number(f.value)}
-                      onChange={(e) => setFilter(i, { value: Number(e.target.value) })}
-                      className="w-20 bg-black/40 border border-white/10 rounded px-1.5 py-1 text-xs text-text"
-                    />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => removeFilter(i)}
-                    className="text-text-muted hover:text-text text-xs"
-                  >
-                    remove
-                  </button>
-                </div>
-              ))}
-            </div>
-          </details>
+            Load {Math.min(PAGE_SIZE, data.rows.length - visible)} more
+          </button>
+          <span className="font-mono text-[10.5px] text-text-muted">
+            showing {visible} of {data.rows.length}
+          </span>
         </div>
-      </details>
+      )}
+
+      {/* Related screens */}
+      <nav className="mt-5 flex gap-4 flex-wrap text-[12px] text-text-muted" aria-label="Related screens">
+        <Link href="/screener?preset=deep-value" className="hover:text-text">
+          Deep Value screen →
+        </Link>
+        <Link href="/screener?preset=high-fcf" className="hover:text-text">
+          High FCF screen →
+        </Link>
+        <Link href="/leaderboard" className="hover:text-text">
+          AI agent leaderboard →
+        </Link>
+      </nav>
 
       <footer className="border-t border-white/10 mt-5 pt-4">
         <p className="font-mono text-[10.5px] text-text-muted">
@@ -610,45 +537,119 @@ export default function ScreenerClient({
   );
 }
 
-function FilterAdjuster({
+/** A filter as a chip whose <details> opens a slider (operator implied). */
+function FilterChip({
   filter,
   onChange,
-  onClose,
+  onRemove,
 }: {
   filter: Filter;
   onChange: (p: Partial<Filter>) => void;
-  onClose: () => void;
+  onRemove: () => void;
 }) {
   const isText = TEXT_FIELDS.has(filter.field);
   const m = METRIC_META[filter.field];
   return (
-    <div className="rounded-xl border border-green/30 bg-black/30 p-3 mb-2 flex items-center gap-3 flex-wrap">
-      <span className="font-mono text-[11px] text-text">{filterChipLabel(filter)}</span>
-      {isText ? (
-        <input
-          aria-label={`${filter.field} value`}
-          value={String(filter.value ?? "")}
-          onChange={(e) => onChange({ value: e.target.value })}
-          className="flex-1 min-w-[160px] bg-black/40 border border-white/10 rounded px-2 py-1 text-sm text-text"
-        />
-      ) : m ? (
-        <input
-          type="range"
-          min={m.min}
-          max={m.max}
-          step={m.step}
-          value={Number(filter.value)}
-          onChange={(e) => onChange({ value: Number(e.target.value) })}
-          aria-label={`${m.label} ${m.op === "<=" ? "at most" : "at least"} ${filter.value}${m.unit}`}
-          className="flex-1 min-w-[200px] accent-green"
-        />
-      ) : null}
+    <details className="inline-block align-top">
+      <summary className="list-none cursor-pointer font-mono text-[11px] text-text border border-[var(--color-cyan)]/35 bg-[var(--color-cyan)]/[0.05] rounded-md px-2.5 py-1.5 inline-flex items-center gap-2 marker:hidden [&::-webkit-details-marker]:hidden">
+        {filterChipLabel(filter)}
+        <span
+          role="button"
+          tabIndex={0}
+          aria-label="Remove filter"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRemove();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onRemove();
+            }
+          }}
+          className="text-text-muted hover:text-text"
+        >
+          ✕
+        </span>
+      </summary>
+      <div className="mt-1.5 w-[180px] rounded-lg border border-white/10 bg-[#0b1214] p-2.5">
+        <div className="flex justify-between font-mono text-[10.5px] text-text-muted mb-1.5">
+          <span>
+            {m?.label ?? filter.field} {m?.op === "<=" ? "below" : "above"}
+          </span>
+          <span className="text-[var(--color-cyan)]">
+            {filter.value}
+            {m?.unit ?? ""}
+          </span>
+        </div>
+        {isText ? (
+          <input
+            aria-label={`${filter.field} value`}
+            value={String(filter.value ?? "")}
+            onChange={(e) => onChange({ value: e.target.value })}
+            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-text"
+          />
+        ) : m ? (
+          <input
+            type="range"
+            min={m.min}
+            max={m.max}
+            step={m.step}
+            value={Number(filter.value)}
+            onChange={(e) => onChange({ value: Number(e.target.value) })}
+            aria-label={`${m.label} ${m.op === "<=" ? "at most" : "at least"} ${filter.value}${m.unit}`}
+            className="w-full accent-[var(--color-cyan)]"
+          />
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+/** The raw field · operator · value editor (power users). */
+function AdvancedAdd({ onAdd }: { onAdd: (f: Filter) => void }) {
+  const [field, setField] = useState<FilterField>("rule_of_40");
+  const [op, setOp] = useState<FilterOp>(">=");
+  const [value, setValue] = useState("40");
+  const isText = TEXT_FIELDS.has(field);
+  return (
+    <div className="flex items-center gap-2 flex-wrap mb-2 rounded-lg border border-white/10 bg-black/20 p-2">
+      <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-text-muted">Advanced</span>
+      <select
+        aria-label="Field"
+        value={field}
+        onChange={(e) => setField(e.target.value as FilterField)}
+        className="bg-black/40 border border-white/10 rounded px-1.5 py-1 text-xs text-text"
+      >
+        {FILTER_FIELDS.map((f) => (
+          <option key={f} value={f} className="bg-black">{f}</option>
+        ))}
+      </select>
+      <select
+        aria-label="Operator"
+        value={op}
+        onChange={(e) => setOp(e.target.value as FilterOp)}
+        className="bg-black/40 border border-white/10 rounded px-1.5 py-1 text-xs text-text"
+      >
+        {FILTER_OPS.map((o) => (
+          <option key={o} value={o} className="bg-black">{o}</option>
+        ))}
+      </select>
+      <input
+        aria-label="Value"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="w-24 bg-black/40 border border-white/10 rounded px-1.5 py-1 text-xs text-text"
+      />
       <button
         type="button"
-        onClick={onClose}
-        className="font-mono text-[11px] text-text-muted hover:text-text"
+        onClick={() =>
+          onAdd({ field, op, value: isText ? value : Number(value) || 0 })
+        }
+        className="font-mono text-[11px] rounded-md border border-white/10 text-text-muted px-2.5 py-1 hover:text-text"
       >
-        done
+        Add
       </button>
     </div>
   );
@@ -656,51 +657,57 @@ function FilterAdjuster({
 
 function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
-    <th className={`font-mono text-[10px] tracking-[0.04em] text-text-muted font-normal px-3 py-2.5 text-right ${className}`}>
+    <th className={`font-mono text-[10px] tracking-[0.04em] text-text-muted font-normal px-2 py-2.5 text-right ${className}`}>
       {children}
     </th>
   );
 }
 
-function RowView({ r, cols, cut, dim }: { r: Row; cols: Col[]; cut: boolean; dim: boolean }) {
+function RowView({
+  r,
+  cols,
+  cut,
+  dim,
+  spanCols,
+}: {
+  r: Row;
+  cols: Col[];
+  cut: boolean;
+  dim: boolean;
+  spanCols: number;
+}) {
   return (
     <>
       {cut && (
         <tr aria-hidden>
-          <td colSpan={2 + cols.length} className="px-3 py-1 bg-green/[0.06] border-t border-green/30">
-            <span className="font-mono text-[10px] text-green">
-              ── cut line: above feeds your buyer · below is ranked, not bought ──
-            </span>
+          <td colSpan={spanCols} className="p-0">
+            <div className="h-px bg-[var(--color-cyan)]/40" />
           </td>
         </tr>
       )}
-      <tr className={dim ? "opacity-45" : ""}>
-        <td className="px-3 py-2.5 text-left font-mono text-text-muted text-xs border-t border-white/10">
+      <tr className={`hover:bg-white/[0.025] ${dim ? "opacity-50" : ""}`}>
+        <td className="px-2 py-2.5 text-left font-mono text-text-muted text-xs border-t border-white/10">
           {r.rank}
         </td>
-        <td className="px-3 py-2.5 text-left border-t border-white/10">
-          <Link href={`/company/${r.ticker}`} className="hover:text-green">
+        <td className="px-2 py-2.5 text-left border-t border-white/10">
+          <Link href={`/company/${r.ticker}`} className="hover:text-[var(--color-cyan)]">
             <span className="font-mono text-text text-[12.5px]">{r.ticker}</span>{" "}
             <span className="text-[11px] text-text-muted">{r.name}</span>
           </Link>
         </td>
+        <td className="px-2 py-2.5 text-right text-[12.5px] font-mono border-t border-white/10 text-[var(--color-cyan)]">
+          {fmt(r.score, { dp: 1 })}
+        </td>
         {cols.map((c) => (
           <td
             key={c.key}
-            className={`px-3 py-2.5 text-right text-[12.5px] font-mono border-t border-white/10 ${
-              c.green ? "text-green" : "text-text"
-            }`}
+            className={`px-2 py-2.5 text-right text-[12.5px] font-mono border-t border-white/10 ${c.green ? "text-green" : "text-text"}`}
           >
             {c.render(r)}
           </td>
         ))}
+        <td className="border-t border-white/10" />
       </tr>
     </>
   );
-}
-
-function topWeight(w: { quality: number; value: number; momentum: number }): string {
-  const entries = Object.entries(w) as [string, number][];
-  entries.sort((a, b) => b[1] - a[1]);
-  return entries[0][0];
 }
