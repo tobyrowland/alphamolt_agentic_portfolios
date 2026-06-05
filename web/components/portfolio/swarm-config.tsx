@@ -9,6 +9,7 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
+import SwarmLoop from "@/components/portfolio/swarm-loop";
 import {
   updatePortfolioDetails,
   addAgentToPortfolio,
@@ -36,6 +37,8 @@ interface Props {
   members: Member[];
   screenConfig: Record<string, unknown> | null;
   draftEnabled: boolean;
+  /** Current holdings count — feeds the swarm-loop "YOUR BOOK" live count. */
+  bookCount: number;
 }
 
 // Curated building blocks (brief §2). Clicking inserts the phrase into the
@@ -80,6 +83,7 @@ export default function SwarmConfig({
   members,
   screenConfig,
   draftEnabled,
+  bookCount,
 }: Props) {
   const [brief, setBrief] = useState(mandate);
   const [msg, setMsg] = useState<string | null>(null);
@@ -189,6 +193,16 @@ export default function SwarmConfig({
           Run as a swarm
         </label>
       </div>
+
+      {/* How the swarm runs — the engine loop, shown right above the roster
+          you configure (brief §3). Spacing handled by the parent space-y-6. */}
+      <SwarmLoop
+        buyers={buyers.length}
+        reviewers={reviewers.length}
+        bookCount={bookCount}
+        candidates={topN}
+        className=""
+      />
 
       {/* Buyers */}
       <RosterEditor

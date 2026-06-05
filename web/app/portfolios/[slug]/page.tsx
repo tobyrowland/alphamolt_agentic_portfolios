@@ -7,7 +7,8 @@ import { AgentMonogram } from "@/components/agent-monogram";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import SwarmConfig from "@/components/portfolio/swarm-config";
-import SwarmGraphic from "@/components/portfolio/swarm-graphic";
+import PortfolioSignpost from "@/components/portfolio/portfolio-signpost";
+import SwarmLoop from "@/components/portfolio/swarm-loop";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import {
   getPortfolio,
@@ -252,8 +253,11 @@ export default async function PortfolioPage({ params }: PageParams) {
       <Nav />
       <main className="flex-1 w-full">
         <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 py-10 sm:py-14">
-          {/* Header */}
-          <header className="mb-10 sm:mb-12">
+          {/* Header — identity + status on the left, performance at a glance on
+              the right (brief §1: perf belongs in the header, not stranded below
+              the config). */}
+          <header className="mb-10 sm:mb-12 flex flex-wrap items-start justify-between gap-4">
+            <div>
             <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted">
               Portfolio
             </p>
@@ -298,20 +302,27 @@ export default async function PortfolioPage({ params }: PageParams) {
                 </>
               )}
             </div>
+            </div>
+
+            {/* Performance strip — value, P/L %, holdings at a glance. */}
+            {snapshot && (
+              <div className="flex gap-5 sm:gap-7 text-right">
+                <HeaderStat label="Value" value={formatUsd(snapshot.total_value_usd)} />
+                <HeaderStat
+                  label="P/L"
+                  value={`${snapshot.pnl_pct >= 0 ? "+" : ""}${snapshot.pnl_pct.toFixed(2)}%`}
+                  tone={snapshot.pnl_pct > 0 ? "positive" : snapshot.pnl_pct < 0 ? "negative" : "neutral"}
+                />
+                <HeaderStat label="Holdings" value={String(bookCount)} />
+              </div>
+            )}
           </header>
 
-          {/* The portfolio's single "how this works" top graphic (swarm graphic
-              brief): mirrors the screener signpost with the cyan "you are here"
-              marker on the portfolio, the swarm loop nested inside. Explainer
-              only — links to the screen / roster / holdings, configures nothing. */}
+          {/* Page-top wayfinder: slim, balanced two-node signpost mirroring the
+              screener (Screen → top N → this portfolio). No nested loop — the
+              swarm engine loop lives lower, above the roster. */}
           {isSwarmPortfolio && (
-            <SwarmGraphic
-              buyers={buyerCount}
-              reviewers={reviewerCount}
-              bookCount={bookCount}
-              candidates={candidateCount}
-              screenHref={screenHref}
-            />
+            <PortfolioSignpost candidates={candidateCount} screenHref={screenHref} />
           )}
 
           {/* Config-in-place for the owner (portfolio brief): mandate +
@@ -335,6 +346,7 @@ export default async function PortfolioPage({ params }: PageParams) {
                 }))}
                 screenConfig={portfolio.screen_config}
                 draftEnabled={!!portfolio.draft_config}
+                bookCount={bookCount}
               />
             </section>
           ) : (
@@ -357,6 +369,16 @@ export default async function PortfolioPage({ params }: PageParams) {
               </p>
             )}
           </section>
+
+          {/* How the swarm runs — engine loop above the agents/roster (brief §3). */}
+          {isSwarmPortfolio && (
+            <SwarmLoop
+              buyers={buyerCount}
+              reviewers={reviewerCount}
+              bookCount={bookCount}
+              candidates={candidateCount}
+            />
+          )}
 
           {/* Agents — who operates this portfolio */}
           <section id="roster" className="mb-12 sm:mb-14 scroll-mt-20">
@@ -420,39 +442,10 @@ export default async function PortfolioPage({ params }: PageParams) {
           </>
           )}
 
-          {/* Portfolio summary */}
+          {/* Holdings — the perf summary now lives in the header (brief §1), so
+              this section is just the book itself. */}
           {snapshot ? (
             <section id="holdings" className="mb-12 sm:mb-14 scroll-mt-20">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 mb-6">
-                <Stat
-                  label="Total value"
-                  value={formatUsd(snapshot.total_value_usd)}
-                />
-                <Stat label="Cash" value={formatUsd(snapshot.cash_usd)} />
-                <Stat
-                  label="P/L"
-                  value={formatUsd(snapshot.pnl_usd)}
-                  tone={
-                    snapshot.pnl_usd > 0
-                      ? "positive"
-                      : snapshot.pnl_usd < 0
-                        ? "negative"
-                        : "neutral"
-                  }
-                />
-                <Stat
-                  label="P/L %"
-                  value={`${snapshot.pnl_pct >= 0 ? "+" : ""}${snapshot.pnl_pct.toFixed(2)}%`}
-                  tone={
-                    snapshot.pnl_pct > 0
-                      ? "positive"
-                      : snapshot.pnl_pct < 0
-                        ? "negative"
-                        : "neutral"
-                  }
-                />
-              </div>
-
               <h3 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
                 Holdings ({snapshot.holdings.length})
               </h3>
@@ -522,7 +515,8 @@ export default async function PortfolioPage({ params }: PageParams) {
 
 // ----- Presentational helpers ---------------------------------------------
 
-function Stat({
+// Compact at-a-glance stat for the header perf strip (brief §1).
+function HeaderStat({
   label,
   value,
   tone = "neutral",
@@ -538,14 +532,12 @@ function Stat({
         ? "text-[var(--color-red)]"
         : "text-text";
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.02] px-3 py-3 sm:px-5 sm:py-4 min-w-0">
-      <p
-        className={`font-mono text-lg sm:text-2xl font-bold tabular-nums ${color} truncate`}
-      >
-        {value}
-      </p>
-      <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-dim mt-1 truncate">
+    <div className="min-w-0">
+      <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-dim">
         {label}
+      </p>
+      <p className={`font-mono text-base sm:text-lg font-bold tabular-nums ${color} mt-0.5`}>
+        {value}
       </p>
     </div>
   );
