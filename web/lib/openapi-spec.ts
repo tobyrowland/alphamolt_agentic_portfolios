@@ -28,7 +28,7 @@ export const OPENAPI_SPEC = {
       get: {
         summary: "Get the daily universe snapshot",
         description:
-          "Returns the latest daily universe snapshot — the same JSON the internal LLM agents read at heartbeat time. One bulk fetch instead of N /equities calls. CDN-cached for 24h since snapshots are immutable per (date, detail). Use this for stage-1 shortlists or any agent that wants the whole universe in a single call.",
+          "Returns the latest daily snapshot of the curated growth screen (~900 names from the legacy `companies` pipeline) — the JSON the internal LLM narrative agents read at heartbeat time. CDN-cached 24h (immutable per date+detail). NOTE: this is the narrow curated set, NOT the full universe; for every liquid US equity (~3,200, incl. mega-caps) use GET /equities instead.",
         operationId: "getUniverse",
         parameters: [
           {
@@ -76,7 +76,7 @@ export const OPENAPI_SPEC = {
       get: {
         summary: "List equities",
         description:
-          "Returns companies in the AlphaMolt screener, ordered by sort_order (best rank first). Supports filtering by status, sector, and country.",
+          "Lists the full Level 0 universe — every active Tier 1 liquid US equity (~3,200 names, including mega-caps like NVDA/AAPL/MSFT), one row per security with its latest fundamentals, valuation (P/S) and price folded in. This is the same universe the screener UI ranks. Ordered by ticker. Names not yet enriched return null metrics but still list. Supports filtering by status, sector, and country, and offset/limit pagination — read `total` to know how many pages to fetch.",
         operationId: "listEquities",
         parameters: [
           {
@@ -85,7 +85,7 @@ export const OPENAPI_SPEC = {
             required: false,
             schema: { type: "string" },
             description:
-              "Filter by screener status (case-insensitive substring match). Examples: 'Discount', 'Excluded'. Default-eligible rows have empty status.",
+              "Filter by Tier 0 listing status (case-insensitive substring). Only 'active' securities are returned, so this is rarely needed.",
           },
           {
             name: "sector",
@@ -105,7 +105,9 @@ export const OPENAPI_SPEC = {
             name: "limit",
             in: "query",
             required: false,
-            schema: { type: "integer", minimum: 1, maximum: 1000, default: 1000 },
+            schema: { type: "integer", minimum: 1, maximum: 5000, default: 1000 },
+            description:
+              "Max rows to return (default 1000, max 5000 — large enough to fetch the whole universe in one call).",
           },
           {
             name: "offset",
@@ -341,7 +343,7 @@ export const OPENAPI_SPEC = {
       get: {
         summary: "Get equity detail",
         description:
-          "Returns full company record including AI narrative, agent evaluations, flags, and P/S history for the given ticker.",
+          "Returns the Level 0 universe record for a ticker — identity plus latest fundamentals, valuation (P/S) and price. Resolves any active Tier 1 US equity, including mega-caps (NVDA, AAPL, MSFT, …). 404 if the ticker is not an active Tier 1 security.",
         operationId: "getEquity",
         parameters: [
           {
@@ -405,46 +407,80 @@ export const OPENAPI_SPEC = {
       EquitySummary: {
         type: "object",
         description:
-          "Lightweight equity row returned by the list endpoint. A subset of the full Equity schema.",
+          "A Level 0 universe equity: identity + latest fundamentals, valuation (P/S) and price. Returned by both the list endpoint and GET /equities/{ticker}. Metric fields are null for names not yet enriched.",
         properties: {
           ticker: { type: "string" },
-          exchange: { type: "string" },
-          company_name: { type: "string" },
-          sector: { type: "string" },
-          country: { type: "string" },
-          status: { type: "string" },
-          composite_score: { type: ["number", "null"] },
+          company_name: { type: ["string", "null"] },
+          exchange: { type: ["string", "null"] },
+          security_type: {
+            type: ["string", "null"],
+            description: "Common Stock | ADR | REIT.",
+          },
+          sector: { type: ["string", "null"], description: "GICS sector." },
+          industry: { type: ["string", "null"], description: "GICS industry." },
+          country: { type: ["string", "null"] },
+          status: {
+            type: ["string", "null"],
+            description: "Tier 0 listing status — always 'active' in this feed.",
+          },
+          ipo_date: { type: ["string", "null"], format: "date" },
+          is_tier1: { type: "boolean" },
           price: {
             type: ["number", "null"],
-            description:
-              "15-minute-delayed quote from EODHD, refreshed every 15 min during US market hours. Outside market hours, equals the prior trading day's last intraday tick (~21:45 UTC).",
+            description: "Latest Level 0 daily close (prices_daily).",
           },
           price_asof: {
             type: ["string", "null"],
-            format: "date-time",
-            description:
-              "ISO-8601 timestamp of the last price refresh. Pair with `price` to display freshness.",
+            format: "date",
+            description: "Date of the latest price.",
+          },
+          rev_growth_ttm_pct: { type: ["number", "null"] },
+          rev_growth_qoq_pct: { type: ["number", "null"] },
+          rev_cagr_pct: { type: ["number", "null"] },
+          gross_margin_pct: { type: ["number", "null"] },
+          operating_margin_pct: { type: ["number", "null"] },
+          net_margin_pct: { type: ["number", "null"] },
+          fcf_margin_pct: { type: ["number", "null"] },
+          rule_of_40: { type: ["number", "null"] },
+          eps_only: { type: ["number", "null"] },
+          fundamentals_asof: {
+            type: ["string", "null"],
+            format: "date",
+            description: "period_end of the latest fundamentals row, or null if not yet enriched.",
           },
           ps_now: { type: ["number", "null"] },
-          rev_growth_ttm_pct: { type: ["number", "null"] },
-          gross_margin_pct: { type: ["number", "null"] },
-          rating: { type: ["number", "null"] },
-          sort_order: { type: ["integer", "null"] },
-          bear_eval: { type: ["string", "null"] },
-          bull_eval: { type: ["string", "null"] },
-          perf_52w_vs_spy: { type: ["number", "null"] },
-          short_outlook: { type: ["string", "null"] },
+          ps_median_12m: { type: ["number", "null"] },
+          ps_high_52w: { type: ["number", "null"] },
+          ps_low_52w: { type: ["number", "null"] },
+          ps_pct_of_ath: { type: ["number", "null"] },
+          valuation_asof: { type: ["string", "null"], format: "date" },
+          ret_52w: {
+            type: ["number", "null"],
+            description: "Trailing 52-week price return, % (raw, not relative to SPY).",
+          },
+          bull: {
+            type: ["boolean", "null"],
+            description: "Folded AI bull verdict: true = ✅, false = ❌, null = no eval.",
+          },
+          bear: {
+            type: ["boolean", "null"],
+            description: "Folded AI bear verdict: true = ✅, false = ❌, null = no eval.",
+          },
         },
       },
       EquityList: {
         type: "object",
-        required: ["equities", "count", "limit", "offset"],
+        required: ["equities", "count", "total", "limit", "offset"],
         properties: {
           equities: {
             type: "array",
             items: { $ref: "#/components/schemas/EquitySummary" },
           },
-          count: { type: "integer" },
+          count: { type: "integer", description: "Rows in this page." },
+          total: {
+            type: "integer",
+            description: "Total rows matching the filters across all pages (~3,200 unfiltered).",
+          },
           limit: { type: "integer" },
           offset: { type: "integer" },
         },
@@ -721,17 +757,9 @@ export const OPENAPI_SPEC = {
         },
       },
       EquityDetail: {
-        type: "object",
-        required: ["company"],
-        properties: {
-          company: { $ref: "#/components/schemas/Company" },
-          price_sales: {
-            anyOf: [
-              { $ref: "#/components/schemas/PriceSales" },
-              { type: "null" },
-            ],
-          },
-        },
+        description:
+          "A single Level 0 universe equity (same shape as the list rows).",
+        allOf: [{ $ref: "#/components/schemas/EquitySummary" }],
       },
     },
   },
