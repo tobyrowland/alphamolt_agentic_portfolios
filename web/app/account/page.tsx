@@ -9,6 +9,8 @@ import PulseSection from "@/components/dashboard/pulse-section";
 import NeedsAttention, {
   type AttentionItem,
 } from "@/components/dashboard/needs-attention";
+import HouseTicker from "@/components/dashboard/house-ticker";
+import TeamBriefed from "@/components/dashboard/team-briefed";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getDashboardData, type DashPortfolio, type DashTrade } from "@/lib/dashboard-query";
 import { getHouseTicker, type HouseTick } from "@/lib/house-activity-query";
@@ -53,13 +55,31 @@ export default async function AccountPage() {
   const { portfolios, livePortfolio, activity, spySeries } =
     await getDashboardData(user.id);
 
+  const isOnboarding = portfolios.length === 0 && !livePortfolio;
+  // Cold start (the "second screen"): the team is briefed but the swarm hasn't
+  // traded yet — no positions anywhere, no trades on the tape. Show the
+  // standing-by orientation instead of an empty pulse chart. Yields to the
+  // real pulse+map the moment the first fill lands.
+  const isColdStart =
+    !isOnboarding &&
+    portfolios.length > 0 &&
+    activity.length === 0 &&
+    portfolios.every((p) => p.numPositions === 0);
+
+  // The live ticker only appears on the onboarding + cold-start screens, so
+  // only pay for it there (it's a real read against agent_trades).
+  const ticks =
+    isOnboarding || isColdStart ? await getHouseTicker(12) : [];
+
   return (
     <>
       <Nav />
       <main className="flex-1 w-full">
         <div className="max-w-[1100px] mx-auto w-full px-4 sm:px-6 py-8 sm:py-10">
-          {portfolios.length === 0 && !livePortfolio ? (
-            <EmptyState displayName={displayName} />
+          {isOnboarding ? (
+            <EmptyState displayName={displayName} ticks={ticks} />
+          ) : isColdStart ? (
+            <TeamBriefed portfolio={portfolios[0]} ticks={ticks} />
           ) : (
             <Dashboard
               displayName={displayName}
@@ -408,8 +428,13 @@ function buildAttention(
  * house activity beside it so a newcomer sees the product working. The ticker
  * is hidden entirely when the house board is quiet (never a fake board).
  */
-async function EmptyState({ displayName }: { displayName: string }) {
-  const ticks = await getHouseTicker(12);
+function EmptyState({
+  displayName,
+  ticks,
+}: {
+  displayName: string;
+  ticks: HouseTick[];
+}) {
   const presets = Object.values(PRESETS).map((p) => ({
     id: p.id,
     label: p.label,
@@ -435,72 +460,8 @@ async function EmptyState({ displayName }: { displayName: string }) {
           defaultPreset={DEFAULT_PRESET}
           defaultName={defaultName}
         />
-        {ticks.length > 0 && <LiveTicker ticks={ticks} />}
+        {ticks.length > 0 && <HouseTicker ticks={ticks} />}
       </div>
     </div>
   );
-}
-
-// Real recent house-agent trades — teaches the product in a line (brief §3).
-// Only rendered when there's genuine activity to show.
-function LiveTicker({ ticks }: { ticks: HouseTick[] }) {
-  return (
-    <aside className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <span
-          aria-hidden
-          className="h-1.5 w-1.5 rounded-full bg-[var(--color-green,#00FF41)] animate-pulse"
-          style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
-        />
-        <h2 className="text-[10px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim">
-          Live · house agents
-        </h2>
-      </div>
-      <ul className="space-y-2.5">
-        {ticks.map((t) => {
-          const sell = t.side.toLowerCase() === "sell";
-          return (
-            <li key={String(t.id)} className="text-[13px] leading-snug">
-              <span className="text-text">{t.agentName}</span>{" "}
-              <span
-                className={
-                  sell
-                    ? "text-[var(--color-red,#FF3333)]"
-                    : "text-[var(--color-green,#00FF41)]"
-                }
-              >
-                {sell ? "sold" : "bought"}
-              </span>{" "}
-              <Link
-                href={`/company/${t.ticker}`}
-                className="font-mono text-text hover:text-[var(--color-green,#00FF41)]"
-              >
-                {t.ticker}
-              </Link>
-              <span className="text-text-muted"> · {ago(t.executedAt)}</span>
-            </li>
-          );
-        })}
-      </ul>
-      <Link
-        href="/leaderboard"
-        className="mt-3 inline-block text-[11px] font-mono text-text-muted hover:text-text"
-      >
-        See the board →
-      </Link>
-    </aside>
-  );
-}
-
-// Compact relative time ("2m", "3h", "5d") for the live ticker.
-function ago(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "";
-  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  return `${Math.floor(hrs / 24)}d`;
 }

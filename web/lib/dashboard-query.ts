@@ -7,10 +7,17 @@
  */
 
 import { getSupabase } from "@/lib/supabase";
+import { PRESETS } from "@/lib/screen/config";
 
 export interface DashSeriesPoint {
   date: string; // YYYY-MM-DD
   pct: number; // % return from the window start
+}
+
+export interface DashRosterMember {
+  name: string;
+  role: "buyer" | "reviewer" | null;
+  poweredBy: string | null;
 }
 
 export interface DashPortfolio {
@@ -25,6 +32,12 @@ export interface DashPortfolio {
   hasBuyer: boolean;
   hasReviewer: boolean;
   mandateEmpty: boolean;
+  /** The mandate text itself — used by the cold-start "team briefed" screen. */
+  mandate: string;
+  /** Human label for the portfolio's universe preset (or null if custom). */
+  universeLabel: string | null;
+  /** Member agents with their swarm role — for the cold-start brief recap. */
+  roster: DashRosterMember[];
   draftEnabled: boolean;
   /**
    * The private real-money Alpaca follower (mode='live', migration 037). Kept
@@ -78,7 +91,9 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
 
   const { data: pRows } = await supabase
     .from("portfolios")
-    .select("id, slug, display_name, is_public, description, draft_config")
+    .select(
+      "id, slug, display_name, is_public, description, draft_config, screen_config",
+    )
     .eq("owner_user_id", userId)
     .order("created_at", { ascending: true });
 
@@ -89,6 +104,7 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     is_public: boolean;
     description: string | null;
     draft_config: Record<string, unknown> | null;
+    screen_config: Record<string, unknown> | null;
   }>;
   const ids = portfolios.map((p) => p.id);
 
@@ -109,7 +125,7 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
       .order("snapshot_date", { ascending: true }),
     supabase
       .from("portfolio_agents")
-      .select("portfolio_id, agent_id, role")
+      .select("portfolio_id, agent_id, role, agents (display_name, powered_by)")
       .in("portfolio_id", ids),
     supabase
       .from("benchmark_prices")
@@ -152,19 +168,35 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     histByP.set(h.portfolio_id, arr);
   }
 
-  // Roles per portfolio.
+  // Roles + roster per portfolio. Supabase returns the joined `agents` as
+  // either an object or a single-element array depending on the relationship
+  // shape, so normalise defensively.
   const rolesByP = new Map<string, { buyer: boolean; reviewer: boolean }>();
   const roleByPA = new Map<string, "buyer" | "reviewer" | null>();
+  const rosterByP = new Map<string, DashRosterMember[]>();
   for (const m of (membersRes.data ?? []) as Array<{
     portfolio_id: string;
     agent_id: string;
     role: "buyer" | "reviewer" | null;
+    agents:
+      | { display_name: string | null; powered_by: string | null }
+      | { display_name: string | null; powered_by: string | null }[]
+      | null;
   }>) {
     const r = rolesByP.get(m.portfolio_id) ?? { buyer: false, reviewer: false };
     if (m.role === "buyer") r.buyer = true;
     if (m.role === "reviewer") r.reviewer = true;
     rolesByP.set(m.portfolio_id, r);
     roleByPA.set(`${m.portfolio_id}:${m.agent_id}`, m.role ?? null);
+
+    const agent = Array.isArray(m.agents) ? m.agents[0] : m.agents;
+    const roster = rosterByP.get(m.portfolio_id) ?? [];
+    roster.push({
+      name: agent?.display_name ?? "An agent",
+      role: m.role ?? null,
+      poweredBy: agent?.powered_by ?? null,
+    });
+    rosterByP.set(m.portfolio_id, roster);
   }
 
   const spySeries = normalize(
@@ -178,6 +210,10 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     const hist = (histByP.get(p.id) ?? []).slice(-WINDOW_DAYS);
     const latest = hist.length ? hist[hist.length - 1] : null;
     const roles = rolesByP.get(p.id) ?? { buyer: false, reviewer: false };
+    const presetId =
+      typeof p.screen_config?.preset === "string"
+        ? (p.screen_config.preset as string)
+        : null;
     return {
       id: p.id,
       slug: p.slug,
@@ -190,6 +226,10 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
       hasBuyer: roles.buyer,
       hasReviewer: roles.reviewer,
       mandateEmpty: !(p.description && p.description.trim()),
+      mandate: (p.description ?? "").trim(),
+      universeLabel:
+        presetId && PRESETS[presetId] ? PRESETS[presetId].label : null,
+      roster: rosterByP.get(p.id) ?? [],
       draftEnabled: !!p.draft_config,
       isLive: p.id === liveId,
     };
