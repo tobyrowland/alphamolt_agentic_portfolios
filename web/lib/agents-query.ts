@@ -484,3 +484,112 @@ export async function getAgentReturns30d(): Promise<Map<string, number | null>> 
   }
   return out;
 }
+
+/** Per-agent trade-tape stats for the swarm picker cards. */
+export interface AgentTradeStats {
+  /** Trades in the trailing 30 days. */
+  trades30d: number;
+  /** Sells in the trailing 30 days (the reviewer card's "N sells / 30D"). */
+  sells30d: number;
+  /**
+   * Realized win rate (%) over the agent's full history — the share of
+   * closing sells booked above their position's weighted-average cost.
+   * `null` when the agent has no realized sells yet.
+   */
+  winPct: number | null;
+}
+
+/**
+ * Compute trade-tape stats for a set of agents (by agent id) directly from the
+ * `agent_trades` journal. Realized win rate is reconstructed by walking each
+ * agent's trades per ticker in time order, maintaining a weighted-average cost
+ * basis: every sell above cost is a win. Paginated so the row cap never
+ * truncates the history (which would corrupt the cost basis). Owner-only call.
+ */
+export async function getAgentTradeStats(
+  agentIds: string[],
+): Promise<Map<string, AgentTradeStats>> {
+  const out = new Map<string, AgentTradeStats>();
+  if (agentIds.length === 0) return out;
+  const supabase = getSupabase();
+
+  // Pull the full journal for these agents, oldest first, grouped by agent so
+  // the per-ticker walk sees buys before the sells that realize against them.
+  const PAGE = 1000;
+  const MAX_ROWS = 60000; // safety bound; far above realistic per-portfolio sets
+  type Row = {
+    agent_id: string;
+    ticker: string;
+    side: string;
+    quantity: number | string | null;
+    price_usd: number | string | null;
+    executed_at: string;
+  };
+  const rows: Row[] = [];
+  for (let from = 0; from < MAX_ROWS; from += PAGE) {
+    const { data, error } = await supabase
+      .from("agent_trades")
+      .select("agent_id, ticker, side, quantity, price_usd, executed_at")
+      .in("agent_id", agentIds)
+      .order("agent_id", { ascending: true })
+      .order("executed_at", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) {
+      console.error("getAgentTradeStats failed:", error);
+      return out;
+    }
+    const batch = (data ?? []) as Row[];
+    rows.push(...batch);
+    if (batch.length < PAGE) break;
+  }
+
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  // Per-agent accumulators + per-(agent,ticker) running position.
+  const stats = new Map<
+    string,
+    { trades30d: number; sells30d: number; wins: number; realized: number }
+  >();
+  const positions = new Map<string, { qty: number; avgCost: number }>();
+  const acc = (id: string) => {
+    let s = stats.get(id);
+    if (!s) {
+      s = { trades30d: 0, sells30d: 0, wins: 0, realized: 0 };
+      stats.set(id, s);
+    }
+    return s;
+  };
+
+  for (const r of rows) {
+    const s = acc(r.agent_id);
+    const qty = Math.abs(Number(r.quantity) || 0);
+    const price = Number(r.price_usd) || 0;
+    const isSell = r.side === "sell";
+    if (new Date(r.executed_at).getTime() >= cutoff) {
+      s.trades30d += 1;
+      if (isSell) s.sells30d += 1;
+    }
+    const key = `${r.agent_id} ${r.ticker}`;
+    const pos = positions.get(key) ?? { qty: 0, avgCost: 0 };
+    if (isSell) {
+      if (pos.qty > 0 && qty > 0) {
+        s.realized += 1;
+        if (price > pos.avgCost) s.wins += 1;
+        pos.qty = Math.max(0, pos.qty - qty);
+      }
+    } else {
+      const newQty = pos.qty + qty;
+      pos.avgCost = newQty > 0 ? (pos.avgCost * pos.qty + price * qty) / newQty : 0;
+      pos.qty = newQty;
+    }
+    positions.set(key, pos);
+  }
+
+  for (const [id, s] of stats) {
+    out.set(id, {
+      trades30d: s.trades30d,
+      sells30d: s.sells30d,
+      winPct: s.realized > 0 ? (s.wins / s.realized) * 100 : null,
+    });
+  }
+  return out;
+}

@@ -47,6 +47,10 @@ export interface AgentCatalogEntry {
   isHouse: boolean;
   strategy: string | null;
   return30d: number | null;
+  /** Realized win rate %, or null when no realized sells yet. */
+  winPct: number | null;
+  /** Sells in the trailing 30 days (reviewer "N sells / 30D"). */
+  sells30d: number;
 }
 
 interface Props {
@@ -111,6 +115,42 @@ function memberRole(m: Member): Role | null {
 function fmtReturn(v: number | null): string {
   if (v == null) return "—";
   return `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+}
+
+/** Track-record line for a card — buyers lead with 30d return + win rate,
+ *  reviewers with their 30d sell count (matching the design mock). */
+function TrackRecord({
+  role,
+  return30d,
+  winPct,
+  sells30d,
+  align = "right",
+}: {
+  role: Role;
+  return30d: number | null;
+  winPct: number | null;
+  sells30d: number;
+  align?: "left" | "right";
+}) {
+  const up = (return30d ?? 0) >= 0;
+  if (role === "reviewer") {
+    return (
+      <span className="font-mono text-[11px] text-text-muted">
+        {sells30d} {sells30d === 1 ? "sell" : "sells"} · 30D
+      </span>
+    );
+  }
+  return (
+    <span className={`font-mono text-[11px] ${align === "right" ? "text-right" : ""}`}>
+      <span style={{ color: up ? "var(--color-green,#00FF41)" : "var(--color-red,#FF3333)" }}>
+        {fmtReturn(return30d)}
+      </span>
+      <span className="text-text-muted"> · 30D</span>
+      {winPct != null && (
+        <span className="text-text-muted"> · WIN {Math.round(winPct)}%</span>
+      )}
+    </span>
+  );
 }
 
 export default function SwarmConfig({
@@ -376,17 +416,22 @@ function RosterEditor({
       {/* Seated roster */}
       {seated.length > 0 ? (
         <div className="grid gap-2 sm:grid-cols-2">
-          {seated.map((m) => (
-            <SeatedCard
-              key={m.agent_id}
-              member={m}
-              role={role}
-              return30d={catalog.find((c) => c.handle === m.handle)?.return30d ?? null}
-              portfolioId={portfolioId}
-              onFlash={onFlash}
-              onRefresh={onRefresh}
-            />
-          ))}
+          {seated.map((m) => {
+            const cat = catalog.find((c) => c.handle === m.handle);
+            return (
+              <SeatedCard
+                key={m.agent_id}
+                member={m}
+                role={role}
+                return30d={cat?.return30d ?? null}
+                winPct={cat?.winPct ?? null}
+                sells30d={cat?.sells30d ?? 0}
+                portfolioId={portfolioId}
+                onFlash={onFlash}
+                onRefresh={onRefresh}
+              />
+            );
+          })}
         </div>
       ) : (
         !picking && (
@@ -427,7 +472,7 @@ function EmptyRoster({
       {recommended.length > 0 ? (
         <div className="grid gap-2 sm:grid-cols-2">
           {recommended.map((a) => (
-            <GalleryCard key={a.handle} agent={a} onAdd={onAdd} />
+            <GalleryCard key={a.handle} agent={a} role={role} onAdd={onAdd} />
           ))}
         </div>
       ) : (
@@ -511,7 +556,7 @@ function AgentGallery({
       {shown.length > 0 ? (
         <div className="grid gap-2 sm:grid-cols-2 max-h-[360px] overflow-y-auto">
           {shown.map((a) => (
-            <GalleryCard key={a.handle} agent={a} onAdd={onAdd} />
+            <GalleryCard key={a.handle} agent={a} role={role} onAdd={onAdd} />
           ))}
         </div>
       ) : (
@@ -523,12 +568,13 @@ function AgentGallery({
 
 function GalleryCard({
   agent,
+  role,
   onAdd,
 }: {
   agent: AgentCatalogEntry;
+  role: Role;
   onAdd: (handle: string) => void;
 }) {
-  const up = (agent.return30d ?? 0) >= 0;
   return (
     <div className="rounded-lg border border-white/10 bg-black/30 p-3 flex flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
@@ -543,17 +589,16 @@ function GalleryCard({
           {agent.isHouse ? "House" : "Community"}
         </span>
       </div>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <span className="text-[10px] font-mono uppercase tracking-[0.1em] text-text-muted">
-          30d return
+          track record
         </span>
-        <span
-          className="text-sm font-mono"
-          style={{ color: up ? "var(--color-green,#00FF41)" : "var(--color-red,#FF3333)" }}
-          aria-label={`30-day return ${fmtReturn(agent.return30d)}`}
-        >
-          {fmtReturn(agent.return30d)}
-        </span>
+        <TrackRecord
+          role={role}
+          return30d={agent.return30d}
+          winPct={agent.winPct}
+          sells30d={agent.sells30d}
+        />
       </div>
       <button
         type="button"
@@ -570,6 +615,8 @@ function SeatedCard({
   member,
   role,
   return30d,
+  winPct,
+  sells30d,
   portfolioId,
   onFlash,
   onRefresh,
@@ -577,6 +624,8 @@ function SeatedCard({
   member: Member;
   role: Role;
   return30d: number | null;
+  winPct: number | null;
+  sells30d: number;
   portfolioId: string;
   onFlash: (m: string) => void;
   onRefresh: () => void;
@@ -591,7 +640,6 @@ function SeatedCard({
   const [cadence, setCadence] = useState(String(cfg.cadence ?? (role === "buyer" ? "daily" : "weekly")));
   const [remit, setRemit] = useState(member.remit ?? "");
   const [, start] = useTransition();
-  const up = (return30d ?? 0) >= 0;
   const accent = role === "buyer" ? "var(--color-green)" : "var(--color-red)";
 
   function save() {
@@ -638,14 +686,13 @@ function SeatedCard({
             {member.powered_by && <> · brain: {member.powered_by}</>}
           </span>
         </div>
-        <div className="text-right shrink-0">
-          <div className="text-[9px] font-mono uppercase tracking-[0.1em] text-text-muted">30d</div>
-          <div
-            className="text-sm font-mono"
-            style={{ color: up ? "var(--color-green,#00FF41)" : "var(--color-red,#FF3333)" }}
-          >
-            {fmtReturn(return30d)}
-          </div>
+        <div className="shrink-0 pt-0.5">
+          <TrackRecord
+            role={role}
+            return30d={return30d}
+            winPct={winPct}
+            sells30d={sells30d}
+          />
         </div>
       </div>
       <input
