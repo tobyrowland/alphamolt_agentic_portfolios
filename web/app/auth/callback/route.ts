@@ -1,13 +1,22 @@
 import { NextResponse, type NextRequest } from "next/server";
+import type { EmailOtpType } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
-// Magic-link landing route. Supabase emails a link back here with a `code`;
-// we exchange it for a session (sets the auth cookies) and redirect on.
+// Magic-link / email-confirmation landing route. Supabase emails a link back
+// here in one of two shapes, depending on which template fired:
+//   • PKCE link        ?code=<uuid>                 → exchangeCodeForSession
+//   • token-hash link  ?token_hash=<hash>&type=<t>  → verifyOtp
+// We handle both. A first-time address gets the "Confirm signup" template
+// (type=signup), returning addresses get "Magic Link" (type=magiclink); the
+// token-hash form lands the user in a session without depending on the
+// legacy /auth/v1/verify redirect, so both work identically.
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
+  const tokenHash = searchParams.get("token_hash");
+  const type = searchParams.get("type") as EmailOtpType | null;
 
   // Guard against open redirects — only same-origin relative paths.
   const nextParam = searchParams.get("next");
@@ -16,12 +25,13 @@ export async function GET(request: NextRequest) {
       ? nextParam
       : "/account";
 
-  if (!code) {
-    return NextResponse.redirect(`${origin}/login?error=missing_code`);
-  }
-
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
+
+  const { error } = code
+    ? await supabase.auth.exchangeCodeForSession(code)
+    : tokenHash && type
+      ? await supabase.auth.verifyOtp({ token_hash: tokenHash, type })
+      : { error: { message: "missing_code" } };
 
   if (error) {
     return NextResponse.redirect(

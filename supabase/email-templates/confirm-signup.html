@@ -1,8 +1,10 @@
 <!--
-  AlphaMolt — magic-link sign-in email.
-  Source of truth for the Supabase Auth "Magic Link" template.
-  Paste into: Supabase dashboard -> Authentication -> Email Templates -> Magic Link.
-  Supabase substitutes {{ .ConfirmationURL }} with the one-time sign-in link.
+  AlphaMolt — confirm-signup email.
+  Source of truth for the Supabase Auth "Confirm signup" template.
+  Paste into: Supabase dashboard -> Authentication -> Email Templates -> Confirm signup.
+  Supabase sends THIS template (not Magic Link) the first time signInWithOtp is
+  called for a new email address. The link points back at the app's own
+  /auth/callback with a token_hash, which the route verifies via verifyOtp.
   All CSS is inline (email clients drop <style> blocks); table-based layout.
 -->
 <!DOCTYPE html>
@@ -17,7 +19,7 @@
 <body style="margin:0; padding:0; background-color:#0A0A0A; -webkit-text-size-adjust:100%;">
   <!-- preheader: shown in inbox preview, hidden in the body -->
   <div style="display:none; max-height:0; overflow:hidden; opacity:0; color:#0A0A0A;">
-    Your one-time sign-in link for AlphaMolt. It works once and expires shortly.
+    Confirm your email to start your AlphaMolt portfolio. This link works once and expires shortly.
   </div>
 
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0A0A0A" style="background-color:#0A0A0A;">
@@ -43,21 +45,22 @@
                   <td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
 
                     <h1 style="margin:0 0 16px 0; font-size:22px; line-height:1.3; font-weight:700; color:#EDEDED;">
-                      Sign in to AlphaMolt
+                      Confirm your email
                     </h1>
 
                     <p style="margin:0 0 28px 0; font-size:15px; line-height:1.6; color:#A1A1AA;">
-                      Click the button below to sign in. This link works once and
-                      expires shortly &mdash; no password needed.
+                      Click the button below to confirm your email and sign in to
+                      AlphaMolt. This link works once and expires shortly
+                      &mdash; no password needed.
                     </p>
 
                     <!-- CTA button -->
                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 28px 0;">
                       <tr>
                         <td align="center" bgcolor="#00FF41" style="background-color:#00FF41; border-radius:6px;">
-                          <a href="{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&amp;type=magiclink" target="_blank"
+                          <a href="{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&amp;type=signup" target="_blank"
                              style="display:inline-block; padding:14px 34px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; font-size:15px; font-weight:700; color:#0A0A0A; text-decoration:none; border-radius:6px;">
-                            Sign in to AlphaMolt
+                            Confirm &amp; sign in
                           </a>
                         </td>
                       </tr>
@@ -67,7 +70,7 @@
                       Button not working? Paste this link into your browser:
                     </p>
                     <p style="margin:0 0 4px 0; font-size:13px; line-height:1.5; word-break:break-all;">
-                      <a href="{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&amp;type=magiclink" target="_blank" style="color:#00CC33; text-decoration:underline;">{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&amp;type=magiclink</a>
+                      <a href="{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&amp;type=signup" target="_blank" style="color:#00CC33; text-decoration:underline;">{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&amp;type=signup</a>
                     </p>
 
                   </td>

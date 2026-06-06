@@ -14,11 +14,30 @@ template → replace the body with the file's contents → **Save**.
 
 | File | Dashboard template | Supabase variables used |
 |---|---|---|
-| `magic-link.html` | Magic Link | `{{ .ConfirmationURL }}` |
+| `magic-link.html` | Magic Link | `{{ .SiteURL }}`, `{{ .TokenHash }}` |
+| `confirm-signup.html` | Confirm signup | `{{ .SiteURL }}`, `{{ .TokenHash }}` |
 
-Only the **Magic Link** template is in use — the app's sole auth path is
-`signInWithOtp` (`web/components/login-form.tsx`). The other templates
-(Confirm signup, Reset password, etc.) are left on Supabase defaults.
+The app's sole auth path is `signInWithOtp` (`web/components/login-form.tsx`),
+but it fires **two** templates depending on the address:
+
+- **Returning** address → **Magic Link**.
+- **First-time** address → **Confirm signup** (Supabase sends this, not Magic
+  Link, when `signInWithOtp` creates the user). Leaving it on the Supabase
+  default is why first-time sign-ins got an unbranded, dead link — so both
+  templates must be deployed.
+
+Both link straight back to the app's own `/auth/callback` with a
+`token_hash` (`?token_hash={{ .TokenHash }}&type=magiclink|signup`) rather
+than `{{ .ConfirmationURL }}`. The callback route
+(`web/app/auth/callback/route.ts`) verifies the hash via `verifyOtp`, so the
+session is established without depending on Supabase's legacy
+`/auth/v1/verify` redirect. The callback still accepts a PKCE `?code=` link
+for backward compatibility.
+
+**Dashboard URL config (required):** Authentication → URL Configuration →
+set **Site URL** to `https://www.alphamolt.ai` (substituted into
+`{{ .SiteURL }}`) and add `https://www.alphamolt.ai/auth/callback` to the
+**Redirect URLs** allow-list.
 
 ## Notes
 
