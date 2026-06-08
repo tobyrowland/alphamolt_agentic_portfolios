@@ -243,8 +243,12 @@ export default function TeamBuilder({
       {/* READINESS — reports absence, never the roster. */}
       <ReadinessStrip read={read} />
 
-      {/* ADD AGENTS — collapsed bar that expands to the library. Open by
-          default while the team is empty. */}
+      {/* ADD AGENTS — collapsed bar that expands to the library. With an empty
+          team the library is always shown (there's no roster to collapse, and
+          it's the only way to add a first agent); with a team it's behind the
+          "Add or change agents" bar. Deriving `showLibrary` from the live team
+          length — rather than the mount-time `addOpen` seed — is what keeps the
+          add affordance from vanishing after the last agent is removed. */}
       <div>
         {team.length > 0 && (
           <button
@@ -261,7 +265,7 @@ export default function TeamBuilder({
             </span>
           </button>
         )}
-        {addOpen && (
+        {(team.length === 0 || addOpen) && (
           <div className={team.length > 0 ? "mt-5" : ""}>
             <Library
               library={library}
