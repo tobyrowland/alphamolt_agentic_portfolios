@@ -313,8 +313,6 @@ function YourTeamUnit({
   ) => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
-  // Footer verdict appears only once there's at least one saved agent.
-  const showFooter = team.length > 0;
 
   return (
     <section>
@@ -400,9 +398,6 @@ function YourTeamUnit({
             </>
           )}
         </div>
-
-        {/* FOOTER — one-line verdict, only when there's an agent. */}
-        {showFooter && <VerdictFooter coverage={coverage} />}
       </div>
     </section>
   );
@@ -454,26 +449,6 @@ function CoverageChip({
 }
 
 // ----- Verdict footer ------------------------------------------------------
-
-function VerdictFooter({ coverage }: { coverage: Coverage }) {
-  if (coverage.complete) {
-    return (
-      <div className="px-4 py-3 border-t border-white/[0.06] text-[12px] font-mono text-[var(--color-green)]">
-        ✓ Every job covered — ready.
-      </div>
-    );
-  }
-  return (
-    <div className="px-4 py-3 border-t border-white/[0.06] text-[12px] font-mono">
-      <span className="text-[var(--color-orange)]">
-        Add: {coverage.gaps.join(", ")}.
-      </span>{" "}
-      {coverage.consequence && (
-        <span className="text-text-muted">{coverage.consequence}</span>
-      )}
-    </div>
-  );
-}
 
 // ----- Schedule formatting -------------------------------------------------
 // Cron-aware next-run helpers live in the shared, client-safe schedule module
