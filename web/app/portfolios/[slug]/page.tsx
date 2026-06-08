@@ -6,6 +6,7 @@ import HoldingsList from "@/components/holdings-list";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import TeamBuilder from "@/components/portfolio/team-builder";
+import TeamScheduleNote from "@/components/portfolio/team-schedule-note";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import {
   getPortfolio,
@@ -215,15 +216,17 @@ export default async function PortfolioPage({ params }: PageParams) {
   if (!portfolio) notFound();
 
   const bookCount = snapshot?.holdings.length ?? holdingsCount;
-  const runningCount = team.filter((a) => a.enabled).length;
   const unrealized =
     snapshot?.holdings.reduce((s, h) => s + (h.unrealized_pnl_usd ?? 0), 0) ??
     snapshot?.pnl_usd ??
     0;
-  const cashPct =
-    snapshot && snapshot.total_value_usd > 0
-      ? Math.round((snapshot.cash_usd / snapshot.total_value_usd) * 100)
-      : null;
+  // Equity (positions at market) vs cash split, and the unrealized return on
+  // account equity (= total paper value).
+  const totalValue = snapshot?.total_value_usd ?? 0;
+  const equityValue = snapshot?.holdings_value_usd ?? 0;
+  const cashValue = snapshot?.cash_usd ?? 0;
+  const equityPct = totalValue > 0 ? (equityValue / totalValue) * 100 : 0;
+  const pnlPct = totalValue > 0 ? (unrealized / totalValue) * 100 : 0;
 
   return (
     <>
@@ -275,27 +278,35 @@ export default async function PortfolioPage({ params }: PageParams) {
           {/* SUMMARY — paper value, unrealized P&L, holdings, team (brief §5).
               Honest: no invented alpha. */}
           {snapshot && (
-            <section className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-10 sm:mb-12">
-              <SummaryCard label="Paper value" value={formatUsd(snapshot.total_value_usd)} />
+            <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-10 sm:mb-12">
+              <PaperValueCard
+                total={totalValue}
+                equity={equityValue}
+                cash={cashValue}
+                equityPct={equityPct}
+              />
               <SummaryCard
                 label="Unrealized P&L"
                 value={`${unrealized >= 0 ? "+" : "-"}$${Math.abs(unrealized).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                 tone={unrealized > 0 ? "positive" : unrealized < 0 ? "negative" : "neutral"}
+                sub={`${unrealized >= 0 ? "+" : "-"}${Math.abs(pnlPct).toFixed(2)}% on equity`}
               />
               <SummaryCard
                 label="Holdings"
                 value={String(bookCount)}
-                sub={cashPct !== null ? `${cashPct}% cash` : undefined}
+                sub="open positions"
               />
               <SummaryCard
                 label="Team"
                 value={`${team.length} agent${team.length === 1 ? "" : "s"}`}
                 sub={
-                  team.length === 0
-                    ? "none yet"
-                    : runningCount === team.length
-                      ? "all running"
-                      : `${runningCount} running`
+                  team.length === 0 ? (
+                    "none yet"
+                  ) : (
+                    <span className="text-[var(--color-green)]">
+                      <TeamScheduleNote />
+                    </span>
+                  )
                 }
               />
             </section>
@@ -385,7 +396,7 @@ function SummaryCard({
 }: {
   label: string;
   value: string;
-  sub?: string;
+  sub?: React.ReactNode;
   tone?: "positive" | "negative" | "neutral";
 }) {
   const color =
@@ -405,6 +416,57 @@ function SummaryCard({
       {sub && (
         <p className="text-[11px] font-mono text-text-muted mt-0.5">{sub}</p>
       )}
+    </div>
+  );
+}
+
+/**
+ * Paper-value card with an equity/cash split bar (component mockup) — so the
+ * owner can see how much capital is invested vs sitting in cash.
+ */
+function PaperValueCard({
+  total,
+  equity,
+  cash,
+  equityPct,
+}: {
+  total: number;
+  equity: number;
+  cash: number;
+  equityPct: number;
+}) {
+  const pct = Math.max(0, Math.min(100, equityPct));
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3.5">
+      <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-muted">
+        Paper value
+      </p>
+      <p className="font-mono text-xl sm:text-2xl font-bold tabular-nums text-text mt-1">
+        {formatUsd(total)}
+      </p>
+      <div
+        className="mt-2.5 h-1.5 w-full rounded-full bg-white/10 overflow-hidden"
+        role="img"
+        aria-label={`${pct.toFixed(0)}% invested in equities, the rest in cash`}
+      >
+        <div
+          className="h-full rounded-full bg-[var(--color-green)]"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="text-[11px] font-mono text-text-muted mt-1.5 leading-relaxed">
+        <span
+          aria-hidden
+          className="inline-block h-2 w-2 rounded-[2px] bg-[var(--color-green)] mr-1 align-middle"
+        />
+        Equity <span className="text-text">{formatUsd0(equity)}</span>
+        <span className="mx-1.5 text-text-dim">·</span>
+        <span
+          aria-hidden
+          className="inline-block h-2 w-2 rounded-[2px] bg-white/30 mr-1 align-middle"
+        />
+        Cash <span className="text-text">{formatUsd0(cash)}</span>
+      </p>
     </div>
   );
 }
@@ -456,4 +518,10 @@ function formatUsd(n: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+/** Whole-dollar USD, e.g. "$535,140" (used in the equity/cash legend). */
+function formatUsd0(n: number): string {
+  const sign = n < 0 ? "-" : "";
+  return `${sign}$${Math.round(Math.abs(n)).toLocaleString("en-US")}`;
 }
