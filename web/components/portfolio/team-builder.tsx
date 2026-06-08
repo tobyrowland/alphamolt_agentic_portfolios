@@ -32,6 +32,7 @@ import {
   removeAgentFromPortfolio,
 } from "@/lib/portfolios-mutations";
 import { runAgent } from "@/lib/run-agent-mutations";
+import { scheduleText } from "@/lib/agents/schedule";
 
 // ----- Action vocabulary ---------------------------------------------------
 
@@ -312,13 +313,11 @@ function YourTeamUnit({
   ) => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
-  // Footer verdict appears only once there's at least one saved agent.
-  const showFooter = team.length > 0;
 
   return (
     <section>
       <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-[var(--color-green)] mb-3">
-        Your team
+        Your agent team
       </h2>
 
       <div
@@ -399,9 +398,6 @@ function YourTeamUnit({
             </>
           )}
         </div>
-
-        {/* FOOTER — one-line verdict, only when there's an agent. */}
-        {showFooter && <VerdictFooter coverage={coverage} />}
       </div>
     </section>
   );
@@ -454,71 +450,9 @@ function CoverageChip({
 
 // ----- Verdict footer ------------------------------------------------------
 
-function VerdictFooter({ coverage }: { coverage: Coverage }) {
-  if (coverage.complete) {
-    return (
-      <div className="px-4 py-3 border-t border-white/[0.06] text-[12px] font-mono text-[var(--color-green)]">
-        ✓ Every job covered — ready.
-      </div>
-    );
-  }
-  return (
-    <div className="px-4 py-3 border-t border-white/[0.06] text-[12px] font-mono">
-      <span className="text-[var(--color-orange)]">
-        Add: {coverage.gaps.join(", ")}.
-      </span>{" "}
-      {coverage.consequence && (
-        <span className="text-text-muted">{coverage.consequence}</span>
-      )}
-    </div>
-  );
-}
-
 // ----- Schedule formatting -------------------------------------------------
-
-function relShort(ms: number): string {
-  const m = Math.round(ms / 60_000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h`;
-  const d = Math.round(h / 24);
-  return `${d}d`;
-}
-
-/** "today 16:00" / "tomorrow 09:00" / "Jun 12 14:30" relative to `now`. */
-function clockLabel(ts: number, now: number): string {
-  const d = new Date(ts);
-  const time = d.toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  const a = new Date(now);
-  a.setHours(0, 0, 0, 0);
-  const b = new Date(ts);
-  b.setHours(0, 0, 0, 0);
-  const days = Math.round((b.getTime() - a.getTime()) / 86_400_000);
-  if (days === 0) return `today ${time}`;
-  if (days === 1) return `tomorrow ${time}`;
-  if (days === -1) return `yesterday ${time}`;
-  return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${time}`;
-}
-
-/**
- * The resting schedule line for an agent. Agents fire on their own cadence
- * (`heartbeat_interval_hours`) at the daily heartbeat; this shows the next due
- * time derived from the last run, or "next cycle" before the first run.
- */
-function scheduleText(agent: TeamAgent, now: number): string {
-  const intervalH = agent.heartbeatIntervalHours ?? 168;
-  const last = agent.lastRunAt ? new Date(agent.lastRunAt).getTime() : null;
-  if (last == null || Number.isNaN(last)) return "Next run · next cycle";
-  const next = last + intervalH * 3_600_000;
-  const ago = relShort(now - last);
-  if (next <= now) return `Last run ${ago} ago · due next cycle`;
-  return `Last run ${ago} ago · next run ${clockLabel(next, now)} (in ${relShort(next - now)})`;
-}
+// Cron-aware next-run helpers live in the shared, client-safe schedule module
+// (single source of the weekly-heartbeat constant).
 
 // ----- Saved (live) team card ----------------------------------------------
 
@@ -711,7 +645,9 @@ function TeamCard({
             />
           )}
           <span className="text-[11px] font-mono text-text-muted">
-            {running ? "Running now…" : scheduleText(agent, now)}
+            {running
+              ? "Running now…"
+              : scheduleText(agent.lastRunAt, agent.heartbeatIntervalHours, now)}
           </span>
         </div>
       )}
