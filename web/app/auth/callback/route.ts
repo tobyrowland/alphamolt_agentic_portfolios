@@ -19,11 +19,14 @@ export async function GET(request: NextRequest) {
   const type = searchParams.get("type") as EmailOtpType | null;
 
   // Guard against open redirects — only same-origin relative paths.
+  // Default lands on the user's own portfolio page (/account/portfolio
+  // resolves to /portfolios/<slug>, or falls back to /account if they
+  // haven't created one yet).
   const nextParam = searchParams.get("next");
   const next =
     nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//")
       ? nextParam
-      : "/account";
+      : "/account/portfolio";
 
   const supabase = await createSupabaseServerClient();
 
