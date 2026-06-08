@@ -83,6 +83,26 @@ export async function generateMetadata({
   };
 }
 
+/**
+ * Format the screener's freshness stamp (the latest `price_asof` across the
+ * Tier 1 universe, i.e. when the daily matview last picked up prices). Parses a
+ * date-only `YYYY-MM-DD` in UTC to avoid an off-by-one from the server's
+ * timezone; falls back to a full timestamp parse otherwise.
+ */
+function formatAsOf(s: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  const d = m
+    ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+    : new Date(s);
+  if (Number.isNaN(d.getTime())) return s;
+  return d.toLocaleDateString("en-US", {
+    timeZone: "UTC",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 export default async function ScreenerPage({
   searchParams,
 }: {
@@ -108,6 +128,11 @@ export default async function ScreenerPage({
               All US-listed equities (incl. ADRs), ranked by a composite you
               control · a research tool, not a recommendation.
             </p>
+            {initial.data_asof && (
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
+                Last refreshed {formatAsOf(initial.data_asof)}
+              </p>
+            )}
           </header>
 
           <ScreenerClient
