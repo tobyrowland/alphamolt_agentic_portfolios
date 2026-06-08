@@ -17,7 +17,7 @@ export async function proxy(request: NextRequest) {
   // homepage — where nothing exchanges it, so the user sees the logged-out
   // homepage despite a valid link. Funnel any stray code through the
   // callback so the session is always established and first-login lands on
-  // the dashboard (callback's default next=/account).
+  // the user's portfolio (callback's default next=/account/portfolio).
   const code = searchParams.get("code");
   if (code && pathname !== "/auth/callback" && !pathname.startsWith("/api")) {
     const callbackUrl = new URL("/auth/callback", request.url);
@@ -57,7 +57,8 @@ export async function proxy(request: NextRequest) {
   // above. Route gating is handled by the pages themselves — protected
   // pages self-guard. The marketing homepage is reachable for everyone:
   // signed-in users see it when they click the logo. First-login lands
-  // on the dashboard via the auth callback's default `next=/account`.
+  // on the user's portfolio via the auth callback's default
+  // `next=/account/portfolio`.
   await supabase.auth.getUser();
 
   return response;
