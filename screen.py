@@ -123,7 +123,11 @@ def score_screen(facts: list[dict], config: dict) -> list[dict]:
     for r in subset:
         ps = _f(r.get("ps"))
         med = _f(r.get("ps_median_12m"))
-        ps_ratio.append(None if ps is None else ps / (med if med and med > 0 else ps))
+        # P/S relative to its own 12-mo median; fall back to a neutral 1.0
+        # (ps/ps) when the median is missing. Guard the denominator so a
+        # ps of 0 (or 0 fallback) doesn't divide by zero — just unscoreable.
+        denom = med if (med and med > 0) else ps
+        ps_ratio.append(ps / denom if (ps is not None and denom) else None)
         ret = _f(r.get("ret_52w"))
         mom.append(None if ret is None else max(MOM_FLOOR, min(MOM_CAP, ret)))
 
