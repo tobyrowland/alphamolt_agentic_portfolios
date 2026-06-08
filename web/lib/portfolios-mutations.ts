@@ -529,6 +529,9 @@ export async function saveTeamAgent(input: {
   portfolioId: string;
   handle: string;
   params: Record<string, number | string>;
+  /** Per-instance brief override (migration 046). null = track the agent
+   *  default; the client passes null when the text equals the default. */
+  mandate?: string | null;
 }): Promise<ActionResult> {
   const { user } = await requireUser();
   const portfolio = await resolveOwnedPortfolio(input.portfolioId, user.id);
@@ -553,6 +556,7 @@ export async function saveTeamAgent(input: {
       agent_id: agent.id,
       role: ROLE_FOR_ACTION[agent.action] ?? null,
       config: input.params ?? {},
+      mandate: normalizeMandate(input.mandate),
       enabled: true,
     },
     { onConflict: "portfolio_id,agent_id" },
@@ -566,11 +570,20 @@ export async function saveTeamAgent(input: {
   return { ok: true };
 }
 
-/** Live edit of a saved agent's params (no re-deploy — brief §4). */
+/** Trim a brief to null/text — empty string collapses to null (track default). */
+function normalizeMandate(mandate: string | null | undefined): string | null {
+  if (mandate === undefined || mandate === null) return null;
+  const trimmed = mandate.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Live edit of a saved agent's params + brief (no re-deploy — brief §4). */
 export async function updateTeamAgentParams(input: {
   portfolioId: string;
   handle: string;
   params: Record<string, number | string>;
+  /** Per-instance brief override (migration 046). null = track the default. */
+  mandate?: string | null;
 }): Promise<ActionResult> {
   const { user } = await requireUser();
   const portfolio = await resolveOwnedPortfolio(input.portfolioId, user.id);
@@ -582,7 +595,7 @@ export async function updateTeamAgentParams(input: {
   const supabase = getSupabase();
   const { error } = await supabase
     .from("portfolio_agents")
-    .update({ config: input.params ?? {} })
+    .update({ config: input.params ?? {}, mandate: normalizeMandate(input.mandate) })
     .eq("portfolio_id", input.portfolioId)
     .eq("agent_id", agent.id);
   if (error) {

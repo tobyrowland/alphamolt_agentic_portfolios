@@ -293,6 +293,23 @@ def _portfolio_is_due(portfolio: dict, now: datetime) -> bool:
     return now >= last + timedelta(hours=PORTFOLIO_HEARTBEAT_INTERVAL_HOURS)
 
 
+def _resolve_member_mandate(member_row: dict, portfolio_mandate: str | None) -> str | None:
+    """The brief a member agent works to (migration 046).
+
+    Per-agent mandates replace the old single portfolio mandate: each thinking
+    agent self-briefs. Resolution mirrors params — the saved INSTANCE override
+    wins, else the agent's baked-in DEFAULT, else the portfolio brief as a
+    legacy fallback (for 1:1 agents that predate per-agent mandates).
+    """
+    override = (member_row.get("mandate") or "").strip()
+    if override:
+        return override
+    default = ((member_row.get("agent") or {}).get("default_mandate") or "").strip()
+    if default:
+        return default
+    return portfolio_mandate
+
+
 def _run_portfolio_swarm(
     db: SupabaseDB,
     pm: PortfolioManager,
@@ -387,7 +404,8 @@ def _run_portfolio_swarm(
         ctx = RebalanceContext(
             db=db, pm=pm, agent=m["agent"], dry_run=False,
             params=dict(m.get("config") or {}), portfolio_id=pid,
-            members=members, mandate=mandate, mode=mode, executor=executor,
+            members=members, mandate=_resolve_member_mandate(m, mandate),
+            mode=mode, executor=executor,
         )
         rationale = cand_map.get(pick.ticker)
         note = f"swarm draft (conviction {pick.conviction}/5): {rationale or ''}".strip()
@@ -434,7 +452,8 @@ def _run_portfolio_swarm(
         ctx = RebalanceContext(
             db=db, pm=pm, agent=agent, dry_run=dry_run,
             params=dict(m.get("config") or {}), portfolio_id=pid,
-            members=members, mandate=mandate, mode=mode, executor=executor,
+            members=members, mandate=_resolve_member_mandate(m, mandate),
+            mode=mode, executor=executor,
         )
         try:
             result = strategy(ctx)
@@ -517,11 +536,13 @@ def _run_portfolio(
 
     members = [m["agent"] for m in member_rows]
     mandate = portfolio.get("description")
+    run_rows = member_rows
     if handle_filter:
-        members = [m for m in members if m.get("handle") == handle_filter]
-    logger.info("  portfolio %-22s %d member(s)", slug, len(members))
+        run_rows = [mr for mr in member_rows if mr["agent"].get("handle") == handle_filter]
+    logger.info("  portfolio %-22s %d member(s)", slug, len(run_rows))
 
-    for member in members:
+    for member_row in run_rows:
+        member = member_row["agent"]
         handle = member.get("handle", member["id"][:8])
         strategy_name = member.get("strategy")
         started = _now_utc()
@@ -552,12 +573,16 @@ def _run_portfolio(
             continue
 
         mode, executor = _resolve_live_executor(portfolio, dry_run=dry_run)
+        # Per-instance params (portfolio_agents.config, migration 045) override
+        # the agent-level config; the membership-less legacy 1:1 agents fall
+        # back to their agents.config. Mandate is resolved per-agent (046).
+        params = {**(member.get("config") or {}), **(member_row.get("config") or {})}
         ctx = RebalanceContext(
             db=db, pm=pm, agent=member, dry_run=dry_run,
-            params=dict(member.get("config") or {}),
+            params=params,
             portfolio_id=portfolio["id"],
             members=members,
-            mandate=mandate,
+            mandate=_resolve_member_mandate(member_row, mandate),
             mode=mode,
             executor=executor,
         )

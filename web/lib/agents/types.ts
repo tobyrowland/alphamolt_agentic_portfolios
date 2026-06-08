@@ -40,12 +40,36 @@ export interface LibraryAgent {
   triggers: string[];
   paramSchema: ParamSpec[];
   sentenceTemplate: string | null;
+  /**
+   * The agent's baked-in brief (migration 046). Non-null only for "thinking"
+   * agents (LLM buyer / reviewer) — the team builder shows a brief field iff
+   * this is set; mechanical/manage agents leave it null.
+   */
+  defaultMandate: string | null;
 }
 
 /** A configured copy of a library agent saved onto a portfolio. */
 export interface TeamAgent extends LibraryAgent {
   params: Record<string, number | string>;
   enabled: boolean;
+  /** Per-instance brief override; null = track the agent default. */
+  mandate: string | null;
+  /** Per-membership last rebalance (ISO), or null if it has never run. */
+  lastRunAt: string | null;
+  /** The agent's cadence in hours (defaults to weekly when unset). */
+  heartbeatIntervalHours: number | null;
+}
+
+/** Whether the owner has pinned a custom brief on this saved agent. */
+export function hasCustomMandate(agent: TeamAgent): boolean {
+  return (agent.mandate ?? "").trim().length > 0;
+}
+
+/** The brief actually in force for an agent: instance override ?? default. */
+export function effectiveMandate(
+  agent: Pick<LibraryAgent, "defaultMandate"> & { mandate?: string | null },
+): string {
+  return (agent.mandate ?? null)?.trim() || agent.defaultMandate || "";
 }
 
 /** Merge stored params over schema defaults, dropping unknown keys. */
@@ -85,48 +109,56 @@ export function fillSentence(
   });
 }
 
-export interface Readiness {
+export interface Coverage {
+  /** Action-axis coverage (the header chips) — counted from saved agents. */
   buy: boolean;
   sell: boolean;
   manage: boolean;
-  /** Declared sell triggers covered by the team's live sell agents. */
-  triggers: string[];
-  /** One-line gap verdict for the readiness strip. */
-  verdict: string;
+  /** All three actions covered. */
+  complete: boolean;
+  /** What's missing, in plain language (the footer verdict's list). */
+  gaps: string[];
+  /** Consequence tail, e.g. "your team can't exit or rebalance yet". */
+  consequence: string;
 }
 
 /**
- * Coverage readout (brief §5). Reports *absence*, never the roster: which of
- * buy / sell / manage are covered by at least one live (saved + running)
- * agent, the union of declared sell triggers, and a one-line gap verdict.
+ * Coverage readout for the "Your Team" unit (component brief §04). The header
+ * chips are the action axis only (buy / sell / manage), counted from *saved*
+ * agents. Trigger nuance (loss protection / profit-taking) lives in the gap
+ * list, not the header — and only once a sell exists but a trigger is absent.
  */
-export function readiness(team: TeamAgent[]): Readiness {
-  const live = team.filter((a) => a.enabled);
-  const buy = live.some((a) => a.action === "buy");
-  const sell = live.some((a) => a.action === "sell");
-  const manage = live.some((a) => a.action === "manage");
+export function teamCoverage(team: TeamAgent[]): Coverage {
+  const buy = team.some((a) => a.action === "buy");
+  const sell = team.some((a) => a.action === "sell");
+  const manage = team.some((a) => a.action === "manage");
+  const complete = buy && sell && manage;
 
-  const triggers = Array.from(
-    new Set(
-      live.filter((a) => a.action === "sell").flatMap((a) => a.triggers),
-    ),
+  const sellTriggers = new Set(
+    team.filter((a) => a.action === "sell").flatMap((a) => a.triggers),
   );
 
-  let verdict: string;
-  if (team.length === 0) {
-    verdict =
-      "Empty team. A complete team can buy, sell and manage — start with a buyer.";
-  } else if (buy && sell && manage) {
-    verdict = "Every job covered.";
+  const gaps: string[] = [];
+  if (!buy) gaps.push("a buyer");
+  if (!sell) {
+    gaps.push("a way to sell");
   } else {
-    const gaps: string[] = [];
-    if (!buy) gaps.push("a buyer");
-    if (!sell) gaps.push("a way to sell");
-    if (!manage) gaps.push("rebalancing");
-    verdict = `Consider adding: ${gaps.join(", ")}.`;
+    // Sell exists — name any missing intent (advice, not a header chip).
+    if (!sellTriggers.has("caps-losses")) gaps.push("loss protection");
+    if (!sellTriggers.has("banks-gains")) gaps.push("profit-taking");
   }
+  if (!manage) gaps.push("rebalancing");
 
-  return { buy, sell, manage, triggers, verdict };
+  // Consequence is about *capabilities* the team lacks, not trigger nuance.
+  const cant: string[] = [];
+  if (!buy) cant.push("open positions");
+  if (!sell) cant.push("exit");
+  if (!manage) cant.push("rebalance");
+  const consequence = cant.length
+    ? `your team can't ${cant.join(" or ")} yet`
+    : "";
+
+  return { buy, sell, manage, complete, gaps, consequence };
 }
 
 /** Heartbeat role a library action maps to (migration 041 + 045). */

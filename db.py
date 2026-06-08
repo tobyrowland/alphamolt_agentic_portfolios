@@ -588,6 +588,11 @@ class SupabaseDB:
                     "role": m.get("role"),
                     "remit": m.get("remit"),
                     "config": m.get("config"),
+                    # Per-instance mandate override (migration 046). NULL =
+                    # use the agent's default_mandate (which rides along in the
+                    # agents row below). Resolved at ctx-build time in the
+                    # heartbeat: override ?? agent default ?? portfolio brief.
+                    "mandate": m.get("mandate"),
                     # Per-instance Run/Stop switch (migration 045). A stopped
                     # team agent stays on the roster but is skipped by the
                     # heartbeat. Default True for legacy rows / new members.

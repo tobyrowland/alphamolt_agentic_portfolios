@@ -886,3 +886,15 @@ ALTER TABLE agents ADD  CONSTRAINT agents_action_check
 CREATE INDEX IF NOT EXISTS idx_agents_library ON agents (action) WHERE action IS NOT NULL;
 
 ALTER TABLE portfolio_agents ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;  -- per-instance Run/Stop
+
+
+-- ============================================================
+-- Per-agent mandates (migration 046 — team builder, brief v2)
+--
+-- Each thinking agent (LLM buyer / reviewer) carries its OWN brief with a
+-- baked-in default; the saved instance can override it. Resolution at heartbeat
+-- time: instance override ?? agent default ?? (legacy) portfolios.description.
+-- Mechanical/manage agents leave default_mandate NULL (no brief field shown).
+-- ============================================================
+ALTER TABLE agents          ADD COLUMN IF NOT EXISTS default_mandate TEXT;  -- baked-in brief; NULL = mechanical (no brief)
+ALTER TABLE portfolio_agents ADD COLUMN IF NOT EXISTS mandate        TEXT;  -- per-instance override; NULL = use agent default

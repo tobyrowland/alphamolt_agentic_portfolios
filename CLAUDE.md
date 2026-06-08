@@ -213,7 +213,22 @@ params live flat in `portfolio_agents.config` (merged into the strategy's
 agent stays on the roster but the heartbeat skips it). Action maps to the
 heartbeat role (`buy→buyer`, `sell→reviewer`, `manage→manager`); buy/sell run
 through the existing swarm engine, manage is inert until a manage engine is
-defined. The **library is the set of hireable agents with `action` set** — the
+defined.
+
+**Per-agent mandates (migration 046).** Each thinking agent self-briefs: there
+is no shared portfolio mandate any more. A library agent's baked-in brief lives
+in `agents.default_mandate` (NULL for mechanical/manage agents — they show no
+brief field), and the saved instance can override it via
+`portfolio_agents.mandate`. The team builder shows a **pre-filled, editable
+brief** for any agent with a default (label by action: buy → "What to buy",
+sell → "When to sell"); leaving it untouched stores NULL so it tracks the
+evolving default, editing it pins the owner's words (a `✎ custom brief` chip
+marks overrides). The heartbeat resolves `ctx.mandate` as
+`instance override ?? agent default ?? (legacy) portfolios.description`
+(`agent_heartbeat._resolve_member_mandate`), so `portfolios.description` is now
+only a fallback for legacy 1:1 agents. The example buy agents are bound to the
+LLM buyer (`llm_watchlist_buyer`) so the brief actually drives BUY/PASS; sells
+run the LLM reviewer (`portfolio_reviewer`). The **library is the set of hireable agents with `action` set** — the
 seeded roster (migration 045) is illustrative; the real roster is curated
 separately by inserting agent rows. Mutations (`saveTeamAgent`,
 `updateTeamAgentParams`, `setTeamAgentEnabled`) live in
