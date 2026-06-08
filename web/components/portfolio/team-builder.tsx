@@ -476,6 +476,13 @@ function VerdictFooter({ coverage }: { coverage: Coverage }) {
 
 // ----- Schedule formatting -------------------------------------------------
 
+// The rebalance automation runs on a fixed weekly cron — Sunday 07:00 UTC
+// (.github/workflows/agent-heartbeat.yml: "0 7 * * 0"). Each agent acts on that
+// tick once its own cadence (heartbeat_interval_hours) has elapsed, so the next
+// run is deterministic: the next Sunday-07:00-UTC at/after the agent's due time.
+const HEARTBEAT_UTC_DAY = 0; // Sunday
+const HEARTBEAT_UTC_HOUR = 7; // 07:00 UTC
+
 function relShort(ms: number): string {
   const m = Math.round(ms / 60_000);
   if (m < 1) return "just now";
@@ -486,38 +493,53 @@ function relShort(ms: number): string {
   return `${d}d`;
 }
 
-/** "today 16:00" / "tomorrow 09:00" / "Jun 12 14:30" relative to `now`. */
-function clockLabel(ts: number, now: number): string {
-  const d = new Date(ts);
-  const time = d.toLocaleTimeString("en-US", {
+/** Local-time label for an instant, e.g. "Sun, Jun 15, 08:00". */
+function dateTimeLabel(ts: number): string {
+  return new Date(ts).toLocaleString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
   });
-  const a = new Date(now);
-  a.setHours(0, 0, 0, 0);
-  const b = new Date(ts);
-  b.setHours(0, 0, 0, 0);
-  const days = Math.round((b.getTime() - a.getTime()) / 86_400_000);
-  if (days === 0) return `today ${time}`;
-  if (days === 1) return `tomorrow ${time}`;
-  if (days === -1) return `yesterday ${time}`;
-  return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${time}`;
+}
+
+/** The smallest Sunday-07:00-UTC instant at or after `after`. */
+function nextHeartbeatTick(after: number): number {
+  const d = new Date(after);
+  let cand = Date.UTC(
+    d.getUTCFullYear(),
+    d.getUTCMonth(),
+    d.getUTCDate(),
+    HEARTBEAT_UTC_HOUR,
+    0,
+    0,
+    0,
+  );
+  for (let i = 0; i < 8; i++) {
+    if (new Date(cand).getUTCDay() === HEARTBEAT_UTC_DAY && cand >= after) {
+      return cand;
+    }
+    cand += 86_400_000;
+  }
+  return cand;
 }
 
 /**
- * The resting schedule line for an agent. Agents fire on their own cadence
- * (`heartbeat_interval_hours`) at the daily heartbeat; this shows the next due
- * time derived from the last run, or "next cycle" before the first run.
+ * The schedule line for an agent. The next run is the next weekly heartbeat
+ * (Sunday 07:00 UTC, shown in the viewer's local time) at or after the agent's
+ * due time — `last run + cadence`, or now for an agent that hasn't run yet.
  */
 function scheduleText(agent: TeamAgent, now: number): string {
   const intervalH = agent.heartbeatIntervalHours ?? 168;
-  const last = agent.lastRunAt ? new Date(agent.lastRunAt).getTime() : null;
-  if (last == null || Number.isNaN(last)) return "Next run · next cycle";
-  const next = last + intervalH * 3_600_000;
-  const ago = relShort(now - last);
-  if (next <= now) return `Last run ${ago} ago · due next cycle`;
-  return `Last run ${ago} ago · next run ${clockLabel(next, now)} (in ${relShort(next - now)})`;
+  const last = agent.lastRunAt ? Date.parse(agent.lastRunAt) : NaN;
+  const hasRun = !Number.isNaN(last);
+  const due = hasRun ? last + intervalH * 3_600_000 : now;
+  const next = nextHeartbeatTick(Math.max(now, due));
+  const nextLabel = `${dateTimeLabel(next)} (in ${relShort(next - now)})`;
+  return hasRun
+    ? `Last run ${relShort(now - last)} ago · next run ${nextLabel}`
+    : `Next run ${nextLabel}`;
 }
 
 // ----- Saved (live) team card ----------------------------------------------
