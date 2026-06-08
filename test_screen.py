@@ -124,6 +124,18 @@ class TestScoring(unittest.TestCase):
         # equal scores → AAA before ZZZ
         self.assertEqual([r["ticker"] for r in out], ["AAA", "ZZZ"])
 
+    def test_zero_ps_without_median_does_not_crash(self):
+        # A P/S of 0 with no recorded median used to divide 0/0 and crash the
+        # whole screen (ZeroDivisionError). It must score as unscoreable-on-value
+        # and rank alongside the rest, not blow up.
+        rows = facts(
+            {"ticker": "ZERO", "ps": 0, "ps_median_12m": None, "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ret_52w": 1},
+            {"ticker": "NORM", "ps": 5, "ps_median_12m": 4, "rule_of_40": 20, "fcf_margin": 1, "gross_margin": 1, "ret_52w": 1},
+        )
+        cfg = {"weights": {"quality": 45, "value": 25, "momentum": 20}, "aiMultiplier": False}
+        out = screen.score_screen(rows, cfg)
+        self.assertEqual(len(out), 2)
+
     def test_topn_helper_via_run(self):
         rows = facts(
             {"ticker": "A", "rule_of_40": 90, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},

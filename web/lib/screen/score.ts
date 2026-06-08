@@ -136,10 +136,13 @@ export function scoreScreen(
   const subset = applyFilters(facts, config.filters);
 
   // Value driver: P/S relative to the stock's own 12-month median (cheaper =
-  // better). Falls back to raw P/S when no median is recorded.
-  const psRatio = subset.map((r) =>
-    r.ps == null ? null : r.ps / (r.ps_median_12m && r.ps_median_12m > 0 ? r.ps_median_12m : r.ps),
-  );
+  // better). Falls back to raw P/S when no median is recorded; guards the
+  // denominator so a P/S of 0 yields null (unscoreable) instead of NaN.
+  const psRatio = subset.map((r) => {
+    if (r.ps == null) return null;
+    const denom = r.ps_median_12m && r.ps_median_12m > 0 ? r.ps_median_12m : r.ps;
+    return denom ? r.ps / denom : null;
+  });
   const mom = subset.map((r) =>
     r.ret_52w == null ? null : Math.max(MOM_FLOOR, Math.min(MOM_CAP, r.ret_52w)),
   );
