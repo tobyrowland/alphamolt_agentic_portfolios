@@ -59,7 +59,26 @@ function fmt(v: number | null, opts?: { pct?: boolean; mult?: boolean; dp?: numb
   if (opts?.mult) return `${s}×`;
   return s;
 }
+// Percent with an explicit sign — for signed metrics (returns, alpha) where the
+// direction is the point.
+function fmtSigned(v: number | null, dp = 1): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return `${v >= 0 ? "+" : ""}${v.toFixed(dp)}%`;
+}
 const PAGE_SIZE = 250;
+
+// Hover explanations for the result columns (header mouseover).
+const COL_HELP: Record<string, string> = {
+  ps: "Price-to-sales — market cap ÷ trailing-12-month revenue. Lower is cheaper on sales.",
+  rev_growth_ttm: "Revenue growth — trailing twelve months, year over year.",
+  gross_margin: "Gross margin — gross profit ÷ revenue.",
+  rule_of_40:
+    "Rule of 40 — revenue growth % + free-cash-flow margin %. ≥ 40 is the bar for a healthy growth-vs-profitability balance.",
+  fcf_margin: "Free-cash-flow margin — free cash flow ÷ revenue.",
+  ret_52w: "Trailing 52-week price return — the raw move, not measured against the market.",
+  perf_52w_vs_spy:
+    "Alpha vs SPY — the stock's trailing 52-week return minus SPY's over the same window. Positive = beat the market. This is what the Momentum score ranks on.",
+};
 
 // Hover explanations for the (jargon-y) ranking controls.
 const WEIGHT_HELP: Record<"quality" | "value" | "momentum", string> = {
@@ -68,7 +87,7 @@ const WEIGHT_HELP: Record<"quality" | "value" | "momentum", string> = {
   value:
     "Value — how cheap it is on sales versus the stock's own 12-month median P/S (not an absolute P/S). Raise it to favour names trading below their usual valuation.",
   momentum:
-    "Momentum — trailing 52-week price return, collared so falling knives and blow-off tops don't dominate. Raise it to favour recent leaders.",
+    "Momentum — trailing 52-week return vs SPY (alpha), collared so falling knives and blow-off tops don't dominate. Raise it to favour names beating the market.",
 };
 const RANKING_HELP =
   "Each name's Score is a percentile blend of Quality, Value and Momentum, weighted by these sliders, relative to the names matching your filters — so it's this screen's own ranking, not a fixed house score.";
@@ -86,19 +105,23 @@ function topWeight(w: { quality: number; value: number; momentum: number }): str
 interface Col {
   key: string;
   label: string;
-  green?: boolean;
+  green?: boolean; // force green text (a "more = better" metric)
+  signed?: (r: Row) => number | null; // colour the cell green/red by this value's sign
+  help?: string; // header mouseover explaining the column
   render: (r: Row) => string;
 }
+// "vs SPY" (alpha) is a base column: it's the Momentum driver, so showing it by
+// default makes the ranking legible without opening the column picker.
 const BASE_COLS: Col[] = [
-  { key: "ps", label: "P/S", render: (r) => fmt(r.ps, { mult: true }) },
-  { key: "rev_growth_ttm", label: "Rev gr%", green: true, render: (r) => fmt(r.rev_growth_ttm, { pct: true }) },
-  { key: "gross_margin", label: "GM%", green: true, render: (r) => fmt(r.gross_margin, { pct: true }) },
-  { key: "rule_of_40", label: "R40", green: true, render: (r) => fmt(r.rule_of_40, { dp: 0 }) },
+  { key: "ps", label: "P/S", help: COL_HELP.ps, render: (r) => fmt(r.ps, { mult: true }) },
+  { key: "rev_growth_ttm", label: "Rev gr%", green: true, help: COL_HELP.rev_growth_ttm, render: (r) => fmt(r.rev_growth_ttm, { pct: true }) },
+  { key: "gross_margin", label: "GM%", green: true, help: COL_HELP.gross_margin, render: (r) => fmt(r.gross_margin, { pct: true }) },
+  { key: "rule_of_40", label: "R40", green: true, help: COL_HELP.rule_of_40, render: (r) => fmt(r.rule_of_40, { dp: 0 }) },
+  { key: "perf_52w_vs_spy", label: "vs SPY", help: COL_HELP.perf_52w_vs_spy, signed: (r) => r.perf_52w_vs_spy, render: (r) => fmtSigned(r.perf_52w_vs_spy) },
 ];
 const EXTRA_COLS: Col[] = [
-  { key: "fcf_margin", label: "FCF M%", green: true, render: (r) => fmt(r.fcf_margin, { pct: true }) },
-  { key: "ret_52w", label: "52w%", render: (r) => fmt(r.ret_52w, { pct: true, dp: 0 }) },
-  { key: "perf_52w_vs_spy", label: "vs SPY", green: true, render: (r) => fmt(r.perf_52w_vs_spy, { pct: true, dp: 0 }) },
+  { key: "fcf_margin", label: "FCF M%", green: true, help: COL_HELP.fcf_margin, render: (r) => fmt(r.fcf_margin, { pct: true }) },
+  { key: "ret_52w", label: "52w%", help: COL_HELP.ret_52w, signed: (r) => r.ret_52w, render: (r) => fmtSigned(r.ret_52w, 0) },
   { key: "net_margin", label: "Net M%", green: true, render: (r) => fmt(r.net_margin, { pct: true }) },
   { key: "operating_margin", label: "Op M%", green: true, render: (r) => fmt(r.operating_margin, { pct: true }) },
   { key: "price", label: "Price", render: (r) => (r.price == null ? "—" : `$${r.price.toFixed(2)}`) },
@@ -542,9 +565,9 @@ export default function ScreenerClient({
             <tr className="bg-white/[0.02]">
               <Th className="text-left w-7">#</Th>
               <Th className="text-left">Ticker</Th>
-              <Th>Score</Th>
+              <Th help={RANKING_HELP}>Score</Th>
               {cols.map((c) => (
-                <Th key={c.key}>{c.label}</Th>
+                <Th key={c.key} help={c.help}>{c.label}</Th>
               ))}
               <th className="relative font-mono text-[10px] text-text-muted font-normal px-2 py-2.5 text-right">
                 <button
@@ -812,10 +835,27 @@ function AdvancedAdd({ onAdd }: { onAdd: (f: Filter) => void }) {
   );
 }
 
-function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+function Th({
+  children,
+  className = "",
+  help,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  help?: string;
+}) {
   return (
     <th className={`font-mono text-[10px] tracking-[0.04em] text-text-muted font-normal px-2 py-2.5 text-right ${className}`}>
-      {children}
+      {help ? (
+        <span
+          title={help}
+          className="cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
+        >
+          {children}
+        </span>
+      ) : (
+        children
+      )}
     </th>
   );
 }
@@ -866,14 +906,26 @@ function RowView({
         <td className="px-2 py-2.5 text-right text-[12.5px] font-mono border-t border-white/10 text-[var(--color-cyan)]">
           {fmt(r.score, { dp: 1 })}
         </td>
-        {cols.map((c) => (
-          <td
-            key={c.key}
-            className={`px-2 py-2.5 text-right text-[12.5px] font-mono border-t border-white/10 ${c.green ? "text-green" : "text-text"}`}
-          >
-            {c.render(r)}
-          </td>
-        ))}
+        {cols.map((c) => {
+          const sv = c.signed ? c.signed(r) : null;
+          const tone = c.signed
+            ? sv == null
+              ? "text-text-muted"
+              : sv >= 0
+                ? "text-green"
+                : "text-[var(--color-red,#FF3333)]"
+            : c.green
+              ? "text-green"
+              : "text-text";
+          return (
+            <td
+              key={c.key}
+              className={`px-2 py-2.5 text-right text-[12.5px] font-mono border-t border-white/10 ${tone}`}
+            >
+              {c.render(r)}
+            </td>
+          );
+        })}
         <td className="border-t border-white/10" />
       </tr>
     </>
