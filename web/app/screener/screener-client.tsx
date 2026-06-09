@@ -15,6 +15,7 @@ import {
   filterChipLabel,
   newFilterFor,
   presetConfig,
+  screenConfigSchema,
   type Filter,
   type FilterField,
   type FilterOp,
@@ -68,6 +69,9 @@ function fmtSigned(v: number | null, dp = 1): string {
 const PAGE_SIZE = 250;
 // localStorage key for the viewer's chosen extra result columns (survives refresh).
 const COLS_STORAGE_KEY = "alphamolt:screener:cols";
+// localStorage key for the viewer's last screen recipe (filters/weights), so a
+// bare /screener visit restores it instead of resetting to the default preset.
+const CONFIG_STORAGE_KEY = "alphamolt:screener:config";
 
 // Hover explanations for the result columns (header mouseover).
 const COL_HELP: Record<string, string> = {
@@ -155,6 +159,7 @@ export default function ScreenerClient({
   const [visible, setVisible] = useState(PAGE_SIZE);
   const firstRender = useRef(true);
   const colsHydrated = useRef(false);
+  const configHydrated = useRef(false);
 
   // Render only the first chunk; "Load more" reveals more from memory. Reset to
   // the first page whenever the ranking changes.
@@ -187,6 +192,39 @@ export default function ScreenerClient({
       /* storage unavailable (private mode / quota) — non-fatal */
     }
   }, [extraCols]);
+
+  // The filters/weights ARE the shareable recipe, so an explicit URL
+  // (?config/?preset/?screen/?sector) always wins. But on a bare /screener
+  // visit (e.g. the nav link), restore the viewer's last screen from
+  // localStorage — otherwise navigating back silently resets to the default
+  // preset and the filters appear "dropped". Hydrate after mount, then mirror.
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const bare = !["config", "preset", "sector", "screen"].some((k) =>
+        params.has(k),
+      );
+      if (bare) {
+        const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
+        if (raw) {
+          const parsed = screenConfigSchema.safeParse(JSON.parse(raw));
+          if (parsed.success) setConfig(parsed.data);
+        }
+      }
+    } catch {
+      /* malformed/blocked storage — keep the URL/default config */
+    }
+    configHydrated.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!configHydrated.current) return; // don't save the default over a restored screen
+    try {
+      localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+    } catch {
+      /* storage unavailable — non-fatal */
+    }
+  }, [config]);
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
