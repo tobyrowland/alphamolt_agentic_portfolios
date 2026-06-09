@@ -389,7 +389,11 @@ export default function ScreenerClient({
             + add filter
           </summary>
           <div className="absolute z-30 mt-1.5 w-52 rounded-xl border border-white/10 bg-[#0b1214] shadow-2xl p-1.5">
-            {NAMED_FILTERS.filter((nf) => !usedFields.has(nf.field)).map((nf) => (
+            {/* Numeric metrics dedupe (one P/S filter is enough); Sector stays
+                addable so you can exclude several sectors at once. */}
+            {NAMED_FILTERS.filter(
+              (nf) => nf.field === "sector" || !usedFields.has(nf.field),
+            ).map((nf) => (
               <button
                 key={nf.field}
                 type="button"
@@ -683,27 +687,59 @@ function FilterChip({
       <div className="mt-1.5 w-[180px] rounded-lg border border-white/10 bg-[#0b1214] p-2.5">
         <div className="flex justify-between font-mono text-[10.5px] text-text-muted mb-1.5">
           <span>
-            {m?.label ?? filter.field} {m?.op === "<=" ? "below" : "above"}
+            {isSector
+              ? "Sector"
+              : `${m?.label ?? filter.field} ${m?.op === "<=" ? "below" : "above"}`}
           </span>
           <span className="text-[var(--color-cyan)]">
-            {filter.value}
-            {m?.unit ?? ""}
+            {isSector
+              ? filter.op === "!="
+                ? "exclude"
+                : "only"
+              : `${filter.value}${m?.unit ?? ""}`}
           </span>
         </div>
         {isSector && sectors.length > 0 ? (
-          <select
-            aria-label="Sector"
-            value={String(filter.value ?? "")}
-            onChange={(e) => onChange({ value: e.target.value })}
-            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-text"
-          >
-            <option value="">Any sector…</option>
-            {sectors.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+          <>
+            {/* Include (only) vs exclude (not) this sector. */}
+            <div className="flex gap-1 mb-2 font-mono text-[10px]">
+              <button
+                type="button"
+                onClick={() => onChange({ op: "==" })}
+                className={`flex-1 rounded px-2 py-1 border transition-colors ${
+                  filter.op !== "!="
+                    ? "border-[var(--color-cyan)]/50 text-[var(--color-cyan)] bg-[var(--color-cyan)]/10"
+                    : "border-white/10 text-text-muted hover:text-text"
+                }`}
+              >
+                Only
+              </button>
+              <button
+                type="button"
+                onClick={() => onChange({ op: "!=" })}
+                className={`flex-1 rounded px-2 py-1 border transition-colors ${
+                  filter.op === "!="
+                    ? "border-[var(--color-red)]/50 text-[var(--color-red)] bg-[var(--color-red)]/10"
+                    : "border-white/10 text-text-muted hover:text-text"
+                }`}
+              >
+                Exclude
+              </button>
+            </div>
+            <select
+              aria-label="Sector"
+              value={String(filter.value ?? "")}
+              onChange={(e) => onChange({ value: e.target.value })}
+              className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-text"
+            >
+              <option value="">Any sector…</option>
+              {sectors.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </>
         ) : isText ? (
           <input
             aria-label={`${filter.field} value`}
