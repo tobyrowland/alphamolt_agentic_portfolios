@@ -183,6 +183,7 @@ export default function ScreenerClient({
   const [loading, setLoading] = useState(false);
   const [excluded, setExcluded] = useState<string[]>(exclusions);
   const [exclBusy, setExclBusy] = useState(false);
+  const [exclMsg, setExclMsg] = useState<string | null>(null);
   const [showIntro, setShowIntro] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [saveLink, setSaveLink] = useState<string | null>(null);
@@ -367,25 +368,59 @@ export default function ScreenerClient({
     [excluded],
   );
 
+  // Rows actually shown: drop any optimistically-excluded ticker. In steady
+  // state the server already filtered these, so this only hides the just-
+  // clicked name in the window before the refetch settles.
+  const rows = useMemo(
+    () =>
+      excludedSet.size
+        ? data.rows.filter((r) => !excludedSet.has(r.ticker.toUpperCase()))
+        : data.rows,
+    [data.rows, excludedSet],
+  );
+
+  // Optimistic: hide the row immediately (excludedSet filters the table), then
+  // persist. Roll back + surface the reason on failure so it's never silent.
   async function onExclude(ticker: string) {
     const t = ticker.toUpperCase();
+    if (excludedSet.has(t)) return;
+    setExclMsg(null);
+    setExcluded((prev) => Array.from(new Set([...prev, t])));
     setExclBusy(true);
-    const res = await excludeFromScreener(t);
-    setExclBusy(false);
-    if (res.ok) {
-      setExcluded((prev) => Array.from(new Set([...prev, t])));
-      await refetch();
+    try {
+      const res = await excludeFromScreener(t);
+      if (res.ok) {
+        await refetch();
+      } else {
+        setExcluded((prev) => prev.filter((x) => x.toUpperCase() !== t));
+        setExclMsg(res.error || `Couldn’t remove ${t} — try again.`);
+      }
+    } catch {
+      setExcluded((prev) => prev.filter((x) => x.toUpperCase() !== t));
+      setExclMsg(`Couldn’t remove ${t} — are you signed in?`);
+    } finally {
+      setExclBusy(false);
     }
   }
 
   async function onRestore(ticker: string) {
     const t = ticker.toUpperCase();
+    setExclMsg(null);
+    setExcluded((prev) => prev.filter((x) => x.toUpperCase() !== t));
     setExclBusy(true);
-    const res = await unexcludeFromScreener(t);
-    setExclBusy(false);
-    if (res.ok) {
-      setExcluded((prev) => prev.filter((x) => x.toUpperCase() !== t));
-      await refetch();
+    try {
+      const res = await unexcludeFromScreener(t);
+      if (res.ok) {
+        await refetch();
+      } else {
+        setExcluded((prev) => Array.from(new Set([...prev, t])));
+        setExclMsg(res.error || `Couldn’t restore ${t} — try again.`);
+      }
+    } catch {
+      setExcluded((prev) => Array.from(new Set([...prev, t])));
+      setExclMsg(`Couldn’t restore ${t} — try again.`);
+    } finally {
+      setExclBusy(false);
     }
   }
 
@@ -683,6 +718,25 @@ export default function ScreenerClient({
         </details>
       )}
 
+      {/* Surfaced error from a remove/restore (e.g. not signed in, or the
+          screener_exclusions table isn't there yet) — never fail silently. */}
+      {exclMsg && (
+        <div
+          role="alert"
+          className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-[var(--color-red,#FF3333)]/40 bg-[var(--color-red,#FF3333)]/[0.06] px-3 py-2 font-mono text-[11px] text-[var(--color-red,#FF3333)]"
+        >
+          <span>{exclMsg}</span>
+          <button
+            type="button"
+            onClick={() => setExclMsg(null)}
+            aria-label="Dismiss"
+            className="text-text-muted hover:text-text"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Results */}
       <div className={`${card} overflow-hidden`}>
         <table className="w-full border-collapse" aria-label="Screened equities ranked by your composite">
@@ -732,12 +786,12 @@ export default function ScreenerClient({
             </tr>
           </thead>
           <tbody>
-            {data.rows.slice(0, visible).map((r, i) => (
+            {rows.slice(0, visible).map((r, i) => (
               <RowView
                 key={r.ticker}
                 r={r}
                 cols={cols}
-                cut={i === data.cut_index && data.cut_index < data.rows.length}
+                cut={i === data.cut_index && data.cut_index < rows.length}
                 dim={i >= data.cut_index}
                 spanCols={metricColCount + 3}
                 topN={config.topN}
@@ -748,7 +802,7 @@ export default function ScreenerClient({
                 onExclude={onExclude}
               />
             ))}
-            {data.rows.length === 0 && (
+            {rows.length === 0 && (
               <tr>
                 <td colSpan={metricColCount + 3} className="p-6 text-center text-sm text-text-muted">
                   No matches — loosen your filters.
@@ -759,17 +813,17 @@ export default function ScreenerClient({
         </table>
       </div>
 
-      {data.rows.length > visible && (
+      {rows.length > visible && (
         <div className="mt-3 flex items-center justify-center gap-3">
           <button
             type="button"
             onClick={() => setVisible((v) => v + PAGE_SIZE)}
             className="font-mono text-[11px] rounded-md border border-white/10 text-text-muted px-4 py-2 hover:text-text hover:border-white/25"
           >
-            Load {Math.min(PAGE_SIZE, data.rows.length - visible)} more
+            Load {Math.min(PAGE_SIZE, rows.length - visible)} more
           </button>
           <span className="font-mono text-[10.5px] text-text-muted">
-            showing {visible} of {data.rows.length}
+            showing {visible} of {rows.length}
           </span>
         </div>
       )}
