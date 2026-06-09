@@ -10,7 +10,12 @@ import NeedsAttention, {
   type AttentionItem,
 } from "@/components/dashboard/needs-attention";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { getDashboardData, type DashPortfolio, type DashTrade } from "@/lib/dashboard-query";
+import {
+  getDashboardData,
+  type DashPortfolio,
+  type DashTrade,
+  type DashValuePoint,
+} from "@/lib/dashboard-query";
 import { getHouseTicker, type HouseTick } from "@/lib/house-activity-query";
 import { PRESETS, DEFAULT_PRESET } from "@/lib/screen/config";
 
@@ -50,7 +55,7 @@ export default async function AccountPage() {
     /* ignore — greeting falls back to the email local-part */
   }
 
-  const { portfolios, livePortfolio, activity, spySeries } =
+  const { portfolios, livePortfolio, activity, spyValues } =
     await getDashboardData(user.id);
 
   return (
@@ -66,7 +71,7 @@ export default async function AccountPage() {
               portfolios={portfolios}
               livePortfolio={livePortfolio}
               activity={activity}
-              spySeries={spySeries}
+              spyValues={spyValues}
             />
           )}
           {/* Live (real-money) risk acknowledgement — shown ONLY to users
@@ -90,13 +95,13 @@ function Dashboard({
   portfolios,
   livePortfolio,
   activity,
-  spySeries,
+  spyValues,
 }: {
   displayName: string;
   portfolios: DashPortfolio[];
   livePortfolio: DashPortfolio | null;
   activity: DashTrade[];
-  spySeries: { date: string; pct: number }[];
+  spyValues: DashValuePoint[];
 }) {
   const best = [...portfolios].sort(
     (a, b) => (b.pnlPct ?? -1e9) - (a.pnlPct ?? -1e9),
@@ -107,7 +112,10 @@ function Dashboard({
     <div className="space-y-8">
       {/* Header + standing line */}
       <header>
-        <h1 className="text-[26px] sm:text-[30px] font-bold tracking-[-0.02em] text-text">
+        <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted">
+          Dashboard
+        </p>
+        <h1 className="mt-1 text-[26px] sm:text-[30px] font-bold tracking-[-0.02em] text-text">
           Hi {displayName}
         </h1>
         <p className="mt-1 text-sm text-text-muted">
@@ -129,7 +137,7 @@ function Dashboard({
       </header>
 
       {/* Pulse */}
-      <PulseSection portfolios={portfolios} spy={spySeries} />
+      <PulseSection portfolios={portfolios} spyValues={spyValues} />
 
       {/* Needs attention */}
       {items.length > 0 && <NeedsAttention items={items} />}
