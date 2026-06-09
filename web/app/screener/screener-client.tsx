@@ -77,11 +77,9 @@ const AI_HELP =
 const TOPN_HELP =
   "The top N ranked names become your buyer's candidate pool — the cut line in the table. Only these feed the swarm.";
 
-function topWeight(w: { quality: number; value: number; momentum: number }): string {
-  const e = Object.entries(w) as [string, number][];
-  e.sort((a, b) => b[1] - a[1]);
-  return e[0][0];
-}
+// How many visits the "how this works" intro auto-shows before it stays hidden.
+const INTRO_MAX_VIEWS = 3;
+const INTRO_KEY = "screenerIntroViews";
 
 interface Col {
   key: string;
@@ -121,10 +119,7 @@ export default function ScreenerClient({
   const [config, setConfig] = useState<ScreenConfig>(initialConfig);
   const [data, setData] = useState<ScreenData>(initialData);
   const [loading, setLoading] = useState(false);
-  const [brief, setBrief] = useState(initialConfig.brief ?? "");
-  const [briefDirty, setBriefDirty] = useState(false);
-  const [compileStatus, setCompileStatus] = useState<string | null>(null);
-  const [compiling, setCompiling] = useState(false);
+  const [showIntro, setShowIntro] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [saveLink, setSaveLink] = useState<string | null>(null);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
@@ -143,6 +138,29 @@ export default function ScreenerClient({
     const supabase = createSupabaseBrowserClient();
     supabase.auth.getSession().then(({ data }) => setSignedIn(!!data.session));
   }, []);
+
+  // Show the "how this works" intro the first few visits, then leave it hidden
+  // (re-openable via the small link). Tracked client-side in localStorage.
+  useEffect(() => {
+    try {
+      const n = Number(localStorage.getItem(INTRO_KEY) ?? "0");
+      if (n < INTRO_MAX_VIEWS) {
+        setShowIntro(true);
+        localStorage.setItem(INTRO_KEY, String(n + 1));
+      }
+    } catch {
+      /* localStorage unavailable — just skip the intro */
+    }
+  }, []);
+
+  function dismissIntro() {
+    setShowIntro(false);
+    try {
+      localStorage.setItem(INTRO_KEY, String(INTRO_MAX_VIEWS));
+    } catch {
+      /* ignore */
+    }
+  }
 
   // Live re-rank on config change (debounced) + URL sync. Skips initial mount.
   useEffect(() => {
@@ -175,43 +193,8 @@ export default function ScreenerClient({
   }, []);
 
   function selectPreset(id: string) {
-    const c = presetConfig(id);
-    setConfig(c);
-    setBrief(c.brief ?? "");
-    setBriefDirty(false);
-    setCompileStatus(null);
+    setConfig(presetConfig(id));
     setSaveLink(null);
-  }
-
-  async function compile() {
-    if (!brief.trim()) return;
-    setCompiling(true);
-    setCompileStatus("Building your screen…");
-    try {
-      const res = await fetch("/api/compile-brief", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brief }),
-      });
-      if (!res.ok) {
-        setCompileStatus("Couldn’t build the screen — tune the knobs directly.");
-        return;
-      }
-      const { compiled } = await res.json();
-      setConfig((c) => ({
-        ...c,
-        preset: "custom",
-        brief,
-        filters: compiled.filters,
-        weights: compiled.weights,
-        aiMultiplier: compiled.aiMultiplier,
-      }));
-      setBriefDirty(false);
-      const fc = compiled.filters.length;
-      setCompileStatus(`Built — ${fc} filter${fc === 1 ? "" : "s"} + a ${topWeight(compiled.weights)}-tilted weighting`);
-    } finally {
-      setCompiling(false);
-    }
   }
 
   async function onSave() {
@@ -260,108 +243,23 @@ export default function ScreenerClient({
 
   return (
     <div>
-      {/* How this works — at the top, under the h1: the screen ranks the whole
-          universe, the top N flow to a portfolio. Screen → top N → Portfolio. */}
-      <div className="mb-4">
-        <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mb-2">
-          How this works
-        </div>
-        <div className="flex items-stretch gap-0 flex-wrap">
-          <div className="flex-1 min-w-[200px] rounded-xl border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] p-3.5">
-            <div className="font-mono text-[12px] text-[var(--color-cyan)]">
-              ● THIS SCREEN{" "}
-              <span className="text-[9px] text-text-muted tracking-[0.05em]">YOU ARE HERE</span>
-            </div>
-            <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">
-              Ranks every US equity by your config. Re-ranks live.
-            </div>
-          </div>
-          <div className="flex-[0_0_130px] min-w-[120px] flex flex-col items-center justify-center px-1">
-            <div className="font-mono text-[10px] text-green">top {config.topN}</div>
-            <div
-              className="w-full h-px my-1.5 relative"
-              style={{ background: "linear-gradient(90deg,rgba(38,224,240,.5),rgba(55,219,128,.5))" }}
-            >
-              <span className="absolute -right-0.5 -top-[5px] text-green text-[11px]">▶</span>
-            </div>
-            <div className="font-mono text-[9px] text-text-muted">candidates</div>
-          </div>
-          <Link
-            href={runHref}
-            className="flex-1 min-w-[200px] rounded-xl border border-green/45 bg-green/[0.06] p-3.5 hover:bg-green/[0.1] transition-colors"
-          >
-            <div className="font-mono text-[12px] text-green">PORTFOLIO →</div>
-            <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">
-              Your <span className="text-text">swarm</span> drafts &amp; trades them — marked to
-              market, daily.
-            </div>
-            <div className="font-mono text-[10px] text-green mt-2">
-              Run this screen as a portfolio →
-            </div>
-          </Link>
-        </div>
-      </div>
-
-      {/* Preset chips */}
-      <div className="flex items-center gap-1.5 flex-wrap mb-2.5">
-        <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mr-1">
-          Preset
-        </span>
-        {Object.values(PRESETS).map((p) => (
-          <button
-            key={p.id}
-            type="button"
-            onClick={() => selectPreset(p.id)}
-            aria-pressed={config.preset === p.id}
-            title={p.description}
-            className={`font-mono text-[10.5px] rounded-md px-2.5 py-1.5 border transition-colors ${
-              config.preset === p.id
-                ? "text-[var(--color-cyan)] border-[var(--color-cyan)]/50 bg-[var(--color-cyan)]/[0.08]"
-                : "text-text-muted border-white/10 hover:text-text"
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
-        <span
-          className={`font-mono text-[10.5px] rounded-md px-2.5 py-1.5 border ${
-            config.preset === "custom"
-              ? "text-[var(--color-cyan)] border-[var(--color-cyan)]/50 bg-[var(--color-cyan)]/[0.08]"
-              : "text-text-muted/50 border-white/10"
-          }`}
-        >
-          Custom
-        </span>
-      </div>
-
-      {/* Compact, pre-filled brief */}
-      <label htmlFor="brief" className="sr-only">
-        Strategy brief
-      </label>
-      <textarea
-        id="brief"
-        value={brief}
-        onChange={(e) => {
-          setBrief(e.target.value);
-          setBriefDirty(true);
-        }}
-        rows={2}
-        placeholder="Describe the stocks you want — e.g. Rule of 40 winners, no biotech, P/S under 15…"
-        className="w-full resize-y rounded-lg bg-white/[0.02] border border-white/10 px-3 py-2.5 text-[12.5px] leading-relaxed text-text placeholder:text-text-muted/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/40"
-      />
-      <div className="flex items-center gap-3 mt-2 mb-1 flex-wrap">
+      {/* How this works — a dismissible intro shown the first few visits; it
+          explains that this page defines the universe the trader bots buy from.
+          After that it collapses to a small re-openable link. */}
+      {showIntro ? (
+        <IntroPopout topN={config.topN} runHref={runHref} onDismiss={dismissIntro} />
+      ) : (
         <button
           type="button"
-          onClick={compile}
-          disabled={compiling || !brief.trim()}
-          className="font-mono text-[11px] rounded-md px-3 py-1.5 bg-green text-black disabled:opacity-40"
+          onClick={() => setShowIntro(true)}
+          className="mb-4 inline-flex items-center gap-1.5 font-mono text-[10.5px] text-text-muted hover:text-text"
         >
-          {compiling ? "Building…" : briefDirty ? "Update screen ↻" : "Build screen from brief"}
+          <span aria-hidden>ⓘ</span> How this works
         </button>
-        <span className="font-mono text-[10.5px] text-text-muted" aria-live="polite">
-          {compileStatus ?? "turns your plain-English brief into the filters & weights that drive the screener below"}
-        </span>
-      </div>
+      )}
+
+      {/* Presets — the prominent way in. */}
+      <PresetCards activePreset={config.preset} onSelect={selectPreset} />
 
       {/* Screen bar: friendly filter chips + collapsed weighting on the right */}
       <div className="flex items-start gap-2 flex-wrap mt-3.5 mb-2">
@@ -642,6 +540,122 @@ export default function ScreenerClient({
 }
 
 /** A filter as a chip whose <details> opens a slider (operator implied). */
+/**
+ * First-visits intro: spells out that the screener defines the universe the
+ * portfolio's trader bots pick from, with the compact Screen → Portfolio flow.
+ */
+function IntroPopout({
+  topN,
+  runHref,
+  onDismiss,
+}: {
+  topN: number;
+  runHref: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="relative mb-4 rounded-xl border border-[var(--color-cyan)]/40 bg-[var(--color-cyan)]/[0.05] p-4">
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="absolute right-3 top-2.5 text-text-muted hover:text-text text-sm"
+      >
+        ✕
+      </button>
+      <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--color-cyan)] mb-1">
+        How this works
+      </div>
+      <p className="text-sm font-bold text-text">This is your trading universe.</p>
+      <p className="text-[12.5px] text-text-dim mt-1 leading-relaxed max-w-prose">
+        The screener ranks every US-listed stock by the filters and scoring you
+        set. The top {topN} become the universe your portfolio&apos;s trader bots
+        pick from — so what you choose here shapes what they&apos;re allowed to
+        buy.
+      </p>
+      <div className="mt-3 flex items-center gap-2 flex-wrap font-mono text-[11px]">
+        <span className="rounded-md border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] px-2.5 py-1 text-[var(--color-cyan)]">
+          This screen
+        </span>
+        <span className="text-text-muted">→ top {topN} →</span>
+        <span className="rounded-md border border-green/45 bg-green/[0.06] px-2.5 py-1 text-green">
+          Your portfolio
+        </span>
+        <Link href={runHref} className="ml-1 text-green hover:underline">
+          Run this screen as a portfolio →
+        </Link>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="mt-3 font-mono text-[10.5px] text-text-muted hover:text-text"
+      >
+        Got it — don&apos;t show this again
+      </button>
+    </div>
+  );
+}
+
+/** Prominent preset picker — cards, not pills. The primary way into a screen. */
+function PresetCards({
+  activePreset,
+  onSelect,
+}: {
+  activePreset?: string;
+  onSelect: (id: string) => void;
+}) {
+  const presets = Object.values(PRESETS);
+  const isCustom =
+    !activePreset || activePreset === "custom" || !PRESETS[activePreset];
+  return (
+    <div className="mb-4">
+      <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-muted mb-2">
+        Start from a preset
+      </div>
+      <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+        {presets.map((p) => {
+          const active = activePreset === p.id;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => onSelect(p.id)}
+              aria-pressed={active}
+              className={`text-left rounded-xl border p-3.5 transition-colors ${
+                active
+                  ? "border-[var(--color-cyan)]/60 bg-[var(--color-cyan)]/[0.08]"
+                  : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/20"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className={`font-semibold text-[13.5px] ${active ? "text-[var(--color-cyan)]" : "text-text"}`}
+                >
+                  {p.label}
+                </span>
+                {active && (
+                  <span className="text-[var(--color-cyan)] text-[11px]" aria-hidden>
+                    ●
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-text-muted mt-1 leading-relaxed line-clamp-2">
+                {p.description}
+              </p>
+            </button>
+          );
+        })}
+      </div>
+      {isCustom && (
+        <p className="mt-2 font-mono text-[10.5px] text-text-muted">
+          <span className="text-[var(--color-cyan)]">Custom</span> — tuned with the
+          filters &amp; weights below. Pick a preset to reset.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function FilterChip({
   filter,
   sectors,
