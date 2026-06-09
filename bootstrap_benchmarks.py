@@ -6,10 +6,14 @@ For each (ticker, display_name) below:
   1. Picks an anchor date: MIN(inception_date) across agent_accounts,
      falling back to today if no accounts exist yet.
   2. Hits Yahoo Finance's chart API for daily adjusted closes between
-     anchor and today, and inserts every (price_date, adjusted_close)
-     into benchmark_prices.
-  3. Upserts the benchmarks row with inception_date/price and
-     latest_price/latest_price_date derived from the fetched series.
+     min(anchor, today − 53 weeks) and today, and inserts every
+     (price_date, adjusted_close) into benchmark_prices. The series is
+     pulled ≥ 53 weeks deep regardless of arena age so the vs-SPY 52-week
+     anchor (read by the screener at today − 52w) always exists.
+  3. Upserts the benchmarks row, with inception_date/price anchored at the
+     arena anchor (first close on/after it — NOT the deep-fetch start, so
+     the leaderboard benchmark still starts alongside the agents) and
+     latest_price/latest_price_date from the newest close.
 
 Yahoo is used instead of EODHD because the project's EODHD plan doesn't
 cover /api/eod/ for ETFs (403 Forbidden). The shape of the data is
@@ -148,35 +152,52 @@ def seed_benchmark(
 ) -> bool:
     """Fetch prices and seed benchmarks + benchmark_prices. Returns True on success."""
     today = date.today()
-    logger.info("Seeding %s (%s) from %s → %s", ticker, display_name, anchor, today)
+    # Fetch the price series deep enough that the vs-SPY 52-week anchor always
+    # exists — screen.py / query.ts read benchmark_prices at (today − 52w) to
+    # compute each name's return vs SPY, so an 8-week-old series leaves vs-SPY
+    # NULL universe-wide. We pull ≥ 53 weeks regardless of arena age. Inception,
+    # though, stays anchored to the arena (MIN agent inception) so the
+    # leaderboard benchmark still "runs alongside" the agents rather than
+    # showing a full year of head start.
+    fetch_start = min(anchor, today - timedelta(weeks=53))
+    logger.info(
+        "Seeding %s (%s): prices %s → %s, inception anchored at %s",
+        ticker, display_name, fetch_start, today, anchor,
+    )
 
-    series = yahoo_daily(ticker, anchor, today, logger)
+    series = yahoo_daily(ticker, fetch_start, today, logger)
     if not series:
         logger.error("%s: no price data returned; skipping", ticker)
         return False
 
     series.sort(key=lambda r: r.get("date", ""))
 
-    first = next(
-        (r for r in series if r.get("date") and r.get("adjusted_close") is not None),
-        None,
-    )
-    last = next(
-        (r for r in reversed(series) if r.get("date") and r.get("adjusted_close") is not None),
-        None,
-    )
-    if not first or not last:
+    valid = [
+        r for r in series
+        if r.get("date") and r.get("adjusted_close") is not None
+    ]
+    if not valid:
         logger.error("%s: no valid close prices in response", ticker)
         return False
 
-    inception_date = date.fromisoformat(first["date"])
-    inception_price = float(first["adjusted_close"])
+    last = valid[-1]
+    # Inception baseline = first close on/after the arena anchor (NOT the
+    # deep-fetch start), so the benchmark portfolio's starting value matches the
+    # agents'. Falls back to the earliest available close if nothing is ≥ anchor.
+    inception_row = next(
+        (r for r in valid if date.fromisoformat(r["date"]) >= anchor),
+        valid[0],
+    )
+
+    inception_date = date.fromisoformat(inception_row["date"])
+    inception_price = float(inception_row["adjusted_close"])
     latest_date = date.fromisoformat(last["date"])
     latest_price = float(last["adjusted_close"])
 
     logger.info(
-        "  first=%s @ %.4f   last=%s @ %.4f   (%d rows)",
-        inception_date, inception_price, latest_date, latest_price, len(series),
+        "  inception=%s @ %.4f   last=%s @ %.4f   (%d rows from %s)",
+        inception_date, inception_price, latest_date, latest_price,
+        len(valid), valid[0]["date"],
     )
 
     if dry_run:
