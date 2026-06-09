@@ -13,6 +13,12 @@ export interface DashSeriesPoint {
   pct: number; // % return from the window start
 }
 
+/** Raw daily value point — the pulse re-normalises these per selected period. */
+export interface DashValuePoint {
+  date: string; // YYYY-MM-DD
+  value: number;
+}
+
 export interface DashPortfolio {
   id: string;
   slug: string;
@@ -21,7 +27,11 @@ export interface DashPortfolio {
   value: number | null;
   pnlPct: number | null;
   numPositions: number;
+  /** Last 30 trading days, normalised — feeds the compact card sparkline. */
   series: DashSeriesPoint[];
+  /** Raw daily value over the full lookback — feeds the period-selectable
+   *  pulse chart, which re-normalises to whichever window is selected. */
+  valueSeries: DashValuePoint[];
   hasBuyer: boolean;
   hasReviewer: boolean;
   mandateEmpty: boolean;
@@ -56,10 +66,14 @@ export interface DashboardData {
   /** The private real-money Alpaca follower, if the owner has one. */
   livePortfolio: DashPortfolio | null;
   activity: DashTrade[];
-  spySeries: DashSeriesPoint[];
+  /** Raw SPY closes over the full lookback; the pulse normalises per period. */
+  spyValues: DashValuePoint[];
 }
 
+// Card sparkline window vs the pulse-chart lookback. The pulse fetches up to a
+// year so its period selector (1W … 1Y/All) has data to re-base against.
 const WINDOW_DAYS = 30;
+const LOOKBACK_DAYS = 370;
 
 function normalize(
   rows: { date: string; value: number }[],
@@ -72,7 +86,7 @@ function normalize(
 
 export async function getDashboardData(userId: string): Promise<DashboardData> {
   const supabase = getSupabase();
-  const since = new Date(Date.now() - (WINDOW_DAYS + 5) * 86400000)
+  const since = new Date(Date.now() - (LOOKBACK_DAYS + 5) * 86400000)
     .toISOString()
     .slice(0, 10);
 
@@ -93,7 +107,7 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
   const ids = portfolios.map((p) => p.id);
 
   if (ids.length === 0) {
-    return { portfolios: [], livePortfolio: null, activity: [], spySeries: [] };
+    return { portfolios: [], livePortfolio: null, activity: [], spyValues: [] };
   }
 
   // Fan out the shared reads. The live-follower lookup is filtered on
@@ -167,16 +181,14 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     roleByPA.set(`${m.portfolio_id}:${m.agent_id}`, m.role ?? null);
   }
 
-  const spySeries = normalize(
-    ((spyRes.data ?? []) as Array<{ price_date: string; close: number | string }>).map((r) => ({
-      date: r.price_date,
-      value: Number(r.close) || 0,
-    })),
-  );
+  const spyValues: DashValuePoint[] = (
+    (spyRes.data ?? []) as Array<{ price_date: string; close: number | string }>
+  ).map((r) => ({ date: r.price_date, value: Number(r.close) || 0 }));
 
   const dashAll: DashPortfolio[] = portfolios.map((p) => {
-    const hist = (histByP.get(p.id) ?? []).slice(-WINDOW_DAYS);
-    const latest = hist.length ? hist[hist.length - 1] : null;
+    const fullHist = histByP.get(p.id) ?? [];
+    const recent = fullHist.slice(-WINDOW_DAYS);
+    const latest = fullHist.length ? fullHist[fullHist.length - 1] : null;
     const roles = rolesByP.get(p.id) ?? { buyer: false, reviewer: false };
     return {
       id: p.id,
@@ -186,7 +198,8 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
       value: latest ? latest.value : null,
       pnlPct: latest ? latest.pnl : null,
       numPositions: latest ? latest.pos : 0,
-      series: normalize(hist.map((h) => ({ date: h.date, value: h.value }))),
+      series: normalize(recent.map((h) => ({ date: h.date, value: h.value }))),
+      valueSeries: fullHist.map((h) => ({ date: h.date, value: h.value })),
       hasBuyer: roles.buyer,
       hasReviewer: roles.reviewer,
       mandateEmpty: !(p.description && p.description.trim()),
@@ -242,5 +255,5 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     };
   });
 
-  return { portfolios: dashPortfolios, livePortfolio, activity, spySeries };
+  return { portfolios: dashPortfolios, livePortfolio, activity, spyValues };
 }
