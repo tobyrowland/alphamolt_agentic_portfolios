@@ -50,7 +50,9 @@ export interface ScoredRow extends ScreenFacts {
 }
 
 // Momentum collar (brief / CLAUDE.md): a falling knife scores 0, a blow-off
-// top is capped — applied before percentile-ranking the 52w return.
+// top is capped — applied before percentile-ranking the return. Momentum is
+// alpha vs SPY (perf_52w_vs_spy), so a name that merely tracked the market up
+// doesn't read as momentum.
 const MOM_FLOOR = -50;
 const MOM_CAP = 40;
 
@@ -147,7 +149,9 @@ export function scoreScreen(
     return denom ? r.ps / denom : null;
   });
   const mom = subset.map((r) =>
-    r.ret_52w == null ? null : Math.max(MOM_FLOOR, Math.min(MOM_CAP, r.ret_52w)),
+    r.perf_52w_vs_spy == null
+      ? null
+      : Math.max(MOM_FLOOR, Math.min(MOM_CAP, r.perf_52w_vs_spy)),
   );
 
   const pR40 = percentiles(subset.map((r) => r.rule_of_40));

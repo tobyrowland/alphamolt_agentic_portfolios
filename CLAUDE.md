@@ -131,7 +131,8 @@ ranks the whole Tier 1 universe for a given config. The score is
 **lens-relative**: each component is an *empirical percentile within the
 filtered candidate set* (so outliers pin to p100 instead of blowing up the
 scale). Composite = weighted blend of Quality (0.60·R40 + 0.25·FCF + 0.15·GM),
-Value (inverse P/S ÷ 12-mo median) and Momentum (collared 52-week return),
+Value (inverse P/S ÷ 12-mo median) and Momentum (collared 52-week return vs
+SPY — `perf_52w_vs_spy`, derived from `benchmark_prices`),
 ×optional AI bull/bear multiplier. Implemented once in TS
 (`web/lib/screen/score.ts`) and mirrored in Python (`screen.py`) so the buyer's
 top N is identical to the page's.

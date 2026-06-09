@@ -132,7 +132,10 @@ def score_screen(facts: list[dict], config: dict) -> list[dict]:
         # ps of 0 (or 0 fallback) doesn't divide by zero — just unscoreable.
         denom = med if (med and med > 0) else ps
         ps_ratio.append(ps / denom if (ps is not None and denom) else None)
-        ret = _f(r.get("ret_52w"))
+        # Momentum is alpha vs SPY (perf_52w_vs_spy = ret_52w − SPY's 52w
+        # return, derived in load_facts), collared — so a name that only rode
+        # the market up doesn't read as momentum.
+        ret = _f(r.get("perf_52w_vs_spy"))
         mom.append(None if ret is None else max(MOM_FLOOR, min(MOM_CAP, ret)))
 
     p_r40 = _percentiles([_f(r.get("rule_of_40")) for r in subset])

@@ -20,7 +20,8 @@ def facts(*rows: dict) -> list[dict]:
         "price": 10, "price_asof": "2026-06-03", "rev_growth_ttm": None,
         "gross_margin": None, "fcf_margin": None, "net_margin": None,
         "operating_margin": None, "rule_of_40": None, "ps": None,
-        "ps_median_12m": None, "ret_52w": None, "bull": None, "bear": None,
+        "ps_median_12m": None, "ret_52w": None, "perf_52w_vs_spy": None,
+        "bull": None, "bear": None,
     }
     return [{**base, **r} for r in rows]
 
@@ -82,9 +83,10 @@ class TestScoring(unittest.TestCase):
 
     def test_momentum_collar(self):
         # A huge winner is capped, a crash floored — both still rank by collar.
+        # Momentum scores on alpha vs SPY (perf_52w_vs_spy), not the raw return.
         rows = facts(
-            {"ticker": "MOON", "ret_52w": 500, "rule_of_40": 1, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
-            {"ticker": "KNIFE", "ret_52w": -90, "rule_of_40": 1, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
+            {"ticker": "MOON", "perf_52w_vs_spy": 500, "rule_of_40": 1, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
+            {"ticker": "KNIFE", "perf_52w_vs_spy": -90, "rule_of_40": 1, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
         )
         cfg = {"weights": {"quality": 0, "value": 0, "momentum": 100}, "aiMultiplier": False}
         out = screen.score_screen(rows, cfg)
