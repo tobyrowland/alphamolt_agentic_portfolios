@@ -66,6 +66,8 @@ function fmtSigned(v: number | null, dp = 1): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(dp)}%`;
 }
 const PAGE_SIZE = 250;
+// localStorage key for the viewer's chosen extra result columns (survives refresh).
+const COLS_STORAGE_KEY = "alphamolt:screener:cols";
 
 // Hover explanations for the result columns (header mouseover).
 const COL_HELP: Record<string, string> = {
@@ -157,10 +159,39 @@ export default function ScreenerClient({
   const [extraCols, setExtraCols] = useState<Set<string>>(new Set());
   const [visible, setVisible] = useState(PAGE_SIZE);
   const firstRender = useRef(true);
+  const colsHydrated = useRef(false);
 
   // Render only the first chunk; "Load more" reveals more from memory. Reset to
   // the first page whenever the ranking changes.
   useEffect(() => setVisible(PAGE_SIZE), [data]);
+
+  // The chosen extra columns are a per-viewer VIEW preference (not part of the
+  // shareable screen recipe), so they persist in localStorage rather than the
+  // URL — otherwise a refresh silently drops them. Hydrate after mount (so the
+  // server/client first paint match), then mirror every change back.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(COLS_STORAGE_KEY);
+      if (raw) {
+        const keys = (JSON.parse(raw) as string[]).filter((k) =>
+          EXTRA_COLS.some((c) => c.key === k),
+        );
+        if (keys.length) setExtraCols(new Set(keys));
+      }
+    } catch {
+      /* ignore malformed/blocked storage — just start with no extra columns */
+    }
+    colsHydrated.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!colsHydrated.current) return; // don't overwrite storage with the pre-hydration empty set
+    try {
+      localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify([...extraCols]));
+    } catch {
+      /* storage unavailable (private mode / quota) — non-fatal */
+    }
+  }, [extraCols]);
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
