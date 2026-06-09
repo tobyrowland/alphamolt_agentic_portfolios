@@ -15,6 +15,7 @@ import {
   filterChipLabel,
   newFilterFor,
   presetConfig,
+  screenConfigSchema,
   type Filter,
   type FilterField,
   type FilterOp,
@@ -80,6 +81,11 @@ const TOPN_HELP =
 // How many visits the "how this works" intro auto-shows before it stays hidden.
 const INTRO_MAX_VIEWS = 3;
 const INTRO_KEY = "screenerIntroViews";
+// Remembered-across-visits: the last screen config (filters/weights) + the
+// chosen extra columns. Restored on a bare /screener visit (an explicit
+// ?config=/?preset=/?screen= URL wins, so shared links still work).
+const CONFIG_KEY = "screenerConfig";
+const COLS_KEY = "screenerCols";
 
 interface Col {
   key: string;
@@ -129,6 +135,61 @@ export default function ScreenerClient({
   const [extraCols, setExtraCols] = useState<Set<string>>(new Set());
   const [visible, setVisible] = useState(PAGE_SIZE);
   const firstRender = useRef(true);
+  const restored = useRef(false);
+
+  // Remember filters + columns across visits. On mount, restore the saved
+  // columns, and — only when the URL carries no explicit screen (bare
+  // /screener, so shared ?config=/?preset=/?screen= links still win) — restore
+  // the saved config. Persistence (below) is gated on this having run first so
+  // the initial default never clobbers a saved screen.
+  useEffect(() => {
+    try {
+      const savedCols = localStorage.getItem(COLS_KEY);
+      if (savedCols) {
+        const keys = JSON.parse(savedCols) as unknown;
+        if (Array.isArray(keys)) {
+          const valid = keys.filter(
+            (k): k is string =>
+              typeof k === "string" && EXTRA_COLS.some((c) => c.key === k),
+          );
+          if (valid.length) setExtraCols(new Set(valid));
+        }
+      }
+      const params = new URLSearchParams(window.location.search);
+      const bare = !["config", "preset", "sector", "screen"].some((k) =>
+        params.has(k),
+      );
+      if (bare) {
+        const savedCfg = localStorage.getItem(CONFIG_KEY);
+        if (savedCfg) {
+          const parsed = screenConfigSchema.safeParse(JSON.parse(savedCfg));
+          if (parsed.success) setConfig(parsed.data);
+        }
+      }
+    } catch {
+      /* localStorage unavailable / malformed — keep the URL/default config */
+    }
+    restored.current = true;
+  }, []);
+
+  // Persist (after the restore has run, so it doesn't save the default over a
+  // remembered screen on the very first commit).
+  useEffect(() => {
+    if (!restored.current) return;
+    try {
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+    } catch {
+      /* ignore */
+    }
+  }, [config]);
+  useEffect(() => {
+    if (!restored.current) return;
+    try {
+      localStorage.setItem(COLS_KEY, JSON.stringify([...extraCols]));
+    } catch {
+      /* ignore */
+    }
+  }, [extraCols]);
 
   // Render only the first chunk; "Load more" reveals more from memory. Reset to
   // the first page whenever the ranking changes.
