@@ -1,29 +1,37 @@
 #!/usr/bin/env python3
 """
-backfill_sectors.py — populate securities.gics_sector / gics_industry from EODHD.
+backfill_sectors.py — populate securities.gics_sector from TradingView.
 
-universe_sync.py builds the Tier 0 `securities` table from EODHD's
-exchange-symbol-list, which carries no sector — so gics_sector starts NULL for
-every name (~71% of Tier 1 had no sector, leaving the screener's Sector column
-and filter mostly empty). This fetches each security's General.Sector /
-General.Industry from the EODHD `fundamentals` endpoint and writes them onto
-`securities`, in ONE consistent EODHD taxonomy.
+universe_sync builds `securities` from EODHD's exchange-symbol-list, which
+carries no sector, so gics_sector starts NULL. The screener reads it (via the
+screen_facts matview) for the Sector column + filter, so most of the Tier 1
+universe — gold miners, banks, ADRs — shows "—".
 
-By default it re-fetches EVERY active Tier 1 name (uniform taxonomy across the
-whole column); `--only-missing` fills just the NULLs (cheap — the weekly cron
-mode, to pick up names universe_sync added). After writing it refreshes the
-screen_facts materialized view so the screener shows the sectors immediately.
+Source: TradingView (`tv_screen.fetch_sector_data`, the same helper
+nightly_screen uses). Chosen over EODHD because it (a) covers every US-listed
+name, including the miners / financials / ADRs EODHD classifies poorly or not at
+all, and (b) uses the SAME sector taxonomy already shown on the screener
+("Technology Services", "Non-Energy Minerals", "Finance", …), so the Sector
+filter / dropdown stay coherent. EODHD's different taxonomy would fragment them.
 
-It never overwrites an existing sector with a blank: a name EODHD has no sector
-for keeps whatever it already had.
+Writes ONLY gics_sector, in a UNIFORM single-column payload. This matters: the
+previous EODHD version mixed sector-only and industry-only rows in one batch, and
+PostgREST's upsert pads the column union with NULLs — which UPDATE-on-conflict
+then wrote back, wiping existing sectors. Every row here carries exactly
+{ticker, gics_sector, updated_at}, so a batch can never null another column.
 
-    python backfill_sectors.py                  # all active Tier 1 (full re-fetch)
-    python backfill_sectors.py --only-missing    # only rows with a NULL sector
+Idempotent and additive: a name TradingView can't resolve keeps whatever sector
+it already had (we never write a blank). Re-running therefore RESTORES sectors a
+bad run cleared, and fills the names that never had one. Refreshes the
+screen_facts matview at the end so the screener shows sectors immediately.
+
+    python backfill_sectors.py                   # all active Tier 1
+    python backfill_sectors.py --only-missing     # only NULL sectors (cron mode)
     python backfill_sectors.py --tickers IAG GFI DRD
-    python backfill_sectors.py --all-securities  # Tier 0 (every active security)
-    python backfill_sectors.py --dry-run --limit 20
+    python backfill_sectors.py --all-securities   # Tier 0 (every active security)
+    python backfill_sectors.py --dry-run --limit 50
 
-Env: EODHD_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY.
+Env: SUPABASE_URL, SUPABASE_SERVICE_KEY (TradingView needs no API key).
 """
 
 from __future__ import annotations
@@ -35,7 +43,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from db import SupabaseDB
-from eodhd import EODHDClient, EODHDError
+from tv_screen import fetch_sector_data
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,15 +52,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("backfill_sectors")
 
-WRITE_BATCH = 200
+WRITE_BATCH = 500
 
 
 def _clean(v: object) -> str | None:
-    """EODHD sometimes returns '', 'NA' or None for an unclassified field."""
+    """Treat blank / NA / None placeholders as 'no sector'."""
     if not isinstance(v, str):
         return None
     s = v.strip()
-    if not s or s.upper() in {"NA", "N/A", "NONE", "NULL"}:
+    if not s or s.upper() in {"NA", "N/A", "NONE", "NULL", "NAN"}:
         return None
     return s
 
@@ -60,7 +68,7 @@ def _clean(v: object) -> str | None:
 def select_targets(db: SupabaseDB, args: argparse.Namespace) -> list[dict]:
     """The securities to (re)fetch, honouring the scope flags."""
     rows = db.get_all_securities(
-        columns="ticker,is_tier1,gics_sector", status="active"
+        columns="ticker,exchange,is_tier1,gics_sector", status="active"
     )
     if args.tickers:
         want = {t.upper() for t in args.tickers}
@@ -77,7 +85,7 @@ def select_targets(db: SupabaseDB, args: argparse.Namespace) -> list[dict]:
 
 def main() -> int:
     load_dotenv()
-    ap = argparse.ArgumentParser(description="Backfill securities sectors from EODHD")
+    ap = argparse.ArgumentParser(description="Backfill securities sectors from TradingView")
     ap.add_argument("--only-missing", action="store_true",
                     help="only rows whose gics_sector is NULL (cron mode)")
     ap.add_argument("--all-securities", action="store_true",
@@ -91,17 +99,25 @@ def main() -> int:
     args = ap.parse_args()
 
     db = SupabaseDB()
-    client = EODHDClient()
-
     targets = select_targets(db, args)
-    logger.info("Backfilling sectors for %d securities%s%s",
+    logger.info("Resolving sectors for %d securities%s%s",
                 len(targets),
                 " (only missing)" if args.only_missing else "",
                 " [dry-run]" if args.dry_run else "")
+    if not targets:
+        logger.info("Nothing to do.")
+        return 0
 
-    pending: list[dict] = []
-    written = updated = missing = errors = 0
+    # One batched, no-filter TradingView pull. Pass the stored exchange so
+    # NYSE:/NASDAQ: names resolve on the first pass; fetch_sector_data retries the
+    # rest across common exchanges.
+    pairs = [(r["ticker"], r.get("exchange") or "") for r in targets]
+    sectors = fetch_sector_data(pairs, logger)
+    logger.info("TradingView returned a sector for %d/%d tickers", len(sectors), len(targets))
+
     now = datetime.now(timezone.utc).isoformat()
+    pending: list[dict] = []
+    written = updated = missing = 0
 
     def flush() -> None:
         nonlocal written
@@ -110,43 +126,23 @@ def main() -> int:
             written += len(pending)
         pending.clear()
 
-    for i, r in enumerate(targets, 1):
+    for r in targets:
         ticker = r.get("ticker")
         if not ticker:
             continue
-        try:
-            fund = client.fundamentals(f"{ticker}.US")
-        except EODHDError as e:
-            errors += 1
-            logger.warning("%s: fundamentals failed (%s)", ticker, e)
-            continue
-
-        general = (fund or {}).get("General") or {}
-        sector = _clean(general.get("Sector"))
-        industry = _clean(general.get("Industry"))
-        if not sector and not industry:
+        sector = _clean(sectors.get(ticker.upper()))
+        if not sector:
             missing += 1
-        else:
-            # Only write the fields we actually got — never blank out an
-            # existing sector when EODHD has no classification for the name.
-            row: dict = {"ticker": ticker, "updated_at": now}
-            if sector:
-                row["gics_sector"] = sector
-            if industry:
-                row["gics_industry"] = industry
-            pending.append(row)
-            updated += 1
-
+            continue
+        # Uniform single-field payload — never null another column on conflict.
+        pending.append({"ticker": ticker, "gics_sector": sector, "updated_at": now})
+        updated += 1
         if len(pending) >= WRITE_BATCH:
             flush()
-        if i % 200 == 0:
-            logger.info("  %d/%d  (updated=%d missing=%d errors=%d)",
-                        i, len(targets), updated, missing, errors)
-
     flush()
 
-    logger.info("Done. fetched=%d updated=%d written=%d missing=%d errors=%d",
-                len(targets), updated, written, missing, errors)
+    logger.info("Done. resolved=%d updated=%d written=%d unresolved=%d",
+                len(sectors), updated, written, missing)
 
     if not args.dry_run and not args.no_refresh and written:
         logger.info("Refreshing screen_facts matview so the screener picks up sectors…")

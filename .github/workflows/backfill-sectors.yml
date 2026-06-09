@@ -1,10 +1,11 @@
 name: Backfill sectors (Level 0)
 
-# Populates securities.gics_sector / gics_industry from EODHD fundamentals.
+# Populates securities.gics_sector from TradingView (full US coverage + the same
+# taxonomy the screener already shows; non-destructive uniform-column write).
 # universe_sync builds `securities` from the exchange-symbol-list (no sector),
 # so sectors start NULL. Run this manually with only_missing OFF once to seed
-# the whole Tier 1 column in one taxonomy; the weekly cron then runs
-# --only-missing to fill names universe_sync has since added.
+# (or restore) the whole Tier 1 column; the weekly cron then runs --only-missing
+# to fill names universe_sync has since added.
 
 on:
   workflow_dispatch:
