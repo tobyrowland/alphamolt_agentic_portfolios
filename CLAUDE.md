@@ -253,6 +253,17 @@ name with no recent row (a fresh gate promotion) gets a full 2y per-ticker
 backfill. Stores `dollar_volume` + `adj_close`. Flags: `--backfill` (force 2y
 for all Tier 1), `--tickers`, `--years`, `--dry-run`.
 
+### backfill_sectors.py (Sundays 02:45 UTC — weekly, + one-off full run)
+Populates `securities.gics_sector` / `gics_industry` from EODHD `fundamentals`
+(`General.Sector` / `General.Industry`). `universe_sync.py` builds `securities`
+from the exchange-symbol-list, which carries **no sector**, so sectors start
+NULL (the screener's Sector column/filter was ~71% empty). Run once with
+`--only-missing` OFF to seed the whole Tier 1 column in one consistent EODHD
+taxonomy; the weekly cron runs `--only-missing` to fill names universe_sync has
+since added. Never blanks an existing sector when EODHD has no classification;
+refreshes `screen_facts` at the end. Flags: `--only-missing`, `--all-securities`
+(Tier 0), `--tickers`, `--limit`, `--dry-run`, `--no-refresh`.
+
 ### migrate_companies_to_level0.py (one-off)
 Seeds Level 0 enrichment from the existing pipeline (spec §11 step 4 — reuse
 the ~1k already-enriched rows): copies scalar fundamentals from `companies`

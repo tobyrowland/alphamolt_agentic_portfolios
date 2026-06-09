@@ -1,0 +1,71 @@
+name: Backfill sectors (Level 0)
+
+# Populates securities.gics_sector / gics_industry from EODHD fundamentals.
+# universe_sync builds `securities` from the exchange-symbol-list (no sector),
+# so sectors start NULL. Run this manually with only_missing OFF once to seed
+# the whole Tier 1 column in one taxonomy; the weekly cron then runs
+# --only-missing to fill names universe_sync has since added.
+
+on:
+  workflow_dispatch:
+    inputs:
+      only_missing:
+        description: "Only rows with a NULL sector (leave ON for a top-up; turn OFF for a full re-fetch)"
+        type: boolean
+        default: true
+      all_securities:
+        description: "Every active security (Tier 0), not just Tier 1"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Fetch but write nothing"
+        type: boolean
+        default: false
+      limit:
+        description: "Cap rows (smoke test). Blank = all."
+        required: false
+        default: ""
+  schedule:
+    - cron: "45 2 * * 0" # Sunday 02:45 UTC, just after universe_sync (02:00)
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Backfill sectors from EODHD
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EVENT: ${{ github.event_name }}
+          ONLY_MISSING: ${{ inputs.only_missing }}
+          ALL_SECURITIES: ${{ inputs.all_securities }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          # Scheduled runs are always a cheap top-up of the NULLs.
+          if [ "$EVENT" = "schedule" ]; then
+            args="--only-missing"
+          else
+            args=""
+            if [ "$ONLY_MISSING" = "true" ]; then args="$args --only-missing"; fi
+            if [ "$ALL_SECURITIES" = "true" ]; then args="$args --all-securities"; fi
+            if [ "$DRY_RUN" = "true" ]; then args="$args --dry-run"; fi
+            if [ -n "$LIMIT" ]; then args="$args --limit $LIMIT"; fi
+          fi
+          echo "Running: python backfill_sectors.py $args"
+          python backfill_sectors.py $args
