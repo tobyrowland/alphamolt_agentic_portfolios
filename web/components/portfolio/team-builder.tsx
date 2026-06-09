@@ -217,6 +217,7 @@ export default function TeamBuilder({
         isEmpty={isEmpty}
         busy={isBusy}
         coverage={coverage}
+        libraryOpen={team.length === 0 || addOpen}
         onDropAgent={(handle) => {
           const agent = library.find((a) => a.handle === handle);
           if (agent) addAgent(agent);
@@ -287,6 +288,7 @@ function YourTeamUnit({
   isEmpty,
   busy,
   coverage,
+  libraryOpen,
   onDropAgent,
   onPendingParams,
   onPendingMandate,
@@ -300,6 +302,8 @@ function YourTeamUnit({
   isEmpty: boolean;
   busy: boolean;
   coverage: Coverage;
+  /** Whether the agent library is currently visible (agents draggable). */
+  libraryOpen: boolean;
   onDropAgent: (handle: string) => void;
   onPendingParams: (key: string, params: Record<string, number | string>) => void;
   onPendingMandate: (key: string, mandate: string) => void;
@@ -391,10 +395,15 @@ function YourTeamUnit({
                   />
                 ))}
               </ul>
-              {/* Persistent shaded drop slot, so the affordance never vanishes. */}
-              <div className="m-4 rounded-xl border border-dashed border-white/15 bg-white/[0.015] px-4 py-4 text-center text-sm font-mono text-text-muted">
-                <span aria-hidden>⌑ </span>Drag more agents here
-              </div>
+              {/* Shaded "drag more" slot — only when the library is open below,
+                  i.e. there are actually agents visible to drag in. When the
+                  library is collapsed, additions go through the "Add or change
+                  agents" button, so the hint would point at nothing. */}
+              {libraryOpen && (
+                <div className="m-4 rounded-xl border border-dashed border-white/15 bg-white/[0.015] px-4 py-4 text-center text-sm font-mono text-text-muted">
+                  <span aria-hidden>⌑ </span>Drag more agents here
+                </div>
+              )}
             </>
           )}
         </div>
