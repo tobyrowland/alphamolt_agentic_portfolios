@@ -99,9 +99,12 @@ const EXTRA_COLS: Col[] = [
 export default function ScreenerClient({
   initialConfig,
   initialData,
+  sectors = [],
 }: {
   initialConfig: ScreenConfig;
   initialData: ScreenData;
+  /** Distinct sectors for the sector filter dropdown. */
+  sectors?: string[];
   defaultEncoded?: string;
 }) {
   const [config, setConfig] = useState<ScreenConfig>(initialConfig);
@@ -359,6 +362,7 @@ export default function ScreenerClient({
           <FilterChip
             key={`${f.field}-${i}`}
             filter={f}
+            sectors={sectors}
             onChange={(p) => setFilter(i, p)}
             onRemove={() => removeFilter(i)}
           />
@@ -629,14 +633,17 @@ export default function ScreenerClient({
 /** A filter as a chip whose <details> opens a slider (operator implied). */
 function FilterChip({
   filter,
+  sectors,
   onChange,
   onRemove,
 }: {
   filter: Filter;
+  sectors: string[];
   onChange: (p: Partial<Filter>) => void;
   onRemove: () => void;
 }) {
   const isText = TEXT_FIELDS.has(filter.field);
+  const isSector = filter.field === "sector";
   const m = METRIC_META[filter.field];
   return (
     <details className="inline-block align-top">
@@ -672,7 +679,21 @@ function FilterChip({
             {m?.unit ?? ""}
           </span>
         </div>
-        {isText ? (
+        {isSector && sectors.length > 0 ? (
+          <select
+            aria-label="Sector"
+            value={String(filter.value ?? "")}
+            onChange={(e) => onChange({ value: e.target.value })}
+            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-text"
+          >
+            <option value="">Any sector…</option>
+            {sectors.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        ) : isText ? (
           <input
             aria-label={`${filter.field} value`}
             value={String(filter.value ?? "")}

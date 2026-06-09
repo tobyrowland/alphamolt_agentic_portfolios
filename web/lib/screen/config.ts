@@ -26,6 +26,10 @@ export const FILTER_FIELDS = [
   "operating_margin",
   "rule_of_40",
   "ret_52w",
+  // Derived (not a raw screen_facts column): 52-week return minus SPY's, so
+  // it's computed in the loader (web/lib/screen/query.ts + screen.py) from
+  // ret_52w and the SPY benchmark.
+  "perf_52w_vs_spy",
   "price",
 ] as const;
 export type FilterField = (typeof FILTER_FIELDS)[number];
@@ -238,6 +242,7 @@ export const METRIC_META: Record<string, MetricMeta> = {
   operating_margin: { field: "operating_margin", label: "Operating margin", unit: "%", op: ">=", min: -40, max: 60, step: 5, default: 0 },
   rule_of_40: { field: "rule_of_40", label: "Rule of 40", unit: "", op: ">=", min: 0, max: 120, step: 5, default: 40 },
   ret_52w: { field: "ret_52w", label: "52-week return", unit: "%", op: ">=", min: -50, max: 150, step: 10, default: 0 },
+  perf_52w_vs_spy: { field: "perf_52w_vs_spy", label: "vs SPY (52w)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0 },
   price: { field: "price", label: "Price", unit: "$", op: ">=", min: 0, max: 500, step: 5, default: 5 },
 };
 
@@ -249,6 +254,7 @@ export function impliedOp(field: FilterField): FilterOp {
 /** A readable chip label for a filter, e.g. "P/S ≤ 15" / "Rev growth ≥ 20%". */
 export function filterChipLabel(f: Filter): string {
   if (TEXT_FIELDS.has(f.field)) {
+    if (f.field === "sector" && !String(f.value)) return "any sector";
     const verb = f.op === "!=" ? "exclude" : "only";
     return `${verb} ${f.value}`;
   }
@@ -262,12 +268,14 @@ export function filterChipLabel(f: Filter): string {
 // The "+ add filter" menu — named, friendly filters (not a blank field/op/value
 // row). Each seeds a chip with its implied operator + default value.
 export const NAMED_FILTERS: { field: FilterField; label: string }[] = [
+  { field: "sector", label: "Sector" },
   { field: "ps", label: "P/S multiple" },
   { field: "rev_growth_ttm", label: "Revenue growth" },
   { field: "gross_margin", label: "Gross margin" },
   { field: "fcf_margin", label: "FCF margin" },
   { field: "rule_of_40", label: "Rule of 40" },
   { field: "ret_52w", label: "52-week return" },
+  { field: "perf_52w_vs_spy", label: "Performance vs SPY" },
   { field: "net_margin", label: "Net margin" },
   { field: "operating_margin", label: "Operating margin" },
   { field: "price", label: "Share price" },
@@ -275,6 +283,8 @@ export const NAMED_FILTERS: { field: FilterField; label: string }[] = [
 
 /** Build a default filter for a metric, ready to drop into the bar as a chip. */
 export function newFilterFor(field: FilterField): Filter {
+  // Sector reads as "only <sector>"; other text fields default to "exclude".
+  if (field === "sector") return { field, op: "==", value: "" };
   if (TEXT_FIELDS.has(field)) return { field, op: "!=", value: "" };
   const m = METRIC_META[field];
   return { field, op: impliedOp(field), value: m?.default ?? 0 };

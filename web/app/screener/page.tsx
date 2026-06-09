@@ -161,6 +161,7 @@ export default async function ScreenerPage({
               cut_index: initial.cut_index,
               data_asof: initial.data_asof,
             }}
+            sectors={initial.sectors}
             defaultEncoded={encodeConfig(configFromParams({ preset: DEFAULT_PRESET }))}
           />
         </div>
