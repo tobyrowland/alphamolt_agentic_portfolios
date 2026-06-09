@@ -103,6 +103,21 @@ function formatAsOf(s: string): string {
   });
 }
 
+/**
+ * Tickers that have a /company/<ticker> page (the legacy `companies` table).
+ * The screener ranks the full Level 0 Tier 1 universe, which is broader than
+ * `companies`, so names outside this set would 404 — we render them as plain
+ * text instead of a broken link.
+ */
+async function getCompanyTickers(): Promise<string[]> {
+  const { data, error } = await getSupabase().from("companies").select("ticker");
+  if (error) {
+    console.error("getCompanyTickers failed:", error);
+    return [];
+  }
+  return ((data ?? []) as { ticker: string }[]).map((r) => r.ticker);
+}
+
 export default async function ScreenerPage({
   searchParams,
 }: {
@@ -110,7 +125,10 @@ export default async function ScreenerPage({
 }) {
   const sp = await resolveParams(searchParams);
   const config = (sp.screen ? await savedConfig(sp.screen) : null) ?? configFromParams(sp);
-  const initial = await runScreen(config);
+  const [initial, companyTickers] = await Promise.all([
+    runScreen(config),
+    getCompanyTickers(),
+  ]);
 
   return (
     <>
@@ -166,6 +184,7 @@ export default async function ScreenerPage({
               data_asof: initial.data_asof,
             }}
             sectors={initial.sectors}
+            companyTickers={companyTickers}
             defaultEncoded={encodeConfig(configFromParams({ preset: DEFAULT_PRESET }))}
           />
         </div>

@@ -138,13 +138,20 @@ export default function ScreenerClient({
   initialConfig,
   initialData,
   sectors = [],
+  companyTickers = [],
 }: {
   initialConfig: ScreenConfig;
   initialData: ScreenData;
   /** Distinct sectors for the sector filter dropdown. */
   sectors?: string[];
+  /** Tickers that have a /company/<ticker> page (others render unlinked). */
+  companyTickers?: string[];
   defaultEncoded?: string;
 }) {
+  const linkable = useMemo(
+    () => new Set(companyTickers.map((t) => t.toUpperCase())),
+    [companyTickers],
+  );
   const [config, setConfig] = useState<ScreenConfig>(initialConfig);
   const [data, setData] = useState<ScreenData>(initialData);
   const [loading, setLoading] = useState(false);
@@ -584,6 +591,7 @@ export default function ScreenerClient({
                 spanCols={metricColCount + 3}
                 topN={config.topN}
                 runHref={runHref}
+                hasPage={linkable.has(r.ticker.toUpperCase())}
               />
             ))}
             {data.rows.length === 0 && (
@@ -951,6 +959,7 @@ function RowView({
   spanCols,
   topN,
   runHref,
+  hasPage,
 }: {
   r: Row;
   cols: Col[];
@@ -959,6 +968,7 @@ function RowView({
   spanCols: number;
   topN: number;
   runHref: string;
+  hasPage: boolean;
 }) {
   return (
     <>
@@ -981,10 +991,17 @@ function RowView({
           {r.rank}
         </td>
         <td className="px-2 py-2.5 text-left border-t border-white/10">
-          <Link href={`/company/${r.ticker}`} className="hover:text-[var(--color-cyan)]">
-            <span className="font-mono text-text text-[12.5px]">{r.ticker}</span>{" "}
-            <span className="text-[11px] text-text-muted">{r.name}</span>
-          </Link>
+          {hasPage ? (
+            <Link href={`/company/${r.ticker}`} className="hover:text-[var(--color-cyan)]">
+              <span className="font-mono text-text text-[12.5px]">{r.ticker}</span>{" "}
+              <span className="text-[11px] text-text-muted">{r.name}</span>
+            </Link>
+          ) : (
+            <span title="No analysis page for this name yet">
+              <span className="font-mono text-text text-[12.5px]">{r.ticker}</span>{" "}
+              <span className="text-[11px] text-text-muted">{r.name}</span>
+            </span>
+          )}
         </td>
         <td className="px-2 py-2.5 text-right text-[12.5px] font-mono border-t border-white/10 text-[var(--color-cyan)]">
           {fmt(r.score, { dp: 1 })}
