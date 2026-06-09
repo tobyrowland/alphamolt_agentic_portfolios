@@ -51,26 +51,69 @@ async function fetchFacts(): Promise<ScreenFacts[]> {
     if (batch.length < PAGE) break;
   }
 
-  return rows.map((r) => ({
-    ticker: r.ticker as string,
-    name: (r.name as string) ?? null,
-    sector: (r.sector as string) ?? null,
-    industry: (r.industry as string) ?? null,
-    country: (r.country as string) ?? null,
-    price: num(r.price),
-    price_asof: (r.price_asof as string) ?? null,
-    rev_growth_ttm: num(r.rev_growth_ttm),
-    gross_margin: num(r.gross_margin),
-    fcf_margin: num(r.fcf_margin),
-    net_margin: num(r.net_margin),
-    operating_margin: num(r.operating_margin),
-    rule_of_40: num(r.rule_of_40),
-    ps: num(r.ps),
-    ps_median_12m: num(r.ps_median_12m),
-    ret_52w: num(r.ret_52w),
-    bull: (r.bull as boolean | null) ?? null,
-    bear: (r.bear as boolean | null) ?? null,
-  }) satisfies ScreenFacts);
+  // SPY's own 52-week return, so each row's "vs SPY" is ret_52w − spyRet.
+  // Computed once here (cached with the facts) and subtracted per row.
+  const spyRet = await fetchSpyRet52w();
+
+  return rows.map((r) => {
+    const ret52w = num(r.ret_52w);
+    return {
+      ticker: r.ticker as string,
+      name: (r.name as string) ?? null,
+      sector: (r.sector as string) ?? null,
+      industry: (r.industry as string) ?? null,
+      country: (r.country as string) ?? null,
+      price: num(r.price),
+      price_asof: (r.price_asof as string) ?? null,
+      rev_growth_ttm: num(r.rev_growth_ttm),
+      gross_margin: num(r.gross_margin),
+      fcf_margin: num(r.fcf_margin),
+      net_margin: num(r.net_margin),
+      operating_margin: num(r.operating_margin),
+      rule_of_40: num(r.rule_of_40),
+      ps: num(r.ps),
+      ps_median_12m: num(r.ps_median_12m),
+      ret_52w: ret52w,
+      perf_52w_vs_spy:
+        ret52w != null && spyRet != null
+          ? Math.round((ret52w - spyRet) * 10) / 10
+          : null,
+      bull: (r.bull as boolean | null) ?? null,
+      bear: (r.bear as boolean | null) ?? null,
+    } satisfies ScreenFacts;
+  });
+}
+
+/**
+ * SPY's trailing 52-week return (%), from `benchmark_prices`. Uses the same
+ * 52-weeks-ago anchor as the per-ticker `ret_52w` in screen_facts_mv, so
+ * subtracting gives a consistent "movement vs SPY". Null if SPY history is
+ * missing (the derived field then stays null and won't filter).
+ */
+async function fetchSpyRet52w(): Promise<number | null> {
+  const supabase = getSupabase();
+  const cutoff = new Date(Date.now() - 364 * 86400000).toISOString().slice(0, 10);
+  const [latestRes, agoRes] = await Promise.all([
+    supabase
+      .from("benchmark_prices")
+      .select("close")
+      .eq("ticker", "SPY.US")
+      .order("price_date", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("benchmark_prices")
+      .select("close")
+      .eq("ticker", "SPY.US")
+      .lte("price_date", cutoff)
+      .order("price_date", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  const latest = num((latestRes.data as { close?: unknown } | null)?.close);
+  const ago = num((agoRes.data as { close?: unknown } | null)?.close);
+  if (latest == null || ago == null || ago <= 0) return null;
+  return (latest / ago - 1) * 100;
 }
 
 /** Cached facts load — fresh within TTL, otherwise refetched. Concurrent calls
@@ -97,6 +140,8 @@ export async function loadFacts(): Promise<ScreenFacts[]> {
 
 export interface ScreenResponse extends ScreenResult {
   data_asof: string | null;
+  /** Distinct sectors across the universe — populates the sector dropdown. */
+  sectors: string[];
 }
 
 /** Full contract response for a config: scored rows + counts + as-of. */
@@ -107,7 +152,10 @@ export async function runScreen(config: ScreenConfig): Promise<ScreenResponse> {
     if (f.price_asof && (!acc || f.price_asof > acc)) return f.price_asof;
     return acc;
   }, null);
-  return { ...result, data_asof };
+  const sectors = Array.from(
+    new Set(facts.map((f) => f.sector).filter((s): s is string => !!s)),
+  ).sort();
+  return { ...result, data_asof, sectors };
 }
 
 function num(v: unknown): number | null {

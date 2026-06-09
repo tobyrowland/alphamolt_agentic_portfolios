@@ -34,6 +34,8 @@ export interface ScreenFacts {
   ps: number | null;
   ps_median_12m: number | null;
   ret_52w: number | null;
+  /** 52-week return minus SPY's; derived in the loader, not a raw fact column. */
+  perf_52w_vs_spy: number | null;
   // AI verdict overlay (from companies; Level 0 itself is strategy-neutral)
   bull: boolean | null;
   bear: boolean | null;
@@ -77,6 +79,7 @@ function matchesFilter(row: ScreenFacts, f: Filter): boolean {
   if (TEXT_FIELDS.has(f.field)) {
     const a = (raw == null ? "" : String(raw)).toLowerCase();
     const b = String(f.value).toLowerCase();
+    if (b === "") return true; // unset text filter = no constraint (e.g. sector not yet picked)
     if (f.op === "==") return a === b;
     if (f.op === "!=") return a !== b;
     // ordering ops on text fall back to string compare

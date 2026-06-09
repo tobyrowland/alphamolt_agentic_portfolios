@@ -26,6 +26,7 @@ interface Row {
   ticker: string;
   name: string | null;
   sector: string | null;
+  industry: string | null;
   country: string | null;
   price: number | null;
   price_asof: string | null;
@@ -34,8 +35,11 @@ interface Row {
   rev_growth_ttm: number | null;
   gross_margin: number | null;
   fcf_margin: number | null;
+  net_margin: number | null;
+  operating_margin: number | null;
   rule_of_40: number | null;
   ret_52w: number | null;
+  perf_52w_vs_spy: number | null;
   bull: boolean | null;
   bear: boolean | null;
 }
@@ -94,14 +98,24 @@ const BASE_COLS: Col[] = [
 const EXTRA_COLS: Col[] = [
   { key: "fcf_margin", label: "FCF M%", green: true, render: (r) => fmt(r.fcf_margin, { pct: true }) },
   { key: "ret_52w", label: "52w%", render: (r) => fmt(r.ret_52w, { pct: true, dp: 0 }) },
+  { key: "perf_52w_vs_spy", label: "vs SPY", green: true, render: (r) => fmt(r.perf_52w_vs_spy, { pct: true, dp: 0 }) },
+  { key: "net_margin", label: "Net M%", green: true, render: (r) => fmt(r.net_margin, { pct: true }) },
+  { key: "operating_margin", label: "Op M%", green: true, render: (r) => fmt(r.operating_margin, { pct: true }) },
+  { key: "price", label: "Price", render: (r) => (r.price == null ? "—" : `$${r.price.toFixed(2)}`) },
+  { key: "sector", label: "Sector", render: (r) => r.sector ?? "—" },
+  { key: "country", label: "Country", render: (r) => r.country ?? "—" },
+  { key: "industry", label: "Industry", render: (r) => r.industry ?? "—" },
 ];
 
 export default function ScreenerClient({
   initialConfig,
   initialData,
+  sectors = [],
 }: {
   initialConfig: ScreenConfig;
   initialData: ScreenData;
+  /** Distinct sectors for the sector filter dropdown. */
+  sectors?: string[];
   defaultEncoded?: string;
 }) {
   const [config, setConfig] = useState<ScreenConfig>(initialConfig);
@@ -359,6 +373,7 @@ export default function ScreenerClient({
           <FilterChip
             key={`${f.field}-${i}`}
             filter={f}
+            sectors={sectors}
             onChange={(p) => setFilter(i, p)}
             onRemove={() => removeFilter(i)}
           />
@@ -629,14 +644,17 @@ export default function ScreenerClient({
 /** A filter as a chip whose <details> opens a slider (operator implied). */
 function FilterChip({
   filter,
+  sectors,
   onChange,
   onRemove,
 }: {
   filter: Filter;
+  sectors: string[];
   onChange: (p: Partial<Filter>) => void;
   onRemove: () => void;
 }) {
   const isText = TEXT_FIELDS.has(filter.field);
+  const isSector = filter.field === "sector";
   const m = METRIC_META[filter.field];
   return (
     <details className="inline-block align-top">
@@ -672,7 +690,21 @@ function FilterChip({
             {m?.unit ?? ""}
           </span>
         </div>
-        {isText ? (
+        {isSector && sectors.length > 0 ? (
+          <select
+            aria-label="Sector"
+            value={String(filter.value ?? "")}
+            onChange={(e) => onChange({ value: e.target.value })}
+            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-text"
+          >
+            <option value="">Any sector…</option>
+            {sectors.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        ) : isText ? (
           <input
             aria-label={`${filter.field} value`}
             value={String(filter.value ?? "")}

@@ -143,6 +143,7 @@ export default async function ScreenerPage({
                 ticker: r.ticker,
                 name: r.name,
                 sector: r.sector,
+                industry: r.industry,
                 country: r.country,
                 price: r.price,
                 price_asof: r.price_asof,
@@ -151,8 +152,11 @@ export default async function ScreenerPage({
                 rev_growth_ttm: r.rev_growth_ttm,
                 gross_margin: r.gross_margin,
                 fcf_margin: r.fcf_margin,
+                net_margin: r.net_margin,
+                operating_margin: r.operating_margin,
                 rule_of_40: r.rule_of_40,
                 ret_52w: r.ret_52w,
+                perf_52w_vs_spy: r.perf_52w_vs_spy,
                 bull: r.bull,
                 bear: r.bear,
               })),
@@ -161,6 +165,7 @@ export default async function ScreenerPage({
               cut_index: initial.cut_index,
               data_asof: initial.data_asof,
             }}
+            sectors={initial.sectors}
             defaultEncoded={encodeConfig(configFromParams({ preset: DEFAULT_PRESET }))}
           />
         </div>

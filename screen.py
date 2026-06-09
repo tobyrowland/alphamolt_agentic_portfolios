@@ -32,7 +32,9 @@ logger = logging.getLogger("screen")
 
 FILTER_FIELDS = {
     "sector", "country", "ps", "rev_growth_ttm", "gross_margin", "fcf_margin",
-    "net_margin", "operating_margin", "rule_of_40", "ret_52w", "price",
+    "net_margin", "operating_margin", "rule_of_40", "ret_52w",
+    "perf_52w_vs_spy",  # derived in load_facts (ret_52w − SPY's 52w return)
+    "price",
 }
 TEXT_FIELDS = {"sector", "country"}
 
@@ -67,6 +69,8 @@ def _matches(row: dict, f: dict) -> bool:
     if field in TEXT_FIELDS:
         a = ("" if raw is None else str(raw)).lower()
         b = str(f.get("value", "")).lower()
+        if b == "":
+            return True  # unset text filter = no constraint (parity with score.ts)
         return {
             "==": a == b, "!=": a != b, "<=": a <= b,
             ">=": a >= b, "<": a < b, ">": a > b,
@@ -190,14 +194,43 @@ def _rpc_all(db, fn: str) -> list[dict]:
     return rows
 
 
+def _spy_ret_52w(db) -> float | None:
+    """SPY's trailing 52-week return (%), from benchmark_prices. Same 52-weeks-ago
+    anchor as the per-ticker ret_52w, so the difference is a consistent vs-SPY.
+    Mirrors web/lib/screen/query.ts fetchSpyRet52w()."""
+    from datetime import date, timedelta
+    cutoff = (date.today() - timedelta(weeks=52)).isoformat()
+    try:
+        latest = (db.client.table("benchmark_prices").select("close")
+                  .eq("ticker", "SPY.US").order("price_date", desc=True)
+                  .limit(1).execute())
+        ago = (db.client.table("benchmark_prices").select("close")
+               .eq("ticker", "SPY.US").lte("price_date", cutoff)
+               .order("price_date", desc=True).limit(1).execute())
+    except Exception:  # noqa: BLE001 — never let the benchmark read break the screen
+        return None
+    lv = _f((latest.data or [{}])[0].get("close")) if latest.data else None
+    av = _f((ago.data or [{}])[0].get("close")) if ago.data else None
+    if lv is None or av is None or av <= 0:
+        return None
+    return (lv / av - 1) * 100
+
+
 def load_facts(db) -> list[dict]:
     """Load Level 0 facts for the whole Tier 1 universe + the AI overlay."""
     facts = _rpc_all(db, "screen_facts")
     overlay = {r["ticker"]: r for r in _rpc_all(db, "screen_ai_overlay")}
+    spy = _spy_ret_52w(db)
     for r in facts:
         v = overlay.get(r["ticker"])
         r["bull"] = (v or {}).get("bull")
         r["bear"] = (v or {}).get("bear")
+        # Derived "vs SPY" — kept in lockstep with query.ts so the buyer ranks
+        # the identical filtered set.
+        ret = _f(r.get("ret_52w"))
+        r["perf_52w_vs_spy"] = (
+            round(ret - spy, 1) if (ret is not None and spy is not None) else None
+        )
     return facts
 
 
