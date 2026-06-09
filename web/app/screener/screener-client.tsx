@@ -76,6 +76,17 @@ const COLS_STORAGE_KEY = "alphamolt:screener:cols";
 // localStorage key for the viewer's last screen recipe (filters/weights), so a
 // bare /screener visit restores it instead of resetting to the default preset.
 const CONFIG_STORAGE_KEY = "alphamolt:screener:config";
+// localStorage key for the viewer's CUSTOM recipe specifically — remembered
+// independently of the active preset, so switching to a house preset and back
+// to "Custom" restores the filters/weights they'd set (not the preset's).
+const CUSTOM_STORAGE_KEY = "alphamolt:screener:custom";
+
+/** The "Custom" preset is anything that isn't an unmodified house preset:
+ *  an explicit `custom`, an empty preset, or an unknown id. Drives both the
+ *  Custom card's active state and whether the editable filter bar shows. */
+function isCustomConfig(c: ScreenConfig): boolean {
+  return !c.preset || c.preset === "custom" || !PRESETS[c.preset];
+}
 
 // Hover explanations for the result columns (header mouseover).
 const COL_HELP: Record<string, string> = {
@@ -160,6 +171,14 @@ export default function ScreenerClient({
     [companyTickers],
   );
   const [config, setConfig] = useState<ScreenConfig>(initialConfig);
+  // The remembered Custom recipe — restored when the Custom card is picked.
+  // Seeded from the initial config if it's already custom, else a blank canvas
+  // (no filters, balanced default weights).
+  const [customConfig, setCustomConfig] = useState<ScreenConfig>(() =>
+    isCustomConfig(initialConfig)
+      ? { ...initialConfig, preset: "custom" }
+      : screenConfigSchema.parse({ preset: "custom" }),
+  );
   const [data, setData] = useState<ScreenData>(initialData);
   const [loading, setLoading] = useState(false);
   const [excluded, setExcluded] = useState<string[]>(exclusions);
@@ -176,6 +195,7 @@ export default function ScreenerClient({
   const firstRender = useRef(true);
   const colsHydrated = useRef(false);
   const configHydrated = useRef(false);
+  const customHydrated = useRef(false);
 
   // Render only the first chunk; "Load more" reveals more from memory. Reset to
   // the first page whenever the ranking changes.
@@ -237,6 +257,35 @@ export default function ScreenerClient({
     if (!configHydrated.current) return; // don't save the default over a restored screen
     try {
       localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+    } catch {
+      /* storage unavailable — non-fatal */
+    }
+  }, [config]);
+
+  // The Custom recipe is remembered separately so it survives switching to a
+  // house preset and back (and a refresh). Hydrate after mount, then mirror.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(CUSTOM_STORAGE_KEY);
+      if (raw) {
+        const parsed = screenConfigSchema.safeParse(JSON.parse(raw));
+        if (parsed.success) setCustomConfig({ ...parsed.data, preset: "custom" });
+      }
+    } catch {
+      /* malformed/blocked storage — keep the seeded custom config */
+    }
+    customHydrated.current = true;
+  }, []);
+
+  // Keep the remembered Custom recipe in sync whenever the user is editing in
+  // custom mode; picking a house preset leaves it untouched (so it's there to
+  // restore). Mirror to storage once hydrated.
+  useEffect(() => {
+    if (!customHydrated.current) return;
+    if (!isCustomConfig(config)) return;
+    setCustomConfig(config);
+    try {
+      localStorage.setItem(CUSTOM_STORAGE_KEY, JSON.stringify(config));
     } catch {
       /* storage unavailable — non-fatal */
     }
@@ -345,6 +394,16 @@ export default function ScreenerClient({
     setSaveLink(null);
   }
 
+  // Picking the Custom card restores the remembered custom recipe (filters +
+  // weights), so it reappears exactly as the viewer left it.
+  function selectCustom() {
+    setConfig({ ...customConfig, preset: "custom" });
+    setSaveLink(null);
+  }
+
+  // The editable filter bar only shows in custom mode; a house preset hides it.
+  const customSelected = isCustomConfig(config);
+
   async function onSave() {
     if (!signedIn) {
       setShareMsg("Sign in to save — viewing & sharing stay open.");
@@ -406,10 +465,17 @@ export default function ScreenerClient({
         </button>
       )}
 
-      {/* Presets — the prominent way in. */}
-      <PresetCards activePreset={config.preset} onSelect={selectPreset} />
+      {/* Presets — the prominent way in. Custom is one of the cards. */}
+      <PresetCards
+        activePreset={config.preset}
+        customActive={customSelected}
+        onSelect={selectPreset}
+        onSelectCustom={selectCustom}
+      />
 
-      {/* Screen bar: friendly filter chips + collapsed weighting on the right */}
+      {/* Screen bar: friendly filter chips + collapsed weighting on the right.
+          Only shown in Custom mode — house presets define their own filters. */}
+      {customSelected && (
       <div className="flex items-start gap-2 flex-wrap mt-3.5 mb-2">
         <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mt-2">
           Filters
@@ -465,9 +531,10 @@ export default function ScreenerClient({
         </details>
 
       </div>
+      )}
 
       {/* Advanced raw add row */}
-      {advancedOpen && (
+      {customSelected && advancedOpen && (
         <AdvancedAdd
           onAdd={(f) => {
             setAdvancedOpen(false);
@@ -787,17 +854,21 @@ function IntroPopout({
   );
 }
 
-/** Prominent preset picker — cards, not pills. The primary way into a screen. */
+/** Prominent preset picker — cards, not pills. The primary way into a screen.
+ *  "Custom" is one of the cards: picking it restores the viewer's own filters
+ *  + weights and reveals the editable filter bar. */
 function PresetCards({
   activePreset,
+  customActive,
   onSelect,
+  onSelectCustom,
 }: {
   activePreset?: string;
+  customActive: boolean;
   onSelect: (id: string) => void;
+  onSelectCustom: () => void;
 }) {
   const presets = Object.values(PRESETS);
-  const isCustom =
-    !activePreset || activePreset === "custom" || !PRESETS[activePreset];
   return (
     <div className="mb-4">
       <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-muted mb-2">
@@ -805,7 +876,7 @@ function PresetCards({
       </div>
       <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {presets.map((p) => {
-          const active = activePreset === p.id;
+          const active = !customActive && activePreset === p.id;
           return (
             <button
               key={p.id}
@@ -836,13 +907,36 @@ function PresetCards({
             </button>
           );
         })}
+
+        {/* Custom — restores the viewer's own filters/weights and opens the
+            editable filter bar below. */}
+        <button
+          type="button"
+          onClick={onSelectCustom}
+          aria-pressed={customActive}
+          className={`text-left rounded-xl border p-3.5 transition-colors ${
+            customActive
+              ? "border-[var(--color-cyan)]/60 bg-[var(--color-cyan)]/[0.08]"
+              : "border-dashed border-white/15 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/25"
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className={`font-semibold text-[13.5px] ${customActive ? "text-[var(--color-cyan)]" : "text-text"}`}
+            >
+              Custom
+            </span>
+            {customActive && (
+              <span className="text-[var(--color-cyan)] text-[11px]" aria-hidden>
+                ●
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-text-muted mt-1 leading-relaxed line-clamp-2">
+            Your own filters &amp; weights — build a screen from scratch.
+          </p>
+        </button>
       </div>
-      {isCustom && (
-        <p className="mt-2 font-mono text-[10.5px] text-text-muted">
-          <span className="text-[var(--color-cyan)]">Custom</span> — tuned with the
-          filters &amp; weights below. Pick a preset to reset.
-        </p>
-      )}
     </div>
   );
 }
