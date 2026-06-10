@@ -21,7 +21,9 @@ import {
 import { getRosterData, ROSTER_FALLBACK } from "@/lib/home-roster-query";
 import {
   getLatestConsensus,
+  getContestedTicker,
   type ConsensusResult,
+  type ContestedTicker,
 } from "@/lib/consensus-query";
 import { absoluteUrl } from "@/lib/site";
 
@@ -142,18 +144,29 @@ export default async function HomePage() {
 
 async function HomeConsensusSection() {
   let consensus: ConsensusResult = { snapshot_date: null, rows: [] };
+  let contested: ContestedTicker | null = null;
   try {
-    consensus = await getLatestConsensus();
+    [consensus, contested] = await Promise.all([
+      getLatestConsensus(),
+      getContestedTicker().catch((err) => {
+        // Divergence is optional — its absence just hides the strip, it
+        // never blocks the consensus table.
+        console.error("homepage contested fetch failed:", err);
+        return null;
+      }),
+    ]);
   } catch (err) {
     console.error("homepage consensus fetch failed:", err);
   }
-  // HomeConsensus already renders its own <section id="consensus">; we
-  // just add the vertical rhythm the page wants between major blocks.
+  // Hide the whole section on data failure / empty — never a skeleton with
+  // fabricated tickers (section 4 brief).
+  if (consensus.rows.length === 0) return null;
   return (
     <div className="mt-20 sm:mt-28">
       <HomeConsensus
         rows={consensus.rows}
         snapshotDate={consensus.snapshot_date}
+        contested={contested}
       />
     </div>
   );

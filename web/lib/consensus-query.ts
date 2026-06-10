@@ -88,6 +88,121 @@ export async function getConsensusByDate(
   return { snapshot_date: rows.length > 0 ? snapshot_date : null, rows };
 }
 
+// ---------------------------------------------------------------------------
+// Divergence ("Where they split") — the most-contested ticker this snapshot.
+//
+// A ticker is contested when independent swarms have taken *opposing* live
+// positions on it: some currently hold it, others have exited it inside the
+// lookback window. Both sides must have ≥ 2 swarms (a single dissenter isn't
+// "the arena splitting"). Returns the ticker with the most opposing positions,
+// or null when nothing genuinely qualifies — the homepage hides the strip
+// rather than fabricate divergence.
+// ---------------------------------------------------------------------------
+
+const CONTESTED_LOOKBACK_DAYS = 30;
+const CONTESTED_MIN_PER_SIDE = 2;
+
+export interface ContestedTicker {
+  ticker: string;
+  company_name: string;
+  held: number;
+  exited: number;
+  /** One-line explanation; neutral unless a shared signal is derivable. */
+  why: string;
+}
+
+async function fetchContestedTicker(): Promise<ContestedTicker | null> {
+  const supabase = getSupabase();
+
+  // Current holders per ticker (the same agent population the consensus
+  // snapshot aggregates — agent_holdings, quantity > 0).
+  const { data: holdRows, error: holdErr } = await supabase
+    .from("agent_holdings")
+    .select("ticker, agent_id")
+    .gt("quantity", 0);
+  if (holdErr) {
+    console.error("contested: holdings fetch failed:", holdErr);
+    return null;
+  }
+  const heldBy = new Map<string, Set<string>>();
+  for (const r of (holdRows ?? []) as { ticker: string; agent_id: string }[]) {
+    if (!r.ticker || !r.agent_id) continue;
+    (heldBy.get(r.ticker) ?? heldBy.set(r.ticker, new Set()).get(r.ticker)!).add(
+      r.agent_id,
+    );
+  }
+
+  // Recent sells per ticker.
+  const since = new Date();
+  since.setUTCDate(since.getUTCDate() - CONTESTED_LOOKBACK_DAYS);
+  const { data: sellRows, error: sellErr } = await supabase
+    .from("agent_trades")
+    .select("ticker, agent_id, side, executed_at")
+    .eq("side", "sell")
+    .gte("executed_at", since.toISOString());
+  if (sellErr) {
+    console.error("contested: trades fetch failed:", sellErr);
+    return null;
+  }
+  // "Exited" = sold inside the window AND not currently holding (a full exit,
+  // not a trim followed by a re-buy).
+  const exitedBy = new Map<string, Set<string>>();
+  for (const r of (sellRows ?? []) as {
+    ticker: string;
+    agent_id: string;
+  }[]) {
+    if (!r.ticker || !r.agent_id) continue;
+    if (heldBy.get(r.ticker)?.has(r.agent_id)) continue;
+    (
+      exitedBy.get(r.ticker) ?? exitedBy.set(r.ticker, new Set()).get(r.ticker)!
+    ).add(r.agent_id);
+  }
+
+  // Score the tickers with opposing sides ≥ the floor; most opposing wins,
+  // tiebreak by the more balanced split, then by holders.
+  let best: { ticker: string; held: number; exited: number } | null = null;
+  for (const [ticker, holders] of heldBy) {
+    const held = holders.size;
+    const exited = exitedBy.get(ticker)?.size ?? 0;
+    if (held < CONTESTED_MIN_PER_SIDE || exited < CONTESTED_MIN_PER_SIDE) {
+      continue;
+    }
+    if (
+      !best ||
+      held + exited > best.held + best.exited ||
+      (held + exited === best.held + best.exited &&
+        Math.min(held, exited) > Math.min(best.held, best.exited))
+    ) {
+      best = { ticker, held, exited };
+    }
+  }
+  if (!best) return null;
+
+  const { data: company } = await supabase
+    .from("companies")
+    .select("company_name")
+    .eq("ticker", best.ticker)
+    .maybeSingle();
+  const company_name =
+    (company as { company_name?: string } | null)?.company_name ?? best.ticker;
+
+  // Neutral copy: the firing break signal isn't persisted at sell time, so we
+  // never claim a shared tripped signal we can't prove.
+  return {
+    ticker: best.ticker,
+    company_name,
+    held: best.held,
+    exited: best.exited,
+    why: "Same data, opposite calls.",
+  };
+}
+
+export const getContestedTicker = unstable_cache(
+  fetchContestedTicker,
+  ["consensus-contested-v1"],
+  { revalidate: 600, tags: ["consensus"] },
+);
+
 async function fetchSnapshotRows(
   snapshot_date: string,
 ): Promise<ConsensusRow[]> {
