@@ -23,6 +23,8 @@
 UPDATE agents SET
     strategy          = 'ma_sniper',
     display_name      = '200-Week Sniper',
+    description       = 'Buys quality companies only when they trade down to their '
+                        '200-week average — and sits in cash until they do.',
     action            = 'buy',
     available_for_hire = TRUE,
     powered_by        = 'Rules-based',
