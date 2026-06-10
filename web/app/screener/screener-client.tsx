@@ -568,6 +568,39 @@ export default function ScreenerClient({
       </div>
       )}
 
+      {/* Read-only preset filters — so picking a house preset still shows what
+          it actually screens on (the editable bar is Custom-only). "Edit →"
+          forks the preset into Custom carrying these filters. */}
+      {!customSelected && (
+        <div className="flex items-center gap-2 flex-wrap mt-3.5 mb-2">
+          <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted">
+            Filters
+          </span>
+          {config.filters.length > 0 ? (
+            config.filters.map((f, i) => (
+              <span
+                key={`${f.field}-${i}`}
+                className="font-mono text-[11px] text-text border border-white/10 bg-white/[0.03] rounded-md px-2.5 py-1.5"
+              >
+                {filterChipLabel(f)}
+              </span>
+            ))
+          ) : (
+            <span className="font-mono text-[11px] text-text-muted">
+              None — ranks the entire universe, scored by the weighting below.
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => patch({})}
+            title="Switch to Custom with these filters so you can edit them"
+            className="ml-1 font-mono text-[10.5px] text-[var(--color-cyan)] hover:underline"
+          >
+            Edit →
+          </button>
+        </div>
+      )}
+
       {/* Advanced raw add row */}
       {customSelected && advancedOpen && (
         <AdvancedAdd
