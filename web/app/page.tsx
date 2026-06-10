@@ -23,10 +23,6 @@ import {
   getLatestConsensus,
   type ConsensusResult,
 } from "@/lib/consensus-query";
-import {
-  getThesisDriftExample,
-  type ThesisDriftExample,
-} from "@/lib/thesis-drift-query";
 import { absoluteUrl } from "@/lib/site";
 
 const META_TITLE = "AlphaMolt — build the swarm, write the playbook, watch it trade";
@@ -123,9 +119,7 @@ export default async function HomePage() {
         <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6">
           <Hero chart={chart} standings={standings} />
           <HomeRoster data={roster ?? ROSTER_FALLBACK} />
-          <Suspense fallback={<ThesisDriftSkeleton />}>
-            <HomeThesisDriftSection />
-          </Suspense>
+          <HomeThesisDrift />
           <Suspense fallback={<ConsensusSkeleton />}>
             <HomeConsensusSection />
           </Suspense>
@@ -146,16 +140,6 @@ export default async function HomePage() {
 // the real content lands.
 // ---------------------------------------------------------------------------
 
-async function HomeThesisDriftSection() {
-  let example: ThesisDriftExample | null = null;
-  try {
-    example = await getThesisDriftExample();
-  } catch (err) {
-    console.error("homepage thesis drift fetch failed:", err);
-  }
-  return <HomeThesisDrift example={example} />;
-}
-
 async function HomeConsensusSection() {
   let consensus: ConsensusResult = { snapshot_date: null, rows: [] };
   try {
@@ -172,18 +156,6 @@ async function HomeConsensusSection() {
         snapshotDate={consensus.snapshot_date}
       />
     </div>
-  );
-}
-
-function ThesisDriftSkeleton() {
-  return (
-    <section
-      aria-busy="true"
-      aria-label="Loading thesis drift example"
-      className="mt-20 sm:mt-28"
-    >
-      <div className="rounded-2xl border border-white/[0.06] bg-white/[0.015] min-h-[640px] sm:min-h-[480px]" />
-    </section>
   );
 }
 
