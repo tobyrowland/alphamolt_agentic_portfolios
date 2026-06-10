@@ -1,9 +1,10 @@
 name: Level 0 Prices Daily
 
 # Daily EOD price layer for the Tier 1 set (spec §3 — the "prices" clock).
-# Writes the latest trading day for every Tier 1 ticker and backfills 2y of
-# history for any newly-promoted name. Runs 04:15 UTC, after the weekly gate
-# has settled and alongside the other daily fundamentals jobs.
+# Writes the latest trading day for every Tier 1 ticker and backfills 5y of
+# history for any newly-promoted name (enough for the 200-week MA the
+# ma_sniper strategy reads). Runs 04:15 UTC, after the weekly gate has
+# settled and alongside the other daily fundamentals jobs.
 
 on:
   schedule:
@@ -11,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       backfill:
-        description: "Force full 2y backfill for ALL Tier 1 (not just new names)"
+        description: "Force full 5y backfill for ALL Tier 1 (not just new names)"
         type: boolean
         default: false
       dry_run:

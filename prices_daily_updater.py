@@ -6,8 +6,11 @@ Daily clock (spec §3). Maintains `prices_daily` for the Tier 1 set:
   * Daily increment — one `eod-bulk-last-day` call writes the latest trading
     day's OHLCV for every Tier 1 ticker (idempotent upsert on (ticker, date)).
   * Backfill — any Tier 1 ticker with no recent prices_daily row (a fresh
-    promotion from the weekly gate) gets a full 2y per-ticker history pull
-    (spec §11 step 3 / §12 — 2 years of daily history).
+    promotion from the weekly gate) gets a full per-ticker history pull
+    (``HISTORY_YEARS`` of daily history). 5 years is carried so long-horizon
+    lenses work — notably the 200-week (~3.85y) moving average the
+    ``ma_sniper`` strategy gates on; a 200wMA needs ~4y of weekly closes to
+    even compute, so 2y was not enough.
 
 `dollar_volume` (close * volume) is stored alongside so the affordability gate
 and liquidity lenses don't recompute it. `adj_close` carries EODHD's
@@ -15,7 +18,7 @@ split/dividend-adjusted close so valuation-over-time stays consistent.
 
 Usage:
     python prices_daily_updater.py                 # increment + backfill new names
-    python prices_daily_updater.py --backfill      # force full 2y for all Tier 1
+    python prices_daily_updater.py --backfill      # force full 5y for all Tier 1
     python prices_daily_updater.py --tickers NVDA AAPL
     python prices_daily_updater.py --dry-run
 """
@@ -34,7 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("prices_daily")
 
-HISTORY_YEARS = 2
+HISTORY_YEARS = 5   # 5y of daily history → enough for a 200-week (~3.85y) MA
 RECENT_WINDOW_DAYS = 7   # a Tier 1 ticker with a row newer than this is "current"
 
 
@@ -96,7 +99,7 @@ def daily_increment(db: SupabaseDB, client: EODHDClient, tier1: set[str],
 def main() -> None:
     ap = argparse.ArgumentParser(description="Level 0 prices_daily updater")
     ap.add_argument("--backfill", action="store_true",
-                    help="force full 2y backfill for all Tier 1 (not just new names)")
+                    help="force full backfill for all Tier 1 (not just new names)")
     ap.add_argument("--tickers", nargs="+", help="limit to these tickers")
     ap.add_argument("--years", type=int, default=HISTORY_YEARS)
     ap.add_argument("--dry-run", action="store_true")
@@ -120,7 +123,7 @@ def main() -> None:
         since = (date.today() - timedelta(days=RECENT_WINDOW_DAYS)).isoformat()
         current = db.get_tickers_with_recent_prices(since)
         to_backfill = tier1 - current
-    logger.info("Backfilling %d ticker(s) (2y history)", len(to_backfill))
+    logger.info("Backfilling %d ticker(s) (%dy history)", len(to_backfill), args.years)
 
     backfilled_rows = 0
     errors = 0

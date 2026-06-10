@@ -372,17 +372,45 @@ def _run_portfolio_swarm(
 
     sw_buyers: list = []
     convictions: dict[str, dict[str, int]] = {}
+    sniper_details: dict[str, dict] = {}
     for m in buyers_m:
         aid = m["agent"]["id"]
         cfg = m.get("config") or {}
+        strat = m["agent"].get("strategy")
+        if strat == "ma_sniper":
+            # The 200-week sniper sources conviction from each candidate's
+            # proximity to its long-run trend instead of the screen-rank
+            # baseline: it expresses conviction ONLY for names at/below their
+            # 200-week MA (within `band_pct`), and is silent — accumulating
+            # cash — for everything else. Sizing honours the `target_position_pct`
+            # slider on this path (translated to the draft's max-per-name).
+            import ma_sniper as _ma_sniper
+
+            band = float(cfg.get("band_pct", _ma_sniper.DEFAULT_BAND * 100.0)) / 100.0
+            size_pct = cfg.get("target_position_pct")
+            max_per = (
+                float(size_pct) / 100.0
+                if size_pct is not None
+                else float(cfg.get("maxPerName", 0.05) or 0.05)
+            )
+            convictions[aid] = _ma_sniper.sniper_convictions(
+                db, draftable, prices, band=band, details=sniper_details,
+            )
+        else:
+            max_per = float(cfg.get("maxPerName", 0.08) or 0.08)
+            convictions[aid] = dict(rank_conv)
         sw_buyers.append(
             _swarm.Buyer(
                 aid,
                 gate=int(cfg.get("convictionGate", 1) or 1),
-                max_per_name=float(cfg.get("maxPerName", 0.08) or 0.08),
+                max_per_name=max_per,
             )
         )
-        convictions[aid] = dict(rank_conv)
+    if sniper_details:
+        logger.info(
+            "  portfolio %-22s sniper: %d name(s) at/below 200w MA (%s)",
+            slug, len(sniper_details), ", ".join(sorted(sniper_details)),
+        )
 
     plan = _swarm.snake_draft_plan(
         sw_buyers, draftable, prices, total_value, cash, convictions=convictions
@@ -408,6 +436,15 @@ def _run_portfolio_swarm(
             mode=mode, executor=executor,
         )
         rationale = cand_map.get(pick.ticker)
+        snipe = sniper_details.get(pick.ticker)
+        if snipe:
+            # A sniper strike — record the discount to the 200-week average so
+            # the thesis captures the fat pitch, not just the screen rank.
+            disc = snipe["discount_pct"]
+            where = f"{abs(disc):.1f}% below" if disc < 0 else f"{disc:.1f}% above"
+            rationale = (
+                f"At 200-week average ({where} trend); {rationale or 'quality screen pick'}"
+            )
         note = f"swarm draft (conviction {pick.conviction}/5): {rationale or ''}".strip()
         thesis = {"thesis_text": rationale} if rationale else None
         try:

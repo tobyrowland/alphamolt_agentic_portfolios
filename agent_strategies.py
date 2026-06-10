@@ -1323,6 +1323,181 @@ def rebalance_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
 
 
 # ---------------------------------------------------------------------------
+# Strategy: ma_sniper (the "200-week average sniper")
+# ---------------------------------------------------------------------------
+#
+# Charlie Munger's patience discipline: wait, fully prepared, for a QUALITY
+# business to trade down to its long-run trend, then strike. Quality is the
+# portfolio's screen top-N (quality-weighted — same candidate set every buyer
+# uses); the trend is the 200-week (~3.85y) moving average. The conviction core
+# lives in ma_sniper.py and is the primary path on the swarm (the heartbeat
+# sources per-name conviction from it). This standalone rebalance is the
+# non-swarm fallback so the strategy also works on a 1:1 / non-buyer portfolio
+# and so get_strategy('ma_sniper') resolves.
+#
+# Patient accumulator: it only ever BUYS — deploying available cash into names
+# at/below their 200-week average, deepest discount first — and never force-
+# sells to fund a buy. Most runs buy nothing (no quality name is on sale);
+# selling is the reviewer's job.
+
+
+MA_SNIPER_DEFAULTS = {
+    "band_pct": 5.0,            # proximity band to the 200w MA (percent)
+    "target_position_pct": 5.0,  # size per strike (percent of total value)
+    "cash_reserve_pct": 0.02,   # keep 2% cash for rounding / drift
+    "min_trade_usd": 500.0,     # ignore sub-noise notionals
+    "max_positions": 25,        # stop accumulating past this many holdings
+}
+
+
+def _format_ma_sniper_buy_note(ticker: str, detail: dict, rationale: str | None) -> str:
+    disc = detail.get("discount_pct", 0.0)
+    where = f"{abs(disc):.1f}% below" if disc < 0 else f"{disc:.1f}% above"
+    base = f"Bought {ticker} — at 200-week average ({where} long-run trend)"
+    return f"{base}; {rationale}." if rationale else f"{base}."
+
+
+def rebalance_ma_sniper(ctx: RebalanceContext) -> RebalanceResult:
+    """Patient accumulator: buy quality screen names at/below their 200w MA.
+
+    Algorithm:
+        1. Candidate set = the portfolio's screen top-N (quality-weighted).
+        2. Drop names already held or on the 90-day re-buy cooldown; price the
+           rest.
+        3. Compute each candidate's 200-week MA (ma_sniper) and keep only those
+           trading within ``band_pct`` of / below it — deepest discount first.
+        4. Deploy available cash into them at ``target_position_pct`` each,
+           keeping a cash reserve and capping total holdings at ``max_positions``.
+           Never sells. Records a thesis (with the discount) per buy.
+
+    Idempotent modulo price drift: a second run buys nothing when no quality
+    name is on sale (the common case) or everything is already at target.
+    """
+    result = RebalanceResult()
+    params = {**MA_SNIPER_DEFAULTS, **(ctx.params or {})}
+    handle = ctx.agent.get("handle", ctx.agent["id"][:8])
+
+    if not ctx.portfolio_id:
+        result.notes["reason"] = "ma_sniper only runs on a human portfolio"
+        return result
+
+    import ma_sniper as _ma_sniper
+
+    cand_map = _portfolio_screen_candidates(ctx)
+    candidates = list(cand_map.keys())
+    if not candidates:
+        result.notes["reason"] = "portfolio has no screen configured or screen is empty"
+        return result
+
+    book = ctx.get_book()
+    total_value = float(book["total_value_usd"])
+    if total_value <= 0:
+        result.errors.append(f"total_value_usd <= 0 for {handle}")
+        return result
+    cash = float(book["cash_usd"])
+    held = {h["ticker"] for h in book["holdings"]}
+
+    recently_sold = ctx.db.get_recently_sold_tickers(ctx.portfolio_id, days=90)
+
+    # Price only the names we could actually buy (not held, off cooldown).
+    prices: dict[str, float] = {}
+    unpriced: list[str] = []
+    for t in candidates:
+        if t in held or t in recently_sold:
+            continue
+        try:
+            prices[t] = ctx.pm.get_price(t)
+        except PortfolioError:
+            unpriced.append(t)
+    if unpriced:
+        result.notes["unpriced"] = unpriced
+
+    band = float(params["band_pct"]) / 100.0
+    details: dict[str, dict] = {}
+    convs = _ma_sniper.sniper_convictions(
+        ctx.db, list(prices.keys()), prices, band=band, details=details,
+    )
+    if not convs:
+        result.notes["reason"] = "no quality screen name at/below its 200-week average"
+        return result
+
+    # Deepest discount (highest conviction) first; screen rank breaks ties.
+    qualifying = sorted(convs, key=lambda t: (-convs[t], candidates.index(t)))
+
+    max_positions = int(params["max_positions"])
+    slots = max(0, max_positions - len(held))
+    target_usd = total_value * float(params["target_position_pct"]) / 100.0
+    reserve = total_value * float(params["cash_reserve_pct"])
+    min_trade = float(params["min_trade_usd"])
+
+    buys: list[tuple[str, int]] = []
+    spendable = cash - reserve
+    for t in qualifying:
+        if len(buys) >= slots:
+            break
+        price = prices[t]
+        budget = min(target_usd, spendable)
+        qty = int(math.floor(budget / price)) if price > 0 else 0
+        if qty < 1 or qty * price < min_trade:
+            continue
+        buys.append((t, qty))
+        spendable -= qty * price
+
+    if ctx.dry_run:
+        result.notes["dry_run_plan"] = {
+            "buys": [
+                {
+                    "ticker": t,
+                    "qty": q,
+                    "conviction": convs[t],
+                    **details.get(t, {}),
+                }
+                for (t, q) in buys
+            ],
+            "qualifying": [
+                {"ticker": t, "conviction": convs[t], **details.get(t, {})}
+                for t in qualifying
+            ],
+            "slots": slots,
+            "target_usd": round(target_usd, 2),
+            "total_value_usd": total_value,
+        }
+        logger.info(
+            "[dry-run] %s: %d sniper buy(s), %d name(s) at/below 200w MA, total=$%.2f",
+            handle, len(buys), len(qualifying), total_value,
+        )
+        return result
+
+    for t, qty in buys:
+        rationale = cand_map.get(t)
+        note = _format_ma_sniper_buy_note(t, details.get(t, {}), rationale)
+        # Thesis records the discount-to-trend so the audit trail captures the
+        # fat pitch, not just the screen rank.
+        d = details.get(t, {})
+        thesis = {
+            "thesis_text": note,
+            "extend_signals": [],
+            # If price recovers well above the 200w MA the entry logic no longer
+            # holds — a natural break signal for the reviewer to weigh.
+            "break_signals": (
+                [{"metric": "price", "op": ">", "value": round(d["ma_200w"] * 1.5, 4)}]
+                if d.get("ma_200w")
+                else []
+            ),
+        }
+        try:
+            ctx.buy(t, qty, note=note, thesis=thesis)
+            result.buys += 1
+        except PortfolioError as exc:
+            result.errors.append(f"buy {t} x{qty}: {exc}")
+
+    result.notes["targets"] = len(buys)
+    result.notes["qualifying"] = len(qualifying)
+    result.notes["total_value_usd"] = total_value
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -1370,6 +1545,7 @@ STRATEGIES: dict[str, Strategy] = {
     "trading_agents": _trading_agents_lazy,
     "watchlist_buyer": rebalance_watchlist_buyer,
     "llm_watchlist_buyer": _llm_watchlist_buyer_lazy,
+    "ma_sniper": rebalance_ma_sniper,
     "portfolio_reviewer": _portfolio_reviewer_lazy,
 }
 
