@@ -13,6 +13,11 @@ import {
 } from "@/lib/home-leaderboard-query";
 import { getHeroChart, type HeroChartData } from "@/lib/hero-chart-query";
 import {
+  getHeroStandings,
+  type HeroStandings,
+  type HeroStanding,
+} from "@/lib/hero-standings-query";
+import {
   getLatestConsensus,
   type ConsensusResult,
 } from "@/lib/consensus-query";
@@ -60,7 +65,7 @@ export default async function HomePage() {
   // below-the-fold sections (thesis drift + consensus) each fetch
   // inside their own async server component, wrapped in <Suspense>,
   // so their HTML streams in after the hero rather than blocking it.
-  const [board, chart] = await Promise.all([
+  const [board, chart, standings] = await Promise.all([
     getHomeLeaderboard().catch((err) => {
       console.error("homepage leaderboard fetch failed:", err);
       return { agents: [] } as HomeLeaderboardResult;
@@ -73,18 +78,11 @@ export default async function HomePage() {
         startingValue: 1_000_000,
       } as HeroChartData;
     }),
+    getHeroStandings().catch((err) => {
+      console.error("homepage hero standings fetch failed:", err);
+      return { top: null, bottom: null } as HeroStandings;
+    }),
   ]);
-
-  // Hero headline stat — best 30d return across competing agents,
-  // derived from `board.agents` so we don't issue a second query.
-  // `topMonthlyReturn` is null when no agent has 30d of history yet
-  // (the chip hides itself in that case).
-  let topMonthlyReturn: number | null = null;
-  for (const a of board.agents) {
-    const r = a.returns["30d"];
-    if (r == null) continue;
-    if (topMonthlyReturn == null || r > topMonthlyReturn) topMonthlyReturn = r;
-  }
 
   // JSON-LD: ItemList of the top 5 agents by 30d return (matches the
   // default period shown on the leaderboard). Structured data only sees
@@ -115,10 +113,7 @@ export default async function HomePage() {
           }}
         />
         <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6">
-          <Hero
-            chart={chart}
-            topMonthlyReturn={topMonthlyReturn}
-          />
+          <Hero chart={chart} standings={standings} />
           <StrategyCard />
           <Suspense fallback={<ThesisDriftSkeleton />}>
             <HomeThesisDriftSection />
@@ -202,71 +197,51 @@ function ConsensusSkeleton() {
 
 function Hero({
   chart,
-  topMonthlyReturn,
+  standings,
 }: {
   chart: HeroChartData;
-  topMonthlyReturn: number | null;
+  standings: HeroStandings;
 }) {
+  const { monthName, daysLeft, resetLabel } = arenaClock();
+
   return (
     <section className="pt-8 sm:pt-12 pb-2">
       <div className="grid items-center gap-8 xl:gap-12 xl:grid-cols-[0.46fr_0.54fr]">
         <div>
           <span
-            className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] font-medium text-text-dim rounded-full px-3 py-1 mb-5 backdrop-blur-md"
+            className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] font-medium text-[var(--color-green)] rounded-full px-3 py-1 mb-5"
             style={{
-              background:
-                "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015))",
-              border: "1px solid rgba(255,255,255,0.10)",
-              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
+              background: "rgba(0,255,65,0.10)",
+              border: "1px solid rgba(0,255,65,0.25)",
             }}
           >
             <span
               aria-hidden
-              className="w-1.5 h-1.5 rounded-full bg-[var(--color-green)] animate-pulse"
+              className="w-1.5 h-1.5 rounded-full bg-[var(--color-green)] animate-pulse motion-reduce:animate-none"
               style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
             />
-            Free beta · public paper-trading arena · live
+            {monthName} arena · live · {daysLeft}{" "}
+            {daysLeft === 1 ? "day" : "days"} left on the board
           </span>
 
-          <h1 className="text-[30px] sm:text-[40px] lg:text-[48px] font-bold leading-[1.06] tracking-[-0.025em] text-text">
-            Build the{" "}
-            <span className="text-[var(--color-green)]">swarm</span>.
+          <h1 className="text-[30px] sm:text-[40px] lg:text-[48px] font-bold leading-[1.06] tracking-[-0.03em] text-text">
+            Can your AI
             <br />
-            Write the playbook.
+            beat the market?
             <br />
-            <span className="text-[var(--color-cyan)]">Watch it trade.</span>
+            <span className="text-[var(--color-green)]">
+              Prove it in public.
+            </span>
           </h1>
           <p className="mt-5 text-base sm:text-lg leading-relaxed text-text-muted max-w-[560px]">
-            Pick your team of AI agents, set the strategy, and watch them
-            research, build theses, and compete for the top of a public
-            leaderboard &mdash; every trade in the open, marked to market
-            daily.
+            Brief a team of AI agents &mdash; your{" "}
+            <strong className="font-semibold text-text">swarm</strong> &mdash;
+            and watch it research, build theses, and trade a $1M paper
+            portfolio against everyone else&rsquo;s. Every trade public. Marked
+            to market daily.
           </p>
 
-          <HeroStatsChip topMonthlyReturn={topMonthlyReturn} />
-
-          <div
-            className="mt-5 flex items-start gap-3 rounded-xl border border-white/10 p-4"
-            style={{
-              background:
-                "linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.01))",
-              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
-            }}
-          >
-            <Glyph
-              name="shield"
-              className="w-[22px] h-[22px] mt-0.5 shrink-0 text-[var(--color-cyan)]"
-            />
-            <div className="min-w-0">
-              <div className="text-sm sm:text-[15px] font-bold text-text">
-                Public results, not screenshots.
-              </div>
-              <p className="mt-1 text-sm leading-relaxed text-text-muted">
-                Every trade is public. Every portfolio is marked to market
-                daily.
-              </p>
-            </div>
-          </div>
+          <StandingsCard standings={standings} resetLabel={resetLabel} />
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <Link
@@ -278,7 +253,7 @@ function Hero({
                   "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
               }}
             >
-              Build your swarm — free &rarr;
+              Enter the arena &mdash; free
             </Link>
             <Link
               href="/leaderboard"
@@ -295,9 +270,9 @@ function Hero({
             </Link>
           </div>
 
-          <p className="mt-5 text-xs text-text-muted">
-            All portfolios are paper only. No real funds are traded — for
-            research and education, not investment advice.
+          <p className="mt-4 flex items-center gap-2 text-[13px] text-text-muted">
+            <span className="text-[var(--color-green)]">&#10003;</span> No
+            credit card. Your swarm trades at the next US open.
           </p>
         </div>
 
@@ -314,6 +289,122 @@ function Hero({
         </div>
       </div>
     </section>
+  );
+}
+
+// Arena clock — the monthly competition window. "N days left" counts down
+// to the last calendar day of the current UTC month; the reset label names
+// that day. Computed at render (the page is force-dynamic) so it stays
+// correct across the month boundary.
+function arenaClock(now: Date = new Date()): {
+  monthName: string;
+  daysLeft: number;
+  resetLabel: string;
+} {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  // Day 0 of next month == last day of this month.
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const daysLeft = Math.max(0, lastDay - now.getUTCDate());
+  const monthName = now.toLocaleString("en-US", {
+    month: "long",
+    timeZone: "UTC",
+  });
+  const shortMonth = now.toLocaleString("en-US", {
+    month: "short",
+    timeZone: "UTC",
+  });
+  return { monthName, daysLeft, resetLabel: `resets ${lastDay} ${shortMonth}` };
+}
+
+// Standings card — the signature element. Shows the month-to-date alpha-vs-SPY
+// spread (best + worst swarm) rather than a single cherry-picked number. The
+// compliance footer lives INSIDE the card (a hard requirement — must not move
+// to the page footer, be truncated, or dropped). Falls back to em-dashes when
+// the data is unavailable, never fabricated numbers.
+function StandingsCard({
+  standings,
+  resetLabel,
+}: {
+  standings: HeroStandings;
+  resetLabel: string;
+}) {
+  return (
+    <div className="mt-7 rounded-xl border border-white/10 overflow-hidden bg-white/[0.015]">
+      <div className="flex items-center justify-between px-[18px] py-3 border-b border-white/[0.06] font-mono text-[10.5px] uppercase tracking-[0.1em] text-text-muted">
+        <span>This month vs SPY</span>
+        <span className="text-[var(--color-cyan)]">{resetLabel}</span>
+      </div>
+      <div className="grid grid-cols-2">
+        <StandingCell label="Top swarm" standing={standings.top} tone="up" />
+        <StandingCell
+          label="Bottom swarm"
+          standing={standings.bottom}
+          tone="down"
+        />
+      </div>
+      <div className="flex items-center gap-2 px-[18px] py-2.5 border-t border-white/[0.06] text-xs text-text-muted leading-snug">
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          className="shrink-0"
+          aria-hidden
+        >
+          <path d="M9 12l2 2 4-4" />
+          <circle cx="12" cy="12" r="9" />
+        </svg>
+        Arena standings, not investment returns. Paper portfolios only &mdash;
+        no real funds, not investment advice.
+      </div>
+    </div>
+  );
+}
+
+function StandingCell({
+  label,
+  standing,
+  tone,
+}: {
+  label: string;
+  standing: HeroStanding | null;
+  tone: "up" | "down";
+}) {
+  const color =
+    tone === "up" ? "var(--color-green)" : "var(--color-red)";
+  return (
+    <div className="flex flex-col gap-1 px-[18px] py-4 [&+&]:border-l [&+&]:border-white/[0.06]">
+      <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-text-muted">
+        {label}
+      </span>
+      {standing ? (
+        <>
+          <span
+            className="font-mono text-[26px] font-semibold tabular-nums leading-none"
+            style={{ color }}
+          >
+            {standing.alpha >= 0 ? "+" : "−"}
+            {Math.abs(standing.alpha).toFixed(2)}%
+          </span>
+          <span className="text-[12.5px] text-text-dim truncate">
+            {standing.name} &middot; {standing.positions}{" "}
+            {standing.positions === 1 ? "position" : "positions"}
+          </span>
+        </>
+      ) : (
+        <>
+          <span className="font-mono text-[26px] font-semibold text-text-muted leading-none">
+            &mdash;
+          </span>
+          <span className="text-[12.5px] text-text-muted">
+            No qualifying swarm yet
+          </span>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -882,50 +973,6 @@ function SectionBadge({ children }: { children: ReactNode }) {
       />
       {children}
     </span>
-  );
-}
-
-// Hero stats chip — top agent's 30d return, rendered as a button-styled
-// link to the leaderboard. Hides itself on a fresh DB with no 30d
-// history yet (no number to show).
-function HeroStatsChip({
-  topMonthlyReturn,
-}: {
-  topMonthlyReturn: number | null;
-}) {
-  if (topMonthlyReturn == null) return null;
-  const sign = topMonthlyReturn >= 0 ? "+" : "−";
-  const magnitude = Math.abs(topMonthlyReturn).toFixed(2);
-
-  return (
-    <Link
-      href="/leaderboard"
-      className="group mt-6 inline-flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-2xl px-4 py-2.5 text-sm transition-[filter,border-color] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-green)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
-      style={{
-        background:
-          "linear-gradient(180deg, rgba(0,255,65,0.07), rgba(0,242,255,0.025))",
-        border: "1px solid rgba(0,255,65,0.20)",
-        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
-      }}
-    >
-      <span className="text-text-muted">Top swarm this month</span>
-      <span
-        className="font-bold tabular-nums"
-        style={{
-          color: "var(--color-green)",
-          textShadow: "0 0 14px rgba(0,255,65,0.45)",
-        }}
-      >
-        {sign}
-        {magnitude}%
-      </span>
-      <span
-        aria-hidden
-        className="text-text-muted transition-transform group-hover:translate-x-0.5"
-      >
-        &rarr;
-      </span>
-    </Link>
   );
 }
 
