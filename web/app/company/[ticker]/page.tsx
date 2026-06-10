@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
@@ -11,12 +10,11 @@ import Nav from "@/components/nav";
 import PsValuationChart from "@/components/ps-valuation-chart";
 import DistributionStrips from "@/components/distribution-strips";
 import type { CompanyHolder, CompanyTrade } from "@/lib/company-agents-query";
-import {
-  buildSummaryLine,
-  type ActiveThesis,
-  type Lifecycle,
-  type ReasonGroup,
-  type SellTriggerLine,
+import type {
+  ActiveThesis,
+  Lifecycle,
+  ReasonGroup,
+  SellTriggerLine,
 } from "@/lib/company-report-query";
 import { buildStripModels, type StripModel } from "@/lib/metric-stats-query";
 import {
@@ -24,19 +22,31 @@ import {
   loadPriceSales,
   loadMetricStats,
   loadAgentActivity,
+  loadPeers,
+  type PeerTicker,
 } from "@/lib/company-page-data";
+import {
+  compute14dActivity,
+  buildActivityBadge,
+  buildHeroSummary,
+  humaniseReason,
+  buildCompiledSummary,
+  buildFaq,
+  buildMetaDescription,
+  formatLongDate,
+  COMPILED_NOTE,
+  type BadgeTone,
+  type FaqEntry,
+} from "@/lib/company-templates";
 
-// 300s ISR matches the 15-min intraday price cadence — readers see fresh
-// data without re-rendering on every request. Content is fully
-// server-rendered into the initial HTML (brief §8.1); the agent-activity
-// regions stream behind Suspense so the instant shell (identity, price,
-// chart, fundamentals) paints without waiting on the heavy trade reads
-// (brief §8.10).
-export const revalidate = 300;
+// P0: all agent activity is server-rendered in the synchronous body (no
+// Suspense streaming) so the page is fully meaningful with JS off and the
+// differentiated content is present in the raw HTML for crawlers. ISR ≤24h
+// (also fixes the staleness problem).
+export const revalidate = 86400;
 
 // ---------------------------------------------------------------------------
-// Metadata (brief §8.2–§8.5, §8.8, §8.11) — neutral, per-ticker, no
-// recommendation framing, no Review/Rating schema.
+// Metadata (P1) — title kept; meta description ADDED, populated from live data.
 // ---------------------------------------------------------------------------
 
 export async function generateMetadata({
@@ -48,52 +58,45 @@ export async function generateMetadata({
   const ticker = decodeURIComponent(rawTicker);
 
   try {
-    const supabase = getSupabase();
-    const [{ data }, tradeCountRes] = await Promise.all([
-      supabase
-        .from("companies")
-        .select("ticker, company_name, sector, short_outlook")
-        .eq("ticker", ticker)
-        .single(),
-      supabase
-        .from("agent_trades")
-        .select("id", { count: "exact", head: true })
-        .eq("ticker", ticker),
+    const [company, priceSales, activity] = await Promise.all([
+      loadCompany(ticker),
+      loadPriceSales(ticker),
+      loadAgentActivity(ticker),
     ]);
 
-    if (!data) {
+    if (!company) {
       return {
         title: `${ticker} — not found`,
         robots: { index: false, follow: false },
       };
     }
 
-    const name = (data.company_name as string | null) ?? ticker;
+    const a14d = compute14dActivity(activity.trades);
     const indexable = isCompanyIndexable({
-      hasTrades: (tradeCountRes.count ?? 0) > 0,
-      shortOutlook: data.short_outlook as string | null,
+      hasTrades: activity.traded,
+      shortOutlook: company.short_outlook,
     });
 
-    // ~55-char title, ticker front-loaded; layout appends " | AlphaMolt".
     const title = `${ticker} Stock — AI Agent Analysis & Valuation`;
-    const description =
-      `See how AI trading agents are paper-trading ${name} (${ticker}): who's buying ` +
-      `or selling, recorded theses, P/S vs its history, and fundamentals ranked across ` +
-      `the market. Research only — not financial advice.`;
+    const description = buildMetaDescription({
+      company,
+      priceSales,
+      activity: a14d,
+      totalAgents: activity.totalAgents,
+    });
     const canonical = `/company/${encodeURIComponent(ticker)}`;
+    const name = company.company_name ?? ticker;
 
     return {
       title,
       description,
       alternates: { canonical },
-      // §8.8: thin, untraded + data-sparse pages stay out of the index but
-      // remain crawlable for internal links.
       robots: indexable
         ? { index: true, follow: true }
         : { index: false, follow: true },
       openGraph: {
         title: `${ticker} — AI agent paper-trading activity & valuation`,
-        description: `Who's buying or selling ${name} (${ticker}) across the AI agent arena, the recorded theses, and P/S vs its 12-month median.`,
+        description: `Who's buying or selling ${name} (${ticker}) across the AI agent arena, the recorded reasons, and P/S vs its 12-month median.`,
         type: "website",
       },
       twitter: {
@@ -108,12 +111,13 @@ export async function generateMetadata({
   }
 }
 
-// Neutral JSON-LD only (brief §8.5): BreadcrumbList + Dataset. Never
-// Review / Rating / AggregateRating — those assert a recommendation.
+// ---------------------------------------------------------------------------
+// JSON-LD (P1) — BreadcrumbList + FAQPage (mirrors the visible FAQ) + Dataset.
+// ---------------------------------------------------------------------------
+
 function breadcrumbJsonLd(ticker: string, name: string | null, sector: string | null) {
   const display = name ?? ticker;
   const items: Array<{ name: string; item?: string }> = [
-    { name: "Home", item: absoluteUrl("/") },
     { name: "Screener", item: absoluteUrl("/screener") },
   ];
   if (sector) {
@@ -135,6 +139,18 @@ function breadcrumbJsonLd(ticker: string, name: string | null, sector: string | 
   };
 }
 
+function faqJsonLd(faq: FaqEntry[]) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faq.map((f) => ({
+      "@type": "Question",
+      name: f.q,
+      acceptedAnswer: { "@type": "Answer", text: f.a },
+    })),
+  };
+}
+
 function datasetJsonLd({
   ticker,
   name,
@@ -149,7 +165,7 @@ function datasetJsonLd({
     "@context": "https://schema.org",
     "@type": "Dataset",
     name: `${ticker} — AI agent paper-trading activity and fundamentals`,
-    description: `Paper-trading actions by AI agents on ${display} (${ticker}), with recorded theses, price-to-sales history, and fundamentals ranked across the screened universe.`,
+    description: `Paper-trading actions by AI agents on ${display} (${ticker}), with recorded reasons, price-to-sales history, and fundamentals ranked across the screened universe.`,
     ...(dateModified ? { dateModified } : {}),
     isAccessibleForFree: true,
     creator: { "@type": "Organization", name: "AlphaMolt" },
@@ -158,7 +174,7 @@ function datasetJsonLd({
 }
 
 // ---------------------------------------------------------------------------
-// Page — instant shell + streamed agent-activity regions
+// Page — everything server-rendered up front (P0).
 // ---------------------------------------------------------------------------
 
 export default async function CompanyPage({
@@ -169,75 +185,74 @@ export default async function CompanyPage({
   const { ticker } = await params;
   const decoded = decodeURIComponent(ticker);
 
-  // Instant shell: the three fast reads only (companies + price_sales +
-  // metric_stats). Everything that needs the heavy trade/holder/thesis
-  // reads streams in below via <Suspense>.
-  const [company, priceSales, metricStats] = await Promise.all([
+  const [company, priceSales, metricStats, activity] = await Promise.all([
     loadCompany(decoded),
     loadPriceSales(decoded),
     loadMetricStats(),
+    loadAgentActivity(decoded),
   ]);
 
   if (!company) notFound();
 
+  const peers = await loadPeers(company.ticker, company.sector, company.ps_now);
+
   const strips = buildStripModels(company, metricStats);
   const dataUpdated = company.data_updated_at ?? company.ai_analyzed_at ?? null;
+  const a14d = compute14dActivity(activity.trades);
+  const badge = buildActivityBadge(a14d);
+  const heroSummary = buildHeroSummary(company, priceSales, a14d);
+  const compiledClauses = buildCompiledSummary({
+    company,
+    priceSales,
+    lifecycle: activity.lifecycle,
+    activity: a14d,
+    totalAgents: activity.totalAgents,
+  });
+  const faq = buildFaq({
+    company,
+    priceSales,
+    lifecycle: activity.lifecycle,
+    activity: a14d,
+    totalAgents: activity.totalAgents,
+    dataUpdated,
+  });
 
   const breadcrumb = breadcrumbJsonLd(company.ticker, company.company_name, company.sector);
+  const faqLd = faqJsonLd(faq);
   const dataset = datasetJsonLd({
     ticker: company.ticker,
     name: company.company_name,
     dateModified:
-      (company.data_updated_at ?? company.scored_at ?? company.ai_analyzed_at ?? null)?.slice(
-        0,
-        10,
-      ) ?? null,
+      (company.data_updated_at ?? company.scored_at ?? company.ai_analyzed_at ?? null)?.slice(0, 10) ??
+      null,
   });
 
   return (
     <>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumb) }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(dataset) }}
-      />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumb) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(dataset) }} />
       <Nav />
       <main className="flex-1 w-full">
         <div className="max-w-[760px] mx-auto w-full px-4 sm:px-[18px] py-6">
           <article>
             <Breadcrumbs ticker={company.ticker} sector={company.sector} />
 
-            {/* BLOCK 1 — header (identity + price + score paint instantly;
-                behavioural status, summary, lifecycle, held-by stream in) */}
             <Header
               company={company}
               dataUpdated={dataUpdated}
-              badge={
-                <Suspense fallback={<BadgeSkeleton />}>
-                  <BehaviouralBadge ticker={decoded} />
-                </Suspense>
-              }
-              summary={
-                <Suspense fallback={<SummarySkeleton />}>
-                  <SummaryParagraph ticker={decoded} company={company} priceSales={priceSales} />
-                </Suspense>
-              }
-              lifecycle={
-                <Suspense fallback={<PillsSkeleton />}>
-                  <LifecyclePillsRow ticker={decoded} />
-                </Suspense>
-              }
-              heldBy={
-                <Suspense fallback={<span className="text-text-muted">—</span>}>
-                  <HeldByValue ticker={decoded} />
-                </Suspense>
-              }
+              badge={badge}
+              heroSummary={heroSummary}
+              lifecycle={activity.lifecycle}
+              totalAgents={activity.totalAgents}
+              traded={activity.traded}
             />
 
-            {/* BLOCK 2 — P/S valuation chart (anchor, instant) */}
+            {compiledClauses.length >= 3 && (
+              <CompiledSummary clauses={compiledClauses} />
+            )}
+
+            {/* P/S valuation chart (do not regress) */}
             {priceSales && (
               <Block heading="Price-to-sales history · 52 weeks">
                 <PsHeader priceSales={priceSales} psNow={company.ps_now} />
@@ -245,165 +260,73 @@ export default async function CompanyPage({
               </Block>
             )}
 
-            {/* BLOCK 3 — what the agents did (streamed; hidden when untraded) */}
-            <Suspense fallback={<BlockSkeleton heading="What the agents did" />}>
-              <WhatAgentsDidSection ticker={decoded} />
-            </Suspense>
+            {/* What the agents did + the conversion band at the highest-
+                interest moment, directly after it. */}
+            {activity.traded && (
+              <>
+                <WhatAgentsDid
+                  ticker={company.ticker}
+                  sector={company.sector}
+                  bought={activity.bought}
+                  sold={activity.sold}
+                  trades={activity.trades}
+                  sellTriggers={activity.sellTriggers}
+                />
+                <CtaBand
+                  ticker={company.ticker}
+                  sector={company.sector}
+                  totalAgents={activity.totalAgents}
+                  holding={activity.lifecycle.holding}
+                  traded={activity.traded}
+                />
+              </>
+            )}
 
-            {/* BLOCK 4 — fundamentals distribution strips (instant) */}
+            {/* Fundamentals (do not regress; metrics expanded, null rows omitted) */}
             <Block heading={`Fundamentals · where ${company.ticker} sits in the universe`}>
+              {company.rating != null && (
+                <p className="font-mono text-[12px] text-text-muted mb-3">
+                  TradingView analyst consensus: {formatNumber(company.rating, { decimals: 1 })} / 5 (external)
+                </p>
+              )}
               <DistributionStrips ticker={company.ticker} strips={strips} />
               <FundamentalsFootnote company={company} strips={strips} />
               <FullMetrics company={company} priceSales={priceSales} />
             </Block>
 
-            {/* BLOCK 5 — position ledger (streamed; hidden when untraded) */}
-            <Suspense fallback={<BlockSkeleton heading="Position ledger" />}>
-              <PositionLedgerSection ticker={decoded} />
-            </Suspense>
+            {/* Position ledger — invitation when no holders */}
+            <Block heading="Position ledger">
+              <PositionLedger
+                ticker={company.ticker}
+                sector={company.sector}
+                holders={activity.holders}
+                trades={activity.trades}
+                theses={activity.theses}
+              />
+            </Block>
 
-            {/* Related links — internal crawl paths (brief §8.6) */}
-            <RelatedLinks ticker={company.ticker} sector={company.sector} />
+            {/* CTA band also shown when the ticker was never traded */}
+            {!activity.traded && (
+              <CtaBand
+                ticker={company.ticker}
+                sector={company.sector}
+                totalAgents={activity.totalAgents}
+                holding={0}
+                traded={false}
+              />
+            )}
 
-            <footer className="mt-6 pt-4 border-t border-white/[0.09]">
-              <p className="font-mono text-[10.5px] text-text-muted leading-relaxed">
-                A record of paper-trading activity by AI agents · not a recommendation · not
-                financial advice. Prices are 15-minute delayed (EODHD).
-                {dataUpdated && <> Data updated {formatDate(dataUpdated)}.</>}
-              </p>
-            </footer>
+            {/* FAQ (P3) — mirrors the FAQPage JSON-LD */}
+            <Faq ticker={company.ticker} faq={faq} />
+
+            {/* Related — peer entity links + category links (P5) */}
+            <RelatedLinks ticker={company.ticker} sector={company.sector} peers={peers} />
+
+            <LegalBlock dataUpdated={dataUpdated} />
           </article>
         </div>
       </main>
     </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Streamed agent-activity regions — each awaits the single memoized
-// loadAgentActivity bundle, so the multiple Suspense boundaries share one
-// DB round-trip rather than re-querying.
-// ---------------------------------------------------------------------------
-
-async function BehaviouralBadge({ ticker }: { ticker: string }) {
-  const { behavioural } = await loadAgentActivity(ticker);
-  return (
-    <span
-      title={behavioural.detail}
-      className="font-mono text-[11px] tracking-wide uppercase px-2.5 py-[3px] rounded-[5px] bg-white/[0.05] text-text-muted"
-    >
-      {behavioural.label}
-    </span>
-  );
-}
-
-async function SummaryParagraph({
-  ticker,
-  company,
-  priceSales,
-}: {
-  ticker: string;
-  company: Company;
-  priceSales: PriceSales | null;
-}) {
-  const { lifecycle } = await loadAgentActivity(ticker);
-  return (
-    <p className="text-[14px] leading-[1.55] text-text mb-4">
-      {buildSummaryLine(company, priceSales, lifecycle)}
-    </p>
-  );
-}
-
-async function LifecyclePillsRow({ ticker }: { ticker: string }) {
-  const { lifecycle, traded } = await loadAgentActivity(ticker);
-  if (!traded) return null;
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap mb-4 font-mono text-[11px]">
-      {lifecycle.watchlisted > 0 && (
-        <>
-          <LifecyclePill>{lifecycle.watchlisted} watchlisted</LifecyclePill>
-          <Chevron />
-        </>
-      )}
-      <LifecyclePill accent>{lifecycle.bought} bought</LifecyclePill>
-      <Chevron />
-      <LifecyclePill strong>{lifecycle.holding} holding</LifecyclePill>
-      {lifecycle.sold > 0 && (
-        <>
-          <Chevron />
-          <LifecyclePill>{lifecycle.sold} sold</LifecyclePill>
-        </>
-      )}
-    </div>
-  );
-}
-
-async function HeldByValue({ ticker }: { ticker: string }) {
-  const { lifecycle, totalAgents } = await loadAgentActivity(ticker);
-  return <>{`${lifecycle.holding} / ${totalAgents}`}</>;
-}
-
-async function WhatAgentsDidSection({ ticker }: { ticker: string }) {
-  const { bought, sold, sellTriggers, traded } = await loadAgentActivity(ticker);
-  if (!traded) return null;
-  return (
-    <Block heading="What the agents did">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-        <ReasonCard
-          badge={`${bought.count} bought — reasons given`}
-          badgeClass="bg-cyan/[0.12] text-cyan"
-          group={bought}
-        />
-        <ReasonCard
-          badge={`${sold.count} sold — reasons given`}
-          badgeClass="bg-white/[0.06] text-text-muted"
-          group={sold}
-        />
-      </div>
-      <SellTriggerRow sellTriggers={sellTriggers} />
-    </Block>
-  );
-}
-
-async function PositionLedgerSection({ ticker }: { ticker: string }) {
-  const { holders, trades, theses, traded } = await loadAgentActivity(ticker);
-  if (!traded) return null;
-  return (
-    <Block heading="Position ledger">
-      <PositionLedger holders={holders} trades={trades} theses={theses} totalTrades={trades.length} />
-    </Block>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Skeletons for the streamed regions (match heights to limit CLS)
-// ---------------------------------------------------------------------------
-
-function BadgeSkeleton() {
-  return <span className="inline-block h-5 w-28 rounded-[5px] bg-white/[0.05] animate-pulse" />;
-}
-
-function SummarySkeleton() {
-  return (
-    <div className="mb-4 space-y-1.5" aria-hidden>
-      <div className="h-3.5 w-full bg-bg-hover rounded animate-pulse" />
-      <div className="h-3.5 w-2/3 bg-bg-hover rounded animate-pulse" />
-    </div>
-  );
-}
-
-function PillsSkeleton() {
-  return <div className="h-7 w-64 mb-4 rounded bg-bg-hover animate-pulse" aria-hidden />;
-}
-
-function BlockSkeleton({ heading }: { heading: string }) {
-  return (
-    <section className="bg-bg-card border border-white/[0.09] rounded-[14px] p-[18px] mt-3.5">
-      <h2 className="font-mono text-[11px] tracking-[0.07em] text-text-muted font-normal uppercase mb-3">
-        {heading}
-      </h2>
-      <div className="h-24 w-full rounded bg-bg-hover animate-pulse" aria-hidden />
-    </section>
   );
 }
 
@@ -431,10 +354,7 @@ function Breadcrumbs({ ticker, sector }: { ticker: string; sector: string | null
       {sector && (
         <>
           <span aria-hidden> › </span>
-          <Link
-            href={`/screener?sector=${encodeURIComponent(sector)}`}
-            className="hover:text-text-dim"
-          >
+          <Link href={`/screener?sector=${encodeURIComponent(sector)}`} className="hover:text-text-dim">
             {sector}
           </Link>
         </>
@@ -446,54 +366,82 @@ function Breadcrumbs({ ticker, sector }: { ticker: string; sector: string | null
 }
 
 // ---------------------------------------------------------------------------
-// BLOCK 1 — header
+// Header
 // ---------------------------------------------------------------------------
+
+const BADGE_TONE: Record<BadgeTone, string> = {
+  buy: "bg-[var(--color-cyan)]/[0.12] text-cyan border-cyan/30",
+  sell: "bg-[var(--color-red)]/[0.10] text-[var(--color-red)] border-[var(--color-red)]/30",
+  flat: "bg-white/[0.05] text-text-muted border-white/[0.12]",
+};
 
 function Header({
   company,
   dataUpdated,
   badge,
-  summary,
+  heroSummary,
   lifecycle,
-  heldBy,
+  totalAgents,
+  traded,
 }: {
   company: Company;
   dataUpdated: string | null;
-  badge: React.ReactNode;
-  summary: React.ReactNode;
-  lifecycle: React.ReactNode;
-  heldBy: React.ReactNode;
+  badge: { label: string; tone: BadgeTone } | null;
+  heroSummary: string;
+  lifecycle: Lifecycle;
+  totalAgents: number;
+  traded: boolean;
 }) {
   const perf = company.perf_52w_vs_spy;
-  const perfLabel =
-    perf != null ? `${perf >= 0 ? "+" : ""}${(perf * 100).toFixed(1)}%` : "—";
+  const perfLabel = perf != null ? `${perf >= 0 ? "+" : ""}${(perf * 100).toFixed(1)}%` : "—";
 
   return (
     <div>
       <div className="flex items-baseline gap-3 flex-wrap mb-0.5">
-        {/* Single <h1> contains ticker + company name (brief §8.4). */}
         <h1 className="text-[26px] font-extrabold tracking-[-0.02em] leading-none">
           {company.ticker}{" "}
-          <span className="text-[17px] font-semibold text-text-muted">
-            {company.company_name}
-          </span>
+          <span className="text-[17px] font-semibold text-text-muted">{company.company_name}</span>
         </h1>
-        {badge}
+        {badge && (
+          <span
+            className={`font-mono text-[10.5px] tracking-[0.1em] uppercase px-2 py-[3px] rounded-[6px] border ${BADGE_TONE[badge.tone]}`}
+          >
+            {badge.label}
+          </span>
+        )}
       </div>
 
       <p className="font-mono text-[11px] text-text-muted mt-0.5 mb-3.5">
         {[company.exchange, company.country, company.sector].filter(Boolean).join(" · ")}
-        {dataUpdated && <> · data updated {formatDate(dataUpdated)}</>}
+        {dataUpdated && <> · data updated {formatLongDate(dataUpdated)}</>}
       </p>
 
-      {summary}
-      {lifecycle}
+      <p className="text-[14px] leading-[1.55] text-text mb-4 max-w-[620px]">{heroSummary}</p>
 
-      {/* Key stats */}
+      {traded && (
+        <div className="flex items-center gap-1.5 flex-wrap mb-4 font-mono text-[11px]">
+          {lifecycle.watchlisted > 0 && (
+            <>
+              <LifecyclePill>{lifecycle.watchlisted} watchlisted</LifecyclePill>
+              <Chevron />
+            </>
+          )}
+          <LifecyclePill accent>{lifecycle.bought} bought</LifecyclePill>
+          <Chevron />
+          <LifecyclePill strong>{lifecycle.holding} holding</LifecyclePill>
+          {lifecycle.sold > 0 && (
+            <>
+              <Chevron />
+              <LifecyclePill>{lifecycle.sold} sold</LifecyclePill>
+            </>
+          )}
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-x-[18px] gap-y-3 border-t border-b border-white/[0.09] py-3.5">
         <Stat label="PRICE" value={formatPrice(company.price)} />
         <Stat label="52W vs SPY" value={perfLabel} />
-        <Stat label="HELD BY" value={heldBy} />
+        <Stat label="HELD BY" value={`${lifecycle.holding} / ${totalAgents}`} />
         <Stat
           label="SCORE"
           value={
@@ -529,21 +477,11 @@ function Chevron() {
   return <span className="font-mono text-text-muted">›</span>;
 }
 
-function Stat({
-  label,
-  value,
-  muted,
-}: {
-  label: string;
-  value: React.ReactNode;
-  muted?: boolean;
-}) {
+function Stat({ label, value, muted }: { label: string; value: React.ReactNode; muted?: boolean }) {
   return (
     <div className="min-w-[80px]">
       <div className="font-mono text-[10px] text-text-muted">{label}</div>
-      <div
-        className={`font-mono ${muted ? "text-[13px] text-text-muted mt-[3px]" : "text-[15px]"}`}
-      >
+      <div className={`font-mono ${muted ? "text-[13px] text-text-muted mt-[3px]" : "text-[15px]"}`}>
         {value}
       </div>
     </div>
@@ -551,7 +489,27 @@ function Stat({
 }
 
 // ---------------------------------------------------------------------------
-// BLOCK 2 — P/S header line
+// Compiled summary (P2.3)
+// ---------------------------------------------------------------------------
+
+function CompiledSummary({ clauses }: { clauses: string[] }) {
+  return (
+    <section className="mt-7 mb-2">
+      <div className="font-mono text-[11px] tracking-[0.12em] uppercase text-text-muted">
+        Compiled summary
+      </div>
+      <p className="mt-2.5 text-[14.5px] leading-[1.75] text-text-dim max-w-[660px]">
+        {clauses.join(" ")}
+      </p>
+      <div className="mt-2.5 font-mono text-[10.5px] tracking-[0.04em] text-text-muted">
+        {COMPILED_NOTE}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P/S header line
 // ---------------------------------------------------------------------------
 
 function PsHeader({ priceSales, psNow }: { priceSales: PriceSales; psNow: number | null }) {
@@ -587,43 +545,156 @@ function PsHeader({ priceSales, psNow }: { priceSales: PriceSales; psNow: number
 }
 
 // ---------------------------------------------------------------------------
-// BLOCK 3 — what the agents did (presentational)
+// What the agents did (P2.4 humanised reasons, P2.5 sold-empty invitation)
 // ---------------------------------------------------------------------------
 
-function ReasonCard({
+function WhatAgentsDid({
+  ticker,
+  sector,
+  bought,
+  sold,
+  trades,
+  sellTriggers,
+}: {
+  ticker: string;
+  sector: string | null;
+  bought: ReasonGroup;
+  sold: ReasonGroup;
+  trades: CompanyTrade[];
+  sellTriggers: SellTriggerLine;
+}) {
+  return (
+    <Block heading="What the agents did">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <BoughtCard bought={bought} trades={trades} />
+        <SoldCard ticker={ticker} sold={sold} />
+      </div>
+      <SellTriggerRow sellTriggers={sellTriggers} />
+    </Block>
+  );
+}
+
+function ReasonCardShell({
   badge,
   badgeClass,
-  group,
+  children,
 }: {
   badge: string;
   badgeClass: string;
-  group: ReasonGroup;
+  children: React.ReactNode;
 }) {
   return (
-    <div className="bg-white/[0.03] border border-white/[0.09] rounded-[10px] p-[13px]">
+    <div className="bg-white/[0.03] border border-white/[0.09] rounded-[10px] p-[16px]">
       <span
         className={`font-mono text-[10px] tracking-wide uppercase px-[7px] py-0.5 rounded-[5px] ${badgeClass}`}
       >
         {badge}
       </span>
-      {group.reasons.length > 0 ? (
-        <ul className="my-[9px] space-y-1.5">
-          {group.reasons.map((r, i) => (
+      {children}
+    </div>
+  );
+}
+
+function BoughtCard({ bought, trades }: { bought: ReasonGroup; trades: CompanyTrade[] }) {
+  // Pair each distinct buy reason with the most recent buy trade carrying it,
+  // so we can humanise the DSL and link the agent.
+  const buys = trades.filter((t) => t.side === "buy");
+  const seen = new Set<string>();
+  const items: { trade: CompanyTrade }[] = [];
+  for (const t of buys) {
+    if (!t.note) continue;
+    const key = t.note.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    items.push({ trade: t });
+    if (items.length >= 3) break;
+  }
+
+  return (
+    <ReasonCardShell
+      badge={`${bought.count} bought${items.length ? " — reason given" : ""}`}
+      badgeClass="bg-cyan/[0.12] text-cyan"
+    >
+      {items.length > 0 ? (
+        <div className="mt-3 space-y-3">
+          {items.map(({ trade }, i) => (
+            <HumanReasonCard key={i} trade={trade} />
+          ))}
+        </div>
+      ) : (
+        <p className="my-[9px] text-[13px] text-text-muted italic">No recorded reasons.</p>
+      )}
+    </ReasonCardShell>
+  );
+}
+
+function HumanReasonCard({ trade }: { trade: CompanyTrade }) {
+  const parsed = humaniseReason(trade.note);
+  if (!parsed) return null;
+  const when = trade.executed_at ? formatLongDate(trade.executed_at) : null;
+  return (
+    <div>
+      {parsed.kind === "raw" ? (
+        <details className="group">
+          <summary className="font-mono text-[10.5px] tracking-[0.06em] text-text-muted cursor-pointer list-none hover:text-text-dim">
+            raw signal ▸
+          </summary>
+          <code className="block mt-2 font-mono text-[11px] text-text-dim bg-bg border border-white/[0.06] rounded-[7px] px-3 py-2 break-all">
+            {parsed.raw}
+          </code>
+        </details>
+      ) : (
+        <>
+          <p className="text-[14px] leading-[1.6] text-text-dim">{parsed.text}</p>
+          {parsed.kind === "humanised" && (
+            <details className="group mt-2">
+              <summary className="font-mono text-[10.5px] tracking-[0.06em] text-text-muted cursor-pointer list-none hover:text-text-dim">
+                raw signal ▸
+              </summary>
+              <code className="block mt-2 font-mono text-[11px] text-text-dim bg-bg border border-white/[0.06] rounded-[7px] px-3 py-2 break-all">
+                {parsed.raw}
+              </code>
+            </details>
+          )}
+        </>
+      )}
+      <p className="font-mono text-[10.5px] text-text-muted mt-2">
+        by{" "}
+        <Link href={`/agents/${trade.handle}`} className="text-cyan hover:underline">
+          {trade.display_name}
+        </Link>
+        {when && <> · {when}</>}
+      </p>
+    </div>
+  );
+}
+
+function SoldCard({ ticker, sold }: { ticker: string; sold: ReasonGroup }) {
+  const hasReasons = sold.reasons.length > 0;
+  return (
+    <ReasonCardShell
+      badge={`${sold.count} sold${hasReasons ? " — reason given" : " — no reason recorded"}`}
+      badgeClass="bg-white/[0.06] text-text-muted"
+    >
+      {hasReasons ? (
+        <ul className="mt-3 space-y-1.5">
+          {sold.reasons.map((r, i) => (
             <li key={i} className="text-[13px] leading-[1.5] text-text-dim">
               &ldquo;{r}&rdquo;
             </li>
           ))}
         </ul>
       ) : (
-        <p className="my-[9px] text-[13px] text-text-muted italic">No recorded reasons.</p>
-      )}
-      {group.agents.length > 0 && (
-        <p className="font-mono text-[10.5px] text-text-muted">
-          {group.agents.slice(0, 3).join(" · ")}
-          {group.agents.length > 3 && ` +${group.agents.length - 3}`}
+        <p className="mt-3 text-[13.5px] leading-[1.6] text-text-muted">
+          This exit predates reason capture. Every exit since records why the agent sold &mdash;{" "}
+          see a{" "}
+          <Link href="/consensus" className="text-cyan hover:underline">
+            recent example
+          </Link>
+          .
         </p>
       )}
-    </div>
+    </ReasonCardShell>
   );
 }
 
@@ -647,11 +718,7 @@ function SellTriggerRow({ sellTriggers }: { sellTriggers: SellTriggerLine }) {
       ) : (
         <span className="text-text">
           {tripped} currently tripped (
-          {sellTriggers.triggers
-            .filter((t) => t.tripped)
-            .map((t) => t.label)
-            .join(", ")}
-          )
+          {sellTriggers.triggers.filter((t) => t.tripped).map((t) => t.label).join(", ")})
         </span>
       )}
     </p>
@@ -659,19 +726,77 @@ function SellTriggerRow({ sellTriggers }: { sellTriggers: SellTriggerLine }) {
 }
 
 // ---------------------------------------------------------------------------
-// BLOCK 4 — fundamentals footnote + full-metrics collapsible
+// CTA band (P4.2) — copy varies by holder count / activity.
 // ---------------------------------------------------------------------------
 
-function FundamentalsFootnote({
-  company,
-  strips,
+function CtaBand({
+  ticker,
+  sector,
+  totalAgents,
+  holding,
+  traded,
 }: {
-  company: Company;
-  strips: StripModel[];
+  ticker: string;
+  sector: string | null;
+  totalAgents: number;
+  holding: number;
+  traded: boolean;
 }) {
-  const quality = strips.filter(
-    (s) => s.available && s.key !== "ps_now" && s.stockPct != null,
+  let headline: string;
+  let supporting: string;
+  if (!traded) {
+    headline = `No agent has traded ${ticker} yet.`;
+    supporting = `Create a portfolio with a ${sector ?? "sector"} brief and yours could be the first on this page.`;
+  } else if (holding >= 1) {
+    headline = `${holding} agent${holding === 1 ? "" : "s"} hold${holding === 1 ? "s" : ""} ${ticker} right now.`;
+    supporting = `See their entries above — then create a portfolio and try to beat them on the leaderboard.`;
+  } else {
+    headline = `${totalAgents} agents have seen ${ticker}. None of them holds it.`;
+    supporting = `Think the swarm is wrong? Create a portfolio, brief your agents with your thesis, and take the other side on the public leaderboard.`;
+  }
+
+  return (
+    <section
+      className="mt-3.5 rounded-[14px] p-[26px]"
+      style={{
+        border: "1px solid rgba(0,242,255,0.25)",
+        background: "linear-gradient(180deg, rgba(0,242,255,0.06), rgba(0,242,255,0.015))",
+      }}
+    >
+      <div className="font-mono text-[10.5px] tracking-[0.16em] uppercase text-cyan mb-3">
+        The other side of the trade
+      </div>
+      <h3 className="text-[20px] font-semibold tracking-[-0.01em] leading-[1.35] max-w-[480px]">
+        {headline}
+      </h3>
+      <p className="mt-2.5 mb-5 text-[14px] text-text-muted max-w-[520px]">{supporting}</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <Link
+          href="/signup"
+          data-cta="company-create"
+          className="inline-flex items-center px-5 py-2.5 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60"
+        >
+          Create your portfolio
+        </Link>
+        <Link
+          href="/docs"
+          data-cta="company-how"
+          className="inline-flex items-center px-4 py-2.5 rounded-lg text-text-dim border border-white/[0.12] text-sm font-medium hover:text-text hover:border-white/20 transition-colors"
+        >
+          How agents trade →
+        </Link>
+        <span className="font-mono text-[11px] text-text-muted">free · no card · live in minutes</span>
+      </div>
+    </section>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Fundamentals footnote + full metrics (P2.6 — expanded, null rows omitted)
+// ---------------------------------------------------------------------------
+
+function FundamentalsFootnote({ company, strips }: { company: Company; strips: StripModel[] }) {
+  const quality = strips.filter((s) => s.available && s.key !== "ps_now" && s.stockPct != null);
   const strong = quality.filter((s) => (s.stockPct ?? 0) >= 60).length;
   const note =
     quality.length > 0
@@ -679,69 +804,55 @@ function FundamentalsFootnote({
         ? `Ranks in the upper half of the screened universe on ${strong} of ${quality.length} quality metrics.`
         : `Ranks below the universe median on most quality metrics.`
       : null;
-  const rating = company.rating;
-
-  if (!note && rating == null) return null;
-
+  if (!note) return null;
   return (
     <p className="font-mono text-[10.5px] text-text-muted mt-[15px] border-t border-white/[0.09] pt-[11px]">
       {note}
-      {rating != null && (
-        <>
-          {" "}
-          TradingView analyst consensus: {formatNumber(rating, { decimals: 1 })} / 5 (external).
-        </>
-      )}
     </p>
   );
 }
 
-function FullMetrics({
-  company,
-  priceSales,
-}: {
-  company: Company;
-  priceSales: PriceSales | null;
-}) {
-  const rows: Array<[string, string]> = [
-    ["P/S", `${formatNumber(company.ps_now, { decimals: 2 })}×`],
-    [
-      "P/S 12-mo median",
-      priceSales?.median_12m != null ? `${priceSales.median_12m.toFixed(2)}×` : "—",
-    ],
-    ["Revenue growth TTM", formatPct(company.rev_growth_ttm_pct)],
-    ["Revenue growth QoQ", formatPct(company.rev_growth_qoq_pct)],
-    ["Revenue CAGR", formatPct(company.rev_cagr_pct)],
-    ["Gross margin", formatPct(clampGm(company.gross_margin_pct))],
-    ["Operating margin", formatPct(company.operating_margin_pct)],
-    ["Net margin", formatPct(company.net_margin_pct)],
-    ["FCF margin", formatPct(company.fcf_margin_pct)],
-    ["Rule of 40", formatNumber(company.rule_of_40, { decimals: 1 })],
-    ["EPS", company.eps_only != null ? formatPrice(company.eps_only) : "—"],
-    ["EPS YoY", formatPct(company.eps_yoy_pct)],
+function FullMetrics({ company, priceSales }: { company: Company; priceSales: PriceSales | null }) {
+  // Each row pre-formatted; null/blank rows are dropped rather than dashed.
+  const rows: Array<[string, string | null]> = [
+    ["P/S", company.ps_now != null ? `${company.ps_now.toFixed(2)}×` : null],
+    ["P/S 12-mo median", priceSales?.median_12m != null ? `${priceSales.median_12m.toFixed(2)}×` : null],
+    ["Revenue growth TTM", numOrNull(company.rev_growth_ttm_pct, (v) => formatPct(v))],
+    ["Revenue growth QoQ", numOrNull(company.rev_growth_qoq_pct, (v) => formatPct(v))],
+    ["Revenue CAGR", numOrNull(company.rev_cagr_pct, (v) => formatPct(v))],
+    ["Gross margin", numOrNull(clampGm(company.gross_margin_pct), (v) => formatPct(v))],
+    ["Operating margin", numOrNull(company.operating_margin_pct, (v) => formatPct(v))],
+    ["Net margin", numOrNull(company.net_margin_pct, (v) => formatPct(v))],
+    ["FCF margin", numOrNull(company.fcf_margin_pct, (v) => formatPct(v))],
+    ["Rule of 40", numOrNull(company.rule_of_40, (v) => formatNumber(v, { decimals: 1 }))],
+    ["EPS", company.eps_only != null ? formatPrice(company.eps_only) : null],
+    ["EPS YoY", numOrNull(company.eps_yoy_pct, (v) => formatPct(v))],
     [
       "52w vs SPY",
-      company.perf_52w_vs_spy != null ? formatPct(company.perf_52w_vs_spy * 100) : "—",
+      company.perf_52w_vs_spy != null ? formatPct(company.perf_52w_vs_spy * 100) : null,
     ],
-    ["Rating (TradingView)", formatNumber(company.rating, { decimals: 1 })],
+    ["Rating (TradingView)", numOrNull(company.rating, (v) => `${formatNumber(v, { decimals: 1 })} / 5`)],
   ];
+  const visible = rows.filter((r): r is [string, string] => r[1] != null);
 
   return (
-    <details className="mt-4 group">
-      <summary className="font-mono text-[11px] text-text-muted hover:text-text-dim cursor-pointer select-none list-none">
-        <span className="group-open:hidden">Show full metrics ▼</span>
-        <span className="hidden group-open:inline">Hide full metrics ▲</span>
-      </summary>
-      <div className="mt-3 pt-3 border-t border-white/[0.09] grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2.5">
-        {rows.map(([label, value]) => (
-          <div key={label}>
-            <div className="font-mono text-[10px] text-text-muted">{label}</div>
-            <div className="font-mono text-[12.5px] text-text-dim">{value}</div>
-          </div>
-        ))}
-      </div>
-    </details>
+    <div className="mt-4 pt-3 border-t border-white/[0.09]">
+      <table className="w-full font-mono text-[12.5px]">
+        <tbody>
+          {visible.map(([label, value]) => (
+            <tr key={label} className="border-t border-white/[0.06] first:border-t-0">
+              <td className="py-2 text-text-muted">{label}</td>
+              <td className="py-2 text-right text-text-dim">{value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
+}
+
+function numOrNull(v: number | null | undefined, fmt: (n: number) => string): string | null {
+  return v == null ? null : fmt(v);
 }
 
 function clampGm(v: number | null): number | null {
@@ -750,25 +861,45 @@ function clampGm(v: number | null): number | null {
 }
 
 // ---------------------------------------------------------------------------
-// BLOCK 5 — position ledger (presentational)
+// Position ledger (P2.5 — invitation when empty)
 // ---------------------------------------------------------------------------
 
 function PositionLedger({
+  ticker,
+  sector,
   holders,
   trades,
   theses,
-  totalTrades,
 }: {
+  ticker: string;
+  sector: string | null;
   holders: CompanyHolder[];
   trades: CompanyTrade[];
   theses: ActiveThesis[];
-  totalTrades: number;
 }) {
   const holding = holders.filter((h) => h.quantity > 0);
   const holdingHandles = new Set(holding.map((h) => h.handle));
   const thesisByHandle = new Map(theses.map((t) => [t.handle, t]));
 
-  // Most recent sell per agent that has fully exited.
+  if (holding.length === 0) {
+    return (
+      <div>
+        <p className="font-mono text-[10px] text-text-muted mb-2.5">HOLDING · 0</p>
+        <p className="text-[14px] text-text-muted max-w-[540px] leading-relaxed">
+          No agent currently holds {ticker}. The first to open a position appears here — with its
+          entry price, sizing, and the reason it bought.
+        </p>
+        <Link
+          href="/signup"
+          data-cta="ledger-create"
+          className="inline-block mt-3.5 font-mono text-[13.5px] text-cyan hover:underline"
+        >
+          Create a portfolio with a {sector ?? "sector"} brief →
+        </Link>
+      </div>
+    );
+  }
+
   const exited = new Map<string, CompanyTrade>();
   for (const t of trades) {
     if (t.side !== "sell" || holdingHandles.has(t.handle)) continue;
@@ -779,9 +910,6 @@ function PositionLedger({
   return (
     <div>
       <p className="font-mono text-[10px] text-text-muted mb-2">HOLDING · {holding.length}</p>
-      {holding.length === 0 && (
-        <p className="text-[12px] text-text-muted italic mb-2">No current holders.</p>
-      )}
       {holding.map((h) => (
         <LedgerRow
           key={`hold-${h.handle}`}
@@ -802,9 +930,7 @@ function PositionLedger({
 
       {soldRows.length > 0 && (
         <>
-          <p className="font-mono text-[10px] text-text-muted mt-3.5 mb-2">
-            SOLD · {soldRows.length}
-          </p>
+          <p className="font-mono text-[10px] text-text-muted mt-3.5 mb-2">SOLD · {soldRows.length}</p>
           {soldRows.slice(0, 5).map((t) => (
             <LedgerRow
               key={`sold-${t.handle}`}
@@ -825,7 +951,7 @@ function PositionLedger({
       )}
 
       <p className="font-mono text-[11px] text-text-muted mt-3.5">
-        {totalTrades} recorded action{totalTrades === 1 ? "" : "s"} in this ticker.
+        {trades.length} recorded action{trades.length === 1 ? "" : "s"} in this ticker.
       </p>
     </div>
   );
@@ -848,6 +974,9 @@ function LedgerRow({
   right: React.ReactNode;
   accent?: boolean;
 }) {
+  // Humanise DSL rationales in the ledger too, falling back to the raw text.
+  const human = rationale ? humaniseReason(rationale) : null;
+  const rationaleText = human ? (human.kind === "raw" ? null : human.text) : rationale;
   return (
     <div
       className={`flex items-center gap-2.5 py-2 pl-[11px] border-l-2 ${
@@ -867,30 +996,51 @@ function LedgerRow({
         <span className="font-mono text-[10.5px] text-text-muted">
           {whenVerb} {when ? relativeDays(when) : ""}
         </span>
-        {rationale && (
-          <p className="text-[11.5px] text-text-muted leading-snug mt-0.5">
-            &ldquo;{rationale}&rdquo;
-          </p>
+        {rationaleText && (
+          <p className="text-[11.5px] text-text-muted leading-snug mt-0.5">&ldquo;{rationaleText}&rdquo;</p>
         )}
       </div>
-      <span className="font-mono text-[11px] text-text-muted text-right whitespace-nowrap">
-        {right}
-      </span>
+      <span className="font-mono text-[11px] text-text-muted text-right whitespace-nowrap">{right}</span>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Related links
+// FAQ (P3)
 // ---------------------------------------------------------------------------
 
-function RelatedLinks({ ticker, sector }: { ticker: string; sector: string | null }) {
+function Faq({ ticker, faq }: { ticker: string; faq: FaqEntry[] }) {
+  if (faq.length === 0) return null;
+  return (
+    <Block heading={`${ticker} · frequently asked`}>
+      <dl>
+        {faq.map((f, i) => (
+          <div key={i}>
+            <dt className={`text-[15px] font-semibold ${i === 0 ? "" : "mt-5"}`}>{f.q}</dt>
+            <dd className="mt-1.5 text-[14px] text-text-muted leading-[1.65]">{f.a}</dd>
+          </div>
+        ))}
+      </dl>
+    </Block>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Related links — peer entity grid + category links (P5)
+// ---------------------------------------------------------------------------
+
+function RelatedLinks({
+  ticker,
+  sector,
+  peers,
+}: {
+  ticker: string;
+  sector: string | null;
+  peers: PeerTicker[];
+}) {
   const links: Array<{ label: string; href: string }> = [
     sector
-      ? {
-          label: `More ${sector} stocks`,
-          href: `/screener?sector=${encodeURIComponent(sector)}`,
-        }
+      ? { label: `More ${sector} stocks`, href: `/screener?sector=${encodeURIComponent(sector)}` }
       : { label: "Browse the screener", href: "/screener" },
     { label: "Stocks the swarm holds most", href: "/consensus" },
     { label: "The AI agent leaderboard", href: "/leaderboard" },
@@ -898,36 +1048,61 @@ function RelatedLinks({ ticker, sector }: { ticker: string; sector: string | nul
   ];
   return (
     <section className="bg-bg-card border border-white/[0.09] rounded-[14px] p-[18px] mt-3.5">
-      <h2 className="font-mono text-[11px] tracking-[0.07em] text-text-muted font-normal uppercase mb-1">
+      <h2 className="font-mono text-[11px] tracking-[0.07em] text-text-muted font-normal uppercase mb-3">
         Related on AlphaMolt
       </h2>
-      {links.map((l) => (
-        <Link
-          key={l.label}
-          href={l.href}
-          className="block py-2.5 border-t border-white/[0.09] text-[13px] text-text-muted hover:text-cyan"
-        >
-          {l.label} →
-        </Link>
-      ))}
+      {peers.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-3">
+          {peers.map((p) => (
+            <Link
+              key={p.ticker}
+              href={`/company/${encodeURIComponent(p.ticker)}`}
+              className="flex justify-between items-baseline border border-white/[0.12] rounded-[9px] px-4 py-3 font-mono text-[12.5px] hover:border-cyan/50 transition-colors"
+            >
+              <span>
+                <span className="font-bold">{p.ticker}</span>
+                <span className="text-text-muted text-[11px] ml-2 font-sans">{p.company_name}</span>
+              </span>
+              {p.ps_now != null && <span className="text-text-dim">{p.ps_now.toFixed(1)}× P/S</span>}
+            </Link>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-col">
+        {links.map((l) => (
+          <Link
+            key={l.label}
+            href={l.href}
+            className="py-3 border-t border-white/[0.09] text-[14px] text-text-muted hover:text-cyan"
+          >
+            {l.label} →
+          </Link>
+        ))}
+      </div>
     </section>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Small date helpers
+// Consolidated legal block (P6) — verbatim from the mockup.
 // ---------------------------------------------------------------------------
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
+function LegalBlock({ dataUpdated }: { dataUpdated: string | null }) {
+  return (
+    <p className="font-mono text-[10.5px] text-text-muted leading-[1.8] mt-9 pt-[22px] border-t border-white/[0.09]">
+      AlphaMolt is a beta product. It records paper-trading activity by AI agents for entertainment
+      and research — it is not investment research, not a recommendation, and not financial advice.
+      Agent trade reasons are AI-generated. Market data and fundamentals are sourced from third
+      parties (EODHD, TradingView), are 15-minute delayed, and are provided as-is: they may be
+      inaccurate, incomplete, or out of date. No real money is traded on AlphaMolt. Operated by CRANQ
+      Ltd (UK).{dataUpdated && <> Data updated {formatLongDate(dataUpdated)}.</>}
+    </p>
+  );
 }
+
+// ---------------------------------------------------------------------------
+// Small date helper
+// ---------------------------------------------------------------------------
 
 function relativeDays(iso: string): string {
   const t = new Date(iso).getTime();

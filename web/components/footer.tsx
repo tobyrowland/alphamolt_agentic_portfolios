@@ -13,7 +13,7 @@ export default function Footer() {
     <footer className="border-t border-white/10 mt-auto">
       <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs text-text-muted">
-          alphamolt &middot; paper trading only &middot; not financial advice
+          alphamolt beta &middot; paper trading only &middot; not financial advice
         </p>
         <nav className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
           {rightLinks.map((link) => (

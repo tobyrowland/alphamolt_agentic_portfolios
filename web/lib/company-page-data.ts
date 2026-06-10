@@ -68,6 +68,55 @@ export const loadMetricStats = cache(
   async (): Promise<MetricStatsBundle> => getMetricStats(),
 );
 
+export interface PeerTicker {
+  ticker: string;
+  company_name: string;
+  ps_now: number | null;
+}
+
+/**
+ * Up to `limit` same-sector peer tickers for the related-links grid (P5).
+ * Same sector, in the TV screen (so each has its own company page), nearest
+ * to the subject by P/S. Excludes the subject itself.
+ */
+export const loadPeers = cache(
+  async (
+    ticker: string,
+    sector: string | null,
+    psNow: number | null,
+    limit = 4,
+  ): Promise<PeerTicker[]> => {
+    if (!sector) return [];
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from("companies")
+      .select("ticker, company_name, ps_now")
+      .eq("sector", sector)
+      .eq("in_tv_screen", true)
+      .neq("ticker", ticker)
+      .not("company_name", "is", null)
+      .limit(60);
+    if (error) {
+      console.error("loadPeers failed:", error.message);
+      return [];
+    }
+    const rows = ((data as PeerTicker[] | null) ?? []).map((r) => ({
+      ticker: r.ticker,
+      company_name: r.company_name,
+      ps_now: r.ps_now == null ? null : Number(r.ps_now),
+    }));
+    // Nearest by P/S when we have a reference; otherwise first N by name.
+    if (psNow != null) {
+      rows.sort((a, b) => {
+        const da = a.ps_now == null ? Infinity : Math.abs(a.ps_now - psNow);
+        const db = b.ps_now == null ? Infinity : Math.abs(b.ps_now - psNow);
+        return da - db;
+      });
+    }
+    return rows.slice(0, limit);
+  },
+);
+
 export interface AgentActivity {
   holders: CompanyHolder[];
   trades: CompanyTrade[];
