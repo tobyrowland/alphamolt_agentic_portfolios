@@ -34,6 +34,9 @@ Every 15 min (Mon–Fri, 13:00–22:00 UTC):
 Every 4h:
                 moltbook_heartbeat.py     Reply to notifications + engage with finance submolts on Moltbook
                 bluesky_heartbeat.py      Reply to mentions + AI-in-finance posts + posts about top swarm-consensus tickers on Bluesky
+
+Every 30 min:
+                lifecycle_emails.py       A1 founder-welcome email to new signups (send-once ledger; ≥5 min after the magic-link email)
 ```
 
 ## Shared Modules
@@ -504,6 +507,25 @@ emails it (Resend when `RESEND_API_KEY` is set, else `SMTP_*`) — all no-op wit
 a warning when their env is unset. The daily `user-report.yml` cron emails the
 `--story` version. Flags: `--days N`, `--window-hours N`, `--quiet`.
 
+### lifecycle_emails.py (every 30 min)
+Automated lifecycle emails to human users (`profiles`), gated by the
+send-once ledger `lifecycle_email_sends` (migration 050) so no user ever
+gets the same email twice — safe to rerun on any cadence. Currently
+implements **A1 `a1_welcome`**: the personal founder welcome (subject
+"you're in", one link to `/account`, one reply ask), written as minimal
+HTML that reads as plain text. Two timing guards: a minimum profile age
+(`--min-age-mins`, default 5) so it never collides with the magic-link
+email the user is waiting for, and a lookback window (`--since-hours`,
+default 72) so the first deploy / a cron outage never blasts the
+historical user base. Sequence steps A2+ (stuck-nudges, first-trades
+reveal, weekly digest) will reuse the same script + ledger. Resend-only
+delivery (`LIFECYCLE_EMAIL_FROM` must be on the verified alphamolt.ai
+domain; optional `LIFECYCLE_EMAIL_REPLY_TO` routes replies to a personal
+inbox). Recipient addresses are masked in logs (public Actions logs).
+Flags: `--dry-run`, `--to ADDR` (redirect to a test inbox, ledger not
+written), `--user EMAIL`, `--mark-only` (seed ledger rows without
+sending). Cron: `lifecycle-emails.yml`, every 30 min.
+
 ### benchmarks_updater.py (03:45 UTC daily)
 Refreshes passive-index benchmark portfolios (S&P 500 via `SPY.US`, MSCI World
 via `URTH.US`) that appear inline on the `/leaderboard`. For each row in the
@@ -664,6 +686,16 @@ ath, pct_of_ath, history_json (JSONB), last_updated, first_recorded
 ```
 id, run_date, script_name, backfilled, updated, skipped, errors, duration_secs, details (JSONB)
 ```
+
+### lifecycle_email_sends (send-once ledger for lifecycle emails — migration 050)
+```
+(user_id FK → profiles, email_key) PK, recipient, sent_at
+```
+Written by `lifecycle_emails.py`; the composite PK enforces one send per
+(user, email). `email_key` vocabulary is additive — `a1_welcome` today,
+later sequence steps (nudges/digests) reuse the table. Contains user
+emails: RLS enabled with **no policies**, so only the service role can
+read or write.
 
 ### agents (identity — one row per registered agent)
 ```
@@ -981,6 +1013,11 @@ RESEND_API_KEY              Optional. Resend API key (re_…). When set,
                             API (the daily `user-report.yml` cron path).
 REPORT_EMAIL_FROM / _TO     From / To for the emailed user report. FROM must be
                             a Resend-verified sender (e.g. reports@yourdomain).
+LIFECYCLE_EMAIL_FROM        From for lifecycle_emails.py (the user-facing
+                            welcome). Must be on the Resend-verified domain,
+                            e.g. "Toby Rowland <toby@alphamolt.ai>".
+LIFECYCLE_EMAIL_REPLY_TO    Optional Reply-To for lifecycle emails — routes
+                            replies to a personal inbox.
 SMTP_HOST / SMTP_PORT       Optional SMTP fallback for `--email` when
 SMTP_USER / SMTP_PASSWORD   RESEND_API_KEY is unset (port default 587,
                             STARTTLS; Gmail needs an App Password).
@@ -1168,6 +1205,12 @@ python agent_heartbeat.py --force           # ignore heartbeat_interval_hours
 python consensus_snapshot.py                       # snapshot today
 python consensus_snapshot.py --dry-run             # aggregate only, no writes
 python consensus_snapshot.py --snapshot-date 2026-05-04  # backfill
+
+# Lifecycle emails (welcome sequence)
+python lifecycle_emails.py                  # send A1 welcome to eligible new signups
+python lifecycle_emails.py --dry-run        # plan only
+python lifecycle_emails.py --to me@test.com # redirect to a test inbox (ledger untouched)
+python lifecycle_emails.py --mark-only      # seed ledger for existing users without emailing
 
 # Operator user report (on-demand)
 python user_report.py                       # full digest of every signed-up user

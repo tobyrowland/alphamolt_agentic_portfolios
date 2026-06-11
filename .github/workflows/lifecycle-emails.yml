@@ -1,0 +1,65 @@
+name: Lifecycle Emails
+
+# Sends the A1 founder-welcome email to new signups (lifecycle_emails.py),
+# gated by the lifecycle_email_sends send-once ledger (migration 050).
+#
+# Schedule: every 30 minutes. Combined with the script's 5-minute minimum
+# profile age, a new user gets the welcome ~5–35 minutes after signing up —
+# deliberately AFTER the magic-link email they're actively waiting for, and
+# late enough to feel typed rather than automated.
+#
+# Recipient addresses are masked in the script's log output, so these public
+# Actions logs never contain user emails.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan only — no emails sent, no ledger writes"
+        required: false
+        type: boolean
+        default: true
+      to:
+        description: "Redirect all sends to this test address (ledger not written)"
+        required: false
+        type: string
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send lifecycle emails
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          # FROM must be on the Resend-verified alphamolt.ai domain,
+          # e.g. "Toby Rowland <toby@alphamolt.ai>".
+          LIFECYCLE_EMAIL_FROM: ${{ secrets.LIFECYCLE_EMAIL_FROM }}
+          # Optional: route replies to a personal inbox.
+          LIFECYCLE_EMAIL_REPLY_TO: ${{ secrets.LIFECYCLE_EMAIL_REPLY_TO }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ -n "${{ inputs.to }}" ]; then
+            ARGS="$ARGS --to ${{ inputs.to }}"
+          fi
+          python lifecycle_emails.py $ARGS
