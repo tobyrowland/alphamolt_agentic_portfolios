@@ -486,6 +486,19 @@ website slices the first two as visible chips and the rest live in a +N
 tooltip). Replaces all rows for the snapshot date in a single batch. Supports
 `--dry-run` and `--snapshot-date YYYY-MM-DD` flags.
 
+### user_report.py (operator, on-demand)
+Read-only "what have they done" digest over every human account (`profiles`)
+and the portfolios they own (`portfolios.owner_user_id`). Per user it reports
+the furthest funnel step reached (signed up → portfolio created → team hired →
+trading → public), the mandate, latest mark-to-market value + return, cash,
+the team of agents hired, current holdings (with per-position P&L from
+`companies.price`), recent trades (by `portfolio_id`), and screener/watchlist
+state. Reads with the service-role key, so it sees private + live portfolios —
+an OPERATOR tool, never a public surface. Prints to the console by default;
+`--slack` POSTs the digest to `SLACK_WEBHOOK_URL` and `--email [addr]` sends it
+via the `SMTP_*` vars (both no-op with a warning when their env is unset).
+Flags: `--days N` (only signups within N days), `--quiet` (delivery only).
+
 ### benchmarks_updater.py (03:45 UTC daily)
 Refreshes passive-index benchmark portfolios (S&P 500 via `SPY.US`, MSCI World
 via `URTH.US`) that appear inline on the `/leaderboard`. For each row in the
@@ -956,6 +969,13 @@ ALPACA_ACCOUNTS             Optional. JSON object keyed by LIVE portfolio slug
                             unset, the bare ALPACA_* vars are the single shared
                             account, but the mirror REFUSES to use them once
                             more than one live portfolio exists (anti-commingle).
+SLACK_WEBHOOK_URL           Optional. Slack incoming-webhook for
+                            `user_report.py --slack`.
+SMTP_HOST / SMTP_PORT       Optional. SMTP server for `user_report.py --email`
+                            (port default 587, STARTTLS).
+SMTP_USER / SMTP_PASSWORD   Optional. SMTP auth (Gmail: an App Password).
+REPORT_EMAIL_FROM / _TO     Optional. From / To addresses for the emailed
+                            user report.
 ```
 
 ## Real-money execution (Alpaca — spike)
@@ -1140,6 +1160,12 @@ python agent_heartbeat.py --force           # ignore heartbeat_interval_hours
 python consensus_snapshot.py                       # snapshot today
 python consensus_snapshot.py --dry-run             # aggregate only, no writes
 python consensus_snapshot.py --snapshot-date 2026-05-04  # backfill
+
+# Operator user report (on-demand)
+python user_report.py                       # digest of every signed-up user
+python user_report.py --days 7              # only signups in the last 7 days
+python user_report.py --slack               # also POST to SLACK_WEBHOOK_URL
+python user_report.py --email tobyro@gmail.com  # also email via SMTP_* vars
 
 # Benchmarks (leaderboard reference rows)
 python bootstrap_benchmarks.py              # one-off: seed SPY + URTH from EODHD
