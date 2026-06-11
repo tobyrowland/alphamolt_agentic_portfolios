@@ -36,7 +36,7 @@ Every 4h:
                 bluesky_heartbeat.py      Reply to mentions + AI-in-finance posts + posts about top swarm-consensus tickers on Bluesky
 
 Every 30 min:
-                lifecycle_emails.py       A1 founder-welcome email to new signups (send-once ledger; ≥5 min after the magic-link email)
+                lifecycle_emails.py       Lifecycle emails: A1 welcome to new signups + A2 setup nudge to users stuck pre-portfolio (send-once ledger)
 ```
 
 ## Shared Modules
@@ -510,21 +510,29 @@ a warning when their env is unset. The daily `user-report.yml` cron emails the
 ### lifecycle_emails.py (every 30 min)
 Automated lifecycle emails to human users (`profiles`), gated by the
 send-once ledger `lifecycle_email_sends` (migration 050) so no user ever
-gets the same email twice — safe to rerun on any cadence. Currently
-implements **A1 `a1_welcome`**: the personal founder welcome (subject
-"you're in", one link to `/account`, one reply ask), written as minimal
-HTML that reads as plain text. Two timing guards: a minimum profile age
-(`--min-age-mins`, default 5) so it never collides with the magic-link
-email the user is waiting for, and a lookback window (`--since-hours`,
-default 72) so the first deploy / a cron outage never blasts the
-historical user base. Sequence steps A2+ (stuck-nudges, first-trades
-reveal, weekly digest) will reuse the same script + ledger. Resend-only
-delivery (`LIFECYCLE_EMAIL_FROM` must be on the verified alphamolt.ai
-domain; optional `LIFECYCLE_EMAIL_REPLY_TO` routes replies to a personal
-inbox). Recipient addresses are masked in logs (public Actions logs).
-Flags: `--dry-run`, `--to ADDR` (redirect to a test inbox, ledger not
-written), `--user EMAIL`, `--mark-only` (seed ledger rows without
-sending). Cron: `lifecycle-emails.yml`, every 30 min.
+gets the same email twice — safe to rerun on any cadence, and at most one
+lifecycle email per user per run (earlier sequence steps win). Two steps
+implemented:
+
+- **A1 `a1_welcome`** — the personal founder welcome (subject "you're
+  in", one link to `/account`, one reply ask). Timing guards: a minimum
+  profile age (`--min-age-mins`, default 5) so it never collides with
+  the magic-link email, and a lookback window (`--since-hours`, default
+  72) so a first deploy / cron outage never blasts the historical base.
+- **A2 `a2_setup_nudge`** — the three-step setup walkthrough (hire a
+  buyer from the agent library → edit its brief → set the screener),
+  sent only to users *stuck* at the first funnel step: profile 3–14
+  days old with no `portfolios` row. Links to `/account/portfolio` (the
+  slugless redirect that always resolves correctly), `/screener` and
+  `/leaderboard`. Users who progress on their own never see it.
+
+Both are minimal HTML that reads as plain text. Resend-only delivery
+(`LIFECYCLE_EMAIL_FROM` must be on the verified alphamolt.ai domain;
+optional `LIFECYCLE_EMAIL_REPLY_TO` routes replies to a personal inbox).
+Recipient addresses are masked in logs (public Actions logs). Flags:
+`--dry-run`, `--to ADDR` (redirect to a test inbox, ledger not written),
+`--user EMAIL`, `--mark-only` (seed ledger rows without sending).
+Cron: `lifecycle-emails.yml`, every 30 min.
 
 ### benchmarks_updater.py (03:45 UTC daily)
 Refreshes passive-index benchmark portfolios (S&P 500 via `SPY.US`, MSCI World

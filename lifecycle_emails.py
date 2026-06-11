@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-lifecycle_emails.py — automated lifecycle emails (A1 welcome, for now).
+lifecycle_emails.py — automated lifecycle emails (A1 welcome, A2 setup nudge).
 
 Sends the personal-feeling onboarding emails to human users (`profiles`),
 gated by a send-once ledger (`lifecycle_email_sends`, migration 050) so a
 user can never receive the same lifecycle email twice — safe to rerun on
-any cadence.
+any cadence. At most ONE lifecycle email per user per run (earlier sequence
+steps win), so two steps can never land in the same inbox sweep.
 
-Currently implements one email:
+Sequence steps implemented:
 
   A1 'a1_welcome' — the founder welcome, sent shortly after signup. Two
   deliberate timing guards:
@@ -18,6 +19,12 @@ Currently implements one email:
       (or a long cron outage) doesn't blast the whole historical user
       base with a "welcome" out of nowhere.
 
+  A2 'a2_setup_nudge' — the three-step setup walkthrough (hire a buyer →
+  edit its brief → set the screener), sent only to users STUCK at the
+  first funnel step: profile is 3-14 days old and they own no portfolio.
+  Users who progress on their own never see it; the 14-day ceiling keeps
+  a fresh deploy from nudging long-dormant accounts.
+
 Styled as minimal HTML that reads as plain text (no images / buttons /
 branding) — the goal is replies, not clicks. Delivery is Resend-only
 (the alphamolt.ai domain is already verified there for the magic-link
@@ -25,7 +32,7 @@ sender). User emails are masked in log output so public Actions logs
 never leak addresses.
 
 Usage:
-    python lifecycle_emails.py                       # send to eligible new signups
+    python lifecycle_emails.py                       # send all due lifecycle emails
     python lifecycle_emails.py --dry-run             # plan only, no sends/writes
     python lifecycle_emails.py --to me@test.com      # redirect sends to a test inbox
                                                      # (ledger NOT written)
@@ -66,6 +73,21 @@ SITE_URL = "https://www.alphamolt.ai"
 A1_KEY = "a1_welcome"
 A1_SUBJECT = "you're in"
 
+A2_KEY = "a2_setup_nudge"
+A2_SUBJECT = "three steps, three minutes"
+A2_MIN_AGE_DAYS = 3    # let them find their own way first
+A2_LOOKBACK_DAYS = 14  # never nudge long-dormant accounts on a fresh deploy
+
+FOOTER_TEXT = (
+    'You\'re getting this because you signed up at alphamolt.ai. Reply "no more '
+    "emails\" and I'll stop."
+)
+FOOTER_HTML = (
+    '<p style="color:#999999;font-size:12px;">You\'re getting this because you '
+    "signed up at alphamolt.ai. Reply &quot;no more emails&quot; and I'll "
+    "stop.</p>"
+)
+
 
 # ---------------------------------------------------------------------------
 # A1 welcome copy — minimal HTML that reads as plain text. One link, one ask.
@@ -91,8 +113,7 @@ people write are the most interesting part of this.
 
 — Toby
 
-You're getting this because you signed up at alphamolt.ai. Reply "no more \
-emails" and I'll stop.
+{FOOTER_TEXT}
 """
 
 
@@ -111,9 +132,88 @@ running</a>.</p>
 you're going to give your agents. I read every reply &mdash; honestly, the \
 briefs people write are the most interesting part of this.</p>
 <p>&mdash; Toby</p>
-<p style="color:#999999;font-size:12px;">You're getting this because you \
-signed up at alphamolt.ai. Reply &quot;no more emails&quot; and I'll stop.</p>
+{FOOTER_HTML}
 """
+
+
+# ---------------------------------------------------------------------------
+# A2 setup-nudge copy — the three-step walkthrough for users stuck at
+# "signed up, no portfolio". Links: the user's own portfolio page (the
+# slugless /account/portfolio redirect always resolves correctly — portfolio,
+# /account to create one, or login), the public screener, the leaderboard.
+# ---------------------------------------------------------------------------
+
+def a2_text(first_name: str | None) -> str:
+    greeting = f"Hi {first_name} —" if first_name else "Hi —"
+    return f"""{greeting}
+
+Toby again. Noticed you haven't set your portfolio running yet, so here's \
+the whole thing, honestly:
+
+1. Hire a buyer. Your portfolio page has an agent library — pick one; the \
+difference is mostly which brain it runs on (Claude, GPT-5, Gemini or Grok).
+   {SITE_URL}/account/portfolio
+
+2. Tell it what to buy. Each agent comes with a short pre-filled brief you \
+can edit — one paragraph in plain English, like "profitable software \
+companies growing 20%+ that aren't priced like it."
+
+3. Point the screener at the market you care about. Also plain English — \
+you describe the screen, we compile it. Your buyer shops from its top names \
+every day.
+   {SITE_URL}/screener
+
+That's it. The agents do everything after that, and every position they \
+take comes with a written thesis — the leaderboard is full of portfolios \
+already running this way if you want to see what it looks like:
+{SITE_URL}/leaderboard
+
+Open your portfolio and start with step 1:
+{SITE_URL}/account/portfolio
+
+Or — genuinely — just reply with a sentence about what you'd want it to do, \
+and I'll set it all up for you.
+
+— Toby
+
+{FOOTER_TEXT}
+"""
+
+
+def a2_html(first_name: str | None) -> str:
+    greeting = f"Hi {first_name} —" if first_name else "Hi —"
+    return f"""\
+<p>{greeting}</p>
+<p>Toby again. Noticed you haven't set your portfolio running yet, so here's \
+the whole thing, honestly:</p>
+<p>1. <a href="{SITE_URL}/account/portfolio">Hire a buyer</a>. Your portfolio \
+page has an agent library &mdash; pick one; the difference is mostly which \
+brain it runs on (Claude, GPT&#8209;5, Gemini or Grok).</p>
+<p>2. Tell it what to buy. Each agent comes with a short pre-filled brief you \
+can edit &mdash; one paragraph in plain English, like &quot;profitable \
+software companies growing 20%+ that aren't priced like it.&quot;</p>
+<p>3. Point <a href="{SITE_URL}/screener">the screener</a> at the market you \
+care about. Also plain English &mdash; you describe the screen, we compile \
+it. Your buyer shops from its top names every day.</p>
+<p>That's it. The agents do everything after that, and every position they \
+take comes with a written thesis &mdash; <a href="{SITE_URL}/leaderboard">the \
+leaderboard</a> is full of portfolios already running this way if you want to \
+see what it looks like.</p>
+<p><a href="{SITE_URL}/account/portfolio">Open your portfolio</a> and start \
+with step 1.</p>
+<p>Or &mdash; genuinely &mdash; just reply with a sentence about what you'd \
+want it to do, and I'll set it all up for you.</p>
+<p>&mdash; Toby</p>
+{FOOTER_HTML}
+"""
+
+
+# Sequence order matters: a user due for several steps gets only the
+# earliest one this run; later steps go out on subsequent runs.
+RENDERERS = {
+    A1_KEY: (A1_SUBJECT, a1_text, a1_html),
+    A2_KEY: (A2_SUBJECT, a2_text, a2_html),
+}
 
 
 def first_name_of(profile: dict) -> str | None:
@@ -145,55 +245,83 @@ def _mask(email: str) -> str:
 # Data access (service role)
 # ---------------------------------------------------------------------------
 
-def eligible_profiles(
-    db: SupabaseDB,
-    since_hours: int,
-    min_age_mins: int,
-    only_email: str | None,
-) -> list[dict]:
-    """New signups inside the lookback window, old enough to have read the
-    magic-link email, that have not yet been sent the welcome."""
-    now = datetime.now(timezone.utc)
-    cutoff_oldest = now - timedelta(hours=since_hours)
-    cutoff_newest = now - timedelta(minutes=min_age_mins)
-
+def fetch_profiles(db: SupabaseDB, oldest: datetime, only_email: str | None) -> list[dict]:
     resp = (
         db.client.table("profiles")
         .select("id, email, display_name, created_at")
-        .gte("created_at", cutoff_oldest.isoformat())
+        .gte("created_at", oldest.isoformat())
         .order("created_at", desc=False)
         .execute()
     )
-    profiles = resp.data or []
-
-    sent_resp = (
-        db.client.table("lifecycle_email_sends")
-        .select("user_id")
-        .eq("email_key", A1_KEY)
-        .execute()
-    )
-    already_sent = {row["user_id"] for row in (sent_resp.data or [])}
-
     out = []
-    for p in profiles:
+    for p in resp.data or []:
         if not p.get("email"):
             continue
         if only_email and p["email"].strip().lower() != only_email.strip().lower():
             continue
-        if p["id"] in already_sent:
-            continue
-        created = _parse_dt(p.get("created_at"))
-        if created is None or created > cutoff_newest:
-            continue  # too fresh — let the magic-link email land alone
         out.append(p)
     return out
 
 
-def record_send(db: SupabaseDB, user_id: str, recipient: str) -> None:
+def fetch_sent(db: SupabaseDB) -> set[tuple[str, str]]:
+    """All (user_id, email_key) pairs already sent."""
+    resp = db.client.table("lifecycle_email_sends").select("user_id, email_key").execute()
+    return {(row["user_id"], row["email_key"]) for row in (resp.data or [])}
+
+
+def fetch_portfolio_owners(db: SupabaseDB) -> set[str]:
+    """user_ids that own at least one portfolio (any mode)."""
+    resp = (
+        db.client.table("portfolios")
+        .select("owner_user_id")
+        .not_.is_("owner_user_id", "null")
+        .execute()
+    )
+    return {row["owner_user_id"] for row in (resp.data or [])}
+
+
+def record_send(db: SupabaseDB, user_id: str, email_key: str, recipient: str) -> None:
     db.client.table("lifecycle_email_sends").upsert(
-        {"user_id": user_id, "email_key": A1_KEY, "recipient": recipient},
+        {"user_id": user_id, "email_key": email_key, "recipient": recipient},
         on_conflict="user_id,email_key",
     ).execute()
+
+
+# ---------------------------------------------------------------------------
+# Eligibility — one (profile, email_key) plan, max one email per user per run
+# ---------------------------------------------------------------------------
+
+def plan_sends(
+    profiles: list[dict],
+    sent: set[tuple[str, str]],
+    portfolio_owners: set[str],
+    since_hours: int,
+    min_age_mins: int,
+) -> list[tuple[dict, str]]:
+    now = datetime.now(timezone.utc)
+    plan: list[tuple[dict, str]] = []
+    for p in profiles:
+        created = _parse_dt(p.get("created_at"))
+        if created is None:
+            continue
+        age = now - created
+        due: str | None = None
+
+        if (
+            (p["id"], A1_KEY) not in sent
+            and timedelta(minutes=min_age_mins) <= age <= timedelta(hours=since_hours)
+        ):
+            due = A1_KEY
+        elif (
+            (p["id"], A2_KEY) not in sent
+            and timedelta(days=A2_MIN_AGE_DAYS) <= age <= timedelta(days=A2_LOOKBACK_DAYS)
+            and p["id"] not in portfolio_owners
+        ):
+            due = A2_KEY
+
+        if due:
+            plan.append((p, due))
+    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -260,10 +388,10 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="Plan only — no emails sent, no ledger writes")
     parser.add_argument("--min-age-mins", type=int, default=5,
-                        help="Minimum profile age before the welcome sends, so it "
+                        help="A1: minimum profile age before the welcome sends, so it "
                              "never collides with the magic-link email (default 5)")
     parser.add_argument("--since-hours", type=int, default=72,
-                        help="Only consider signups within this window (default 72)")
+                        help="A1: only welcome signups within this window (default 72)")
     parser.add_argument("--to", default=None, metavar="ADDR",
                         help="Redirect all sends to a test address; ledger NOT written")
     parser.add_argument("--user", default=None, metavar="EMAIL",
@@ -273,35 +401,44 @@ def main() -> int:
     args = parser.parse_args()
 
     db = SupabaseDB()
-    profiles = eligible_profiles(db, args.since_hours, args.min_age_mins, args.user)
+    now = datetime.now(timezone.utc)
+    oldest = now - max(
+        timedelta(hours=args.since_hours), timedelta(days=A2_LOOKBACK_DAYS)
+    )
+    profiles = fetch_profiles(db, oldest, args.user)
+    sent = fetch_sent(db)
+    portfolio_owners = fetch_portfolio_owners(db)
+
+    plan = plan_sends(profiles, sent, portfolio_owners, args.since_hours, args.min_age_mins)
     logger.info(
-        "%d profile(s) eligible for %s (window %dh, min age %dmin)",
-        len(profiles), A1_KEY, args.since_hours, args.min_age_mins,
+        "%d send(s) due across %d profile(s) in window (A1 ≤%dh, A2 %d-%dd)",
+        len(plan), len(profiles), args.since_hours, A2_MIN_AGE_DAYS, A2_LOOKBACK_DAYS,
     )
 
-    sent = skipped = errors = 0
-    for p in profiles:
+    sent_n = skipped = errors = 0
+    for p, key in plan:
         recipient = args.to or p["email"]
         if args.dry_run:
-            logger.info("[dry-run] would send %s to %s", A1_KEY, _mask(recipient))
+            logger.info("[dry-run] would send %s to %s", key, _mask(recipient))
             skipped += 1
             continue
         if args.mark_only:
-            record_send(db, p["id"], p["email"])
-            logger.info("Marked %s as sent for %s (no email)", A1_KEY, _mask(p["email"]))
-            sent += 1
+            record_send(db, p["id"], key, p["email"])
+            logger.info("Marked %s as sent for %s (no email)", key, _mask(p["email"]))
+            sent_n += 1
             continue
 
+        subject, text_fn, html_fn = RENDERERS[key]
         name = first_name_of(p)
-        if send_via_resend(recipient, A1_SUBJECT, a1_text(name), a1_html(name)):
-            if not args.to:  # test redirects don't burn the user's one welcome
-                record_send(db, p["id"], p["email"])
-            sent += 1
+        if send_via_resend(recipient, subject, text_fn(name), html_fn(name)):
+            if not args.to:  # test redirects don't burn the user's one send
+                record_send(db, p["id"], key, p["email"])
+            sent_n += 1
         else:
             errors += 1
 
-    logger.info("Done: %d sent, %d skipped, %d errors", sent, skipped, errors)
-    return 1 if errors and not sent else 0
+    logger.info("Done: %d sent, %d skipped, %d errors", sent_n, skipped, errors)
+    return 1 if errors and not sent_n else 0
 
 
 if __name__ == "__main__":
