@@ -437,6 +437,10 @@ def _deliver_resend(report: str, subject: str, recipient: str) -> bool:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Resend's API is behind Cloudflare, which 403s (error 1010) the
+            # default "Python-urllib" agent as a bot. A normal UA passes.
+            "User-Agent": "AlphaMolt-UserReport/1.0 (+https://alphamolt.ai)",
         },
     )
     try:
