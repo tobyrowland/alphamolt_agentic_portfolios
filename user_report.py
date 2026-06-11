@@ -697,7 +697,18 @@ def _deliver_resend(report: str, subject: str, recipient: str) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             ok = 200 <= resp.status < 300
-        logger.info("Resend email %s to %s", "ok" if ok else "failed", recipient)
+            raw = resp.read().decode(errors="replace")
+        msg_id = None
+        try:
+            msg_id = json.loads(raw).get("id")
+        except (ValueError, AttributeError):
+            pass
+        # Accepted by Resend ≠ delivered. Trace this id in the Resend
+        # dashboard (Emails) to see delivered / bounced / dropped + reason.
+        logger.info(
+            "Resend email %s to %s (id=%s) — check Resend dashboard for delivery status",
+            "accepted" if ok else "rejected", recipient, msg_id,
+        )
         return ok
     except urllib.error.HTTPError as exc:  # surface Resend's error body
         body = exc.read().decode(errors="replace")[:300]
