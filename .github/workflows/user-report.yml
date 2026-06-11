@@ -1,0 +1,54 @@
+name: User Report
+
+# Daily operator digest of signed-up users and their portfolios, emailed to
+# the operator. Read-only — never writes to the DB.
+#
+# Schedule: 07:00 UTC. GitHub cron has no DST, so this is 08:00 UK during BST
+# (summer) and 07:00 UK during GMT (winter). Adjust the cron by an hour at the
+# DST boundary if you need it pinned to 08:00 year-round.
+#
+# Runs with --quiet so the digest (which contains user emails) is delivered by
+# email only and never printed into the public Actions logs.
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Only include users who signed up within N days (blank = all)"
+        required: false
+        type: string
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send user report
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Email via Resend's HTTP API. FROM must be a Resend-verified sender.
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_EMAIL_FROM: ${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO: ${{ secrets.REPORT_EMAIL_TO }}
+        run: |
+          ARGS="--email --quiet"
+          if [ -n "${{ inputs.days }}" ]; then
+            ARGS="$ARGS --days ${{ inputs.days }}"
+          fi
+          python user_report.py $ARGS

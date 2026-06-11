@@ -971,11 +971,14 @@ ALPACA_ACCOUNTS             Optional. JSON object keyed by LIVE portfolio slug
                             more than one live portfolio exists (anti-commingle).
 SLACK_WEBHOOK_URL           Optional. Slack incoming-webhook for
                             `user_report.py --slack`.
-SMTP_HOST / SMTP_PORT       Optional. SMTP server for `user_report.py --email`
-                            (port default 587, STARTTLS).
-SMTP_USER / SMTP_PASSWORD   Optional. SMTP auth (Gmail: an App Password).
-REPORT_EMAIL_FROM / _TO     Optional. From / To addresses for the emailed
-                            user report.
+RESEND_API_KEY              Optional. Resend API key (re_…). When set,
+                            `user_report.py --email` sends via the Resend HTTP
+                            API (the daily `user-report.yml` cron path).
+REPORT_EMAIL_FROM / _TO     From / To for the emailed user report. FROM must be
+                            a Resend-verified sender (e.g. reports@yourdomain).
+SMTP_HOST / SMTP_PORT       Optional SMTP fallback for `--email` when
+SMTP_USER / SMTP_PASSWORD   RESEND_API_KEY is unset (port default 587,
+                            STARTTLS; Gmail needs an App Password).
 ```
 
 ## Real-money execution (Alpaca — spike)

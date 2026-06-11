@@ -23,9 +23,13 @@ Usage:
 
 Delivery env vars:
     SLACK_WEBHOOK_URL                Slack incoming-webhook URL (--slack)
-    SMTP_HOST / SMTP_PORT            SMTP server (port default 587, STARTTLS)
+    --email prefers Resend, then SMTP:
+    RESEND_API_KEY                   Resend API key (re_…); when set, --email
+                                     sends via the Resend HTTP API
+    REPORT_EMAIL_FROM / _TO          From / To addresses (From must be a
+                                     Resend-verified sender)
+    SMTP_HOST / SMTP_PORT            SMTP fallback (port default 587, STARTTLS)
     SMTP_USER / SMTP_PASSWORD        SMTP auth (Gmail: an App Password)
-    REPORT_EMAIL_FROM / _TO          From / To addresses (--email)
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ import logging
 import os
 import smtplib
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -393,11 +398,66 @@ def deliver_slack(report: str) -> bool:
 
 
 def deliver_email(report: str, to_override: str | None) -> bool:
+    """Email the digest. Prefers the Resend HTTP API when RESEND_API_KEY is
+    set; otherwise falls back to SMTP (SMTP_* vars)."""
+    subject = f"AlphaMolt user report · {datetime.now(timezone.utc):%Y-%m-%d}"
+    recipient = (to_override or os.environ.get("REPORT_EMAIL_TO", "")).strip()
+
+    if os.environ.get("RESEND_API_KEY", "").strip():
+        return _deliver_resend(report, subject, recipient)
+    if os.environ.get("SMTP_HOST", "").strip():
+        return _deliver_smtp(report, subject, recipient)
+    logger.warning(
+        "--email skipped; set RESEND_API_KEY (+ REPORT_EMAIL_FROM/_TO) or the SMTP_* vars."
+    )
+    return False
+
+
+def _deliver_resend(report: str, subject: str, recipient: str) -> bool:
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    sender = os.environ.get("REPORT_EMAIL_FROM", "").strip()
+    missing = [
+        n
+        for n, v in [
+            ("REPORT_EMAIL_FROM", sender),
+            ("recipient (REPORT_EMAIL_TO/--email)", recipient),
+        ]
+        if not v
+    ]
+    if missing:
+        logger.warning("Resend email skipped; missing: %s", ", ".join(missing))
+        return False
+
+    payload = json.dumps(
+        {"from": sender, "to": [recipient], "subject": subject, "text": report}
+    ).encode()
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            ok = 200 <= resp.status < 300
+        logger.info("Resend email %s to %s", "ok" if ok else "failed", recipient)
+        return ok
+    except urllib.error.HTTPError as exc:  # surface Resend's error body
+        body = exc.read().decode(errors="replace")[:300]
+        logger.error("Resend email failed (%s): %s", exc.code, body)
+        return False
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Resend email failed: %s", exc)
+        return False
+
+
+def _deliver_smtp(report: str, subject: str, recipient: str) -> bool:
     host = os.environ.get("SMTP_HOST", "").strip()
     user = os.environ.get("SMTP_USER", "").strip()
     password = os.environ.get("SMTP_PASSWORD", "").strip()
     sender = os.environ.get("REPORT_EMAIL_FROM", user).strip()
-    recipient = (to_override or os.environ.get("REPORT_EMAIL_TO", "")).strip()
     port = int(os.environ.get("SMTP_PORT", "587"))
 
     missing = [
@@ -411,11 +471,11 @@ def deliver_email(report: str, to_override: str | None) -> bool:
         if not v
     ]
     if missing:
-        logger.warning("--email skipped; missing: %s", ", ".join(missing))
+        logger.warning("SMTP email skipped; missing: %s", ", ".join(missing))
         return False
 
     msg = EmailMessage()
-    msg["Subject"] = f"AlphaMolt user report · {datetime.now(timezone.utc):%Y-%m-%d}"
+    msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
     msg.set_content(report)
@@ -424,10 +484,10 @@ def deliver_email(report: str, to_override: str | None) -> bool:
             s.starttls()
             s.login(user, password)
             s.send_message(msg)
-        logger.info("Email delivered to %s", recipient)
+        logger.info("SMTP email delivered to %s", recipient)
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.error("Email delivery failed: %s", exc)
+        logger.error("SMTP email delivery failed: %s", exc)
         return False
 
 
