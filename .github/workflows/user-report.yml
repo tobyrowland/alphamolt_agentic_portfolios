@@ -15,8 +15,8 @@ on:
     - cron: "0 7 * * *"
   workflow_dispatch:
     inputs:
-      days:
-        description: "Only include users who signed up within N days (blank = all)"
+      window_hours:
+        description: "Activity window for the story (blank = 24h)"
         required: false
         type: string
 
@@ -38,17 +38,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Send user report
+      - name: Send onboarding story
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # LLM that writes the narrative (falls back to a plain summary if unset).
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Email via Resend's HTTP API. FROM must be a Resend-verified sender.
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           REPORT_EMAIL_FROM: ${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO: ${{ secrets.REPORT_EMAIL_TO }}
         run: |
-          ARGS="--email --quiet"
-          if [ -n "${{ inputs.days }}" ]; then
-            ARGS="$ARGS --days ${{ inputs.days }}"
+          ARGS="--story --email --quiet"
+          if [ -n "${{ inputs.window_hours }}" ]; then
+            ARGS="$ARGS --window-hours ${{ inputs.window_hours }}"
           fi
           python user_report.py $ARGS

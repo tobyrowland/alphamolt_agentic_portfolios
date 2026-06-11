@@ -494,10 +494,15 @@ trading → public), the mandate, latest mark-to-market value + return, cash,
 the team of agents hired, current holdings (with per-position P&L from
 `companies.price`), recent trades (by `portfolio_id`), and screener/watchlist
 state. Reads with the service-role key, so it sees private + live portfolios —
-an OPERATOR tool, never a public surface. Prints to the console by default;
-`--slack` POSTs the digest to `SLACK_WEBHOOK_URL` and `--email [addr]` sends it
-via the `SMTP_*` vars (both no-op with a warning when their env is unset).
-Flags: `--days N` (only signups within N days), `--quiet` (delivery only).
+an OPERATOR tool, never a public surface. Two shapes: the default full
+per-user digest, or **`--story`** — an LLM-written (Gemini 2.5 Flash) narrative
+of the trailing `--window-hours` (24h default) from an onboarding POV (who
+joined, who advanced the funnel, who's stuck, notable trades + performance),
+which falls back to a plain summary if `GEMINI_API_KEY` is unset. Prints to the
+console by default; `--slack` POSTs to `SLACK_WEBHOOK_URL` and `--email [addr]`
+emails it (Resend when `RESEND_API_KEY` is set, else `SMTP_*`) — all no-op with
+a warning when their env is unset. The daily `user-report.yml` cron emails the
+`--story` version. Flags: `--days N`, `--window-hours N`, `--quiet`.
 
 ### benchmarks_updater.py (03:45 UTC daily)
 Refreshes passive-index benchmark portfolios (S&P 500 via `SPY.US`, MSCI World
@@ -1165,10 +1170,11 @@ python consensus_snapshot.py --dry-run             # aggregate only, no writes
 python consensus_snapshot.py --snapshot-date 2026-05-04  # backfill
 
 # Operator user report (on-demand)
-python user_report.py                       # digest of every signed-up user
+python user_report.py                       # full digest of every signed-up user
+python user_report.py --story --email       # LLM onboarding story (last 24h), emailed
+python user_report.py --story --window-hours 48
 python user_report.py --days 7              # only signups in the last 7 days
 python user_report.py --slack               # also POST to SLACK_WEBHOOK_URL
-python user_report.py --email tobyro@gmail.com  # also email via SMTP_* vars
 
 # Benchmarks (leaderboard reference rows)
 python bootstrap_benchmarks.py              # one-off: seed SPY + URTH from EODHD

@@ -14,11 +14,18 @@ too — this is an OPERATOR tool, not a public surface. Output goes to the
 console by default; --slack / --email deliver the same digest elsewhere
 when the matching env vars are set.
 
+Two report shapes:
+  * default       — a full per-user state digest (snapshot of everyone).
+  * --story       — an LLM-written narrative of the last --window-hours (24h
+                    by default) from an onboarding POV: who joined, who
+                    progressed, who's stuck, notable trades + performance.
+                    Needs GEMINI_API_KEY; falls back to a plain summary.
+
 Usage:
-    python user_report.py                      # print digest to console
+    python user_report.py                      # full digest to console
+    python user_report.py --story --email      # email the 24h onboarding story
+    python user_report.py --story --window-hours 48
     python user_report.py --slack              # also POST to SLACK_WEBHOOK_URL
-    python user_report.py --email              # also email via SMTP_* vars
-    python user_report.py --days 7             # only users who signed up in 7d
     python user_report.py --email tobyro@gmail.com   # override recipient
 
 Delivery env vars:
@@ -42,7 +49,7 @@ import smtplib
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
 from dotenv import load_dotenv
@@ -78,15 +85,25 @@ def _pct(v) -> str:
 
 
 def _days_since(iso: str | None) -> int | None:
+    d = _parse_dt(iso)
+    if d is None:
+        return None
+    return (datetime.now(timezone.utc) - d).days
+
+
+def _parse_dt(iso: str | None) -> datetime | None:
     if not iso:
         return None
     try:
         d = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        if d.tzinfo is None:
-            d = d.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - d).days
+        return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d
     except (ValueError, TypeError):
         return None
+
+
+def _within(iso: str | None, cutoff: datetime) -> bool:
+    d = _parse_dt(iso)
+    return d is not None and d >= cutoff
 
 
 def _ago(iso: str | None) -> str:
@@ -182,15 +199,20 @@ class ReportData:
         return resp.data or []
 
     def latest_snapshot(self, portfolio_id: str) -> dict | None:
+        return (self.recent_snapshots(portfolio_id, 1) or [None])[0]
+
+    def recent_snapshots(self, portfolio_id: str, n: int = 2) -> list[dict]:
+        # Newest first; [0] is today's mark, [1] the prior trading day's —
+        # their delta is the ~24h ("on the day") move.
         resp = (
             self.c.table("agent_portfolio_history")
             .select("snapshot_date, total_value_usd, pnl_pct, num_positions")
             .eq("portfolio_id", portfolio_id)
             .order("snapshot_date", desc=True)
-            .limit(1)
+            .limit(n)
             .execute()
         )
-        return (resp.data or [None])[0]
+        return resp.data or []
 
     def watchlist_count(self, portfolio_id: str) -> int:
         resp = (
@@ -375,6 +397,235 @@ def _render_portfolio(data: ReportData, pf: dict, lines: list[str], counts: dict
 
 
 # ---------------------------------------------------------------------------
+# 24-hour activity digest → LLM onboarding story
+# ---------------------------------------------------------------------------
+
+# Emails that are the team's own / obvious tests — flagged so the story
+# doesn't count them as real traction.
+TEST_EMAIL_HINTS = ("@alphamolt.ai", "@cranq.")
+
+
+def _looks_internal(email: str | None) -> bool:
+    return any(h in (email or "").lower() for h in TEST_EMAIL_HINTS)
+
+
+def _hours_ago(iso: str | None) -> float | None:
+    d = _parse_dt(iso)
+    if d is None:
+        return None
+    return round((datetime.now(timezone.utc) - d).total_seconds() / 3600, 1)
+
+
+def collect_facts(data: ReportData, window_hours: int) -> dict:
+    """Structured digest of what changed in the trailing window — the input
+    the LLM narrates. Current-state context (totals, stuck cohort) is kept so
+    the story has substance even on a quiet day."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+    totals = {"users": 0, "with_portfolio": 0, "trading": 0, "public": 0}
+    new_signups: list[dict] = []
+    advances: list[dict] = []
+    trades_in_window: list[dict] = []
+    performance: list[dict] = []
+    stuck: list[dict] = []
+
+    for p in data.profiles():
+        totals["users"] += 1
+        email = p.get("email")
+        who = p.get("display_name") or (email or "").split("@")[0] or p["id"]
+        internal = _looks_internal(email)
+        portfolios = data.portfolios_for(p["id"])
+
+        if _within(p.get("created_at"), cutoff):
+            new_signups.append({
+                "who": who, "email": email, "internal": internal,
+                "hours_ago": _hours_ago(p.get("created_at")),
+                "created_portfolio": bool(portfolios),
+            })
+
+        if not portfolios:
+            stuck.append({
+                "who": who, "email": email, "internal": internal,
+                "days_since_signup": _days_since(p.get("created_at")),
+            })
+            continue
+        totals["with_portfolio"] += 1
+
+        for pf in portfolios:
+            pid = pf["id"]
+            holdings = data.holdings(pid)
+            team = data.team(pid)
+            trades = data.trades(pid)
+            snaps = data.recent_snapshots(pid, 2)
+            name = pf.get("display_name") or pf.get("slug")
+
+            if bool(trades) or bool(holdings):
+                totals["trading"] += 1
+            if pf.get("is_public"):
+                totals["public"] += 1
+
+            # Funnel advances inside the window
+            if _within(pf.get("created_at"), cutoff):
+                advances.append({"who": who, "internal": internal,
+                                 "event": "created portfolio", "detail": name})
+            hired = [m for m in team if _within(m.get("joined_at"), cutoff)]
+            if hired:
+                agents = ", ".join((m.get("agents") or {}).get("display_name", "?") for m in hired)
+                advances.append({"who": who, "internal": internal,
+                                 "event": "hired agents", "detail": f"{name}: {agents}"})
+            window_trades = [t for t in trades if _within(t.get("executed_at"), cutoff)]
+            if window_trades and len(window_trades) == len(trades):
+                advances.append({"who": who, "internal": internal,
+                                 "event": "first trade", "detail": name})
+
+            if window_trades:
+                trades_in_window.append({
+                    "who": who, "internal": internal, "portfolio": name,
+                    "count": len(window_trades),
+                    "trades": [{
+                        "side": t.get("side"), "ticker": t.get("ticker"),
+                        "qty": safe_float(t.get("quantity")),
+                        "price": safe_float(t.get("price_usd")),
+                        "hours_ago": _hours_ago(t.get("executed_at")),
+                    } for t in window_trades[:12]],
+                })
+
+            if snaps:
+                latest = snaps[0]
+                day_change = None
+                if len(snaps) > 1:
+                    v0 = safe_float(latest.get("total_value_usd"))
+                    v1 = safe_float(snaps[1].get("total_value_usd"))
+                    if v0 is not None and v1:
+                        day_change = round((v0 - v1) / v1 * 100, 2)
+                best = worst = None
+                if holdings:
+                    prices = data.prices([h["ticker"] for h in holdings])
+                    moves = []
+                    for h in holdings:
+                        c = safe_float(h.get("avg_cost_usd"))
+                        px = prices.get(h["ticker"])
+                        if c and px:
+                            moves.append([h["ticker"], round((px - c) / c * 100)])
+                    if moves:
+                        best = max(moves, key=lambda m: m[1])
+                        worst = min(moves, key=lambda m: m[1])
+                performance.append({
+                    "who": who, "internal": internal, "portfolio": name,
+                    "mode": pf.get("mode") or "paper", "public": bool(pf.get("is_public")),
+                    "mandate": (pf.get("description") or "").strip()[:200] or None,
+                    "value": safe_float(latest.get("total_value_usd")),
+                    "pnl_pct": safe_float(latest.get("pnl_pct")),
+                    "day_change_pct": day_change,
+                    "positions": latest.get("num_positions"),
+                    "team": [(m.get("agents") or {}).get("display_name") for m in team],
+                    "best_holding": best, "worst_holding": worst,
+                })
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="minutes"),
+        "window_hours": window_hours,
+        "totals": totals,
+        "new_signups": new_signups,
+        "advances": advances,
+        "trades_in_window": trades_in_window,
+        "performance": performance,
+        "stuck": stuck,
+    }
+
+
+STORY_BRIEF = """You are writing AlphaMolt's daily internal "onboarding digest" — a short email to the founder.
+
+What AlphaMolt is: a public web app where a person signs up, writes a plain-English investment mandate, hires a team of AI agents into a $1M paper-trading portfolio, and those agents trade US stocks and compete on a public leaderboard ranked by return vs the S&P 500. The onboarding funnel is: signed up -> created a portfolio -> wrote a mandate -> hired agents -> first trade -> went public.
+
+Your job: tell the story of the last {window_hours} hours as an engaging, honest narrative from an onboarding / growth point of view. Celebrate genuine successes and call out failures and drop-off without spin.
+
+Guidance:
+- Lead with what actually changed in the window (new signups, funnel advances, trades, notable performance moves). If it was a quiet window, say so plainly and give the current state of play.
+- Be specific: use names/handles and real numbers from the data. Never invent anything that isn't in the data.
+- Accounts flagged "internal": true are the team's own / test accounts — do not count them as real traction; mention them only briefly, as tests.
+- Highlight friction: people stuck at "signed up" with no portfolio (especially the older ones) are the core onboarding problem.
+- Note standout portfolios: best / worst day move, big winning or losing holdings, who is actually trading versus idle.
+- End with 1-2 concrete, specific suggestions to improve onboarding conversion, grounded in what you saw.
+
+Tone: sharp, concise, a little wry. About 250-400 words. Plain text for an email — short paragraphs, no markdown headings or tables, no subject line.
+
+Here is the data (JSON):
+"""
+
+
+def narrate(facts: dict, window_hours: int) -> str | None:
+    """Turn the facts into a story via Gemini. Returns None on failure so the
+    caller can fall back to a plain-text summary."""
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        logger.warning("--story needs GEMINI_API_KEY; falling back to plain summary.")
+        return None
+    prompt = STORY_BRIEF.format(window_hours=window_hours) + json.dumps(facts, default=str)
+    model = os.environ.get("REPORT_LLM_MODEL", "gemini-2.5-flash").strip()
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
+        f":generateContent?key={api_key}"
+    )
+    body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode()
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                url, data=body, headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                data = json.loads(resp.read())
+            if "error" in data:
+                raise RuntimeError(str(data["error"]))
+            text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            if text:
+                return text
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gemini story attempt %d/3 failed: %s", attempt + 1, exc)
+    return None
+
+
+def story_header(facts: dict) -> str:
+    t = facts["totals"]
+    return (
+        f"AlphaMolt onboarding digest · last {facts['window_hours']}h · "
+        f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}\n"
+        f"{t['users']} users · {t['with_portfolio']} with a portfolio · "
+        f"{t['trading']} trading · {t['public']} public\n"
+        + "=" * 60
+        + "\n\n"
+    )
+
+
+def facts_to_text(facts: dict) -> str:
+    """Plain-text fallback if the LLM is unavailable — never leaves the email empty."""
+    lines: list[str] = []
+    ns = [s for s in facts["new_signups"] if not s["internal"]]
+    lines.append(f"New signups in window: {len(ns)}")
+    for s in ns:
+        lines.append(f"  - {s['who']} <{s['email']}> ({s['hours_ago']}h ago)"
+                     + (" — created a portfolio" if s["created_portfolio"] else " — no portfolio yet"))
+    adv = [a for a in facts["advances"] if not a["internal"]]
+    lines.append(f"\nFunnel advances: {len(adv)}")
+    for a in adv:
+        lines.append(f"  - {a['who']}: {a['event']} ({a['detail']})")
+    tw = [t for t in facts["trades_in_window"] if not t["internal"]]
+    lines.append(f"\nPortfolios trading in window: {len(tw)}")
+    for t in tw:
+        lines.append(f"  - {t['who']} / {t['portfolio']}: {t['count']} trades")
+    stuck = [s for s in facts["stuck"] if not s["internal"]]
+    lines.append(f"\nStuck (signed up, no portfolio): {len(stuck)}")
+    for s in sorted(stuck, key=lambda x: x["days_since_signup"] or 0, reverse=True):
+        lines.append(f"  - {s['who']} <{s['email']}> — {s['days_since_signup']}d ago")
+    return "\n".join(lines)
+
+
+def build_story(data: ReportData, window_hours: int) -> str:
+    facts = collect_facts(data, window_hours)
+    body = narrate(facts, window_hours) or facts_to_text(facts)
+    return story_header(facts) + body
+
+
+# ---------------------------------------------------------------------------
 # Delivery
 # ---------------------------------------------------------------------------
 
@@ -502,8 +753,12 @@ def _deliver_smtp(report: str, subject: str, recipient: str) -> bool:
 def main() -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--story", action="store_true",
+                        help="Emit an LLM-written onboarding story of the trailing window")
+    parser.add_argument("--window-hours", type=int, default=24,
+                        help="Activity window for --story (default 24)")
     parser.add_argument("--days", type=int, default=None,
-                        help="Only users who signed up within N days")
+                        help="Full report: only users who signed up within N days")
     parser.add_argument("--slack", action="store_true",
                         help="Also POST the digest to SLACK_WEBHOOK_URL")
     parser.add_argument("--email", nargs="?", const=True, default=False,
@@ -514,7 +769,10 @@ def main() -> int:
 
     db = SupabaseDB()
     data = ReportData(db)
-    report, counts = build_report(data, args.days)
+    if args.story:
+        report = build_story(data, args.window_hours)
+    else:
+        report, _counts = build_report(data, args.days)
 
     if not args.quiet:
         print(report)
