@@ -90,48 +90,68 @@ export const PRESETS: Record<string, Preset> = {
     id: "quality-growth",
     label: "Quality Growth",
     description:
-      "Durable compounders — Rule of 40, fat FCF and gross margins, valuation kept sane.",
+      "Durable compounders — Rule of 40 ≥ 40, double-digit growth, fat gross margins, valuation kept sane.",
     config: {
       ...base,
       brief:
-        "Durable quality compounders: high Rule of 40, fat free cash flow and gross margins, with the valuation kept sane — P/S under 15.",
-      filters: [{ field: "ps", op: "<=", value: 15 }],
+        "Durable quality compounders: Rule of 40 at or above 40, still growing revenue 10%+, with fat gross margins (40%+) and the valuation kept sane — P/S under 15.",
+      filters: [
+        { field: "rule_of_40", op: ">=", value: 40 },
+        { field: "rev_growth_ttm", op: ">=", value: 10 },
+        { field: "gross_margin", op: ">=", value: 40 },
+        { field: "ps", op: "<=", value: 15 },
+      ],
       weights: { quality: 60, value: 25, momentum: 15 },
     },
   },
   "deep-value": {
     id: "deep-value",
     label: "Deep Value",
-    description: "Cheap on sales relative to their own history; quality is secondary.",
+    description:
+      "Cheap on sales vs their own history — but still profitable and not shrinking, to dodge value traps.",
     config: {
       ...base,
       brief:
-        "Cheap on sales relative to their own 12-month history. I'll tolerate weaker quality for the discount — P/S under 8.",
-      filters: [{ field: "ps", op: "<=", value: 8 }],
+        "Cheap on sales relative to their own 12-month history — P/S under 8 — but still profitable (operating margin ≥ 0) and not shrinking (revenue growth ≥ 0), so the discount isn't a value trap.",
+      filters: [
+        { field: "ps", op: "<=", value: 8 },
+        { field: "operating_margin", op: ">=", value: 0 },
+        { field: "rev_growth_ttm", op: ">=", value: 0 },
+      ],
       weights: { quality: 20, value: 60, momentum: 20 },
     },
   },
   momentum: {
     id: "momentum",
     label: "Momentum",
-    description: "Leaders by trailing 52-week price strength, quality as a sanity check.",
+    description:
+      "Price leaders beating SPY, filtered for real growth and decent margins so it's not junk.",
     config: {
       ...base,
       brief:
-        "Market leaders by trailing 52-week price strength, with quality as a sanity check so I'm not just chasing junk.",
-      filters: [],
+        "Market leaders by trailing 52-week price strength — beating SPY by 5%+ — with real revenue growth (10%+) and decent gross margins (25%+) as a quality sanity check so I'm not just chasing junk.",
+      filters: [
+        { field: "perf_52w_vs_spy", op: ">=", value: 5 },
+        { field: "rev_growth_ttm", op: ">=", value: 10 },
+        { field: "gross_margin", op: ">=", value: 25 },
+      ],
       weights: { quality: 25, value: 15, momentum: 60 },
     },
   },
   "high-fcf": {
     id: "high-fcf",
     label: "High FCF",
-    description: "Cash machines — free-cash-flow margin and Rule of 40 lead the score.",
+    description:
+      "Cash machines — high free-cash-flow margin, Rule of 40, and genuine operating profitability.",
     config: {
       ...base,
       brief:
-        "Cash machines: strong free-cash-flow margin (10%+) and Rule of 40 lead the ranking; valuation is secondary.",
-      filters: [{ field: "fcf_margin", op: ">=", value: 10 }],
+        "Cash machines: free-cash-flow margin of 15%+, Rule of 40 at or above 40, and genuine operating profitability (operating margin 10%+). Valuation is secondary.",
+      filters: [
+        { field: "fcf_margin", op: ">=", value: 15 },
+        { field: "rule_of_40", op: ">=", value: 40 },
+        { field: "operating_margin", op: ">=", value: 10 },
+      ],
       weights: { quality: 65, value: 20, momentum: 15 },
     },
   },
