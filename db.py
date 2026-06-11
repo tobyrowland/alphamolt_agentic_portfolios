@@ -815,6 +815,30 @@ class SupabaseDB:
             if r.get("ticker")
         }
 
+    def get_agent_sold_tickers(
+        self, portfolio_id: str, agent_id: str,
+    ) -> set[str]:
+        """Every ticker a specific agent has EVER sold in a portfolio (no window).
+
+        Trade attribution stamps ``agent_trades.agent_id`` with the acting
+        agent, so this is "names this agent has already acted on". Used by the
+        profit-taker to enforce its trim-once-per-equity-ever rule: once it has
+        banked a gain on a name it never trims that name again.
+        """
+        resp = (
+            self.client.table("agent_trades")
+            .select("ticker")
+            .eq("portfolio_id", portfolio_id)
+            .eq("agent_id", agent_id)
+            .eq("side", "sell")
+            .execute()
+        )
+        return {
+            str(r.get("ticker") or "").upper()
+            for r in (resp.data or [])
+            if r.get("ticker")
+        }
+
     def upsert_portfolio_snapshot(self, data: dict) -> None:
         """Insert or update a daily agent_portfolio_history row.
 

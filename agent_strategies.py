@@ -1498,6 +1498,130 @@ def rebalance_ma_sniper(ctx: RebalanceContext) -> RebalanceResult:
 
 
 # ---------------------------------------------------------------------------
+# Strategy: profit_taker (one-time gain banker)
+# ---------------------------------------------------------------------------
+#
+# A sell-side trimmer: when a holding has grown by `gain_pct` versus its cost
+# basis, sell `sell_pct` of the position to bank the gain — and never touch
+# that equity again. Unlike the LLM reviewer this is purely mechanical (no
+# brief, no LLM) and it TRIMS rather than fully exits (unless sell_pct = 100).
+#
+# "Once per equity, ever" is enforced durably via the trade journal: the sell
+# is attributed to this agent, so on every later run the names it has already
+# trimmed are read back from agent_trades (db.get_agent_sold_tickers) and
+# skipped — permanently, even if the position keeps climbing or is later
+# re-bought. That makes the strategy idempotent across runs by construction.
+
+
+PROFIT_TAKER_DEFAULTS = {
+    "gain_pct": 25.0,        # trigger: position up at least this % vs avg cost
+    "sell_pct": 50.0,        # trim this % of the position when triggered
+    "min_trade_usd": 100.0,  # ignore sub-noise trims
+}
+
+
+def _format_profit_taker_note(ticker: str, gain_pct: float, sell_pct: float) -> str:
+    scope = "exiting" if sell_pct >= 100 else f"trimming {sell_pct:.0f}%"
+    return (
+        f"Sold {ticker} — up {gain_pct:.0f}% vs cost, banking the gain "
+        f"({scope}, one-time)."
+    )
+
+
+def rebalance_profit_taker(ctx: RebalanceContext) -> RebalanceResult:
+    """Bank a one-time profit on any holding past its gain threshold.
+
+    For each current holding (priced at the book's market price):
+        1. Skip names this agent has already trimmed — ever (the journal-backed
+           once-per-equity rule).
+        2. gain% = price / avg_cost − 1. If gain% ≥ ``gain_pct``, sell
+           floor(qty × ``sell_pct``/100) shares (a full exit when sell_pct=100).
+        3. Trims below ``min_trade_usd`` notional are skipped as noise.
+
+    Only ever sells; never buys. Idempotent across runs — once a name is trimmed
+    it is recorded in the trade journal and never reconsidered.
+    """
+    result = RebalanceResult()
+    params = {**PROFIT_TAKER_DEFAULTS, **(ctx.params or {})}
+    handle = ctx.agent.get("handle", ctx.agent["id"][:8])
+
+    if not ctx.portfolio_id:
+        result.notes["reason"] = "profit_taker only runs on a human portfolio"
+        return result
+
+    gain_threshold = float(params["gain_pct"])
+    sell_fraction = float(params["sell_pct"]) / 100.0
+    min_trade = float(params["min_trade_usd"])
+
+    book = ctx.get_book()
+    holdings = book.get("holdings") or []
+    if not holdings:
+        result.notes["reason"] = "no holdings"
+        return result
+
+    already = ctx.db.get_agent_sold_tickers(ctx.portfolio_id, ctx.agent["id"])
+
+    plan: list[tuple[str, int, float]] = []  # (ticker, qty_to_sell, gain_pct)
+    skipped_already: list[str] = []
+    for h in holdings:
+        ticker = h["ticker"]
+        qty = float(h.get("quantity") or 0)
+        avg_cost = SupabaseDB.safe_float(h.get("avg_cost_usd"))
+        price = SupabaseDB.safe_float(h.get("price_usd"))
+        if qty <= 0 or not avg_cost or avg_cost <= 0 or not price:
+            continue
+        if ticker in already:
+            skipped_already.append(ticker)
+            continue
+        gain = (price / avg_cost - 1.0) * 100.0
+        if gain < gain_threshold:
+            continue
+        qty_to_sell = int(math.floor(qty * sell_fraction))
+        if qty_to_sell < 1:
+            continue  # position too small to trim a whole share — wait
+        if qty_to_sell * price < min_trade:
+            continue
+        plan.append((ticker, qty_to_sell, gain))
+
+    if skipped_already:
+        result.notes["skipped_already_trimmed"] = skipped_already
+
+    if not plan:
+        result.notes.setdefault("reason", "no holding above its gain threshold")
+        return result
+
+    if ctx.dry_run:
+        result.notes["dry_run_plan"] = {
+            "sells": [
+                {
+                    "ticker": t,
+                    "qty": q,
+                    "gain_pct": round(g, 1),
+                    "sell_pct": params["sell_pct"],
+                }
+                for (t, q, g) in plan
+            ],
+            "gain_threshold_pct": gain_threshold,
+        }
+        logger.info(
+            "[dry-run] %s: %d profit-take trim(s) (≥%.0f%% gain)",
+            handle, len(plan), gain_threshold,
+        )
+        return result
+
+    for ticker, qty, gain in plan:
+        note = _format_profit_taker_note(ticker, gain, float(params["sell_pct"]))
+        try:
+            ctx.sell(ticker, qty, note=note)
+            result.sells += 1
+        except PortfolioError as exc:
+            result.errors.append(f"sell {ticker} x{qty}: {exc}")
+
+    result.notes["trims"] = result.sells
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -1546,6 +1670,7 @@ STRATEGIES: dict[str, Strategy] = {
     "watchlist_buyer": rebalance_watchlist_buyer,
     "llm_watchlist_buyer": _llm_watchlist_buyer_lazy,
     "ma_sniper": rebalance_ma_sniper,
+    "profit_taker": rebalance_profit_taker,
     "portfolio_reviewer": _portfolio_reviewer_lazy,
 }
 
