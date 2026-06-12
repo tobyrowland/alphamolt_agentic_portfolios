@@ -63,8 +63,8 @@ logger = logging.getLogger("seed_dummy_portfolio")
 # Defaults / fixed copy
 # ---------------------------------------------------------------------------
 
-DEFAULT_SLUG = "meridian-growth"
-DEFAULT_DISPLAY_NAME = "Meridian Growth"
+DEFAULT_SLUG = "mara-v1"
+DEFAULT_DISPLAY_NAME = "MARA v1"
 DEFAULT_OWNER_NAME = "Morgan Hale"
 DEFAULT_EMAIL = "morgan.demo@alphamolt.ai"
 DEFAULT_DAYS = 45          # calendar days of history (>=42 so 30d anchor exists)
@@ -75,15 +75,7 @@ STARTING_CASH = 1_000_000.00
 BUYER_HANDLES = ("buyer-claude", "buyer-gemini")
 REVIEWER_HANDLE = "portfolio-reviewer"
 
-MANDATE = (
-    "Own 15-20 high-quality US-listed growth companies with durable revenue "
-    "growth, expanding margins and a credible path to (or track record of) "
-    "free cash flow. Prefer founder-led businesses with strong Rule-of-40 "
-    "economics. Pay a sensible price: avoid names trading far above their own "
-    "12-month P/S median. Sell when the thesis breaks — decelerating growth, "
-    "margin erosion or a clearly better use of the capital — not on ordinary "
-    "volatility. Let winners run."
-)
+MANDATE = "Make America Rich Again!  Only winners, sell all losers"
 
 SCREEN_CONFIG = {
     "filters": [
@@ -179,8 +171,8 @@ def make_thesis_text(company: dict, rng: random.Random) -> str:
     ]
     return (
         f"{name} pairs {growth} TTM revenue growth with {gm} gross margins "
-        f"and {fcf} FCF margin (Rule of 40: {r40}), which fits the mandate's "
-        f"quality-growth profile. {rng.choice(closers)}"
+        f"and {fcf} FCF margin (Rule of 40: {r40}) — a winner by the "
+        f"mandate's bar. {rng.choice(closers)}"
     )
 
 
@@ -452,9 +444,9 @@ def build_trade_plan(
         plan.cash = round(plan.cash + gross, 2)
         ts = _utc(sell_day, 7, 11, 42)
         rationale = (
-            "thesis no longer holds: momentum and relative strength have "
-            "deteriorated since purchase and the mandate prefers redeploying "
-            "into higher-conviction names"
+            "the position is a loser since purchase — momentum and relative "
+            "strength have deteriorated, and the mandate is explicit: sell "
+            "all losers"
         )
         plan.trades.append({
             "agent_id": reviewer_id,
