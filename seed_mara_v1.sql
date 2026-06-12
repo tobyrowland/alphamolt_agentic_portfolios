@@ -139,13 +139,18 @@ BEGIN
         LIMIT 160
     ),
     cov AS (
-        SELECT p.ticker,
+        SELECT m.ticker,
                COUNT(*) AS n_days,
-               MAX(ABS(p.close / NULLIF(lag(p.close) OVER (PARTITION BY p.ticker ORDER BY p.date), 0) - 1)) AS max_move
-        FROM prices_daily p
-        JOIN _days dd ON dd.day = p.date
-        WHERE p.ticker IN (SELECT ticker FROM universe) AND p.close > 0
-        GROUP BY p.ticker
+               MAX(m.move) AS max_move
+        FROM (
+            SELECT p.ticker,
+                   ABS(p.close / NULLIF(lag(p.close) OVER (
+                       PARTITION BY p.ticker ORDER BY p.date), 0) - 1) AS move
+            FROM prices_daily p
+            JOIN _days dd ON dd.day = p.date
+            WHERE p.ticker IN (SELECT ticker FROM universe) AND p.close > 0
+        ) m
+        GROUP BY m.ticker
     )
     SELECT u.ticker, u.sort_order,
            (SELECT close FROM prices_daily pp
