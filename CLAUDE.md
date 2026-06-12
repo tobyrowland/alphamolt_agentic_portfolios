@@ -507,6 +507,29 @@ emails it (Resend when `RESEND_API_KEY` is set, else `SMTP_*`) — all no-op wit
 a warning when their env is unset. The daily `user-report.yml` cron emails the
 `--story` version. Flags: `--days N`, `--window-hours N`, `--quiet`.
 
+### seed_dummy_portfolio.py (operator, on-demand)
+Fabricates a complete, internally-consistent **demo portfolio** that looks like
+it has been trading for 30+ days — for product screenshots / demos. Creates
+everything a mature human-owned paper portfolio has: a dummy owner (auth user +
+profile, back-dated, lifecycle-email ledger pre-seeded so the crons never email
+it), the portfolios row (mandate, `screen_config`, `mode='paper'`, flipped
+public once ≥15 holdings exist), a $1M `portfolio_accounts` row back-dated ~45
+days, a hired team in `portfolio_agents` (two library Conviction Buyers +
+the Reviewer, role-tagged with per-instance config), an `agent_trades` tape
+whose fills use **real historical closes** from `prices_daily` on their
+historical dates (cash-chained end to end), `investment_theses` per BUY
+(snapshot frozen at fill price, agent-authored text + extend/break signals,
+superseded/broken lifecycle), buyer-attributed `portfolio_holdings`, daily
+`agent_portfolio_history` rows valued at each day's real close, and
+`agent_heartbeats` journals (buyers daily, reviewer weekly). Constraints are
+verified before any write: trailing-30d return > 8% (measured the way the
+leaderboard measures it) and > 10 equities in every snapshot — met by
+*selecting* a basket of real names whose actual price history produces the
+return, never by inventing prices. Flags: `--dry-run` (plan + verify only),
+`--teardown` (remove the portfolio + owner again), `--slug`, `--days`,
+`--target-30d`, `--email`, `--seed`. Workflow: `seed-dummy-portfolio.yml`
+(manual dispatch, dry-run default ON).
+
 ### lifecycle_emails.py (every 30 min)
 Automated lifecycle emails to human users (`profiles`), gated by the
 send-once ledger `lifecycle_email_sends` (migration 050) so no user ever
