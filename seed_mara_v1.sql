@@ -23,10 +23,18 @@
 
 BEGIN;
 
--- The AFTER INSERT trigger on agent_trades recomputes a same-day snapshot
--- from CURRENT account state — wrong for back-dated trades. Disable for the
--- duration of this transaction; our own history rows are written below.
-ALTER TABLE agent_trades DISABLE TRIGGER agent_trades_recompute_snapshot;
+-- The AFTER INSERT trigger on agent_trades (if present — it has been dropped
+-- on some environments) recomputes a same-day snapshot from CURRENT account
+-- state, which is wrong for back-dated trades. Disable it for the duration
+-- of this transaction; our own history rows are written below.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_trigger
+                WHERE tgname = 'agent_trades_recompute_snapshot'
+                  AND tgrelid = 'agent_trades'::regclass) THEN
+        EXECUTE 'ALTER TABLE agent_trades DISABLE TRIGGER agent_trades_recompute_snapshot';
+    END IF;
+END $$;
 
 DO $seed$
 DECLARE
@@ -547,7 +555,14 @@ BEGIN
 END
 $seed$;
 
-ALTER TABLE agent_trades ENABLE TRIGGER agent_trades_recompute_snapshot;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_trigger
+                WHERE tgname = 'agent_trades_recompute_snapshot'
+                  AND tgrelid = 'agent_trades'::regclass) THEN
+        EXECUTE 'ALTER TABLE agent_trades ENABLE TRIGGER agent_trades_recompute_snapshot';
+    END IF;
+END $$;
 
 COMMIT;
 
