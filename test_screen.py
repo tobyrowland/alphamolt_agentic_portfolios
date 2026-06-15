@@ -150,5 +150,62 @@ class TestScoring(unittest.TestCase):
         self.assertEqual(top2, ["A", "B"])
 
 
+class _FakeDB:
+    """Minimal stub for portfolio_screen_candidates: serves one screen_config
+    and a fixed active-rejection set."""
+
+    def __init__(self, config: dict, rejected: set[str]):
+        self._config = config
+        self._rejected = rejected
+
+    # screen.portfolio_screen_config reads via the supabase client; patch the
+    # module helper instead (see tests below). This stub only needs the
+    # rejection accessor that screen.portfolio_screen_candidates calls.
+    def get_active_screener_rejections(self, portfolio_id):
+        return set(self._rejected)
+
+
+class TestRejectionFilter(unittest.TestCase):
+    """Migration 051: portfolio_screen_candidates drops the portfolio's active
+    rejections when hideRejected is on (default), and keeps them when off."""
+
+    def _ranked(self):
+        return facts(
+            {"ticker": "A", "rule_of_40": 90, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
+            {"ticker": "B", "rule_of_40": 50, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
+            {"ticker": "C", "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
+        )
+
+    def _run(self, config, rejected):
+        # Patch the two screen.py reads so the test is pure (no DB/RPC).
+        orig_cfg = screen.portfolio_screen_config
+        orig_run = screen.run_screen
+        ranked = self._ranked()
+        screen.portfolio_screen_config = lambda db, pid: config
+        screen.run_screen = lambda db, cfg: screen.score_screen(ranked, cfg)
+        try:
+            return screen.portfolio_screen_candidates(_FakeDB(config, rejected), "pid")
+        finally:
+            screen.portfolio_screen_config = orig_cfg
+            screen.run_screen = orig_run
+
+    def test_hide_rejected_default_on_drops_rejected(self):
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "topN": 40}
+        out = self._run(cfg, {"A"})
+        self.assertNotIn("A", out)
+        self.assertIn("B", out)
+        self.assertIn("C", out)
+
+    def test_hide_rejected_off_keeps_rejected(self):
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "topN": 40, "hideRejected": False}
+        out = self._run(cfg, {"A"})
+        self.assertIn("A", out)
+
+    def test_no_rejections_is_noop(self):
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "topN": 40}
+        out = self._run(cfg, set())
+        self.assertEqual(set(out), {"A", "B", "C"})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -152,6 +152,30 @@ Deterministic scoring-as-a-function (Python mirror of
 candidates(db, portfolio_id)` returns the top N `{ticker: rationale}` that both
 buyers (`watchlist_buyer`, `llm_watchlist_buyer`) now trade from. Pure, no LLM.
 
+### Screener rejections — per-portfolio 90-day auto-hide (migration 051)
+When a portfolio's BUY agent (`llm_watchlist_buyer`) evaluates a candidate and
+**doesn't buy it** — a PASS verdict, or a BUY below its conviction gate — the
+name is recorded in `screener_rejections` (`(portfolio_id, ticker)` PK,
+`expires_at` = now + 90d, `rejected_by_agent_id`, `verdict`, `conviction`,
+`reason`, `restored_at`). The screener's **`hideRejected`** toggle (in
+`screen_config`, **on by default**) then drops those names from BOTH the
+screener results and the buyer's candidate pool for 90 days, so the agent
+doesn't churn straight back into re-evaluating a name it just passed on. A
+5/5 BUY that merely ran out of cash is **not** a rejection (still wanted). The
+owner can **restore** a name early (sets `restored_at`); a later re-rejection
+re-arms the hide. An actual buy clears any stale rejection. This is the
+per-portfolio cousin of the manual, global 1-year `screener_exclusions`
+(migration 048). Applied at read time, honouring `hideRejected`:
+`screen.portfolio_screen_candidates()` (Python buyer pool, via
+`db.get_active_screener_rejections`), `web/lib/screen/query.ts runScreen(...,
+rejected)` + `web/app/api/screen/route.ts` (the live re-rank). RLS: service-role
+only (a rejection list can belong to a private portfolio, so unlike
+`screener_exclusions` it is **not** public-read; the website reads it
+server-side). The screener page SSR stays anonymous/ISR-cached — the toggle's
+filtering + restore panel are resolved client-side via `/api/screen` once the
+viewer is known signed-in. Owner UI: `web/lib/screen/rejections-{query,
+mutations}.ts` + the toggle/restore panel in `web/app/screener/screener-client.tsx`.
+
 ## Portfolio swarm — multi-buyer / multi-reviewer coordination
 
 A portfolio runs a **swarm**: multiple specialist buyers + reviewers over one

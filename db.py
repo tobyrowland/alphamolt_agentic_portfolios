@@ -839,6 +839,96 @@ class SupabaseDB:
             if r.get("ticker")
         }
 
+    # ------------------------------------------------------------------
+    # Screener rejections (migration 051) — per-portfolio 90-day auto-hide
+    # of names a BUY agent evaluated and passed on. Cousin of the manual,
+    # global screener_exclusions (migration 048). Service-role only.
+    # ------------------------------------------------------------------
+
+    def get_active_screener_rejections(self, portfolio_id: str) -> set[str]:
+        """Tickers this portfolio's buyer evaluated and passed on, still within
+        the 90-day window and not manually restored. Upper-cased.
+
+        Fail-open: a read error (e.g. the table not yet migrated) returns an
+        empty set rather than blocking the screen / buyer.
+        """
+        if not portfolio_id:
+            return set()
+        try:
+            resp = (
+                self.client.table("screener_rejections")
+                .select("ticker")
+                .eq("portfolio_id", portfolio_id)
+                .gt("expires_at", date.today().isoformat())
+                .is_("restored_at", "null")
+                .execute()
+            )
+        except Exception:  # noqa: BLE001
+            return set()
+        return {
+            str(r.get("ticker") or "").upper()
+            for r in (resp.data or [])
+            if r.get("ticker")
+        }
+
+    def record_screener_rejections(
+        self, portfolio_id: str, rows: list[dict], *, days: int = 90,
+    ) -> int:
+        """Upsert one rejection per row for a portfolio (migration 051).
+
+        Each row: ``{ticker, rejected_by_agent_id?, verdict?, conviction?,
+        reason?}``. The expiry window is refreshed to ``now + days`` and any
+        prior manual ``restored_at`` is cleared, so a fresh rejection re-arms
+        the hide. Returns the number of rows written. Best-effort: a write
+        failure is swallowed (the buyer must never crash on bookkeeping).
+        """
+        if not portfolio_id or not rows:
+            return 0
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        expires = (now + timedelta(days=days)).isoformat()
+        payload = []
+        for r in rows:
+            ticker = str(r.get("ticker") or "").upper()
+            if not ticker:
+                continue
+            payload.append({
+                "portfolio_id": portfolio_id,
+                "ticker": ticker,
+                "rejected_at": now.isoformat(),
+                "expires_at": expires,
+                "rejected_by_agent_id": r.get("rejected_by_agent_id"),
+                "verdict": r.get("verdict"),
+                "conviction": r.get("conviction"),
+                "reason": (r.get("reason") or None),
+                "restored_at": None,
+            })
+        if not payload:
+            return 0
+        try:
+            self.client.table("screener_rejections").upsert(
+                payload, on_conflict="portfolio_id,ticker"
+            ).execute()
+        except Exception:  # noqa: BLE001
+            return 0
+        return len(payload)
+
+    def clear_screener_rejection(self, portfolio_id: str, ticker: str) -> None:
+        """Drop a rejection outright — used when the name is actually bought,
+        so a later sell+re-screen isn't shadowed by a stale rejection. Idempotent."""
+        if not portfolio_id or not ticker:
+            return
+        try:
+            (
+                self.client.table("screener_rejections")
+                .delete()
+                .eq("portfolio_id", portfolio_id)
+                .eq("ticker", str(ticker).upper())
+                .execute()
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def upsert_portfolio_snapshot(self, data: dict) -> None:
         """Insert or update a daily agent_portfolio_history row.
 

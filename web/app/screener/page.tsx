@@ -126,6 +126,10 @@ export default async function ScreenerPage({
 }) {
   const sp = await resolveParams(searchParams);
   const config = (sp.screen ? await savedConfig(sp.screen) : null) ?? configFromParams(sp);
+  // NOTE: the SSR paint is anonymous (no auth cookies) so this page stays
+  // ISR-cached / indexable. Per-portfolio rejection hiding (migration 051) is
+  // resolved client-side via /api/screen (which reads the session) once the
+  // viewer is known signed-in — see screener-client's sign-in refetch.
   const [initial, companyTickers, exclusions] = await Promise.all([
     runScreen(config),
     getCompanyTickers(),

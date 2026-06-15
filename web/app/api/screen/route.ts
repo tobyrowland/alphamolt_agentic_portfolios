@@ -13,6 +13,7 @@
 import { errorResponse, jsonResponse } from "@/lib/api-utils";
 import { configFromParams, screenConfigSchema } from "@/lib/screen/config";
 import { runScreen } from "@/lib/screen/query";
+import { activeRejectionsForViewer } from "@/lib/screen/rejections-query";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -52,7 +53,11 @@ export async function GET(req: Request) {
     // Validate (defends against a hand-edited config param).
     screenConfigSchema.parse(config);
 
-    const result = await runScreen(config);
+    // Per-portfolio rejection set (migration 051), so the live re-rank hides
+    // the same names the SSR page did. Empty for logged-out callers.
+    const { rejections } = await activeRejectionsForViewer();
+    const rejectedSet = new Set(rejections.map((r) => r.ticker.toUpperCase()));
+    const result = await runScreen(config, rejectedSet);
     const rows = result.rows.map((r) =>
       Object.fromEntries(DISPLAY.map((k) => [k, (r as unknown as Record<string, unknown>)[k]])),
     );
@@ -65,12 +70,16 @@ export async function GET(req: Request) {
         cut_index: result.cut_index,
         data_asof: result.data_asof,
         config,
+        // The viewer's active per-portfolio rejections (migration 051) — the
+        // client uses these for the restore panel. Empty for logged-out callers.
+        rejected: rejections.map((r) => r.ticker),
       },
       {
         headers: {
-          // Re-rank feels live but still gets CDN relief; invalidated by the
-          // daily data refresh well inside this window.
-          "Cache-Control": "public, max-age=60, stale-while-revalidate=300",
+          // Per-viewer (rejections depend on the session) — must not be shared
+          // across users by a CDN. Re-rank is cheap (cached facts + in-memory
+          // scoring) so private/no-store is fine.
+          "Cache-Control": "private, no-store",
         },
       },
     );

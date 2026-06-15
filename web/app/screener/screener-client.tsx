@@ -8,6 +8,7 @@ import {
   excludeFromScreener,
   unexcludeFromScreener,
 } from "@/lib/screen/exclusions-mutations";
+import { restoreRejection } from "@/lib/screen/rejections-mutations";
 import {
   FILTER_FIELDS,
   FILTER_OPS,
@@ -54,6 +55,9 @@ interface ScreenData {
   total_universe: number;
   cut_index: number;
   data_asof: string | null;
+  /** Viewer's active per-portfolio rejections (migration 051); only the
+   *  /api/screen route populates this (SSR is anonymous). */
+  rejected?: string[];
 }
 
 function fmt(v: number | null, opts?: { pct?: boolean; mult?: boolean; dp?: number }): string {
@@ -155,6 +159,7 @@ export default function ScreenerClient({
   sectors = [],
   companyTickers = [],
   exclusions = [],
+  rejections = [],
 }: {
   initialConfig: ScreenConfig;
   initialData: ScreenData;
@@ -164,6 +169,8 @@ export default function ScreenerClient({
   companyTickers?: string[];
   /** Tickers on the manual 1-year blocklist (owner-managed). */
   exclusions?: string[];
+  /** Tickers this portfolio's buyer evaluated and passed on (migration 051). */
+  rejections?: string[];
   defaultEncoded?: string;
 }) {
   const linkable = useMemo(
@@ -184,6 +191,10 @@ export default function ScreenerClient({
   const [excluded, setExcluded] = useState<string[]>(exclusions);
   const [exclBusy, setExclBusy] = useState(false);
   const [exclMsg, setExclMsg] = useState<string | null>(null);
+  // Per-portfolio agent rejections (migration 051) — the manage/restore panel.
+  const [rejected, setRejected] = useState<string[]>(rejections);
+  const [rejBusy, setRejBusy] = useState(false);
+  const [rejMsg, setRejMsg] = useState<string | null>(null);
   const [showIntro, setShowIntro] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [saveLink, setSaveLink] = useState<string | null>(null);
@@ -331,7 +342,11 @@ export default function ScreenerClient({
       const encoded = encodeConfig(config);
       try {
         const res = await fetch(`/api/screen?config=${encoded}`, { cache: "no-store" });
-        if (res.ok) setData((await res.json()) as ScreenData);
+        if (res.ok) {
+          const json = (await res.json()) as ScreenData;
+          setData(json);
+          if (json.rejected) setRejected(json.rejected);
+        }
       } finally {
         setLoading(false);
       }
@@ -350,18 +365,35 @@ export default function ScreenerClient({
     setSaveLink(null);
   }, []);
 
-  // Re-fetch the current screen — used after an exclusion changes the universe.
+  // Re-fetch the current screen — used after an exclusion/rejection changes the
+  // universe, and once on sign-in (so /api/screen applies the viewer's
+  // per-portfolio rejection hide and returns the restore list).
   const refetch = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch(`/api/screen?config=${encodeConfig(config)}`, {
         cache: "no-store",
       });
-      if (res.ok) setData((await res.json()) as ScreenData);
+      if (res.ok) {
+        const json = (await res.json()) as ScreenData;
+        setData(json);
+        if (json.rejected) setRejected(json.rejected);
+      }
     } finally {
       setLoading(false);
     }
   }, [config]);
+
+  // Once we learn the viewer is signed in, refetch so rejections (migration
+  // 051) are applied + loaded. SSR is anonymous, so this is the logged-in
+  // owner's first filtered view. Fires once.
+  const signinRefetched = useRef(false);
+  useEffect(() => {
+    if (signedIn && !signinRefetched.current) {
+      signinRefetched.current = true;
+      void refetch();
+    }
+  }, [signedIn, refetch]);
 
   const excludedSet = useMemo(
     () => new Set(excluded.map((t) => t.toUpperCase())),
@@ -421,6 +453,29 @@ export default function ScreenerClient({
       setExclMsg(`Couldn’t restore ${t} — try again.`);
     } finally {
       setExclBusy(false);
+    }
+  }
+
+  // Restore a name the portfolio's buyer passed on (migration 051): clears the
+  // 90-day hide so it shows again and the buyer reconsiders it next run.
+  async function onRestoreRejection(ticker: string) {
+    const t = ticker.toUpperCase();
+    setRejMsg(null);
+    setRejected((prev) => prev.filter((x) => x.toUpperCase() !== t));
+    setRejBusy(true);
+    try {
+      const res = await restoreRejection(t);
+      if (res.ok) {
+        await refetch();
+      } else {
+        setRejected((prev) => Array.from(new Set([...prev, t])));
+        setRejMsg(res.error || `Couldn’t restore ${t} — try again.`);
+      }
+    } catch {
+      setRejected((prev) => Array.from(new Set([...prev, t])));
+      setRejMsg(`Couldn’t restore ${t} — are you signed in?`);
+    } finally {
+      setRejBusy(false);
     }
   }
 
@@ -669,6 +724,20 @@ export default function ScreenerClient({
               AI bull/bear ×
             </label>
           </div>
+          <div className="flex items-center justify-end mt-2">
+            <label
+              title="Hide names your portfolio's buyer evaluated and passed on, for 90 days. Restore any of them in the panel below."
+              className="font-mono text-[10.5px] text-[var(--color-cyan)] inline-flex items-center gap-1.5 cursor-help shrink-0"
+            >
+              <input
+                type="checkbox"
+                checked={config.hideRejected !== false}
+                onChange={(e) => patch({ hideRejected: e.target.checked })}
+                className="accent-[var(--color-cyan)]"
+              />
+              Hide agent-rejected (90d)
+            </label>
+          </div>
           {(["quality", "value", "momentum"] as const).map((k) => (
             <div key={k} className="mt-2.5">
               <div className="flex justify-between font-mono text-[11px] text-text-muted capitalize">
@@ -762,6 +831,61 @@ export default function ScreenerClient({
           <button
             type="button"
             onClick={() => setExclMsg(null)}
+            aria-label="Dismiss"
+            className="text-text-muted hover:text-text"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Passed-on names — this portfolio's buyer evaluated them and didn't
+          buy (migration 051). Hidden from the screener (and not re-evaluated
+          by the buyer) for 90 days while "Hide agent-rejected" is on. Restore
+          any of them here to show it again and have the buyer reconsider. */}
+      {signedIn && rejected.length > 0 && (
+        <details className={`mb-2 ${card}`}>
+          <summary className="list-none cursor-pointer font-mono text-[11px] text-text-muted px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden flex items-center justify-between">
+            <span>
+              🛇 Passed on by your agents ({rejected.length})
+              {config.hideRejected !== false
+                ? " — hidden for 90 days"
+                : " — currently shown (toggle off)"}
+            </span>
+            <span className="text-text-muted/60">manage ▾</span>
+          </summary>
+          <div className="px-3 pb-3 flex flex-wrap gap-1.5">
+            {[...new Set(rejected.map((t) => t.toUpperCase()))].sort().map((t) => (
+              <span
+                key={t}
+                className="inline-flex items-center gap-1.5 font-mono text-[11px] text-text border border-white/10 bg-white/[0.03] rounded-md px-2 py-1"
+              >
+                {t}
+                <button
+                  type="button"
+                  disabled={rejBusy}
+                  onClick={() => onRestoreRejection(t)}
+                  title={`Restore ${t} to the screener now`}
+                  aria-label={`Restore ${t}`}
+                  className="text-[var(--color-cyan)] hover:underline disabled:opacity-40"
+                >
+                  restore
+                </button>
+              </span>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {rejMsg && (
+        <div
+          role="alert"
+          className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-[var(--color-red,#FF3333)]/40 bg-[var(--color-red,#FF3333)]/[0.06] px-3 py-2 font-mono text-[11px] text-[var(--color-red,#FF3333)]"
+        >
+          <span>{rejMsg}</span>
+          <button
+            type="button"
+            onClick={() => setRejMsg(null)}
             aria-label="Dismiss"
             className="text-text-muted hover:text-text"
           >
