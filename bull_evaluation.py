@@ -427,6 +427,13 @@ def main():
     logger.info("Writing %d verdicts", matched)
     if updates:
         db.upsert_companies_batch(updates)
+        # Dual-write to the Level 0 ai_analysis table (migration 053) so the
+        # screener overlay + buyer read bull verdicts off Level 0, not companies.
+        db.upsert_ai_analysis_batch([
+            {"ticker": u["ticker"], "bull_eval": u["bull_eval"],
+             "analyzed_at": u["bull_eval_at"]}
+            for u in updates
+        ])
 
     # Log the run
     elapsed = time.time() - start_time

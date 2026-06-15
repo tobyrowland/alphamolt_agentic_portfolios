@@ -419,6 +419,12 @@ def main():
                 "bear_eval": verdict,
                 "bear_eval_at": today_str,
             })
+            # Dual-write Level 0 ai_analysis (migration 053) — the screener
+            # overlay + buyer read bear verdicts off Level 0, not companies.
+            db.upsert_ai_analysis(ticker, {
+                "bear_eval": verdict,
+                "analyzed_at": today_str,
+            })
             matched += 1
         else:
             logger.warning("No verdict found for %s", ticker)

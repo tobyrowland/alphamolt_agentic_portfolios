@@ -727,6 +727,18 @@ ps_ath, ps_pct_of_ath, history_json, source, fetched_at — PK (ticker, date)
 
 **`events`** `ticker (FK), type (earnings|split|dividend), date, value, source, fetched_at — PK (ticker, type, date)`
 
+**`ai_analysis`** (Level 0 home for AI bull/bear + narratives — migration 053,
+Stage A1) `ticker (PK, no FK — a derived lens table), bull_eval, bear_eval,
+short_outlook, key_risks, full_outlook, event_impact, analyzed_at, updated_at`.
+The screener's AI multiplier (`screen_ai_overlay` / `screen_facts_mv`) and the
+buyer's narrative enrichment (`db.get_ai_analysis`) read bull/bear + narratives
+from **here**, not `companies` — the first step of retiring the legacy TV
+`companies` flow. Seeded from `companies` (zero coverage loss) and kept fresh by
+the eval scripts **dual-writing** it (`db.upsert_ai_analysis`) alongside
+`companies`. **Stage A2** (pending) repoints those scripts' *input* universe
+from `companies` to Tier 1, so bull/bear + narratives finally cover the whole
+Tier-1 universe (today they cover only the legacy screen's names).
+
 All Level 0 tables: public-read RLS, service-role writes. `metric_stats`
 (distribution percentiles) is reused from migration 038.
 

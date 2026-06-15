@@ -575,6 +575,15 @@ def main():
             )
             if update_fields and not args.dry_run:
                 db.upsert_company(ticker, update_fields)
+                # Dual-write narratives to the Level 0 ai_analysis table
+                # (migration 053) so the company narratives live off Level 0.
+                db.upsert_ai_analysis(ticker, {
+                    "short_outlook": update_fields.get("short_outlook"),
+                    "full_outlook": update_fields.get("full_outlook"),
+                    "key_risks": update_fields.get("key_risks"),
+                    "event_impact": update_fields.get("event_impact"),
+                    "analyzed_at": update_fields.get("ai_analyzed_at"),
+                })
                 total_written += 1
                 logger.info("  Wrote update for %s", ticker)
             elif not update_fields and not args.dry_run:
