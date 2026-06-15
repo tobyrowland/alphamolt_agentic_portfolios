@@ -1142,8 +1142,10 @@ going live is an `ALPACA_BASE_URL` + key swap.
 `portfolio_holdings` + `portfolio_accounts.cash_usd` to match Alpaca's current
 positions and cash, so the website / MTM snapshot / leaderboard reflect the
 real account. It **refuses** unless the portfolio is `mode='live'` (so it can
-never clobber a paper book), validates each Alpaca symbol against `companies`
-before writing (the holdings FK target; unknown symbols are skipped), and
+never clobber a paper book), validates each Alpaca symbol against `securities`
+(Level 0 Tier 0 — the real `portfolio_holdings.ticker` FK target, so Level-0-only
+names like foreign ADRs are written, not dropped; only symbols absent from
+`securities` are skipped), and
 preserves `first_bought_at`. The MTM snapshot is produced on the next
 `portfolio_valuation.py` run from the mirrored holdings; per-trade journaling
 into `agent_trades` (Alpaca activities, deduped by order id) is the remaining

@@ -398,15 +398,18 @@ class AlpacaExecutionBackend:
         print(f"\n{tag}{head}  portfolio={portfolio_slug}  mode=live  "
               f"alpaca={'PAPER' if self.client.is_paper else 'LIVE'}\n")
 
-        # Upsert every Alpaca position. Validate the symbol against `companies`
-        # first — portfolio_holdings.ticker FKs to companies, and the website
-        # joins through it for price/name, so an unknown symbol must be skipped
-        # rather than written. (US symbols map 1:1; exchange-suffix / FX mapping
-        # for non-US listings is a follow-up.)
+        # Upsert every Alpaca position. Validate the symbol against `securities`
+        # (Level 0 Tier 0) — that's the real FK target of
+        # portfolio_holdings.ticker, so a Level-0-only name (e.g. a foreign ADR
+        # like TSM that the legacy `companies` TradingView screen excludes) is a
+        # perfectly valid holding and must be written, not dropped. The paper
+        # book already holds such names; the live mirror must too, or a real
+        # fill silently never reaches the DB/website. Skip only symbols absent
+        # from `securities` entirely (the FK would otherwise reject the write).
         for symbol, (qty, avg) in sorted(alpaca_pos.items()):
-            if not db.get_company(symbol):
+            if not db.get_security(symbol):
                 logger.warning(
-                    "skip %s: not in companies universe (FK target missing)",
+                    "skip %s: not in securities universe (FK target missing)",
                     symbol,
                 )
                 continue
