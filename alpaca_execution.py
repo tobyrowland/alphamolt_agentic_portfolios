@@ -227,14 +227,22 @@ class AlpacaExecutionBackend:
         """
         self._guard_live(allow_live)
         if ref_price and self.price_band > 0:
-            limit_price = self._band_limit_price(side, ref_price)
+            # Centre the band on the LIVE market price when we can get one, so a
+            # stale DB ref (e.g. a Level-0 daily close for a name the intraday
+            # job doesn't cover) can't push a marketable limit out of reach and
+            # leave it unfilled. Falls back to the passed ref_price when the
+            # data API has nothing (off-hours, no entitlement, unknown symbol).
+            live = self.client.get_latest_trade_price(symbol)
+            band_ref = live if (live and live > 0) else ref_price
+            limit_price = self._band_limit_price(side, band_ref)
             order = self.client.submit_order(
                 symbol, side, qty=qty,
                 order_type="limit", limit_price=limit_price,
             )
             logger.info(
-                "%s %s x%s  limit=$%.4f (ref=$%.4f, band=%.1f%%)",
-                side.upper(), symbol, qty, limit_price, ref_price,
+                "%s %s x%s  limit=$%.4f (band_ref=$%.4f [live=%s intended=$%.4f], band=%.1f%%)",
+                side.upper(), symbol, qty, limit_price, band_ref,
+                f"${live:.4f}" if live else "n/a", ref_price,
                 self.price_band * 100,
             )
         else:

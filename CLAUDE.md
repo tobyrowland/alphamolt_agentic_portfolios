@@ -1178,11 +1178,18 @@ view is the live portfolio's own (private) detail page.
 
 **Price protection.** All live orders (mirror + forward path) are placed as
 marketable **limit** orders one `ALPACA_PRICE_BAND_PCT` band (default 3%) from
-the intended price — a buy never pays more than band% above, a sell never
-accepts more than band% below. If the market gaps past the band (classic
-at-the-open / illiquid risk) the order doesn't fill, and the next mirror run
-re-converges. `execute_and_wait(..., ref_price=)` computes the limit; the
-mirror passes the sizing price, the forward path passes `companies.price`.
+the **live market price** — a buy never pays more than band% above, a sell
+never accepts more than band% below. `execute_and_wait(..., ref_price=)`
+centres the band on Alpaca's latest trade price
+(`AlpacaClient.get_latest_trade_price`, IEX feed, best-effort) and only falls
+back to the passed `ref_price` (the mirror's sizing price / the forward path's
+`companies.price`) when the data API returns nothing. This matters because a
+Level-0-only ticker (e.g. a foreign ADR like `TSM` the legacy pipeline doesn't
+price intraday) is otherwise referenced off a stale daily close — anchoring the
+band there pushes a marketable limit out of reach and it never fills. Centring
+on the live quote keeps the band as genuine slippage protection. If the market
+still gaps past the band (classic at-the-open / illiquid risk) the order
+doesn't fill, and the next mirror run re-converges.
 
 **Scheduling.** The swarm rebalances the paper book at the 07:00 UTC heartbeat,
 which is *before* the US open (13:30 UTC) — so the heartbeat's inline
