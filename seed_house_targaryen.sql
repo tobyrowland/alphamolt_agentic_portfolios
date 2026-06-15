@@ -8,10 +8,17 @@
 -- per buy, buyer-attributed holdings, daily MTM snapshots and heartbeat
 -- journals. SQL twin of seed_dummy_portfolio.py.
 --
+-- This version seeds an UNDERPERFORMER: the basket is the WEAKEST trailing-30d
+-- names (and still excludes MARA v1's holdings so the books stay distinct), so
+-- the portfolio sits at the BOTTOM of the leaderboard. It first tears down any
+-- prior incarnation of this slug, so it is safe to re-run. RUN seed_mara_v1.sql
+-- FIRST so the MARA-exclusion reads MARA's final (re-seeded) holdings.
+--
 -- Everything runs in ONE transaction and the script RAISEs (rolling back
 -- every row) unless the result satisfies:
---   * trailing-30d return > 8% (leaderboard measurement: latest snapshot vs
---     the snapshot 30 days ago)
+--   * trailing-30d return is NEGATIVE and at least 0.5pp BELOW the human
+--     portfolio "chuckyegg" (looked up live; leaderboard measurement: latest
+--     snapshot vs the snapshot 30 days ago)
 --   * > 10 equities in every daily snapshot
 --
 -- Teardown (paste separately if you ever want it gone):
@@ -85,6 +92,8 @@ DECLARE
     v_anchor     NUMERIC;
     v_ret30      NUMERIC;
     v_minpos     INT;
+    v_chuck      NUMERIC;
+    v_chuck_pid  UUID;
     r            RECORD;
     d            DATE;
     k_fields CONSTANT TEXT[] := ARRAY[
@@ -101,10 +110,36 @@ DECLARE
         'short_outlook','key_risks','full_outlook','bull_eval','bear_eval',
         'status','flags','ai_analyzed_at'];
 BEGIN
-    -- ---- guards -------------------------------------------------------------
-    IF EXISTS (SELECT 1 FROM portfolios WHERE slug = c_slug) THEN
-        RAISE EXCEPTION 'portfolio slug % already exists — tear it down first', c_slug;
+    -- ---- teardown any prior incarnation (idempotent re-seed) ----------------
+    -- agent_heartbeats carry no FK to portfolios, so clear them by tag first;
+    -- deleting the portfolio then cascades account / holdings / members /
+    -- trades / theses / history. The owner + profile + lifecycle ledger are
+    -- left in place and reused by email below.
+    DELETE FROM agent_heartbeats
+     WHERE notes->>'portfolio_id' = (SELECT id::text FROM portfolios WHERE slug = c_slug);
+    DELETE FROM portfolios WHERE slug = c_slug;
+
+    -- ---- chuckyegg's trailing-30d return — the bar we must come in UNDER ----
+    SELECT p.id INTO v_chuck_pid
+      FROM portfolios p
+      LEFT JOIN profiles pr ON pr.id = p.owner_user_id
+     WHERE p.slug = 'chuckyegg'
+        OR lower(p.display_name) = 'chuckyegg'
+        OR lower(pr.display_name) = 'chuckyegg'
+     LIMIT 1;
+    IF v_chuck_pid IS NOT NULL THEN
+        SELECT ROUND((l.tv / NULLIF(a.tv, 0) - 1) * 100, 2) INTO v_chuck
+        FROM (SELECT total_value_usd AS tv FROM agent_portfolio_history
+               WHERE portfolio_id = v_chuck_pid ORDER BY snapshot_date DESC LIMIT 1) l,
+             (SELECT total_value_usd AS tv FROM agent_portfolio_history
+               WHERE portfolio_id = v_chuck_pid AND snapshot_date <= v_today - 30
+               ORDER BY snapshot_date DESC LIMIT 1) a;
+        IF v_chuck IS NULL THEN   -- <30d history: fall back to latest since-inception
+            SELECT pnl_pct INTO v_chuck FROM agent_portfolio_history
+             WHERE portfolio_id = v_chuck_pid ORDER BY snapshot_date DESC LIMIT 1;
+        END IF;
     END IF;
+    v_chuck := COALESCE(v_chuck, 0);   -- chuckyegg not found → just require a loss
     SELECT id INTO v_buy_a FROM agents WHERE handle = 'buyer-chatgpt';
     SELECT id INTO v_buy_b FROM agents WHERE handle = 'buyer-grok';
     SELECT id INTO v_rev   FROM agents WHERE handle = 'portfolio-reviewer';
@@ -184,15 +219,15 @@ BEGIN
         RAISE EXCEPTION 'only % candidates with usable price history', (SELECT COUNT(*) FROM _cand);
     END IF;
 
-    -- ---- basket: 14 strongest trailing-30d names + 3 mid-rank adds ----------
+    -- ---- basket: 14 WEAKEST trailing-30d names + a few more laggards -------
     CREATE TEMP TABLE _pick ON COMMIT DROP AS
-    SELECT ticker, (row_number() OVER (ORDER BY ret30 DESC))::int - 1 AS ord,
+    SELECT ticker, (row_number() OVER (ORDER BY ret30 ASC))::int - 1 AS ord,
            TRUE AS is_initial
-    FROM _cand ORDER BY ret30 DESC LIMIT 14;
+    FROM _cand ORDER BY ret30 ASC LIMIT 14;
     INSERT INTO _pick
     SELECT ticker, 13 + (row_number() OVER (ORDER BY sort_order))::int, FALSE
     FROM _cand
-    WHERE ret30 > -0.08 AND ticker NOT IN (SELECT ticker FROM _pick)
+    WHERE ret30 < 0.05 AND ticker NOT IN (SELECT ticker FROM _pick)
     ORDER BY sort_order LIMIT 4;
 
     CREATE TEMP TABLE _pos (
@@ -426,8 +461,8 @@ BEGIN
                                            snapshot, thesis_text, source, status,
                                            opened_at, status_changed_at)
             SELECT p.opened_by, v_pid, v_best, v_trade_id, v_snapshot,
-                   'Thesis intact and outperforming since purchase — the mandate rides its '
-                   'strongest dragons, so the position is sized up.',
+                   'Held up best of the book through a weak tape since purchase; the '
+                   'mandate sizes into relative strength, so the position is added to.',
                    'agent', 'active', v_ts, v_ts
             FROM _pos p WHERE p.ticker = v_best
             RETURNING id INTO v_thesis_id;
@@ -537,8 +572,8 @@ BEGIN
     SELECT MIN(num_positions) INTO v_minpos FROM agent_portfolio_history
      WHERE portfolio_id = v_pid;
 
-    IF v_ret30 IS NULL OR v_ret30 <= 8.0 THEN
-        RAISE EXCEPTION 'trailing-30d return % pct <= 8 pct — rolling back (universe too weak this window)', v_ret30;
+    IF v_ret30 IS NULL OR v_ret30 >= v_chuck - 0.5 OR v_ret30 >= 0 THEN
+        RAISE EXCEPTION 'trailing-30d return % pct is not clearly below chuckyegg (% pct) and negative — rolling back (loser basket too strong this window)', v_ret30, v_chuck;
     END IF;
     IF v_minpos IS NULL OR v_minpos <= 10 THEN
         RAISE EXCEPTION 'min daily positions % <= 10 — rolling back', v_minpos;
@@ -560,7 +595,7 @@ BEGIN
     RAISE NOTICE '  holdings           %  cash $%', (SELECT COUNT(*) FROM portfolio_holdings WHERE portfolio_id = v_pid), v_cash;
     RAISE NOTICE '  final value        $%  (since inception: % pct)', v_final,
         (SELECT pnl_pct FROM agent_portfolio_history WHERE portfolio_id = v_pid AND snapshot_date = v_today);
-    RAISE NOTICE '  trailing 30d       +% pct  (constraint: > 8 pct)', v_ret30;
+    RAISE NOTICE '  trailing 30d       % pct  (chuckyegg: % pct — must be below + negative)', v_ret30, v_chuck;
     RAISE NOTICE '  min positions      %  (constraint: > 10)', v_minpos;
     RAISE NOTICE '  reviewer exited    %  on %', v_worst, v_sell_day;
     RAISE NOTICE '  topped up          %', v_best;
