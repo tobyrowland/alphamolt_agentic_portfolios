@@ -41,24 +41,13 @@ _COMPANY_NARRATIVE_FIELDS = (
 
 
 def _load_company_narratives(db, tickers) -> dict[str, dict]:
-    """Map ticker -> companies narrative row for the given tickers (one query).
+    """Map ticker -> AI narrative row for the given tickers (one query).
 
-    Best-effort: a read error returns {} so the buyer still evaluates on the
-    Level 0 facts alone.
+    Reads the Level 0 `ai_analysis` table (migration 053), so the enrichment
+    covers any Tier-1 name once evaluated — not just the legacy companies set.
+    Best-effort: returns {} on error so the buyer still evaluates on facts alone.
     """
-    tl = sorted({str(t).upper() for t in tickers if t})
-    if not tl:
-        return {}
-    try:
-        resp = (
-            db.client.table("companies")
-            .select("ticker,company_name," + ",".join(_COMPANY_NARRATIVE_FIELDS))
-            .in_("ticker", tl)
-            .execute()
-        )
-    except Exception:  # noqa: BLE001 — never block the buyer on the enrichment join
-        return {}
-    return {str(r.get("ticker") or "").upper(): r for r in (resp.data or [])}
+    return db.get_ai_analysis(tickers)
 
 
 def _build_equity_data(fact_row: dict, company: dict | None) -> dict:

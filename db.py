@@ -312,6 +312,53 @@ class SupabaseDB:
         )
         return resp.data[0]["date"] if resp.data else None
 
+    def upsert_ai_analysis_batch(self, rows: list[dict]) -> None:
+        """Upsert AI-analysis rows (bull/bear + narratives) into the Level 0
+        `ai_analysis` table (migration 053), conflict on ticker.
+
+        PostgREST upsert merges — only the columns present in each row are
+        updated on conflict, so a bull-only write doesn't clobber an existing
+        bear verdict or narrative. Best-effort: a write error is logged, never
+        raised, so it can't break the eval job it's dual-writing from.
+        """
+        if not rows:
+            return
+        for r in rows:
+            self._sanitize(r)
+        try:
+            self.client.table("ai_analysis").upsert(
+                rows, on_conflict="ticker"
+            ).execute()
+        except Exception as exc:  # noqa: BLE001 — dual-write must never crash the writer
+            import logging
+            logging.getLogger("db").warning("upsert_ai_analysis_batch failed: %s", exc)
+
+    def upsert_ai_analysis(self, ticker: str, fields: dict) -> None:
+        """Single-ticker convenience over ``upsert_ai_analysis_batch``."""
+        if not ticker:
+            return
+        self.upsert_ai_analysis_batch([{"ticker": ticker, **fields}])
+
+    def get_ai_analysis(self, tickers) -> dict[str, dict]:
+        """Map ticker -> ai_analysis row for the given tickers (one query).
+
+        Used by the buyer's narrative enrichment. Best-effort: returns {} on a
+        read error (e.g. the table not yet migrated) so the buyer still runs.
+        """
+        tl = sorted({str(t).upper() for t in tickers if t})
+        if not tl:
+            return {}
+        try:
+            resp = (
+                self.client.table("ai_analysis")
+                .select("ticker,short_outlook,key_risks,full_outlook,bull_eval,bear_eval")
+                .in_("ticker", tl)
+                .execute()
+            )
+        except Exception:  # noqa: BLE001
+            return {}
+        return {str(r.get("ticker") or "").upper(): r for r in (resp.data or [])}
+
     def get_level0_close(self, ticker: str) -> float | None:
         """Latest USD close for a ticker from the Level 0 price layer.
 
