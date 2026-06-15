@@ -312,6 +312,38 @@ class SupabaseDB:
         )
         return resp.data[0]["date"] if resp.data else None
 
+    def get_level0_close(self, ticker: str) -> float | None:
+        """Latest USD close for a ticker from the Level 0 price layer.
+
+        The trading layer's fallback when a ticker isn't in `companies` (e.g. a
+        Tier-1 name the legacy pipeline never covered). Prefers the most-recent
+        `prices_daily` close; falls back to the gate-stamped `securities.
+        last_close`. Returns None when neither has a usable value.
+        """
+        if not ticker:
+            return None
+        try:
+            resp = (
+                self.client.table("prices_daily")
+                .select("close")
+                .eq("ticker", ticker.upper())
+                .order("date", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if resp.data:
+                close = SupabaseDB.safe_float(resp.data[0].get("close"))
+                if close and close > 0:
+                    return close
+            sec = self.get_security(ticker.upper())
+            if sec:
+                lc = SupabaseDB.safe_float(sec.get("last_close"))
+                if lc and lc > 0:
+                    return lc
+        except Exception:  # noqa: BLE001 — never block a trade on the fallback read
+            return None
+        return None
+
     # --- fundamentals (history) ---
 
     def upsert_fundamentals_batch(self, rows: list[dict]) -> None:

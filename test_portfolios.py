@@ -187,6 +187,38 @@ class DbPortfolioHelpersTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# PortfolioManager.get_price — companies primary, Level 0 fallback
+# ---------------------------------------------------------------------------
+
+
+class GetPriceFallbackTests(unittest.TestCase):
+    """A ticker absent from `companies` (e.g. a Tier-1 name the legacy pipeline
+    never covered) must still price off Level 0 so it's tradable + valuable."""
+
+    def _pm(self, company, level0):
+        pm = portfolio_module.PortfolioManager.__new__(
+            portfolio_module.PortfolioManager
+        )
+        pm.db = SimpleNamespace(
+            get_company=lambda t: company,
+            get_level0_close=lambda t: level0,
+        )
+        return pm
+
+    def test_companies_price_wins(self):
+        self.assertEqual(self._pm({"price": 42.0}, 99.0).get_price("AAA"), 42.0)
+
+    def test_level0_fallback_when_absent(self):
+        self.assertEqual(self._pm(None, 180.5).get_price("TSM"), 180.5)
+
+    def test_level0_fallback_when_price_null(self):
+        self.assertEqual(self._pm({"price": None}, 12.3).get_price("BBB"), 12.3)
+
+    def test_unknown_ticker_raises(self):
+        with self.assertRaises(portfolio_module.PortfolioError):
+            self._pm(None, None).get_price("ZZZ")
+
+
 # PortfolioManager._ensure_portfolio_for_agent — creates the 1:1 shim
 # ---------------------------------------------------------------------------
 

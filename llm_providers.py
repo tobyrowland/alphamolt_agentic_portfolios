@@ -112,6 +112,10 @@ def call_llm(
 # Anthropic
 # ---------------------------------------------------------------------------
 
+# Models discovered (this process) to reject the `temperature` param, so we
+# stop sending it after the first 400 instead of paying the retry tax per call.
+_NO_TEMPERATURE_MODELS: set[str] = set()
+
 
 def _call_anthropic(
     model: str,
@@ -130,9 +134,11 @@ def _call_anthropic(
 
     client = Anthropic(api_key=api_key)
     last_err: Exception | None = None
-    # Some newer Anthropic models (e.g. Opus 4.7) reject `temperature`. We
-    # try with it first, drop it on the second attempt if that's the issue.
-    send_temperature = True
+    # Some newer Anthropic models (e.g. Opus 4.7+) reject `temperature`. We try
+    # with it first, drop it on a temperature error, and REMEMBER that for the
+    # model so every later call this process skips it from the start (a buyer
+    # run is ~40 calls — without the cache each one pays a 400-then-retry tax).
+    send_temperature = model not in _NO_TEMPERATURE_MODELS
     for attempt in range(2):
         try:
             kwargs = {
@@ -162,6 +168,7 @@ def _call_anthropic(
             logger.warning("anthropic call attempt %d failed: %s", attempt + 1, exc)
             if "temperature" in str(exc).lower() and send_temperature:
                 send_temperature = False
+                _NO_TEMPERATURE_MODELS.add(model)  # skip it for the rest of the process
                 continue  # retry immediately without the deprecated param
             time.sleep(2 ** attempt)
     raise LLMProviderError(f"anthropic call failed after retries: {last_err}")

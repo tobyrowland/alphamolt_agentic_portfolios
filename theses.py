@@ -72,13 +72,32 @@ def build_snapshot(db, ticker: str) -> dict:
     ``snapshot`` JSONB column.
 
     Returns a dict containing exactly the fields in ``_SNAPSHOT_FIELDS``
-    (missing fields become None). Raises ``ValueError`` if the ticker
-    isn't in ``companies``.
+    (missing fields become None). Primary source is ``companies``; for a
+    Tier-1 name absent from ``companies`` (the legacy pipeline never covered
+    it) it falls back to a minimal Level 0 snapshot (identity + price) so the
+    thesis still records — rather than raising and dropping the audit row.
     """
     company = db.get_company(ticker)
-    if not company:
-        raise ValueError(f"no companies row for {ticker}")
-    return {k: company.get(k) for k in _SNAPSHOT_FIELDS}
+    if company:
+        return {k: company.get(k) for k in _SNAPSHOT_FIELDS}
+
+    # Level 0 fallback — identity from securities + latest close, rest None.
+    # Fully defensive: a thesis snapshot must never fail to build (it would
+    # drop the audit row), so any read error yields a minimal ticker-only snap.
+    snapshot = {k: None for k in _SNAPSHOT_FIELDS}
+    snapshot["ticker"] = ticker
+    try:
+        sec = db.get_security(ticker)
+        if sec:
+            snapshot["company_name"] = sec.get("name")
+            snapshot["country"] = sec.get("country")
+            snapshot["sector"] = sec.get("gics_sector")
+        price = db.get_level0_close(ticker)
+        if price is not None:
+            snapshot["price"] = price
+    except Exception:  # noqa: BLE001
+        pass
+    return snapshot
 
 
 def record_thesis(

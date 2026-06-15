@@ -167,16 +167,27 @@ class PortfolioManager:
     # ------------------------------------------------------------------
 
     def get_price(self, ticker: str) -> float:
-        """Return the latest `companies.price` for a ticker (treated as USD)."""
+        """Return the latest price for a ticker (treated as USD).
+
+        Primary source is `companies.price`. Falls back to the Level 0 price
+        layer (`prices_daily` latest close / `securities.last_close`) when the
+        ticker isn't in `companies` or its price is unusable — so Tier-1 names
+        the legacy pipeline never covered (US-listed financials, foreign-
+        domiciled ADRs) are still priceable for both trading and MTM.
+        """
         company = self.db.get_company(ticker)
+        price = SupabaseDB.safe_float(company.get("price")) if company else None
+        if price is not None and price > 0:
+            return price
+        # Fallback: Level 0. Covers names absent from companies entirely.
+        level0_price = self.db.get_level0_close(ticker)
+        if level0_price is not None and level0_price > 0:
+            return level0_price
         if not company:
             raise PortfolioError(f"Unknown ticker: {ticker}")
-        price = SupabaseDB.safe_float(company.get("price"))
-        if price is None or price <= 0:
-            raise PortfolioError(
-                f"No usable price for {ticker} (companies.price is null or <=0)"
-            )
-        return price
+        raise PortfolioError(
+            f"No usable price for {ticker} (companies.price and Level 0 both empty)"
+        )
 
     # ------------------------------------------------------------------
     # Trading
