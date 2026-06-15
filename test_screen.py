@@ -206,6 +206,23 @@ class TestRejectionFilter(unittest.TestCase):
         out = self._run(cfg, set())
         self.assertEqual(set(out), {"A", "B", "C"})
 
+    def test_candidate_rows_return_fact_dicts_and_respect_rejections(self):
+        # The buyer sources evaluation data from these rows (Level 0 facts),
+        # so they must be the full fact dicts and honour the rejection hide.
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "topN": 40}
+        orig_cfg, orig_run = screen.portfolio_screen_config, screen.run_screen
+        ranked = self._ranked()
+        screen.portfolio_screen_config = lambda db, pid: cfg
+        screen.run_screen = lambda db, c: screen.score_screen(ranked, c)
+        try:
+            rows = screen.portfolio_screen_candidate_rows(_FakeDB(cfg, {"A"}), "pid")
+        finally:
+            screen.portfolio_screen_config, screen.run_screen = orig_cfg, orig_run
+        tickers = {r["ticker"] for r in rows}
+        self.assertNotIn("A", tickers)            # rejected, hidden
+        self.assertEqual(tickers, {"B", "C"})
+        self.assertTrue(all("rule_of_40" in r and "score" in r for r in rows))  # full fact rows
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

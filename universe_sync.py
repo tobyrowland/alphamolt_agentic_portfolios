@@ -68,6 +68,31 @@ EXCLUDE_NAME_KEYWORDS = (
 ADR_KEYWORDS = ("ADR", "ADS", "AMERICAN DEPOSITARY")
 REIT_KEYWORDS = ("REIT",)
 
+# --- US-exchange listing gate (Tier 1 = US-exchange-listed only) ---
+# EODHD's "US" symbol list spans every US-market venue: the real exchanges
+# (NYSE / NASDAQ / NYSE MKT (=AMEX) / NYSE ARCA / BATS) PLUS the OTC tiers
+# (OTCQX / OTCQB / Pink / Grey / OTCBB / OTCMKTS). A name quoted only on an OTC
+# tier is NOT an exchange listing, so we drop it — Tier 1 carries only
+# exchange-listed US equities (which still includes NYSE/NASDAQ-listed ADRs of
+# foreign companies, e.g. TSM / ING; it excludes pink-sheet ADRs like RYCEY /
+# SCBFY). Matched as substrings so every OTC label variant is caught; no real
+# exchange label contains any of these, so this can never drop a listed name.
+OTC_EXCHANGE_MARKERS = ("OTC", "PINK", "GREY", "GRAY", "NMFQS", "EXPM")
+
+
+def is_us_exchange_listed(exchange: str | None) -> bool:
+    """False for OTC / pink-sheet / grey-market quotations, True otherwise.
+
+    An empty/unknown exchange is treated as listed (fail-open) — EODHD reliably
+    labels the OTC tiers, so the only effect of a missing value would be a rare
+    false-keep, never a false-delist of a real exchange listing.
+    """
+    e = (exchange or "").strip().upper()
+    if not e:
+        return True
+    return not any(marker in e for marker in OTC_EXCHANGE_MARKERS)
+
+
 
 def classify_security(row: dict) -> tuple[str, str | None] | None:
     """Map one EODHD symbol-list row to (security_type, share_class), or None
@@ -126,6 +151,7 @@ def ingest_tier0(db: SupabaseDB, client: EODHDClient, limit: int | None,
     seen: set[str] = set()
     rows: list[dict] = []
     dropped = 0
+    dropped_otc = 0
     for r in raw:
         code = (r.get("Code") or "").strip().upper()
         if not code:
@@ -133,6 +159,13 @@ def ingest_tier0(db: SupabaseDB, client: EODHDClient, limit: int | None,
         classified = classify_security(r)
         if classified is None:
             dropped += 1
+            continue
+        # US-exchange-listed only: drop OTC / pink-sheet quotations. Done after
+        # classify so `dropped` stays the type/name count and OTC is reported
+        # separately. A previously-active OTC name absent from `seen` here is
+        # then soft-delisted below, so it leaves Tier 1 on this run.
+        if not is_us_exchange_listed(r.get("Exchange")):
+            dropped_otc += 1
             continue
         kind, share_class = classified
         seen.add(code)
@@ -155,8 +188,11 @@ def ingest_tier0(db: SupabaseDB, client: EODHDClient, limit: int | None,
     delist_rows = [{"ticker": t, "status": "delisted", "is_tier1": False}
                    for t in delisted]
 
-    logger.info("Tier 0: %d kept, %d dropped (type/name), %d newly delisted",
-                len(rows), dropped, len(delist_rows))
+    logger.info(
+        "Tier 0: %d kept, %d dropped (type/name), %d dropped (OTC/pink), "
+        "%d newly delisted",
+        len(rows), dropped, dropped_otc, len(delist_rows),
+    )
 
     if not dry_run:
         for i in range(0, len(rows), 500):
@@ -164,7 +200,8 @@ def ingest_tier0(db: SupabaseDB, client: EODHDClient, limit: int | None,
         if delist_rows:
             db.upsert_securities_batch(delist_rows)
 
-    return {"kept": len(rows), "dropped": dropped, "delisted": len(delist_rows)}
+    return {"kept": len(rows), "dropped": dropped, "dropped_otc": dropped_otc,
+            "delisted": len(delist_rows)}
 
 
 def collect_addv(client: EODHDClient) -> dict[str, dict]:

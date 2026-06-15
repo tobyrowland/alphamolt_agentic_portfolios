@@ -24,14 +24,80 @@ from typing import Any
 
 from agent_strategies import RebalanceContext, RebalanceResult
 from llm_picker import (
-    _filter_snapshot_us_only,
-    _load_latest_snapshot,
     _mandate_block,
     _parse_with_retry,
-    _us_listed_tickers,
 )
 from llm_providers import LLMProviderError, call_llm
 from portfolio import PortfolioError
+
+
+# Narrative + AI-overlay fields pulled from the legacy `companies` row to
+# enrich a Level 0-sourced candidate when they exist (they only exist for
+# names the legacy pipeline narrated/evaluated). Absent → the buyer evaluates
+# on quantitative facts alone.
+_COMPANY_NARRATIVE_FIELDS = (
+    "short_outlook", "key_risks", "full_outlook", "bull_eval", "bear_eval",
+)
+
+
+def _load_company_narratives(db, tickers) -> dict[str, dict]:
+    """Map ticker -> companies narrative row for the given tickers (one query).
+
+    Best-effort: a read error returns {} so the buyer still evaluates on the
+    Level 0 facts alone.
+    """
+    tl = sorted({str(t).upper() for t in tickers if t})
+    if not tl:
+        return {}
+    try:
+        resp = (
+            db.client.table("companies")
+            .select("ticker,company_name," + ",".join(_COMPANY_NARRATIVE_FIELDS))
+            .in_("ticker", tl)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001 — never block the buyer on the enrichment join
+        return {}
+    return {str(r.get("ticker") or "").upper(): r for r in (resp.data or [])}
+
+
+def _build_equity_data(fact_row: dict, company: dict | None) -> dict:
+    """Assemble the per-ticker ``equity_data`` the LLM evaluator sees, from a
+    Level 0 screen fact row (the same data the screener ranked on) + the legacy
+    ``companies`` narrative where it exists.
+
+    Shape mirrors the old universe-snapshot entry closely enough that the
+    prompt reads naturally; ``narrative.bull_eval`` / ``bear_eval`` keep the
+    keys ``_evaluate_ticker`` looks for (None when the name was never narrated).
+    """
+    company = company or {}
+    narrative = {f: company.get(f) for f in _COMPANY_NARRATIVE_FIELDS}
+    return {
+        "ticker": fact_row.get("ticker"),
+        "company_name": fact_row.get("name") or company.get("company_name"),
+        "sector": fact_row.get("sector"),
+        "country": fact_row.get("country"),
+        "fundamentals": {
+            "rule_of_40": fact_row.get("rule_of_40"),
+            "rev_growth_ttm_pct": fact_row.get("rev_growth_ttm"),
+            "gross_margin_pct": fact_row.get("gross_margin"),
+            "operating_margin_pct": fact_row.get("operating_margin"),
+            "net_margin_pct": fact_row.get("net_margin"),
+            "fcf_margin_pct": fact_row.get("fcf_margin"),
+        },
+        "valuation": {
+            "ps": fact_row.get("ps"),
+            "ps_median_12m": fact_row.get("ps_median_12m"),
+            "price": fact_row.get("price"),
+        },
+        "momentum": {
+            "ret_52w": fact_row.get("ret_52w"),
+            "perf_52w_vs_spy": fact_row.get("perf_52w_vs_spy"),
+        },
+        "ai_overlay": {"bull": fact_row.get("bull"), "bear": fact_row.get("bear")},
+        "narrative": narrative,
+        "source": "level0",
+    }
 
 logger = logging.getLogger("llm_watchlist_buyer")
 
@@ -491,14 +557,20 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
     # rank + score is the per-ticker rationale handed to the LLM evaluator.
     import screen as _screen
 
-    screen_candidates = _screen.portfolio_screen_candidates(ctx.db, ctx.portfolio_id)
-    watchlist_tickers = sorted(screen_candidates.keys())
+    # Fetch the screen's top-N fact rows ONCE — they give both the rationale
+    # (rank + score) and the Level 0 evaluation data used in Phase 1 below.
+    candidate_rows = _screen.portfolio_screen_candidate_rows(ctx.db, ctx.portfolio_id)
+    fact_rows: dict[str, dict] = {
+        str(r.get("ticker") or "").upper(): r for r in candidate_rows
+    }
+    watchlist_tickers = sorted(fact_rows.keys())
     if not watchlist_tickers:
         result.notes["reason"] = "portfolio has no screen configured or screen is empty"
         return result
 
     combined_rationale: dict[str, str] = {
-        t: (screen_candidates[t] or "") for t in watchlist_tickers
+        r["ticker"]: f"screen rank #{r['rank']} · score {r['score']:.1f}"
+        for r in candidate_rows
     }
 
     # Filter: already-held at >= target weight (concentration cap).
@@ -554,31 +626,29 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
         return result
 
     # 2. Phase 1 — per-ticker LLM evaluation, parallel.
-
-    # Load + filter the extended-tier snapshot once for the whole batch.
-    snap_row = _load_latest_snapshot(ctx.db, "extended")
-    if not snap_row:
-        result.errors.append(
-            "no extended universe snapshot — build one via build_universe_snapshot.py"
-        )
-        return result
-    us_tickers = _us_listed_tickers(ctx.db)
-    snapshot_json = _filter_snapshot_us_only(snap_row["json"], us_tickers)
-
+    #
+    # Evaluation data comes from Level 0 — the SAME Tier-1 fact rows the
+    # screener ranked on — enriched with the AI narrative + bull/bear from
+    # `companies` where it exists. This replaces the legacy in_tv_screen
+    # universe snapshot, so every Tier-1 screen candidate is evaluable (the old
+    # snapshot only covered names the legacy TradingView screen included, which
+    # is why US-listed financials / foreign-domiciled ADRs showed up as
+    # "missing" and were never bought). `fact_rows` was fetched once in step 1.
+    narratives = _load_company_narratives(ctx.db, candidates)
     by_ticker_data: dict[str, dict] = {
-        str(t.get("ticker") or "").upper(): t
-        for t in (snapshot_json.get("tickers") or [])
-        if t.get("ticker")
+        t: _build_equity_data(fact_rows[t], narratives.get(t))
+        for t in candidates
+        if t in fact_rows
     }
-    missing_from_snapshot = [t for t in candidates if t not in by_ticker_data]
-    if missing_from_snapshot:
-        # Drop them with a note rather than failing — most likely the
-        # ticker dropped out of the screen between curator and buyer runs.
-        result.notes["missing_from_snapshot"] = missing_from_snapshot
+    missing_facts = [t for t in candidates if t not in by_ticker_data]
+    if missing_facts:
+        # Shouldn't normally happen (candidates ARE the screen top-N), but a
+        # name could drop out of the screen between the two reads — note + skip.
+        result.notes["missing_facts"] = missing_facts
         candidates = [t for t in candidates if t in by_ticker_data]
 
     if not candidates:
-        result.notes["reason"] = "no candidates have extended-tier data"
+        result.notes["reason"] = "no Level 0 facts for any candidate"
         return result
 
     concurrency = max(1, int(params["concurrency"]))

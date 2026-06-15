@@ -71,6 +71,27 @@ class TestClassifySecurity(unittest.TestCase):
             "Common Stock")
 
 
+class TestUsExchangeGate(unittest.TestCase):
+    """Tier 1 is US-exchange-listed only — OTC / pink-sheet quotations drop."""
+
+    def test_real_exchanges_kept(self):
+        for ex in ("NYSE", "NASDAQ", "NYSE MKT", "NYSE ARCA", "BATS", "AMEX"):
+            self.assertTrue(us.is_us_exchange_listed(ex), ex)
+
+    def test_otc_tiers_dropped(self):
+        for ex in ("OTCQX", "OTCQB", "PINK", "OTCMKTS", "OTCGREY", "OTC", "GREY", "NMFQS"):
+            self.assertFalse(us.is_us_exchange_listed(ex), ex)
+
+    def test_empty_exchange_fails_open(self):
+        # Missing data must never false-delist a real listing.
+        self.assertTrue(us.is_us_exchange_listed(None))
+        self.assertTrue(us.is_us_exchange_listed(""))
+
+    def test_case_insensitive(self):
+        self.assertFalse(us.is_us_exchange_listed("otcqb"))
+        self.assertTrue(us.is_us_exchange_listed("nasdaq"))
+
+
 class TestAffordabilityGate(unittest.TestCase):
     def test_passes_when_liquid_and_priced(self):
         self.assertTrue(us.passes_gate(addv_30d=10_000_000, last_close=42.0, days=30))

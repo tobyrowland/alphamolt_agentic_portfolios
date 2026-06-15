@@ -96,10 +96,13 @@ downstream — it no longer *defines* the universe. The legacy
 `companies` / `price_sales` pipeline is untouched and runs alongside.
 
 **Two tiers.** *Tier 0* (`securities`) is identity-level reference data for
-every US-listed common stock + ADR + REIT (units/warrants/preferreds/SPACs
-excluded), status-tracked, soft-deleted on delisting. *Tier 1* is the subset
-passing the **affordability gate** (`securities.is_tier1`) that receives full
-enrichment (prices, fundamentals, valuation).
+every **US-exchange-listed** common stock + ADR + REIT (units/warrants/
+preferreds/SPACs excluded; **OTC / pink-sheet quotations excluded** —
+`universe_sync.is_us_exchange_listed`, so e.g. NYSE-listed ADRs like TSM/ING
+stay but pink-sheet ADRs like RYCEY/SCBFY drop), status-tracked, soft-deleted
+on delisting. *Tier 1* is the subset passing the **affordability gate**
+(`securities.is_tier1`) that receives full enrichment (prices, fundamentals,
+valuation).
 
 **The affordability gate is the only gate** (`universe_sync.passes_gate`) and
 carries no strategy: trailing-30d ADDV ≥ $5M, last close ≥ $1, enough price
@@ -267,9 +270,10 @@ separately by inserting agent rows. Mutations (`saveTeamAgent`,
 ### universe_sync.py (02:00 UTC Sundays — weekly)
 Level 0 membership/identity + affordability gate. Ingests the full EODHD US
 `exchange-symbol-list` into `securities` (Tier 0): keeps common stock / ADR /
-REIT, drops funds / preferreds / warrants / units / SPACs (`classify_security`),
-adds new listings, soft-deletes names that fell off the list (`status=
-'delisted'`). Then computes the trailing-30d ADDV for the whole universe from
+REIT, drops funds / preferreds / warrants / units / SPACs (`classify_security`)
+**and OTC / pink-sheet quotations** (`is_us_exchange_listed` — US-exchange-
+listed only), adds new listings, soft-deletes names that fell off the list (or
+were dropped by the OTC gate) (`status='delisted'`). Then computes the trailing-30d ADDV for the whole universe from
 ~30 `eod-bulk-last-day` calls and sets `is_tier1` via `passes_gate`. Flags:
 `--dry-run`, `--skip-gate`, `--limit N`.
 
@@ -440,6 +444,15 @@ Two trade-phase strategies share the buyer slot:
   re-buy thrashing. Reads the portfolio mandate
   (`portfolios.description`) — the single owner-written brief that
   covers both *what* to own and *how* to evaluate adds.
+  **Evaluation data is sourced from Level 0** — the same Tier-1 screen
+  fact rows the screener ranked on (`screen.portfolio_screen_candidate_
+  rows`), enriched with the AI narrative + bull/bear from `companies`
+  where it exists (`_build_equity_data` / `_load_company_narratives`).
+  This replaced the legacy `in_tv_screen` universe snapshot, so **every**
+  Tier-1 screen candidate is evaluable — previously US-listed financials
+  / foreign-domiciled ADRs ranked by the screener were absent from the
+  legacy snapshot and silently dropped (`missing_from_snapshot`), so they
+  could never be bought.
 
 Both buyers also enforce a **90-day re-buy cooldown** via
 `db.get_recently_sold_tickers` — once a ticker has been sold from a

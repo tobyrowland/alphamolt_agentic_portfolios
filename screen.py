@@ -297,9 +297,25 @@ def portfolio_screen_candidates(db, portfolio_id: str | None) -> dict[str, str |
     records the screen rank + score (so a recorded thesis carries the "why").
     Empty when the portfolio has no screen configured.
     """
+    return {
+        r["ticker"]: f"screen rank #{r['rank']} · score {r['score']:.1f}"
+        for r in portfolio_screen_candidate_rows(db, portfolio_id)
+    }
+
+
+def portfolio_screen_candidate_rows(db, portfolio_id: str | None) -> list[dict]:
+    """The top-N ranked **fact rows** of a portfolio's screen (not just the
+    tickers). Each row is the Level 0 fact dict + ``score``/``rank``.
+
+    The buyer sources its per-ticker evaluation data from these rows (Level 0
+    facts), rather than the legacy ``in_tv_screen`` universe snapshot — so any
+    Tier-1 screen candidate is evaluable. Honours the same ``hideRejected``
+    90-day filter (migration 051) as the ticker map. Empty when the portfolio
+    has no screen configured.
+    """
     cfg = portfolio_screen_config(db, portfolio_id)
     if not cfg:
-        return {}
+        return []
     ranked = run_screen(db, cfg)
     # Hide names this portfolio's buyer evaluated and passed on within the last
     # 90 days (migration 051), so the buyer doesn't churn straight back into
@@ -313,7 +329,4 @@ def portfolio_screen_candidates(db, portfolio_id: str | None) -> dict[str, str |
                 if (r.get("ticker") or "").upper() not in rejected
             ]
     top_n = int(cfg.get("topN", 40))
-    return {
-        r["ticker"]: f"screen rank #{r['rank']} · score {r['score']:.1f}"
-        for r in ranked[:top_n]
-    }
+    return ranked[:top_n]
