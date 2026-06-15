@@ -1117,6 +1117,10 @@ follower row — slug = the PAPER slug), `go-live`, `mirror` (drifted names
 only), `replicate` (full match — `--threshold 0`, buys the entire current
 paper book, not just changes), `sync`. The inline heartbeat mirror stays as a
 best-effort top-up for any rebalance that happens to land during market hours.
+The live portfolio's own (private) detail page also exposes an owner-only
+**Sync to Alpaca** button (`sync-live-button.tsx` → `syncLivePortfolioToAlpaca`
+in `web/lib/live-mirror-mutations.ts`) that `workflow_dispatch`es `live-mirror.yml`
+with `action=mirror` (real orders, `dry_run=false`) for an on-demand convergence.
 
 The per-decision routing below (`ctx.buy/sell` → Alpaca) is the alternative
 mechanism for a live portfolio that runs *its own* agents; a follower has none,

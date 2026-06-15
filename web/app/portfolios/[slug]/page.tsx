@@ -6,6 +6,7 @@ import HoldingsList from "@/components/holdings-list";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import RebalanceCadenceToggle from "@/components/portfolio/rebalance-cadence-toggle";
+import SyncLiveButton from "@/components/portfolio/sync-live-button";
 import TeamBuilder from "@/components/portfolio/team-builder";
 import TeamScheduleNote from "@/components/portfolio/team-schedule-note";
 import BetaDisclaimer from "@/components/beta-disclaimer";
@@ -330,7 +331,7 @@ export default async function PortfolioPage({ params }: PageParams) {
               (visitor). A live follower has no team of its own: it mirrors the
               paper portfolio's positions, so it shows an explainer instead. */}
           {mode === "live" ? (
-            <LiveFollowerNote />
+            <LiveFollowerNote portfolioId={portfolio.id} isOwner={isOwner} />
           ) : isOwner ? (
             <section id="team" className="mb-12 sm:mb-14 scroll-mt-20">
               <TeamBuilder
@@ -498,7 +499,13 @@ function PaperValueCard({
 // A live portfolio is a private follower of the owner's paper portfolio: it
 // runs no agents of its own and is never public, so instead of the team
 // builder it shows a short explainer of how it's driven.
-function LiveFollowerNote() {
+function LiveFollowerNote({
+  portfolioId,
+  isOwner,
+}: {
+  portfolioId: string;
+  isOwner: boolean;
+}) {
   return (
     <section id="team" className="mb-12 sm:mb-14 scroll-mt-20">
       <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-[var(--color-green)] mb-3">
@@ -518,6 +525,10 @@ function LiveFollowerNote() {
           portfolio&apos;s agents do the deciding, and this account follows
           automatically after each rebalance.
         </p>
+        {/* Manual trigger: converge the Alpaca account onto the paper book now,
+            rather than waiting for the scheduled mirror. Owner-only; the action
+            re-verifies ownership + live mode server-side. */}
+        {isOwner && <SyncLiveButton portfolioId={portfolioId} />}
       </div>
     </section>
   );
