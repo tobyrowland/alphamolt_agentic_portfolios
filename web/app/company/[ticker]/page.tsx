@@ -8,6 +8,7 @@ import { absoluteUrl } from "@/lib/site";
 import { isCompanyIndexable } from "@/lib/company-indexable";
 import Nav from "@/components/nav";
 import PsValuationChart from "@/components/ps-valuation-chart";
+import RevenueChart from "@/components/revenue-chart";
 import DistributionStrips from "@/components/distribution-strips";
 import type { CompanyHolder, CompanyTrade } from "@/lib/company-agents-query";
 import type {
@@ -31,13 +32,15 @@ import {
   buildHeroSummary,
   humaniseReason,
   buildCompiledSummary,
-  buildFaq,
   buildMetaDescription,
   formatLongDate,
   COMPILED_NOTE,
   type BadgeTone,
-  type FaqEntry,
 } from "@/lib/company-templates";
+import {
+  parseAnnualRevenue,
+  parseQuarterlyRevenue,
+} from "@/lib/company-financials";
 
 // P0: all agent activity is server-rendered in the synchronous body (no
 // Suspense streaming) so the page is fully meaningful with JS off and the
@@ -139,18 +142,6 @@ function breadcrumbJsonLd(ticker: string, name: string | null, sector: string | 
   };
 }
 
-function faqJsonLd(faq: FaqEntry[]) {
-  return {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    mainEntity: faq.map((f) => ({
-      "@type": "Question",
-      name: f.q,
-      acceptedAnswer: { "@type": "Answer", text: f.a },
-    })),
-  };
-}
-
 function datasetJsonLd({
   ticker,
   name,
@@ -208,17 +199,10 @@ export default async function CompanyPage({
     activity: a14d,
     totalAgents: activity.totalAgents,
   });
-  const faq = buildFaq({
-    company,
-    priceSales,
-    lifecycle: activity.lifecycle,
-    activity: a14d,
-    totalAgents: activity.totalAgents,
-    dataUpdated,
-  });
+  const annualRevenue = parseAnnualRevenue(company.annual_revenue_5y);
+  const quarterlyRevenue = parseQuarterlyRevenue(company.quarterly_revenue);
 
   const breadcrumb = breadcrumbJsonLd(company.ticker, company.company_name, company.sector);
-  const faqLd = faqJsonLd(faq);
   const dataset = datasetJsonLd({
     ticker: company.ticker,
     name: company.company_name,
@@ -230,7 +214,6 @@ export default async function CompanyPage({
   return (
     <>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumb) }} />
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqLd) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(dataset) }} />
       <Nav />
       <main className="flex-1 w-full">
@@ -316,8 +299,18 @@ export default async function CompanyPage({
               />
             )}
 
-            {/* FAQ (P3) — mirrors the FAQPage JSON-LD */}
-            <Faq ticker={company.ticker} faq={faq} />
+            {/* Income statement — revenue bars (annual / quarterly toggle).
+                Replaces the FAQ section. Net income is omitted until a real
+                per-period series is stored (see RevenueChart). */}
+            {(annualRevenue.length > 0 || quarterlyRevenue.length > 0) && (
+              <Block heading="Income statement">
+                <RevenueChart
+                  ticker={company.ticker}
+                  annual={annualRevenue}
+                  quarterly={quarterlyRevenue}
+                />
+              </Block>
+            )}
 
             {/* Related — peer entity links + category links (P5) */}
             <RelatedLinks ticker={company.ticker} sector={company.sector} peers={peers} />
@@ -1002,26 +995,6 @@ function LedgerRow({
       </div>
       <span className="font-mono text-[11px] text-text-muted text-right whitespace-nowrap">{right}</span>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// FAQ (P3)
-// ---------------------------------------------------------------------------
-
-function Faq({ ticker, faq }: { ticker: string; faq: FaqEntry[] }) {
-  if (faq.length === 0) return null;
-  return (
-    <Block heading={`${ticker} · frequently asked`}>
-      <dl>
-        {faq.map((f, i) => (
-          <div key={i}>
-            <dt className={`text-[15px] font-semibold ${i === 0 ? "" : "mt-5"}`}>{f.q}</dt>
-            <dd className="mt-1.5 text-[14px] text-text-muted leading-[1.65]">{f.a}</dd>
-          </div>
-        ))}
-      </dl>
-    </Block>
   );
 }
 
