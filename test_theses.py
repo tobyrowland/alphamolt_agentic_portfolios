@@ -165,10 +165,16 @@ class BuildSnapshotTests(unittest.TestCase):
         self.assertIn("fcf_margin_pct", snap)
         self.assertIsNone(snap["fcf_margin_pct"])
 
-    def test_unknown_ticker_raises(self):
+    def test_unknown_ticker_falls_back_to_minimal_snapshot(self):
+        # A ticker absent from companies (a Tier-1 name the legacy pipeline
+        # never covered) must NOT raise — it returns a minimal Level 0 snapshot
+        # so the thesis still records. (This stub has no get_security/
+        # get_level0_close, so the fallback degrades to ticker-only.)
         db = _StubDB()
-        with self.assertRaises(ValueError):
-            theses.build_snapshot(db, "GHOST")
+        snap = theses.build_snapshot(db, "GHOST")
+        self.assertEqual(set(snap.keys()), set(theses._SNAPSHOT_FIELDS))
+        self.assertEqual(snap["ticker"], "GHOST")
+        self.assertIsNone(snap["fcf_margin_pct"])
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +278,9 @@ class CloseThesesTests(unittest.TestCase):
         self.assertEqual(n, 2)
         self.assertEqual(db.log[0]["op"], "update")
         self.assertEqual(db.log[0]["filters"], {"agent_id": "A", "ticker": "NVDA"})
-        self.assertEqual(db.log[0]["neq"], {"status": "closed"})
+        # close_theses_for_position only closes ACTIVE theses (preserves
+        # terminal statuses like 'broken'), so it filters eq status=active.
+        self.assertEqual(db.log[0]["eq"], {"status": "active"})
         payload = db.log[0]["payload"]
         self.assertEqual(payload["status"], "closed")
         self.assertIn("status_changed_at", payload)
