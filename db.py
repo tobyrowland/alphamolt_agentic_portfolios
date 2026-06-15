@@ -925,8 +925,8 @@ class SupabaseDB:
     # ------------------------------------------------------------------
 
     def get_active_screener_rejections(self, portfolio_id: str) -> set[str]:
-        """Tickers this portfolio's buyer evaluated and passed on, still within
-        the 90-day window and not manually restored. Upper-cased.
+        """Tickers this portfolio's buyer passed on, still within their expiry
+        window and not manually restored. Upper-cased.
 
         Fail-open: a read error (e.g. the table not yet migrated) returns an
         empty set rather than blocking the screen / buyer.
@@ -951,7 +951,7 @@ class SupabaseDB:
         }
 
     def record_screener_rejections(
-        self, portfolio_id: str, rows: list[dict], *, days: int = 90,
+        self, portfolio_id: str, rows: list[dict], *, days: int = 30,
     ) -> int:
         """Upsert one rejection per row for a portfolio (migration 051).
 

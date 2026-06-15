@@ -102,6 +102,11 @@ LLM_WATCHLIST_BUYER_DEFAULTS: dict[str, Any] = {
     "target_position_pct": 4.0,     # target weight per BUY
     "min_position_pct": 2.0,        # floor on the last (partial) BUY
     "min_conviction": 5,            # hard gate
+    # Screener rejection hide (migration 051): how long a PASSed-on name is
+    # hidden. Short window so it tracks the daily re-rank / quarterly-earnings
+    # cadence rather than outliving the reason it was passed on. (The separate
+    # post-SELL re-buy cooldown stays 90d — see get_recently_sold_tickers.)
+    "rejection_window_days": 30,
     "concurrency": 5,               # ThreadPoolExecutor max_workers for Phase 1
     "per_call_timeout_sec": 90,     # per-future timeout for Phase 1
     # Per-ticker output is small (~500 tokens) but Gemini 2.5 Pro's thinking
@@ -483,6 +488,27 @@ def _active_thesis_tickers(db, portfolio_id: str) -> set[str]:
     return {str(r.get("ticker") or "").upper() for r in (resp.data or []) if r.get("ticker")}
 
 
+def _pass_rejection_rows(evaluations: list[dict], agent_id: str) -> list[dict]:
+    """Rejection rows for the screener hide (migration 051) — only true PASSes.
+
+    A `verdict == "PASS"` is a real "no" and gets hidden. A sub-gate BUY (e.g.
+    4/5) is deliberately NOT recorded: it's a name the agent wants, just not its
+    top pick today, so it stays eligible and is re-evaluated as the screen
+    re-ranks rather than being quarantined.
+    """
+    return [
+        {
+            "ticker": e["ticker"],
+            "rejected_by_agent_id": agent_id,
+            "verdict": e.get("verdict"),
+            "conviction": e.get("conviction"),
+            "reason": (e.get("rationale") or "")[:240] or None,
+        }
+        for e in evaluations
+        if str(e.get("verdict") or "").upper() == "PASS"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Strategy entrypoint
 # ---------------------------------------------------------------------------
@@ -709,29 +735,21 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
     ]
     result.notes["phase1_qualifying"] = len(qualifying)
 
-    # Record the names this buyer evaluated and passed on — a PASS verdict, or
-    # a BUY below the conviction gate (i.e. it looked and didn't pull the
-    # trigger). The screener's "hide rejected" toggle drops these for 90 days
-    # (migration 051) so the buyer doesn't churn back into re-evaluating them.
-    # A 5/5 BUY that just ran out of cash is NOT a rejection — it's still
-    # wanted — so we key off the agent's verdict, not whether a fill happened.
-    # Always recorded (the toggle governs display, not capture); never in
-    # dry-run.
+    # Record only the names this buyer truly PASSED on (a real "no"). A
+    # high-but-sub-gate BUY (e.g. 4/5) is NOT recorded — it's a name the agent
+    # *wants*, just not its top pick today — so it stays eligible and gets
+    # re-evaluated as the screen re-ranks, instead of being quarantined. The
+    # hide window is short (rejection_window_days, default 30) so it tracks the
+    # daily re-rank / earnings cadence; the 90d window applies only to the
+    # post-SELL cooldown. Always recorded (the toggle governs display, not
+    # capture); never in dry-run.
     if not ctx.dry_run:
-        qualifying_tickers = {e["ticker"] for e in qualifying}
-        rejected_rows = [
-            {
-                "ticker": e["ticker"],
-                "rejected_by_agent_id": ctx.agent["id"],
-                "verdict": e.get("verdict"),
-                "conviction": e.get("conviction"),
-                "reason": (e.get("rationale") or "")[:240] or None,
-            }
-            for e in evaluations
-            if e["ticker"] not in qualifying_tickers
-        ]
+        rejected_rows = _pass_rejection_rows(evaluations, ctx.agent["id"])
         if rejected_rows:
-            n = ctx.db.record_screener_rejections(ctx.portfolio_id, rejected_rows)
+            n = ctx.db.record_screener_rejections(
+                ctx.portfolio_id, rejected_rows,
+                days=int(params["rejection_window_days"]),
+            )
             result.notes["screener_rejections_recorded"] = n
 
     if not qualifying:

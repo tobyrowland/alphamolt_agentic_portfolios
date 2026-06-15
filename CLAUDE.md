@@ -155,16 +155,20 @@ Deterministic scoring-as-a-function (Python mirror of
 candidates(db, portfolio_id)` returns the top N `{ticker: rationale}` that both
 buyers (`watchlist_buyer`, `llm_watchlist_buyer`) now trade from. Pure, no LLM.
 
-### Screener rejections — per-portfolio 90-day auto-hide (migration 051)
+### Screener rejections — per-portfolio ~30-day auto-hide (migration 051)
 When a portfolio's BUY agent (`llm_watchlist_buyer`) evaluates a candidate and
-**doesn't buy it** — a PASS verdict, or a BUY below its conviction gate — the
-name is recorded in `screener_rejections` (`(portfolio_id, ticker)` PK,
-`expires_at` = now + 90d, `rejected_by_agent_id`, `verdict`, `conviction`,
-`reason`, `restored_at`). The screener's **`hideRejected`** toggle (in
-`screen_config`, **on by default**) then drops those names from BOTH the
-screener results and the buyer's candidate pool for 90 days, so the agent
-doesn't churn straight back into re-evaluating a name it just passed on. A
-5/5 BUY that merely ran out of cash is **not** a rejection (still wanted). The
+returns a true **PASS**, the name is recorded in `screener_rejections`
+(`(portfolio_id, ticker)` PK, `expires_at` = now + `rejection_window_days`
+(default **30**), `rejected_by_agent_id`, `verdict`, `conviction`, `reason`,
+`restored_at`). A **sub-gate BUY** (e.g. 4/5 — a name the agent wants, just not
+its top pick today) is deliberately **not** recorded, so it stays eligible and
+is re-evaluated as the screen re-ranks (`_pass_rejection_rows`). The screener's
+**`hideRejected`** toggle (in `screen_config`, **on by default**) then drops
+PASSed names from BOTH the screener results and the buyer's candidate pool for
+~30 days — short, so it tracks the daily re-rank / quarterly-earnings cadence
+rather than outliving the reason for the pass (the 90-day window applies only to
+the post-SELL re-buy cooldown, `get_recently_sold_tickers`). A 5/5 BUY that
+merely ran out of cash is **not** a rejection (still wanted). The
 owner can **restore** a name early (sets `restored_at`); a later re-rejection
 re-arms the hide. An actual buy clears any stale rejection. This is the
 per-portfolio cousin of the manual, global 1-year `screener_exclusions`
