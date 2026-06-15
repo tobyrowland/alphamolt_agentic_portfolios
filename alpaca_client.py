@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 PAPER_BASE_URL = "https://paper-api.alpaca.markets"
 LIVE_BASE_URL = "https://api.alpaca.markets"
+# Market-data API lives on its own host (separate from the trading API). Same
+# auth headers. Used only for best-effort live pricing of the execution band.
+DATA_BASE_URL = "https://data.alpaca.markets"
 
 DEFAULT_TIMEOUT = 15  # seconds
 
@@ -136,6 +139,34 @@ class AlpacaClient:
     def get_asset(self, symbol: str) -> dict:
         """Asset metadata — tradable, fractionable, exchange, status."""
         return self._request("GET", f"/v2/assets/{symbol}")
+
+    def get_latest_trade_price(self, symbol: str) -> float | None:
+        """Latest trade price from Alpaca's market-data API, or None.
+
+        Best-effort and never raises: it exists so the execution band can be
+        centred on the *live* market instead of a possibly-stale DB price (the
+        cause of marketable-limit no-fills on names the legacy pipeline doesn't
+        price intraday — e.g. Level-0-only tickers like foreign ADRs). Any
+        failure (no data entitlement, network, off-hours, unknown symbol)
+        returns None so the caller falls back to its intended price.
+
+        Hits the IEX feed explicitly — it's available on every Alpaca plan,
+        so this works without a paid SIP subscription.
+        """
+        try:
+            resp = self._session.request(
+                "GET",
+                f"{DATA_BASE_URL}/v2/stocks/{symbol}/trades/latest",
+                params={"feed": "iex"},
+                timeout=DEFAULT_TIMEOUT,
+            )
+            if resp.status_code >= 400 or not resp.content:
+                return None
+            px = (resp.json().get("trade") or {}).get("p")
+            px = float(px) if px is not None else None
+            return px if px and px > 0 else None
+        except (requests.exceptions.RequestException, ValueError, TypeError):
+            return None
 
     # ------------------------------------------------------------------
     # Positions
