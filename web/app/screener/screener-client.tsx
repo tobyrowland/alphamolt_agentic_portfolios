@@ -8,6 +8,7 @@ import {
   excludeFromScreener,
   unexcludeFromScreener,
 } from "@/lib/screen/exclusions-mutations";
+import { restoreRejection } from "@/lib/screen/rejections-mutations";
 import {
   FILTER_FIELDS,
   FILTER_OPS,
@@ -54,6 +55,14 @@ interface ScreenData {
   total_universe: number;
   cut_index: number;
   data_asof: string | null;
+  /** Viewer's active per-portfolio rejections (migration 051); only the
+   *  /api/screen route populates this (SSR is anonymous). */
+  rejected?: RejectedName[];
+}
+
+interface RejectedName {
+  ticker: string;
+  rejected_at: string;
 }
 
 function fmt(v: number | null, opts?: { pct?: boolean; mult?: boolean; dp?: number }): string {
@@ -155,6 +164,7 @@ export default function ScreenerClient({
   sectors = [],
   companyTickers = [],
   exclusions = [],
+  rejections = [],
 }: {
   initialConfig: ScreenConfig;
   initialData: ScreenData;
@@ -164,6 +174,8 @@ export default function ScreenerClient({
   companyTickers?: string[];
   /** Tickers on the manual 1-year blocklist (owner-managed). */
   exclusions?: string[];
+  /** Names this portfolio's buyer evaluated and passed on (migration 051). */
+  rejections?: RejectedName[];
   defaultEncoded?: string;
 }) {
   const linkable = useMemo(
@@ -184,6 +196,11 @@ export default function ScreenerClient({
   const [excluded, setExcluded] = useState<string[]>(exclusions);
   const [exclBusy, setExclBusy] = useState(false);
   const [exclMsg, setExclMsg] = useState<string | null>(null);
+  // Per-portfolio agent rejections (migration 051) — folded into the Hidden
+  // panel, each tagged with its rejection date.
+  const [rejected, setRejected] = useState<RejectedName[]>(rejections);
+  const [rejBusy, setRejBusy] = useState(false);
+  const [rejMsg, setRejMsg] = useState<string | null>(null);
   const [showIntro, setShowIntro] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [saveLink, setSaveLink] = useState<string | null>(null);
@@ -331,7 +348,11 @@ export default function ScreenerClient({
       const encoded = encodeConfig(config);
       try {
         const res = await fetch(`/api/screen?config=${encoded}`, { cache: "no-store" });
-        if (res.ok) setData((await res.json()) as ScreenData);
+        if (res.ok) {
+          const json = (await res.json()) as ScreenData;
+          setData(json);
+          if (json.rejected) setRejected(json.rejected);
+        }
       } finally {
         setLoading(false);
       }
@@ -350,23 +371,72 @@ export default function ScreenerClient({
     setSaveLink(null);
   }, []);
 
-  // Re-fetch the current screen — used after an exclusion changes the universe.
+  // Re-fetch the current screen — used after an exclusion/rejection changes the
+  // universe, and once on sign-in (so /api/screen applies the viewer's
+  // per-portfolio rejection hide and returns the restore list).
   const refetch = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch(`/api/screen?config=${encodeConfig(config)}`, {
         cache: "no-store",
       });
-      if (res.ok) setData((await res.json()) as ScreenData);
+      if (res.ok) {
+        const json = (await res.json()) as ScreenData;
+        setData(json);
+        if (json.rejected) setRejected(json.rejected);
+      }
     } finally {
       setLoading(false);
     }
   }, [config]);
 
+  // Once we learn the viewer is signed in, refetch so rejections (migration
+  // 051) are applied + loaded. SSR is anonymous, so this is the logged-in
+  // owner's first filtered view. Fires once.
+  const signinRefetched = useRef(false);
+  useEffect(() => {
+    if (signedIn && !signinRefetched.current) {
+      signinRefetched.current = true;
+      void refetch();
+    }
+  }, [signedIn, refetch]);
+
   const excludedSet = useMemo(
     () => new Set(excluded.map((t) => t.toUpperCase())),
     [excluded],
   );
+
+  // One unified "Hidden" list: manual exclusions (reason "manual", global,
+  // 1-year) + this portfolio's agent rejections (reason = the rejection date),
+  // each restorable via the matching action. Agent rejections only count as
+  // "hidden" while the toggle is on (off → they show in the table, so they
+  // aren't hidden). Manual takes precedence if a ticker is both.
+  const hiddenEntries = useMemo(() => {
+    const manual = [...excludedSet].map((t) => ({
+      ticker: t,
+      source: "manual" as const,
+      reason: "manual",
+    }));
+    const manualSet = new Set(manual.map((m) => m.ticker));
+    const agent =
+      config.hideRejected !== false
+        ? rejected
+            .filter((r) => !manualSet.has(r.ticker.toUpperCase()))
+            .map((r) => ({
+              ticker: r.ticker.toUpperCase(),
+              source: "agent" as const,
+              reason: `rejected ${
+                Number.isNaN(Date.parse(r.rejected_at))
+                  ? ""
+                  : new Date(r.rejected_at).toLocaleDateString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                    })
+              }`.trim(),
+            }))
+        : [];
+    return [...manual, ...agent].sort((a, b) => a.ticker.localeCompare(b.ticker));
+  }, [excludedSet, rejected, config.hideRejected]);
 
   // Rows actually shown: drop any optimistically-excluded ticker. In steady
   // state the server already filtered these, so this only hides the just-
@@ -421,6 +491,36 @@ export default function ScreenerClient({
       setExclMsg(`Couldn’t restore ${t} — try again.`);
     } finally {
       setExclBusy(false);
+    }
+  }
+
+  // Restore a name the portfolio's buyer passed on (migration 051): clears the
+  // 90-day hide so it shows again and the buyer reconsiders it next run.
+  async function onRestoreRejection(ticker: string) {
+    const t = ticker.toUpperCase();
+    const prior = rejected.find((x) => x.ticker.toUpperCase() === t);
+    setRejMsg(null);
+    setRejected((prev) => prev.filter((x) => x.ticker.toUpperCase() !== t));
+    setRejBusy(true);
+    const restore = () =>
+      setRejected((prev) =>
+        prev.some((x) => x.ticker.toUpperCase() === t)
+          ? prev
+          : [...prev, prior ?? { ticker: t, rejected_at: new Date().toISOString() }],
+      );
+    try {
+      const res = await restoreRejection(t);
+      if (res.ok) {
+        await refetch();
+      } else {
+        restore();
+        setRejMsg(res.error || `Couldn’t restore ${t} — try again.`);
+      }
+    } catch {
+      restore();
+      setRejMsg(`Couldn’t restore ${t} — are you signed in?`);
+    } finally {
+      setRejBusy(false);
     }
   }
 
@@ -669,6 +769,20 @@ export default function ScreenerClient({
               AI bull/bear ×
             </label>
           </div>
+          <div className="flex items-center justify-end mt-2">
+            <label
+              title="Hide names your portfolio's buyer evaluated and passed on, for 90 days. Restore any of them in the panel below."
+              className="font-mono text-[10.5px] text-[var(--color-cyan)] inline-flex items-center gap-1.5 cursor-help shrink-0"
+            >
+              <input
+                type="checkbox"
+                checked={config.hideRejected !== false}
+                onChange={(e) => patch({ hideRejected: e.target.checked })}
+                className="accent-[var(--color-cyan)]"
+              />
+              Hide agent-rejected (90d)
+            </label>
+          </div>
           {(["quality", "value", "momentum"] as const).map((k) => (
             <div key={k} className="mt-2.5">
               <div className="flex justify-between font-mono text-[11px] text-text-muted capitalize">
@@ -716,31 +830,44 @@ export default function ScreenerClient({
         </div>
       </details>
 
-      {/* Hidden names — the owner's manual 1-year blocklist. Removed names
-          drop from the screener AND the agents' candidate pool until they
-          expire (or are restored here). */}
-      {signedIn && excluded.length > 0 && (
+      {/* Hidden names — one list, two sources. Manual exclusions (reason
+          "manual") are the owner's global 1-year blocklist; agent rejections
+          (reason = the rejection date) are names this portfolio's buyer
+          evaluated and passed on, hidden for 90 days while the toggle is on.
+          Restore sends each to its matching action. */}
+      {signedIn && hiddenEntries.length > 0 && (
         <details className={`mb-2 ${card}`}>
           <summary className="list-none cursor-pointer font-mono text-[11px] text-text-muted px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden flex items-center justify-between">
-            <span>
-              🚫 Hidden ({excluded.length}) — removed from screener &amp; agents
-              for 1 year
-            </span>
+            <span>🚫 Hidden ({hiddenEntries.length}) — removed from the screener</span>
             <span className="text-text-muted/60">manage ▾</span>
           </summary>
           <div className="px-3 pb-3 flex flex-wrap gap-1.5">
-            {[...excludedSet].sort().map((t) => (
+            {hiddenEntries.map((h) => (
               <span
-                key={t}
+                key={h.ticker}
                 className="inline-flex items-center gap-1.5 font-mono text-[11px] text-text border border-white/10 bg-white/[0.03] rounded-md px-2 py-1"
               >
-                {t}
+                {h.ticker}
+                <span
+                  className="text-[10px] text-text-muted/70"
+                  title={
+                    h.source === "manual"
+                      ? "Manually removed (global, 1 year)"
+                      : "Your buyer evaluated and passed on this name (90-day hide)"
+                  }
+                >
+                  {h.reason}
+                </span>
                 <button
                   type="button"
-                  disabled={exclBusy}
-                  onClick={() => onRestore(t)}
-                  title={`Restore ${t} to the screener now`}
-                  aria-label={`Restore ${t}`}
+                  disabled={h.source === "manual" ? exclBusy : rejBusy}
+                  onClick={() =>
+                    h.source === "manual"
+                      ? onRestore(h.ticker)
+                      : onRestoreRejection(h.ticker)
+                  }
+                  title={`Restore ${h.ticker} to the screener now`}
+                  aria-label={`Restore ${h.ticker}`}
                   className="text-[var(--color-cyan)] hover:underline disabled:opacity-40"
                 >
                   restore
@@ -752,7 +879,7 @@ export default function ScreenerClient({
       )}
 
       {/* Surfaced error from a remove/restore (e.g. not signed in, or the
-          screener_exclusions table isn't there yet) — never fail silently. */}
+          table isn't there yet) — never fail silently. */}
       {exclMsg && (
         <div
           role="alert"
@@ -762,6 +889,23 @@ export default function ScreenerClient({
           <button
             type="button"
             onClick={() => setExclMsg(null)}
+            aria-label="Dismiss"
+            className="text-text-muted hover:text-text"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {rejMsg && (
+        <div
+          role="alert"
+          className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-[var(--color-red,#FF3333)]/40 bg-[var(--color-red,#FF3333)]/[0.06] px-3 py-2 font-mono text-[11px] text-[var(--color-red,#FF3333)]"
+        >
+          <span>{rejMsg}</span>
+          <button
+            type="button"
+            onClick={() => setRejMsg(null)}
             aria-label="Dismiss"
             className="text-text-muted hover:text-text"
           >

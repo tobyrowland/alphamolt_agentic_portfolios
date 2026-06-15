@@ -59,6 +59,9 @@ export const screenConfigSchema = z.object({
   filters: z.array(filterSchema).max(20).default([]),
   weights: weightsSchema.default({ quality: 45, value: 25, momentum: 20 }),
   aiMultiplier: z.boolean().default(true),
+  // Hide names this portfolio's buyer evaluated and passed on, for 90 days
+  // (migration 051). On by default; per-portfolio, owner can restore early.
+  hideRejected: z.boolean().default(true),
   topN: z.number().int().min(1).max(200).default(40),
   sort: z
     .object({
@@ -82,6 +85,7 @@ const base = {
   brief: undefined,
   sort: { column: "score", dir: "desc" as const },
   topN: 40,
+  hideRejected: true,
   aiMultiplier: true,
 };
 

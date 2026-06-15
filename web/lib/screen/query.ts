@@ -168,15 +168,28 @@ async function activeExclusions(): Promise<Set<string>> {
   }
 }
 
-/** Full contract response for a config: scored rows + counts + as-of. */
-export async function runScreen(config: ScreenConfig): Promise<ScreenResponse> {
+/**
+ * Full contract response for a config: scored rows + counts + as-of.
+ *
+ * `rejected` is the viewer's per-portfolio 90-day rejection set (migration
+ * 051) — names this portfolio's buyer evaluated and passed on. Dropped only
+ * when the config's `hideRejected` toggle is on (the default). Empty / omitted
+ * for the logged-out public screener, which has no portfolio context.
+ */
+export async function runScreen(
+  config: ScreenConfig,
+  rejected?: Set<string>,
+): Promise<ScreenResponse> {
   const [allFacts, excluded] = await Promise.all([
     loadFacts(),
     activeExclusions(),
   ]);
-  const facts = excluded.size
+  let facts = excluded.size
     ? allFacts.filter((f) => !excluded.has(f.ticker.toUpperCase()))
     : allFacts;
+  if (config.hideRejected !== false && rejected && rejected.size) {
+    facts = facts.filter((f) => !rejected.has(f.ticker.toUpperCase()));
+  }
   const result = scoreScreen(facts, config, facts.length);
   const data_asof = facts.reduce<string | null>((acc, f) => {
     if (f.price_asof && (!acc || f.price_asof > acc)) return f.price_asof;

@@ -649,6 +649,32 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
         if e["verdict"] == "BUY" and e["conviction"] >= min_conviction
     ]
     result.notes["phase1_qualifying"] = len(qualifying)
+
+    # Record the names this buyer evaluated and passed on — a PASS verdict, or
+    # a BUY below the conviction gate (i.e. it looked and didn't pull the
+    # trigger). The screener's "hide rejected" toggle drops these for 90 days
+    # (migration 051) so the buyer doesn't churn back into re-evaluating them.
+    # A 5/5 BUY that just ran out of cash is NOT a rejection — it's still
+    # wanted — so we key off the agent's verdict, not whether a fill happened.
+    # Always recorded (the toggle governs display, not capture); never in
+    # dry-run.
+    if not ctx.dry_run:
+        qualifying_tickers = {e["ticker"] for e in qualifying}
+        rejected_rows = [
+            {
+                "ticker": e["ticker"],
+                "rejected_by_agent_id": ctx.agent["id"],
+                "verdict": e.get("verdict"),
+                "conviction": e.get("conviction"),
+                "reason": (e.get("rationale") or "")[:240] or None,
+            }
+            for e in evaluations
+            if e["ticker"] not in qualifying_tickers
+        ]
+        if rejected_rows:
+            n = ctx.db.record_screener_rejections(ctx.portfolio_id, rejected_rows)
+            result.notes["screener_rejections_recorded"] = n
+
     if not qualifying:
         result.notes["reason"] = "no candidates met the conviction threshold"
         return result
@@ -735,6 +761,9 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
         try:
             ctx.buy(ticker, item["qty"], note=note, thesis=thesis)
             result.buys += 1
+            # Clear any stale rejection — we now own it, so it must never be
+            # shadowed as "rejected" on the screener (migration 051).
+            ctx.db.clear_screener_rejection(ctx.portfolio_id, ticker)
         except PortfolioError as exc:
             result.errors.append(f"buy {ticker} x{item['qty']}: {exc}")
 

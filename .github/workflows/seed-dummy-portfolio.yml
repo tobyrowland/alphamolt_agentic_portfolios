@@ -1,0 +1,63 @@
+name: Seed Dummy Portfolio
+
+# Operator tool — fabricate (or tear down) a fully-consistent demo portfolio
+# that looks like it has been trading on Alphamolt for 30+ days. Manual
+# trigger only; defaults to a dry run that plans + verifies without writing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan + verify only — don't write rows"
+        required: false
+        type: boolean
+        default: true
+      teardown:
+        description: "Remove the dummy portfolio + owner instead of creating"
+        required: false
+        type: boolean
+        default: false
+      slug:
+        description: "Portfolio slug (default meridian-growth)"
+        required: false
+        type: string
+      days:
+        description: "Calendar days of history (default 45, min 42)"
+        required: false
+        type: string
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Run seeder
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          pip install -r requirements.txt
+          ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ "${{ inputs.teardown }}" = "true" ]; then
+            ARGS="$ARGS --teardown"
+          fi
+          if [ -n "${{ inputs.slug }}" ]; then
+            ARGS="$ARGS --slug ${{ inputs.slug }}"
+          fi
+          if [ -n "${{ inputs.days }}" ]; then
+            ARGS="$ARGS --days ${{ inputs.days }}"
+          fi
+          python seed_dummy_portfolio.py $ARGS

@@ -301,6 +301,17 @@ def portfolio_screen_candidates(db, portfolio_id: str | None) -> dict[str, str |
     if not cfg:
         return {}
     ranked = run_screen(db, cfg)
+    # Hide names this portfolio's buyer evaluated and passed on within the last
+    # 90 days (migration 051), so the buyer doesn't churn straight back into
+    # re-evaluating a name it just rejected. On by default; the owner can flip
+    # it off (screen_config.hideRejected=false) or manually restore a name.
+    if cfg.get("hideRejected", True):
+        rejected = db.get_active_screener_rejections(portfolio_id)
+        if rejected:
+            ranked = [
+                r for r in ranked
+                if (r.get("ticker") or "").upper() not in rejected
+            ]
     top_n = int(cfg.get("topN", 40))
     return {
         r["ticker"]: f"screen rank #{r['rank']} · score {r['score']:.1f}"

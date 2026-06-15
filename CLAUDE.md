@@ -152,6 +152,30 @@ Deterministic scoring-as-a-function (Python mirror of
 candidates(db, portfolio_id)` returns the top N `{ticker: rationale}` that both
 buyers (`watchlist_buyer`, `llm_watchlist_buyer`) now trade from. Pure, no LLM.
 
+### Screener rejections — per-portfolio 90-day auto-hide (migration 051)
+When a portfolio's BUY agent (`llm_watchlist_buyer`) evaluates a candidate and
+**doesn't buy it** — a PASS verdict, or a BUY below its conviction gate — the
+name is recorded in `screener_rejections` (`(portfolio_id, ticker)` PK,
+`expires_at` = now + 90d, `rejected_by_agent_id`, `verdict`, `conviction`,
+`reason`, `restored_at`). The screener's **`hideRejected`** toggle (in
+`screen_config`, **on by default**) then drops those names from BOTH the
+screener results and the buyer's candidate pool for 90 days, so the agent
+doesn't churn straight back into re-evaluating a name it just passed on. A
+5/5 BUY that merely ran out of cash is **not** a rejection (still wanted). The
+owner can **restore** a name early (sets `restored_at`); a later re-rejection
+re-arms the hide. An actual buy clears any stale rejection. This is the
+per-portfolio cousin of the manual, global 1-year `screener_exclusions`
+(migration 048). Applied at read time, honouring `hideRejected`:
+`screen.portfolio_screen_candidates()` (Python buyer pool, via
+`db.get_active_screener_rejections`), `web/lib/screen/query.ts runScreen(...,
+rejected)` + `web/app/api/screen/route.ts` (the live re-rank). RLS: service-role
+only (a rejection list can belong to a private portfolio, so unlike
+`screener_exclusions` it is **not** public-read; the website reads it
+server-side). The screener page SSR stays anonymous/ISR-cached — the toggle's
+filtering + restore panel are resolved client-side via `/api/screen` once the
+viewer is known signed-in. Owner UI: `web/lib/screen/rejections-{query,
+mutations}.ts` + the toggle/restore panel in `web/app/screener/screener-client.tsx`.
+
 ## Portfolio swarm — multi-buyer / multi-reviewer coordination
 
 A portfolio runs a **swarm**: multiple specialist buyers + reviewers over one
@@ -506,6 +530,29 @@ console by default; `--slack` POSTs to `SLACK_WEBHOOK_URL` and `--email [addr]`
 emails it (Resend when `RESEND_API_KEY` is set, else `SMTP_*`) — all no-op with
 a warning when their env is unset. The daily `user-report.yml` cron emails the
 `--story` version. Flags: `--days N`, `--window-hours N`, `--quiet`.
+
+### seed_dummy_portfolio.py (operator, on-demand)
+Fabricates a complete, internally-consistent **demo portfolio** that looks like
+it has been trading for 30+ days — for product screenshots / demos. Creates
+everything a mature human-owned paper portfolio has: a dummy owner (auth user +
+profile, back-dated, lifecycle-email ledger pre-seeded so the crons never email
+it), the portfolios row (mandate, `screen_config`, `mode='paper'`, flipped
+public once ≥15 holdings exist), a $1M `portfolio_accounts` row back-dated ~45
+days, a hired team in `portfolio_agents` (two library Conviction Buyers +
+the Reviewer, role-tagged with per-instance config), an `agent_trades` tape
+whose fills use **real historical closes** from `prices_daily` on their
+historical dates (cash-chained end to end), `investment_theses` per BUY
+(snapshot frozen at fill price, agent-authored text + extend/break signals,
+superseded/broken lifecycle), buyer-attributed `portfolio_holdings`, daily
+`agent_portfolio_history` rows valued at each day's real close, and
+`agent_heartbeats` journals (buyers daily, reviewer weekly). Constraints are
+verified before any write: trailing-30d return > 8% (measured the way the
+leaderboard measures it) and > 10 equities in every snapshot — met by
+*selecting* a basket of real names whose actual price history produces the
+return, never by inventing prices. Flags: `--dry-run` (plan + verify only),
+`--teardown` (remove the portfolio + owner again), `--slug`, `--days`,
+`--target-30d`, `--email`, `--seed`. Workflow: `seed-dummy-portfolio.yml`
+(manual dispatch, dry-run default ON).
 
 ### lifecycle_emails.py (every 30 min)
 Automated lifecycle emails to human users (`profiles`), gated by the
