@@ -735,9 +735,15 @@ buyer's narrative enrichment (`db.get_ai_analysis`) read bull/bear + narratives
 from **here**, not `companies` — the first step of retiring the legacy TV
 `companies` flow. Seeded from `companies` (zero coverage loss) and kept fresh by
 the eval scripts **dual-writing** it (`db.upsert_ai_analysis`) alongside
-`companies`. **Stage A2** (pending) repoints those scripts' *input* universe
-from `companies` to Tier 1, so bull/bear + narratives finally cover the whole
-Tier-1 universe (today they cover only the legacy screen's names).
+`companies`. **Stage A2** (migration 054, opt-in) adds per-kind rotation clocks
+(`bull_at`/`bear_at`/`narrated_at`) and an opt-in **`--tier1`** flag on
+`bull_evaluation` / `bear_evaluation` / `update_ai_narratives`: with it they
+rotate over the full Tier-1 universe (`level0_eval.tier1_eval_candidates` —
+prompt rows assembled from Level 0 facts, overlaid with `companies` richness
+where present) and write **only** `ai_analysis`, so financials / foreign ADRs
+finally get bull/bear + narratives. Default (no flag) keeps the legacy
+`companies` path untouched; same per-run batch size, so flipping the crons to
+`--tier1` doesn't change daily LLM cost (never-evaluated names sort first).
 
 All Level 0 tables: public-read RLS, service-role writes. `metric_stats`
 (distribution percentiles) is reused from migration 038.

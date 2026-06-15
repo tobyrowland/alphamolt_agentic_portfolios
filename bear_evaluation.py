@@ -329,10 +329,14 @@ def main():
     parser = argparse.ArgumentParser(description="Bear Evaluation - Fundamental Sentinel")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print prompt and results without writing to the database")
+    parser.add_argument("--tier1", action="store_true",
+                        help="Evaluate the full Level 0 Tier-1 universe (writes "
+                             "ai_analysis only), not just the legacy companies/in_tv_screen set")
     args = parser.parse_args()
 
     logger = setup_logging()
-    logger.info("=== Bear Evaluation started (dry_run=%s) ===", args.dry_run)
+    logger.info("=== Bear Evaluation started (dry_run=%s, tier1=%s) ===",
+                args.dry_run, args.tier1)
     start_time = time.time()
 
     # Validate Gemini key
@@ -345,17 +349,20 @@ def main():
     # Connect to Supabase
     db = SupabaseDB()
 
-    # Read all companies
-    all_companies = db.get_all_companies()
-    logger.info("Read %d companies from database", len(all_companies))
-
-    if not all_companies:
-        logger.error("No companies found in database")
-        sys.exit(1)
-
-    # Select rotation batch (oldest bear_eval_at first, NULLs first)
-    top_equities = select_rotation_batch(all_companies)
-    logger.info("Selected %d tickers for bear evaluation (rotation by bear_eval_at)", len(top_equities))
+    if args.tier1:
+        # Stage A2: rotate over the full Tier-1 universe (ai_analysis clock).
+        import level0_eval
+        top_equities = level0_eval.tier1_eval_candidates(db, "bear", TOP_N)
+        logger.info("Selected %d Tier-1 tickers for bear evaluation (rotation by ai_analysis.bear_at)", len(top_equities))
+    else:
+        all_companies = db.get_all_companies()
+        logger.info("Read %d companies from database", len(all_companies))
+        if not all_companies:
+            logger.error("No companies found in database")
+            sys.exit(1)
+        # Select rotation batch (oldest bear_eval_at first, NULLs first)
+        top_equities = select_rotation_batch(all_companies)
+        logger.info("Selected %d tickers for bear evaluation (rotation by bear_eval_at)", len(top_equities))
 
     if not top_equities:
         logger.warning("No in-screen non-excluded tickers found. Nothing to do.")
@@ -415,14 +422,18 @@ def main():
         ticker = (company.get("ticker") or "").strip()
         verdict = verdicts.get(ticker)
         if verdict:
-            db.upsert_company(ticker, {
-                "bear_eval": verdict,
-                "bear_eval_at": today_str,
-            })
-            # Dual-write Level 0 ai_analysis (migration 053) — the screener
-            # overlay + buyer read bear verdicts off Level 0, not companies.
+            # ai_analysis is the Level 0 home (migrations 053/054): always write
+            # the bear verdict + its rotation clock (bear_at). In --tier1 mode
+            # that's the only write (the name may not exist in companies);
+            # otherwise dual-write companies for the legacy surfaces.
+            if not args.tier1:
+                db.upsert_company(ticker, {
+                    "bear_eval": verdict,
+                    "bear_eval_at": today_str,
+                })
             db.upsert_ai_analysis(ticker, {
                 "bear_eval": verdict,
+                "bear_at": today_str,
                 "analyzed_at": today_str,
             })
             matched += 1

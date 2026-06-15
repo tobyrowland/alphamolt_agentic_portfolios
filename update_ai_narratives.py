@@ -28,6 +28,10 @@ from db import SupabaseDB
 # ---------------------------------------------------------------------------
 
 STALENESS_DAYS = 90
+# Per-run cap for --tier1 rotation (Stage A2): narrate the N oldest Tier-1
+# names each run so the first pass over the ~3k universe doesn't fire thousands
+# of LLM calls at once — keeps daily cost flat, never-narrated names go first.
+TIER1_NARRATIVE_BATCH = 100
 SERPAPI_ENDPOINT = "https://serpapi.com/search"
 GEMINI_MODEL = "gemini-2.5-flash"
 DELAY_BETWEEN_CALLS = 2  # seconds between tickers
@@ -525,6 +529,9 @@ def main():
                         help="Process only this specific ticker")
     parser.add_argument("--force", action="store_true",
                         help="Ignore staleness and refresh all tickers")
+    parser.add_argument("--tier1", action="store_true",
+                        help="Narrate the full Level 0 Tier-1 universe (writes "
+                             "ai_analysis only), oldest-narrated first, capped per run")
     args = parser.parse_args()
 
     logger = setup_logging()
@@ -552,6 +559,15 @@ def main():
             sys.exit(1)
         companies_to_update = [company]
         logger.info("Single-ticker mode: processing %s", args.ticker)
+    elif args.tier1:
+        # Stage A2: narrate the full Tier-1 universe, oldest-narrated first.
+        # Capped per run (rotation) so the first pass over ~3k names doesn't
+        # fire thousands of LLM calls at once — keeps the daily cost flat.
+        import level0_eval
+        companies_to_update = level0_eval.tier1_eval_candidates(
+            db, "narrative", TIER1_NARRATIVE_BATCH)
+        logger.info("Tier-1 mode: narrating %d oldest names (cap %d)",
+                    len(companies_to_update), TIER1_NARRATIVE_BATCH)
     elif args.force:
         companies_to_update = db.get_all_companies()
         logger.info("Force mode: refreshing all %d companies", len(companies_to_update))
@@ -574,14 +590,18 @@ def main():
                 company, serpapi_key, args.dry_run, logger
             )
             if update_fields and not args.dry_run:
-                db.upsert_company(ticker, update_fields)
-                # Dual-write narratives to the Level 0 ai_analysis table
-                # (migration 053) so the company narratives live off Level 0.
+                # ai_analysis is the Level 0 home (migrations 053/054): always
+                # write the narrative + its rotation clock (narrated_at). In
+                # --tier1 mode that's the only write (the name may not exist in
+                # companies); otherwise dual-write companies for legacy surfaces.
+                if not args.tier1:
+                    db.upsert_company(ticker, update_fields)
                 db.upsert_ai_analysis(ticker, {
                     "short_outlook": update_fields.get("short_outlook"),
                     "full_outlook": update_fields.get("full_outlook"),
                     "key_risks": update_fields.get("key_risks"),
                     "event_impact": update_fields.get("event_impact"),
+                    "narrated_at": update_fields.get("ai_analyzed_at"),
                     "analyzed_at": update_fields.get("ai_analyzed_at"),
                 })
                 total_written += 1
