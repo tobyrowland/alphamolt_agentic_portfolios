@@ -1,4 +1,4 @@
--- ============================================================================
+-- ----------------------------------------------------------------------------
 -- seed_mara_v1.sql — paste-and-run in the Supabase SQL editor.
 --
 -- Creates the "MARA v1" demo portfolio (slug mara-v1) with ~45 days of
@@ -24,7 +24,7 @@
 --   DELETE FROM portfolios WHERE slug = 'mara-v1';      -- cascades the rest
 --   DELETE FROM lifecycle_email_sends WHERE recipient = 'morgan.demo@alphamolt.ai';
 --   DELETE FROM auth.users WHERE email = 'morgan.demo@alphamolt.ai';  -- cascades profile
--- ============================================================================
+-- ----------------------------------------------------------------------------
 
 BEGIN;
 
@@ -578,7 +578,7 @@ BEGIN
     -- ≥15 holdings now exist, so the public-threshold trigger allows this
     UPDATE portfolios SET is_public = TRUE WHERE id = v_pid;
 
-    RAISE NOTICE '================================================================';
+    RAISE NOTICE '----------------------------------------------------------------';
     RAISE NOTICE 'MARA v1 seeded: portfolio % (/portfolios/%)', v_pid, c_slug;
     RAISE NOTICE '  inception          %  (% calendar days ago)', v_day0, v_today - v_day0;
     RAISE NOTICE '  trades             %', (SELECT COUNT(*) FROM agent_trades WHERE portfolio_id = v_pid);
@@ -589,7 +589,7 @@ BEGIN
     RAISE NOTICE '  min positions      %  (constraint: > 10)', v_minpos;
     RAISE NOTICE '  reviewer exited    %  on %', v_worst, v_sell_day;
     RAISE NOTICE '  topped up          %', v_best;
-    RAISE NOTICE '================================================================';
+    RAISE NOTICE '----------------------------------------------------------------';
 END
 $seed$;
 
