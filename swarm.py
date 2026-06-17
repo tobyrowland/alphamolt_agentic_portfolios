@@ -67,6 +67,7 @@ def snake_draft_plan(
     cash: float,
     *,
     cash_reserve_pct: float = 0.02,
+    min_order_value: float = 0.0,
     convictions: dict[str, dict[str, int]],
 ) -> DraftResult:
     """Plan a snake-draft buy cycle. Pure — returns the ordered picks.
@@ -75,6 +76,11 @@ def snake_draft_plan(
     name; a missing entry means "no opinion / won't draft". A buyer drafts the
     highest-conviction candidate it can both clear (>= its gate) and afford
     (>= 1 share within its max_per_name and the shared cash, minus reserve).
+
+    `min_order_value` is a dust guard: a candidate whose affordable notional
+    (qty*price) is below this floor is skipped rather than drafted, so a buyer
+    spending down the tail of the cash never opens a $9 sliver position. 0
+    disables it (the default, so existing callers/tests are unaffected).
     """
     result = DraftResult(cash_remaining=cash)
     available = [t for t in candidates if prices.get(t, 0) and prices[t] > 0]
@@ -99,7 +105,7 @@ def snake_draft_plan(
                 target = b.max_per_name * total_value
                 spendable = min(target, result.cash_remaining - min_cash)
                 qty = int(math.floor(spendable / price))
-                if qty >= 1:
+                if qty >= 1 and qty * price >= min_order_value:
                     picked = (t, qty, price)
                     break
             if picked is None:
