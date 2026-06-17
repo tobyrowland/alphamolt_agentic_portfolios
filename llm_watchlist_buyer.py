@@ -510,6 +510,111 @@ def _pass_rejection_rows(evaluations: list[dict], agent_id: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Shared evaluation core — used by BOTH this standalone strategy and the
+# portfolio swarm (agent_heartbeat._run_portfolio_swarm), so a swarm buyer
+# "thinks" on exactly the same inputs/logic as the 1:1 buyer.
+# ---------------------------------------------------------------------------
+
+
+def build_candidate_data(
+    db, fact_rows: dict[str, dict], candidates: list[str]
+) -> dict[str, dict]:
+    """Assemble the per-ticker ``equity_data`` map the LLM evaluator consumes.
+
+    One ``ai_analysis`` query for the narrative overlay + the Level 0 fact row
+    per name (`fact_rows` keyed by upper-case ticker). Names without a fact row
+    are dropped (the caller can diff to detect them).
+    """
+    narratives = _load_company_narratives(db, candidates)
+    return {
+        t: _build_equity_data(fact_rows[t], narratives.get(t))
+        for t in candidates
+        if t in fact_rows
+    }
+
+
+def evaluate_candidates(
+    *,
+    provider: str,
+    model: str,
+    candidates: list[str],
+    by_ticker_data: dict[str, dict],
+    combined_rationale: dict[str, str],
+    portfolio: dict,
+    portfolio_mandate: str | None,
+    params: dict,
+    label: str = "buyer",
+) -> tuple[list[dict], dict]:
+    """Phase-1 per-ticker BUY/PASS evaluation, run in parallel.
+
+    The shared "thinking" core: for each candidate it calls the model with the
+    equity data + the buyer's mandate and returns the validated verdict dicts
+    (``{verdict, conviction, rationale, thesis_text, extend_signals,
+    break_signals, ...}``) plus a notes dict (timeouts / parse failures / token
+    totals). Pure w.r.t. the DB — the caller supplies the prepared candidate
+    data — so the standalone strategy and the swarm draft evaluate names
+    identically. Per-ticker errors are captured in notes, never raised.
+    """
+    notes: dict[str, Any] = {}
+    concurrency = max(1, int(params["concurrency"]))
+    timeout_sec = float(params["per_call_timeout_sec"])
+    max_tokens = int(params["max_tokens"])
+    temperature = float(params["temperature"])
+    max_signals = int(params["max_signals_per_kind"])
+
+    evaluations: list[dict] = []
+    parse_failures: dict[str, str] = {}
+    timeouts: list[str] = []
+
+    logger.info(
+        "%s phase 1: %d candidates, concurrency=%d, timeout=%.0fs",
+        label, len(candidates), concurrency, timeout_sec,
+    )
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = {
+            pool.submit(
+                _evaluate_ticker,
+                provider=provider,
+                model=model,
+                ticker=ticker,
+                equity_data=by_ticker_data[ticker],
+                curator_rationale=combined_rationale.get(ticker) or None,
+                portfolio=portfolio,
+                portfolio_mandate=portfolio_mandate,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                max_signals=max_signals,
+            ): ticker
+            for ticker in candidates
+            if ticker in by_ticker_data
+        }
+        for fut, ticker in list(futures.items()):
+            try:
+                ev = fut.result(timeout=timeout_sec)
+            except FutureTimeoutError:
+                timeouts.append(ticker)
+                fut.cancel()
+                continue
+            except Exception as exc:  # noqa: BLE001 — defensive
+                parse_failures[ticker] = f"unexpected: {exc}"
+                continue
+            if "error" in ev:
+                parse_failures[ticker] = ev["error"]
+                continue
+            evaluations.append(ev)
+
+    if timeouts:
+        notes["timeouts"] = timeouts
+    if parse_failures:
+        notes["per_ticker_errors"] = parse_failures
+    notes["phase1_evaluations"] = len(evaluations)
+    notes["phase1_input_tokens"] = sum(int(e.get("input_tokens") or 0) for e in evaluations)
+    notes["phase1_output_tokens"] = sum(int(e.get("output_tokens") or 0) for e in evaluations)
+    return evaluations, notes
+
+
+# ---------------------------------------------------------------------------
 # Strategy entrypoint
 # ---------------------------------------------------------------------------
 
@@ -649,12 +754,7 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
     # snapshot only covered names the legacy TradingView screen included, which
     # is why US-listed financials / foreign-domiciled ADRs showed up as
     # "missing" and were never bought). `fact_rows` was fetched once in step 1.
-    narratives = _load_company_narratives(ctx.db, candidates)
-    by_ticker_data: dict[str, dict] = {
-        t: _build_equity_data(fact_rows[t], narratives.get(t))
-        for t in candidates
-        if t in fact_rows
-    }
+    by_ticker_data = build_candidate_data(ctx.db, fact_rows, candidates)
     missing_facts = [t for t in candidates if t not in by_ticker_data]
     if missing_facts:
         # Shouldn't normally happen (candidates ARE the screen top-N), but a
@@ -666,66 +766,18 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
         result.notes["reason"] = "no Level 0 facts for any candidate"
         return result
 
-    concurrency = max(1, int(params["concurrency"]))
-    timeout_sec = float(params["per_call_timeout_sec"])
-    max_tokens = int(params["max_tokens"])
-    temperature = float(params["temperature"])
-    max_signals = int(params["max_signals_per_kind"])
-
-    evaluations: list[dict] = []
-    parse_failures: dict[str, str] = {}
-    timeouts: list[str] = []
-
-    logger.info(
-        "%s phase 1: %d candidates, concurrency=%d, timeout=%.0fs",
-        handle, len(candidates), concurrency, timeout_sec,
+    evaluations, eval_notes = evaluate_candidates(
+        provider=provider,
+        model=model,
+        candidates=candidates,
+        by_ticker_data=by_ticker_data,
+        combined_rationale=combined_rationale,
+        portfolio=portfolio,
+        portfolio_mandate=portfolio_mandate,
+        params=params,
+        label=handle,
     )
-
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {
-            pool.submit(
-                _evaluate_ticker,
-                provider=provider,
-                model=model,
-                ticker=ticker,
-                equity_data=by_ticker_data[ticker],
-                curator_rationale=combined_rationale.get(ticker) or None,
-                portfolio=portfolio,
-                portfolio_mandate=portfolio_mandate,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                max_signals=max_signals,
-            ): ticker
-            for ticker in candidates
-        }
-        for fut, ticker in list(futures.items()):
-            try:
-                ev = fut.result(timeout=timeout_sec)
-            except FutureTimeoutError:
-                timeouts.append(ticker)
-                fut.cancel()
-                continue
-            except Exception as exc:  # noqa: BLE001 — defensive
-                parse_failures[ticker] = f"unexpected: {exc}"
-                continue
-            if "error" in ev:
-                parse_failures[ticker] = ev["error"]
-                if ev.get("raw_response_truncated"):
-                    parse_failures.setdefault("_raw", {})  # type: ignore[arg-type]
-                continue
-            evaluations.append(ev)
-
-    if timeouts:
-        result.notes["timeouts"] = timeouts
-    if parse_failures:
-        result.notes["per_ticker_errors"] = parse_failures
-
-    # Aggregate token usage for visibility.
-    input_tok = sum(int(e.get("input_tokens") or 0) for e in evaluations)
-    output_tok = sum(int(e.get("output_tokens") or 0) for e in evaluations)
-    result.notes["phase1_evaluations"] = len(evaluations)
-    result.notes["phase1_input_tokens"] = input_tok
-    result.notes["phase1_output_tokens"] = output_tok
+    result.notes.update(eval_notes)
 
     # 3. Filter to BUY @ min_conviction and run Phase 2.
     min_conviction = int(params["min_conviction"])

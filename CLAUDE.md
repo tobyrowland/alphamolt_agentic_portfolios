@@ -205,9 +205,16 @@ no longer read.
   each round; a buyer only drafts a name clearing **its own** conviction gate,
   sized by its `maxPerName` against shared cash; a drafted name is taken (no
   double-buying); each opened position is attributed to its buyer. Conviction
-  source is a deterministic screen-rank baseline (`swarm.rank_to_conviction`) —
-  per-brain LLM conviction can replace it by populating the convictions map; the
-  draft mechanics don't change.
+  source is **per buyer**: an `llm_watchlist_buyer` runs a real per-name LLM
+  evaluation against its own mandate — capped at the top `MAX_SWARM_EVAL` (40)
+  screen names, hard conviction gate, PASSes recorded to `screener_rejections`,
+  and the LLM's `thesis_text` + extend/break signals recorded at the buy site
+  (`agent_heartbeat._llm_swarm_convictions`, reusing
+  `llm_watchlist_buyer.evaluate_candidates`); `ma_sniper` uses 200-week
+  proximity; any other buyer falls back to the deterministic screen-rank
+  baseline (`swarm.rank_to_conviction`). The draft mechanics don't change.
+  `snake_draft_plan` also enforces a `min_order_value` dust guard so the tail of
+  the cash never opens a sub-2% sliver position.
 - **Sell — first valid sell** (`swarm.first_valid_sell_plan` semantics):
   reviewers run their existing sell strategy in order on the shared book, so the
   first to close a name wins.

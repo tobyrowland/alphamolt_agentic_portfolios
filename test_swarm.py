@@ -95,6 +95,41 @@ class TestSnakeDraft(unittest.TestCase):
         )
         self.assertEqual(res.picks, [])
 
+    def test_passed_names_omitted_from_convictions_arent_drafted(self):
+        # The LLM-buyer path puts ONLY BUY>=gate names in the convictions map;
+        # PASS / sub-gate names are absent and must never be drafted, even though
+        # they're in the candidate pool.
+        buyers = [Buyer("A", gate=5, max_per_name=0.5)]
+        conv = {"A": {"AAA": 5}}  # BBB was a PASS → omitted entirely
+        res = snake_draft_plan(
+            buyers, ["AAA", "BBB"], PRICES,
+            total_value=1000, cash=1000, cash_reserve_pct=0.0, convictions=conv,
+        )
+        self.assertEqual([p.ticker for p in res.picks], ["AAA"])
+
+    def test_min_order_value_skips_dust_picks(self):
+        # A buyer with only tail cash left should NOT open a sub-floor sliver
+        # (the CLOV $9.62 bug). With a $50 floor and ~$30 spendable, it passes.
+        buyers = [Buyer("A", gate=1, max_per_name=1.0)]
+        conv = {"A": {"AAA": 5}}
+        res = snake_draft_plan(
+            buyers, ["AAA"], PRICES,
+            total_value=1000, cash=30, cash_reserve_pct=0.0,
+            min_order_value=50.0, convictions=conv,
+        )
+        self.assertEqual(res.picks, [])
+
+    def test_min_order_value_allows_above_floor(self):
+        buyers = [Buyer("A", gate=1, max_per_name=1.0)]
+        conv = {"A": {"AAA": 5}}
+        res = snake_draft_plan(
+            buyers, ["AAA"], PRICES,
+            total_value=1000, cash=100, cash_reserve_pct=0.0,
+            min_order_value=50.0, convictions=conv,
+        )
+        self.assertEqual(len(res.picks), 1)
+        self.assertEqual(res.picks[0].qty, 10)  # $100 / $10
+
 
 class TestFirstValidSell(unittest.TestCase):
     def test_first_reviewer_in_order_wins(self):

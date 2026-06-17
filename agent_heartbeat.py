@@ -323,6 +323,98 @@ def _resolve_member_mandate(member_row: dict, portfolio_mandate: str | None) -> 
     return portfolio_mandate
 
 
+# Cap how many top-ranked screen names a thinking (llm_watchlist_buyer) swarm
+# buyer evaluates per run — bounds LLM cost/latency against the 30-min job
+# timeout and keeps buyers focused on the best names (the screener already
+# ranks the whole universe). Aligns with the default screen_config.topN.
+MAX_SWARM_EVAL = 40
+# Dust guard: the snake draft won't open a position smaller than this fraction
+# of total value, so a buyer spending down the tail of the cash can't open a
+# $9 sliver (mirrors llm_watchlist_buyer's min_position_pct).
+MIN_DRAFT_POSITION_PCT = 0.02
+
+
+def _llm_swarm_convictions(
+    db: SupabaseDB,
+    member_row: dict,
+    cfg: dict,
+    portfolio_mandate: str | None,
+    pid: str,
+    eval_pool: list[str],
+    by_ticker_data: dict[str, dict],
+    cand_map: dict[str, str],
+    book: dict,
+    *,
+    eval_cache: dict,
+    dry_run: bool,
+    logger: logging.Logger,
+) -> tuple[dict[str, int], dict[str, dict], float, int]:
+    """Per-name LLM convictions + theses for one `llm_watchlist_buyer` in the swarm.
+
+    Runs the SAME Phase-1 evaluation the standalone buyer uses
+    (`llm_watchlist_buyer.evaluate_candidates`) over the top-N screen pool, using
+    THIS buyer's own mandate + provider/model. Returns
+    `(convictions{ticker: 1-5 for BUY >= gate}, evals{ticker: eval}, max_per, gate)`.
+
+    Two deliberate safety choices: identical (provider, model, mandate) sweeps are
+    cached so co-briefed buyers don't double-pay; and any eval failure degrades to
+    "this buyer buys nothing this cycle" — never a fallback to the mechanical rank
+    baseline, which is exactly the bug being fixed. Records true PASSes for the
+    screener 30-day hide (never in dry-run).
+    """
+    import llm_watchlist_buyer as _llm_buyer
+
+    aid = member_row["agent"]["id"]
+    label = member_row["agent"].get("handle", aid[:8])
+    bp = {**_llm_buyer.LLM_WATCHLIST_BUYER_DEFAULTS, **cfg}
+    mandate_m = _resolve_member_mandate(member_row, portfolio_mandate)
+    gate = int(cfg.get("convictionGate") or bp["min_conviction"])
+    max_per = float(cfg.get("target_position_pct", bp["target_position_pct"])) / 100.0
+
+    if not eval_pool:
+        return {}, {}, max_per, gate
+
+    key = (bp["provider"], bp["model"], mandate_m or "")
+    evals_list = eval_cache.get(key)
+    if evals_list is None:
+        try:
+            evals_list, _notes = _llm_buyer.evaluate_candidates(
+                provider=bp["provider"],
+                model=bp["model"],
+                candidates=eval_pool,
+                by_ticker_data=by_ticker_data,
+                combined_rationale=cand_map,
+                portfolio=book,
+                portfolio_mandate=mandate_m,
+                params=bp,
+                label=label,
+            )
+        except Exception as exc:  # noqa: BLE001 — a dead provider buys nothing, never mechanically
+            logger.warning("swarm LLM eval failed for %s: %s", label, exc)
+            evals_list = []
+        eval_cache[key] = evals_list
+
+    evals_by_ticker = {e["ticker"]: e for e in evals_list}
+    convictions = {
+        e["ticker"]: int(e["conviction"])
+        for e in evals_list
+        if str(e.get("verdict") or "").upper() == "BUY"
+        and int(e.get("conviction") or 0) >= gate
+    }
+
+    if not dry_run:
+        rej = _llm_buyer._pass_rejection_rows(evals_list, aid)
+        if rej:
+            try:
+                db.record_screener_rejections(
+                    pid, rej, days=int(bp["rejection_window_days"])
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("swarm rejection record failed for %s: %s", label, exc)
+
+    return convictions, evals_by_ticker, max_per, gate
+
+
 def _run_portfolio_swarm(
     db: SupabaseDB,
     pm: PortfolioManager,
@@ -346,9 +438,12 @@ def _run_portfolio_swarm(
     name removes it before the next sees it (first-valid-sell by construction;
     each sell is tagged with the acting reviewer via agent_trades.agent_id).
 
-    Conviction source: a deterministic screen-rank baseline (swarm.rank_to_
-    conviction). Per-brain LLM conviction can replace it by populating the
-    convictions map — the draft mechanics are unchanged.
+    Conviction source per buyer: an `llm_watchlist_buyer` runs a real per-name
+    LLM evaluation (its own mandate, hard conviction gate, rich thesis with
+    extend/break signals — see `_llm_swarm_convictions`); `ma_sniper` uses its
+    200-week proximity; any other buyer falls back to the deterministic
+    screen-rank baseline (swarm.rank_to_conviction). The draft mechanics
+    (order, gates, shared cash, attribution) are identical across all three.
     """
     import screen as _screen
     import swarm as _swarm
@@ -364,10 +459,27 @@ def _run_portfolio_swarm(
     mode, executor = _resolve_live_executor(portfolio, dry_run=dry_run)
 
     # ---- BUY: snake draft over the screen's top-N candidates ----
-    cand_map = _screen.portfolio_screen_candidates(db, pid)  # {ticker: rationale}
+    # Thinking buyers (llm_watchlist_buyer) evaluate each candidate with their
+    # own mandate rather than the rank baseline, so when any are present we pull
+    # the screen FACT ROWS (rank + Level 0 data) and cap the pool to the top
+    # MAX_SWARM_EVAL names to bound LLM cost/latency.
+    llm_buyers = [
+        m for m in buyers_m
+        if m["agent"].get("strategy") == "llm_watchlist_buyer"
+    ]
+    candidate_rows = _screen.portfolio_screen_candidate_rows(db, pid)
+    if llm_buyers:
+        candidate_rows = candidate_rows[:MAX_SWARM_EVAL]
+    cand_map = {
+        str(r["ticker"]).upper(): f"screen rank #{r['rank']} · score {r['score']:.1f}"
+        for r in candidate_rows
+    }  # {ticker: rationale}
+    fact_rows = {str(r.get("ticker") or "").upper(): r for r in candidate_rows}
     book = pm.get_portfolio_book(pid)
-    held = {h.get("ticker") for h in (book.get("holdings") or [])}
-    recently_sold = db.get_recently_sold_tickers(pid, days=90)
+    held = {str(h.get("ticker") or "").upper() for h in (book.get("holdings") or [])}
+    recently_sold = {
+        str(t).upper() for t in db.get_recently_sold_tickers(pid, days=90)
+    }
     prices: dict[str, float] = {}
     for t in cand_map:
         if t in held or t in recently_sold:
@@ -378,6 +490,19 @@ def _run_portfolio_swarm(
             continue
     draftable = [t for t in cand_map if t in prices]
 
+    # Per-name LLM evaluation inputs for thinking buyers (built once, shared
+    # across co-briefed buyers). Active-thesis names are excluded so we never
+    # re-think or clobber a position we already hold a thesis on.
+    by_ticker_data: dict[str, dict] = {}
+    eval_pool: list[str] = []
+    if llm_buyers:
+        import llm_watchlist_buyer as _llm_buyer
+
+        active_thesis = _llm_buyer._active_thesis_tickers(db, pid)
+        eval_pool = [t for t in draftable if t not in active_thesis]
+        by_ticker_data = _llm_buyer.build_candidate_data(db, fact_rows, eval_pool)
+        eval_pool = [t for t in eval_pool if t in by_ticker_data]
+
     total_value = float(book.get("total_value_usd") or 0)
     cash = float(book.get("cash_usd") or 0)
     n = len(draftable)
@@ -386,10 +511,13 @@ def _run_portfolio_swarm(
     sw_buyers: list = []
     convictions: dict[str, dict[str, int]] = {}
     sniper_details: dict[str, dict] = {}
+    buyer_evals: dict[str, dict[str, dict]] = {}  # agent_id -> ticker -> LLM eval
+    eval_cache: dict[tuple, list[dict]] = {}      # dedupe identical eval sweeps
     for m in buyers_m:
         aid = m["agent"]["id"]
         cfg = m.get("config") or {}
         strat = m["agent"].get("strategy")
+        gate = int(cfg.get("convictionGate", 1) or 1)
         if strat == "ma_sniper":
             # The 200-week sniper sources conviction from each candidate's
             # proximity to its long-run trend instead of the screen-rank
@@ -409,15 +537,18 @@ def _run_portfolio_swarm(
             convictions[aid] = _ma_sniper.sniper_convictions(
                 db, draftable, prices, band=band, details=sniper_details,
             )
+        elif strat == "llm_watchlist_buyer":
+            # The thinking buyer: real per-name LLM verdicts (its own mandate),
+            # a hard conviction gate, and a rich thesis recorded at the buy site.
+            convictions[aid], buyer_evals[aid], max_per, gate = _llm_swarm_convictions(
+                db, m, cfg, mandate, pid, eval_pool, by_ticker_data, cand_map, book,
+                eval_cache=eval_cache, dry_run=dry_run, logger=logger,
+            )
         else:
             max_per = float(cfg.get("maxPerName", 0.08) or 0.08)
             convictions[aid] = dict(rank_conv)
         sw_buyers.append(
-            _swarm.Buyer(
-                aid,
-                gate=int(cfg.get("convictionGate", 1) or 1),
-                max_per_name=max_per,
-            )
+            _swarm.Buyer(aid, gate=gate, max_per_name=max_per)
         )
     if sniper_details:
         logger.info(
@@ -426,7 +557,9 @@ def _run_portfolio_swarm(
         )
 
     plan = _swarm.snake_draft_plan(
-        sw_buyers, draftable, prices, total_value, cash, convictions=convictions
+        sw_buyers, draftable, prices, total_value, cash,
+        min_order_value=total_value * MIN_DRAFT_POSITION_PCT,
+        convictions=convictions,
     )
     logger.info(
         "  portfolio %-22s swarm: %d buyer(s), %d candidate(s), %d draft pick(s)%s",
@@ -448,18 +581,33 @@ def _run_portfolio_swarm(
             members=members, mandate=_resolve_member_mandate(m, mandate),
             mode=mode, executor=executor,
         )
-        rationale = cand_map.get(pick.ticker)
-        snipe = sniper_details.get(pick.ticker)
-        if snipe:
-            # A sniper strike — record the discount to the 200-week average so
-            # the thesis captures the fat pitch, not just the screen rank.
-            disc = snipe["discount_pct"]
-            where = f"{abs(disc):.1f}% below" if disc < 0 else f"{disc:.1f}% above"
-            rationale = (
-                f"At 200-week average ({where} trend); {rationale or 'quality screen pick'}"
-            )
-        note = f"swarm draft (conviction {pick.conviction}/5): {rationale or ''}".strip()
-        thesis = {"thesis_text": rationale} if rationale else None
+        ev = buyer_evals.get(pick.agent_id, {}).get(pick.ticker)
+        if ev:
+            # Thinking buyer: record the LLM's narrative + extend/break signals
+            # so the reviewer's thesis-break machinery actually has something to
+            # check (the rank stub left it with nothing).
+            note = (
+                f"swarm draft (LLM {pick.conviction}/5): "
+                f"{(ev.get('rationale') or '')[:80]}"
+            ).strip()
+            thesis = {
+                "thesis_text": ev.get("thesis_text") or None,
+                "extend_signals": ev.get("extend_signals") or None,
+                "break_signals": ev.get("break_signals") or None,
+            }
+        else:
+            rationale = cand_map.get(pick.ticker)
+            snipe = sniper_details.get(pick.ticker)
+            if snipe:
+                # A sniper strike — record the discount to the 200-week average so
+                # the thesis captures the fat pitch, not just the screen rank.
+                disc = snipe["discount_pct"]
+                where = f"{abs(disc):.1f}% below" if disc < 0 else f"{disc:.1f}% above"
+                rationale = (
+                    f"At 200-week average ({where} trend); {rationale or 'quality screen pick'}"
+                )
+            note = f"swarm draft (conviction {pick.conviction}/5): {rationale or ''}".strip()
+            thesis = {"thesis_text": rationale} if rationale else None
         try:
             ctx.buy(pick.ticker, pick.qty, note=note, thesis=thesis)
             buy_counts[pick.agent_id] += 1
