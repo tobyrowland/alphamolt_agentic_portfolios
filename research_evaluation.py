@@ -68,6 +68,38 @@ _CORE_FINANCIAL_KEYS = (
 def _has_verified_financials(equity: dict) -> bool:
     return any(equity.get(k) is not None for k in _CORE_FINANCIAL_KEYS)
 
+
+# Per-DIMENSION verified inputs — a dimension is only scored when at least one of
+# its specific inputs is present (companies-style keys, as level0_eval assembles
+# them). Never let the LLM score a dimension we can't seed with data. Today
+# balance_sheet_risk has NO inputs (cash/debt/shares_out are unpopulated for
+# every Tier-1 name), so it is gated off everywhere until the balance-sheet
+# backfill lands — at which point it returns automatically, no code change.
+_DIMENSION_INPUTS = {
+    "moat": ("gross_margin_pct", "operating_margin_pct"),
+    "growth_durability": ("rev_growth_ttm_pct", "rev_cagr_pct", "rev_growth_qoq_pct"),
+    "earnings_quality": ("fcf_margin_pct", "net_margin_pct"),
+    "balance_sheet_risk": ("cash", "debt", "shares_out"),
+}
+
+
+def _scoreable_dims(equity: dict) -> list[str]:
+    """The dimensions whose verified inputs are present for this equity."""
+    return [
+        dim for dim in _DIMENSIONS
+        if any(equity.get(k) is not None for k in _DIMENSION_INPUTS[dim])
+    ]
+
+
+def _dimension_schema(dims: list[str]) -> str:
+    """The per-dimension JSON schema lines for the prompt — only the dims we
+    have verified inputs for, so the model never scores an unsupported one."""
+    return "\n".join(
+        f'  "{dim}": {{"score": <1-5>, "rationale": "<one line>", "evidence": "<one line>"}},'
+        for dim in dims
+    )
+
+
 # Noise keys not worth sending to the model (identity dupes / stale verdicts it
 # shouldn't anchor on / large blobs).
 _BLOCK_EXCLUDE = {
@@ -107,6 +139,9 @@ BALANCE_SHEET_RISK (downside guardrail — 5 = SAFEST):
 Be discriminating — do NOT default everything to 4. Use the full 1-5 range; most
 companies are average on most dimensions.
 
+Score ONLY the dimensions present in the OUTPUT SCHEMA below — any others are
+intentionally omitted because we lack verified data for them, so do NOT add them.
+
 Also emit break_signals: a SHORT base set (max {max_break_signals}) of
 machine-checkable conditions that, if they later become true, would mean the
 business case has weakened — every portfolio holding this name inherits them.
@@ -130,10 +165,7 @@ DATA (Level 0 facts + prior in-house notes):
 OUTPUT SCHEMA (strict JSON, no other text):
 {{
   "quality_score": <integer 1-5 — your overall read of the business>,
-  "moat":               {{"score": <1-5>, "rationale": "<one line>", "evidence": "<one line>"}},
-  "growth_durability":  {{"score": <1-5>, "rationale": "<one line>", "evidence": "<one line>"}},
-  "earnings_quality":   {{"score": <1-5>, "rationale": "<one line>", "evidence": "<one line>"}},
-  "balance_sheet_risk": {{"score": <1-5>, "rationale": "<one line>", "evidence": "<one line>"}},
+{dimension_schema}
   "break_signals": [{{"field": "...", "op": "...", "value": <number>, "description": "..."}}]
 }}
 Output JSON only."""
@@ -163,11 +195,18 @@ def _clamp_score(v) -> int | None:
         return None
 
 
-def _build_card(parsed: dict, model: str, max_break_signals: int) -> dict | None:
-    """Validate the LLM JSON into a stored research_card, or None if unusable."""
+def _build_card(parsed: dict, model: str, max_break_signals: int,
+                dims: list[str]) -> dict | None:
+    """Validate the LLM JSON into a stored research_card, or None if unusable.
+
+    Accepts ONLY the gated `dims` (whose verified inputs we supplied) — any other
+    dimension the model returns is dropped. quality_score is recomputed as the
+    rounded mean of the scored dims, never the model's own rollup (which could
+    fold in a dimension we didn't ask for).
+    """
     card: dict = {"version": 1, "model": model}
-    dims_ok = 0
-    for dim in _DIMENSIONS:
+    scores: list[int] = []
+    for dim in dims:
         d = parsed.get(dim)
         if not isinstance(d, dict):
             continue
@@ -179,17 +218,11 @@ def _build_card(parsed: dict, model: str, max_break_signals: int) -> dict | None
             "rationale": str(d.get("rationale") or "").strip()[:240],
             "evidence": str(d.get("evidence") or "").strip()[:240],
         }
-        dims_ok += 1
-    if dims_ok == 0:
-        return None  # nothing usable — skip the write rather than store junk
+        scores.append(score)
+    if len(scores) < 2:
+        return None  # too thin to be a meaningful card — skip the write
 
-    q = _clamp_score(parsed.get("quality_score"))
-    if q is None:
-        # Fall back to the mean of the scored dimensions.
-        scores = [card[d]["score"] for d in _DIMENSIONS if d in card]
-        q = max(1, min(5, round(sum(scores) / len(scores))))
-    card["quality_score"] = q
-
+    card["quality_score"] = max(1, min(5, round(sum(scores) / len(scores))))
     card["break_signals"] = _validate_signals(
         parsed.get("break_signals"), max_count=max_break_signals
     )
@@ -199,8 +232,10 @@ def _build_card(parsed: dict, model: str, max_break_signals: int) -> dict | None
 def _evaluate_one(equity: dict, cfg: dict) -> dict:
     """One LLM research call for one equity. Returns {ticker, card} or {ticker, error}."""
     ticker = equity["ticker"]
-    # Data-quality gate: never research a name without verified financials.
-    if not _has_verified_financials(equity):
+    # Data-quality gate: only score dimensions whose verified inputs are present,
+    # and never call the LLM for a name with too little to assess (< 2 dims).
+    dims = _scoreable_dims(equity)
+    if len(dims) < 2:
         return {"ticker": ticker, "error": "insufficient verified data — skipped"}
     system = RESEARCH_SYSTEM_PROMPT.format(
         max_break_signals=cfg["max_break_signals"],
@@ -212,6 +247,7 @@ def _evaluate_one(equity: dict, cfg: dict) -> dict:
         sector=equity.get("sector") or "—",
         country=equity.get("country") or "—",
         equity_data_json=_equity_block(equity),
+        dimension_schema=_dimension_schema(dims),
     )
     try:
         resp = call_llm(
@@ -226,7 +262,7 @@ def _evaluate_one(equity: dict, cfg: dict) -> dict:
     except LLMProviderError as exc:
         return {"ticker": ticker, "error": f"JSON parse failed: {exc}"}
 
-    card = _build_card(parsed, cfg["model"], cfg["max_break_signals"])
+    card = _build_card(parsed, cfg["model"], cfg["max_break_signals"], dims)
     if card is None:
         return {"ticker": ticker, "error": "no usable dimension scores"}
     return {"ticker": ticker, "card": card}

@@ -779,7 +779,16 @@ without correct fundamentals — `level0_eval.stale_tier1_tickers` restricts the
 `--tier1` rotation to names with real EODHD financials
 (`level0_eval.verified_fact_tickers`), and `research_evaluation` defensively
 skips any name whose assembled facts lack core financials, so cards are never
-hallucinated from the ticker alone.
+hallucinated from the ticker alone. The gate is **per-dimension**
+(`research_evaluation._DIMENSION_INPUTS` / `_scoreable_dims`): a dimension is
+scored only when its specific verified inputs are present, the prompt's output
+schema is built from just those dimensions, and `quality_score` is the rounded
+mean of the **scored** dimensions (never the model's own rollup). Today
+`balance_sheet_risk` is gated OFF for every name — `fundamentals.cash`/`debt`/
+`shares_out` are unpopulated — so cards are moat/growth/earnings only; it
+returns automatically once a balance-sheet backfill lands (a tracked follow-up:
+`backfill_tier1_fundamentals` + `eodhd.py` already have the EODHD fields via
+`price_sales_updater.get_shares_outstanding`).
 
 All Level 0 tables: public-read RLS, service-role writes. `metric_stats`
 (distribution percentiles) is reused from migration 038.
