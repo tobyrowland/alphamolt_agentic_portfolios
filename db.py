@@ -344,20 +344,28 @@ class SupabaseDB:
 
         Used by the buyer's narrative enrichment. Best-effort: returns {} on a
         read error (e.g. the table not yet migrated) so the buyer still runs.
+
+        Tries the full select including `research_card` (migration 055) and
+        falls back to the base columns if that column doesn't exist yet — so the
+        buyer keeps its bull/bear + narrative enrichment in the window before the
+        migration is applied, and picks up the card automatically once it is.
         """
         tl = sorted({str(t).upper() for t in tickers if t})
         if not tl:
             return {}
-        try:
-            resp = (
-                self.client.table("ai_analysis")
-                .select("ticker,short_outlook,key_risks,full_outlook,bull_eval,bear_eval")
-                .in_("ticker", tl)
-                .execute()
-            )
-        except Exception:  # noqa: BLE001
-            return {}
-        return {str(r.get("ticker") or "").upper(): r for r in (resp.data or [])}
+        base = "ticker,short_outlook,key_risks,full_outlook,bull_eval,bear_eval"
+        for cols in (base + ",research_card", base):
+            try:
+                resp = (
+                    self.client.table("ai_analysis")
+                    .select(cols)
+                    .in_("ticker", tl)
+                    .execute()
+                )
+            except Exception:  # noqa: BLE001 — fall back without research_card, then give up
+                continue
+            return {str(r.get("ticker") or "").upper(): r for r in (resp.data or [])}
+        return {}
 
     def get_level0_close(self, ticker: str) -> float | None:
         """Latest USD close for a ticker from the Level 0 price layer.

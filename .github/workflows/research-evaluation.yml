@@ -1,0 +1,61 @@
+name: Research Evaluation
+
+# The shared per-equity research card (migration 055): scored moat / growth
+# durability / earnings quality / balance-sheet risk + base break signals,
+# computed once per equity and read by every portfolio's buyer.
+#
+# Daily 04:15 UTC — rotation batch of 100 stalest by ai_analysis.researched_at,
+# alongside bull (04:30) / bear (04:00). Per-ticker LLM call, parallelised.
+
+on:
+  schedule:
+    - cron: "15 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Evaluate but write nothing"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  research-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Research Evaluation
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # The card's model is configurable (--model); pipe the common LLM keys
+          # so google (default) or anthropic both work.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RESEARCH_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -u
+          ARGS=()
+          if [ "${RESEARCH_DRY_RUN}" = "true" ]; then ARGS+=(--dry-run); fi
+          python research_evaluation.py ${ARGS[@]+"${ARGS[@]}"}
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: research-eval-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30

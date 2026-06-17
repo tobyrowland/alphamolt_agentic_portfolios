@@ -17,6 +17,7 @@ Daily (UTC):
 03:45           benchmarks_updater.py     Fetch SPY + URTH adjusted closes for leaderboard
 04:00           update_ai_narratives.py   Gemini refresh of stale narratives (90+ days)
 04:00           bear_evaluation.py        Refresh 100 oldest bear_eval rows (rotation, ~5d full cycle)
+04:15           research_evaluation.py    Shared per-equity research card — 100 stalest Tier-1 (moat/durability/earnings-quality/balance-sheet, scored 1-5 + break signals)
 04:30           bull_evaluation.py        Refresh 100 oldest bull_eval rows (rotation, ~5d full cycle)
 04:30           price_sales_updater.py    P/S ratio tracking + 52w history
 05:00           score_ai_analysis.py      Score, rank & assign sort_order
@@ -755,6 +756,19 @@ where present) and write **only** `ai_analysis`, so financials / foreign ADRs
 finally get bull/bear + narratives. Default (no flag) keeps the legacy
 `companies` path untouched; same per-run batch size, so flipping the crons to
 `--tier1` doesn't change daily LLM cost (never-evaluated names sort first).
+**Stage A3** (migration 055) broadens the shared card with a `research_card`
+JSONB column (+ `researched_at` rotation clock): the deep, equity-intrinsic
+business analysis — **moat, growth durability, earnings quality, balance-sheet
+risk, each scored 1-5 with an anchored rubric + rationale, rolled into a
+`quality_score`**, plus a base set of machine-checkable `break_signals` (same
+vocab as `theses.check_thesis`). Written once per equity per rotation by
+`research_evaluation.py` (daily 04:15, 100 stalest Tier-1, per-ticker LLM call),
+read by the buyer (`db.get_ai_analysis` returns it) so the per-portfolio call
+reasons over the pre-digested card instead of re-deriving business quality from
+raw numbers every run — the deep thinking amortized across all portfolios. The
+card's `break_signals` are inherited by every holding's thesis
+(`llm_watchlist_buyer._merge_break_signals`) so the reviewer always has a
+consistent set to watch.
 
 All Level 0 tables: public-read RLS, service-role writes. `metric_stats`
 (distribution percentiles) is reused from migration 038.

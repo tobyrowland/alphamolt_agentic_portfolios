@@ -23,7 +23,12 @@ from __future__ import annotations
 
 from typing import Any
 
-_CLOCK_COLUMN = {"bull": "bull_at", "bear": "bear_at", "narrative": "narrated_at"}
+_CLOCK_COLUMN = {
+    "bull": "bull_at",
+    "bear": "bear_at",
+    "narrative": "narrated_at",
+    "research": "researched_at",  # the shared research card (migration 055)
+}
 
 # Level 0 fundamentals field -> companies-style key the prompt/build_equity_block
 # expects, so a Tier-1-only name reads like a companies row in the prompt.
@@ -73,7 +78,9 @@ def stale_tier1_tickers(db, kind: str, top_n: int) -> list[str]:
     """
     clock = _CLOCK_COLUMN.get(kind)
     if clock is None:
-        raise ValueError(f"unknown kind {kind!r} (expected bull|bear|narrative)")
+        raise ValueError(
+            f"unknown kind {kind!r} (expected bull|bear|narrative|research)"
+        )
 
     # Active Tier-1 universe.
     tier1: list[str] = []

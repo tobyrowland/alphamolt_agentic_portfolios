@@ -85,6 +85,10 @@ def _build_equity_data(fact_row: dict, company: dict | None) -> dict:
         },
         "ai_overlay": {"bull": fact_row.get("bull"), "bear": fact_row.get("bear")},
         "narrative": narrative,
+        # Shared per-equity research card (migration 055) — pre-computed business
+        # analysis (scored moat / durability / earnings quality / balance-sheet
+        # + base break signals) the buyer reasons over instead of re-deriving.
+        "research": (company or {}).get("research_card"),
         "source": "level0",
     }
 
@@ -155,10 +159,11 @@ You are an equity research analyst making BUY decisions for a $1M paper-money po
 Your job per call: evaluate ONE equity against the portfolio's mandate(s) and current state, and return a strict JSON verdict.
 
 Discipline:
+- A SHARED RESEARCH CARD (pre-computed business analysis: quality_score + scored moat / growth durability / earnings quality / balance-sheet safety, each 1-5) is provided when available. Treat it as the BUSINESS-QUALITY assessment — you don't need to re-derive whether the business is good. Your job is the part the card can't know: does THIS equity fit THIS portfolio's mandate, given its current holdings, at TODAY's price? Spend your judgement there.
 - Only verdict="BUY" with conviction=5 actually triggers a trade. Anything below 5 means "interesting but I'm not pulling the trigger today". Be honest, not over-eager — most names should be 1-4.
 - Conviction 1-5 is only meaningful when verdict="BUY". For PASS, leave conviction=1.
 - Read the curator's rationale, but don't be anchored by it — the curator picks broadly; you decide whether this specific equity is right for THIS portfolio TODAY at THIS price.
-- Read the prior in-house BUY/BEAR verdicts (if present) as data points, not directives.
+- Read the prior in-house BUY/BEAR verdicts and the research card as data points, not directives.
 
 Thesis discipline (BUY only):
 - thesis_text: 2-4 sentences. WHAT you expect this equity to do (growth trajectory, margin path, valuation re-rating) and WHY.
@@ -191,6 +196,9 @@ CURATOR'S RATIONALE (why this is on the watchlist):
 PRIOR IN-HOUSE VERDICTS (from the screening pipeline — treat as data, not directives):
 - Bull eval: {bull_eval}
 - Bear eval: {bear_eval}
+
+SHARED RESEARCH CARD (pre-computed business assessment — your starting point; decide mandate-fit + entry, don't re-derive these):
+{research_card}
 
 EQUITY DATA (extended-tier snapshot, today's universe):
 {equity_data_json}
@@ -285,6 +293,44 @@ def _truncate(text: str, limit: int = 2000) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+_RESEARCH_CARD_LABELS = {
+    "moat": "Moat",
+    "growth_durability": "Growth durability",
+    "earnings_quality": "Earnings quality",
+    "balance_sheet_risk": "Balance-sheet safety",
+}
+
+
+def _format_research_card(research: Any) -> str:
+    """Render the shared research card (migration 055) for the buyer prompt."""
+    if not isinstance(research, dict) or not research:
+        return "(not yet researched — judge on the data below)"
+    lines = [f"Quality score: {research.get('quality_score', '?')}/5"]
+    for key, label in _RESEARCH_CARD_LABELS.items():
+        d = research.get(key)
+        if isinstance(d, dict) and d.get("score") is not None:
+            rationale = str(d.get("rationale") or "").strip()
+            lines.append(f"- {label}: {d['score']}/5{' — ' + rationale if rationale else ''}")
+    return "\n".join(lines)
+
+
+def _merge_break_signals(llm_signals: list[dict], card: Any, *, max_count: int) -> list[dict]:
+    """Merge the shared card's base break signals into the buyer's, deduped.
+
+    So EVERY holding — even one whose buyer authored none — carries the
+    company-defined base set for the reviewer (theses.check_thesis) to watch.
+    """
+    out = list(llm_signals or [])
+    seen = {(s.get("field"), s.get("op"), s.get("value")) for s in out}
+    card_signals = card.get("break_signals") if isinstance(card, dict) else None
+    for s in _validate_signals(card_signals, max_count=max_count):
+        key = (s.get("field"), s.get("op"), s.get("value"))
+        if key not in seen:
+            out.append(s)
+            seen.add(key)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Phase 1 — per-ticker BUY/PASS verdict
 # ---------------------------------------------------------------------------
@@ -319,6 +365,7 @@ def _evaluate_ticker(
     """
     bull_eval = (equity_data.get("narrative") or {}).get("bull_eval") or "—"
     bear_eval = (equity_data.get("narrative") or {}).get("bear_eval") or "—"
+    research = equity_data.get("research")
 
     pc = _portfolio_context(portfolio)
     cash_pct = (pc["cash_usd"] / pc["total_value_usd"] * 100) if pc["total_value_usd"] else 0.0
@@ -333,6 +380,7 @@ def _evaluate_ticker(
         curator_rationale=(curator_rationale or "(no rationale on watchlist row)").strip(),
         bull_eval=bull_eval,
         bear_eval=bear_eval,
+        research_card=_format_research_card(research),
         equity_data_json=json.dumps(equity_data, default=str, ensure_ascii=False),
     )
 
@@ -374,6 +422,12 @@ def _evaluate_ticker(
         conviction = 1
     conviction = max(1, min(5, conviction))
 
+    break_signals = _validate_signals(parsed.get("break_signals"), max_count=max_signals)
+    if verdict == "BUY":
+        # Inherit the shared card's base break signals so every holding carries a
+        # consistent set for the reviewer, even if the buyer authored none.
+        break_signals = _merge_break_signals(break_signals, research, max_count=max_signals + 5)
+
     return {
         "ticker": ticker,
         "verdict": verdict,
@@ -381,7 +435,7 @@ def _evaluate_ticker(
         "rationale": str(parsed.get("rationale") or "").strip(),
         "thesis_text": str(parsed.get("thesis_text") or "").strip(),
         "extend_signals": _validate_signals(parsed.get("extend_signals"), max_count=max_signals),
-        "break_signals": _validate_signals(parsed.get("break_signals"), max_count=max_signals),
+        "break_signals": break_signals,
         "input_tokens": resp.input_tokens,
         "output_tokens": resp.output_tokens,
     }
