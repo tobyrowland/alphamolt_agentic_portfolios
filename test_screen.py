@@ -21,7 +21,7 @@ def facts(*rows: dict) -> list[dict]:
         "gross_margin": None, "fcf_margin": None, "net_margin": None,
         "operating_margin": None, "rule_of_40": None, "ps": None,
         "ps_median_12m": None, "ret_52w": None, "perf_52w_vs_spy": None,
-        "bull": None, "bear": None,
+        "bull": None, "bear": None, "quality_score": None,
     }
     return [{**base, **r} for r in rows]
 
@@ -104,6 +104,37 @@ class TestScoring(unittest.TestCase):
         av = next(r for r in out if r["ticker"] == "AV")
         # identical quality percentiles (both p100), so the multiplier decides
         self.assertAlmostEqual(dp["score"] / av["score"], 1.3 / 0.4, places=5)
+
+    def test_quality_multiplier_tilts_by_score(self):
+        # Identical quantitative quality (both p100); the research-card
+        # quality_score (migration 056) tilts the rank: 5 → ×1.2, 1 → ×0.8.
+        rows = facts(
+            {"ticker": "HIQ", "rule_of_40": 50, "fcf_margin": 20, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "quality_score": 5},
+            {"ticker": "LOQ", "rule_of_40": 50, "fcf_margin": 20, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "quality_score": 1},
+        )
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "qualityMultiplier": True}
+        out = screen.score_screen(rows, cfg)
+        hiq = next(r for r in out if r["ticker"] == "HIQ")
+        loq = next(r for r in out if r["ticker"] == "LOQ")
+        self.assertEqual(out[0]["ticker"], "HIQ")
+        self.assertAlmostEqual(hiq["score"] / loq["score"], 1.2 / 0.8, places=5)
+
+    def test_quality_multiplier_neutral_for_no_card_and_when_off(self):
+        # A name with no card is neutral (×1.0); the toggle off disables entirely.
+        rows = facts(
+            {"ticker": "CARD", "rule_of_40": 50, "fcf_margin": 20, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "quality_score": 1},
+            {"ticker": "NONE", "rule_of_40": 50, "fcf_margin": 20, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "quality_score": None},
+        )
+        off = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "qualityMultiplier": False}
+        out = screen.score_screen(rows, off)
+        # toggle off → identical scores (multiplier never applied)
+        self.assertAlmostEqual(out[0]["score"], out[1]["score"], places=5)
+        on = {**off, "qualityMultiplier": True}
+        out2 = screen.score_screen(rows, on)
+        none_row = next(r for r in out2 if r["ticker"] == "NONE")
+        card_row = next(r for r in out2 if r["ticker"] == "CARD")
+        # no-card name unchanged vs toggle-off; carded 1/5 name is penalised
+        self.assertGreater(none_row["score"], card_row["score"])
 
     def test_outlier_r40_does_not_blow_up_scale(self):
         # Empirical-percentile scoring: a 26000 R40 just pins to p100.

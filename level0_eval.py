@@ -70,11 +70,44 @@ def _bulk(db, table: str, select: str, tickers: list[str]) -> list[dict]:
     return out
 
 
+def verified_fact_tickers(db) -> set[str]:
+    """Tickers we hold VERIFIED financials for — a `fundamentals` row carrying
+    real figures (revenue / margins / rule-of-40) from a trusted source (EODHD).
+
+    The data-quality gate for any LLM research request: we never ask a model to
+    evaluate a name we can't seed with correct fundamentals, or it invents
+    moat/earnings-quality from the ticker alone. Pricing isn't checked here —
+    Tier-1 membership (the affordability gate) already guarantees a live price.
+    """
+    out: set[str] = set()
+    offset = 0
+    while True:
+        resp = (
+            db.client.table("fundamentals")
+            .select("ticker")
+            .or_(
+                "rule_of_40.not.is.null,gross_margin.not.is.null,"
+                "net_margin.not.is.null,rev_growth_ttm.not.is.null,revenue.not.is.null"
+            )
+            .range(offset, offset + 999)
+            .execute()
+        )
+        batch = resp.data or []
+        out.update((r.get("ticker") or "").upper() for r in batch if r.get("ticker"))
+        if len(batch) < 1000:
+            break
+        offset += 1000
+    return out
+
+
 def stale_tier1_tickers(db, kind: str, top_n: int) -> list[str]:
     """The `top_n` Tier-1 tickers least-recently evaluated for `kind`.
 
     Never-evaluated names (no ai_analysis row, or a NULL kind-clock) sort first,
-    then oldest first. Pure read over `securities` + `ai_analysis`.
+    then oldest first. Gated to names with VERIFIED financials
+    (`verified_fact_tickers`) so an LLM eval is never sent without correct data;
+    unverified names re-enter the rotation automatically once their fundamentals
+    backfill. Pure read over `securities` + `fundamentals` + `ai_analysis`.
     """
     clock = _CLOCK_COLUMN.get(kind)
     if clock is None:
@@ -82,7 +115,9 @@ def stale_tier1_tickers(db, kind: str, top_n: int) -> list[str]:
             f"unknown kind {kind!r} (expected bull|bear|narrative|research)"
         )
 
-    # Active Tier-1 universe.
+    verified = verified_fact_tickers(db)
+
+    # Active Tier-1 universe, gated to verified-fact names.
     tier1: list[str] = []
     offset = 0
     while True:
@@ -95,7 +130,10 @@ def stale_tier1_tickers(db, kind: str, top_n: int) -> list[str]:
             .execute()
         )
         batch = resp.data or []
-        tier1.extend((r.get("ticker") or "").upper() for r in batch if r.get("ticker"))
+        tier1.extend(
+            t for r in batch
+            if (t := (r.get("ticker") or "").upper()) and t in verified
+        )
         if len(batch) < 1000:
             break
         offset += 1000

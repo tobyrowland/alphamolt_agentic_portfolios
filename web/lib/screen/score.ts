@@ -39,6 +39,8 @@ export interface ScreenFacts {
   // AI verdict overlay (from companies; Level 0 itself is strategy-neutral)
   bull: boolean | null;
   bear: boolean | null;
+  // Research-card business-quality score 1-5 (migration 056); null = no card yet.
+  quality_score: number | null;
 }
 
 export interface ScoredRow extends ScreenFacts {
@@ -122,6 +124,14 @@ function aiMultiplier(bull: boolean | null, bear: boolean | null): number {
   return 0.4; // avoid
 }
 
+// Research-card business-quality tilt (migration 056). Gentle ±20%, neutral
+// when a name has no card yet. Mirror of screen.py _quality_multiplier().
+const QUALITY_MULT: Record<number, number> = { 1: 0.8, 2: 0.9, 3: 1.0, 4: 1.1, 5: 1.2 };
+function qualityMultiplier(score: number | null): number {
+  if (score == null) return 1.0;
+  return QUALITY_MULT[Math.round(score)] ?? 1.0;
+}
+
 export interface ScreenResult {
   rows: ScoredRow[];
   match_count: number;
@@ -169,6 +179,8 @@ export function scoreScreen(
     const momentum = pMom[i] ?? 0;
     let score = ((wq * quality + wv * value + wm * momentum) / wsum) * 100;
     if (config.aiMultiplier) score *= aiMultiplier(r.bull, r.bear);
+    if (config.qualityMultiplier && r.quality_score != null)
+      score *= qualityMultiplier(r.quality_score);
     return {
       ...r,
       rank: 0,

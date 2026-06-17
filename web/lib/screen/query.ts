@@ -80,6 +80,7 @@ async function fetchFacts(): Promise<ScreenFacts[]> {
           : null,
       bull: (r.bull as boolean | null) ?? null,
       bear: (r.bear as boolean | null) ?? null,
+      quality_score: num(r.quality_score),
     } satisfies ScreenFacts;
   });
 }

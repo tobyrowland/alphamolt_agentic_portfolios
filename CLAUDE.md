@@ -140,9 +140,15 @@ filtered candidate set* (so outliers pin to p100 instead of blowing up the
 scale). Composite = weighted blend of Quality (0.60·R40 + 0.25·FCF + 0.15·GM),
 Value (inverse P/S ÷ 12-mo median) and Momentum (collared 52-week return vs
 SPY — `perf_52w_vs_spy`, derived from `benchmark_prices`),
-×optional AI bull/bear multiplier. Implemented once in TS
+×optional AI bull/bear multiplier ×optional research-card quality multiplier
+(migration 056: `quality_score` 1-5 → ×0.8–1.2, gated by the `qualityMultiplier`
+config toggle, **neutral when a name has no card** so the research rollout never
+penalises unresearched names). Implemented once in TS
 (`web/lib/screen/score.ts`) and mirrored in Python (`screen.py`) so the buyer's
-top N is identical to the page's.
+top N is identical to the page's. `quality_score` reaches both scorers from
+`ai_analysis`: Python via `screen_ai_overlay()`, the web via the
+`screen_facts_mv` column (migration 056 also repointed the matview's bull/bear
+join to `ai_analysis`, finishing migration 053's deferred step).
 
 Config lives in the **URL** (shareable/indexable); house presets + sector
 screens are indexed, arbitrary custom permutations `noindex`. **Save** persists
@@ -768,7 +774,12 @@ reasons over the pre-digested card instead of re-deriving business quality from
 raw numbers every run — the deep thinking amortized across all portfolios. The
 card's `break_signals` are inherited by every holding's thesis
 (`llm_watchlist_buyer._merge_break_signals`) so the reviewer always has a
-consistent set to watch.
+consistent set to watch. **Verified-data gate:** no LLM eval is ever sent
+without correct fundamentals — `level0_eval.stale_tier1_tickers` restricts the
+`--tier1` rotation to names with real EODHD financials
+(`level0_eval.verified_fact_tickers`), and `research_evaluation` defensively
+skips any name whose assembled facts lack core financials, so cards are never
+hallucinated from the ticker alone.
 
 All Level 0 tables: public-read RLS, service-role writes. `metric_stats`
 (distribution percentiles) is reused from migration 038.
