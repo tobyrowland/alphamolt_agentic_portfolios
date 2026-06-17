@@ -106,6 +106,20 @@ def _ai_multiplier(bull: bool | None, bear: bool | None) -> float:
     return 0.4
 
 
+# Research-card business-quality tilt (migration 056). Gentle ±20% so it nudges
+# the rank rather than dominating; neutral (1.0) when a name has no card yet, so
+# the research rollout never penalises unresearched names. Mirror of
+# web/lib/screen/score.ts qualityMultiplier().
+_QUALITY_MULT = {1: 0.8, 2: 0.9, 3: 1.0, 4: 1.1, 5: 1.2}
+
+
+def _quality_multiplier(quality_score: Any) -> float:
+    try:
+        return _QUALITY_MULT.get(int(quality_score), 1.0)
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def _f(v: Any) -> float | None:
     if v is None:
         return None
@@ -149,6 +163,7 @@ def score_screen(facts: list[dict], config: dict) -> list[dict]:
     wm = float(weights.get("momentum", 0))
     wsum = wq + wv + wm or 1.0
     ai_on = bool(config.get("aiMultiplier", True))
+    quality_on = bool(config.get("qualityMultiplier", True))
 
     scored: list[dict] = []
     for i, r in enumerate(subset):
@@ -158,6 +173,8 @@ def score_screen(facts: list[dict], config: dict) -> list[dict]:
         score = ((wq * quality + wv * value + wm * momentum) / wsum) * 100
         if ai_on:
             score *= _ai_multiplier(r.get("bull"), r.get("bear"))
+        if quality_on and r.get("quality_score") is not None:
+            score *= _quality_multiplier(r.get("quality_score"))
         row = dict(r)
         row["score"] = score
         row["quality_pct"] = round(quality * 100)
@@ -248,6 +265,9 @@ def load_facts(db) -> list[dict]:
         v = overlay.get(r["ticker"])
         r["bull"] = (v or {}).get("bull")
         r["bear"] = (v or {}).get("bear")
+        # quality_score from the research card (migration 056) — Python reads it
+        # off the overlay so the buyer gets it without waiting on the matview rebuild.
+        r["quality_score"] = (v or {}).get("quality_score")
         # Derived "vs SPY" — kept in lockstep with query.ts so the buyer ranks
         # the identical filtered set.
         ret = _f(r.get("ret_52w"))

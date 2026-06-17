@@ -59,6 +59,9 @@ export const screenConfigSchema = z.object({
   filters: z.array(filterSchema).max(20).default([]),
   weights: weightsSchema.default({ quality: 45, value: 25, momentum: 20 }),
   aiMultiplier: z.boolean().default(true),
+  // Research-card business-quality tilt (migration 056): ±20% by quality_score,
+  // neutral when a name has no card. On by default.
+  qualityMultiplier: z.boolean().default(true),
   // Hide names this portfolio's buyer evaluated and passed on, for 90 days
   // (migration 051). On by default; per-portfolio, owner can restore early.
   hideRejected: z.boolean().default(true),
@@ -87,6 +90,7 @@ const base = {
   topN: 40,
   hideRejected: true,
   aiMultiplier: true,
+  qualityMultiplier: true,
 };
 
 export const PRESETS: Record<string, Preset> = {

@@ -56,6 +56,18 @@ DEFAULTS = {
 
 _DIMENSIONS = ("moat", "growth_durability", "earnings_quality", "balance_sheet_risk")
 
+# Verified financials the card reasons over (companies-style keys, as assembled
+# by level0_eval). At least one must be present or we DO NOT call the LLM — a
+# card built without correct fundamentals is a hallucination.
+_CORE_FINANCIAL_KEYS = (
+    "rule_of_40", "gross_margin_pct", "net_margin_pct",
+    "rev_growth_ttm_pct", "fcf_margin_pct", "operating_margin_pct",
+)
+
+
+def _has_verified_financials(equity: dict) -> bool:
+    return any(equity.get(k) is not None for k in _CORE_FINANCIAL_KEYS)
+
 # Noise keys not worth sending to the model (identity dupes / stale verdicts it
 # shouldn't anchor on / large blobs).
 _BLOCK_EXCLUDE = {
@@ -187,6 +199,9 @@ def _build_card(parsed: dict, model: str, max_break_signals: int) -> dict | None
 def _evaluate_one(equity: dict, cfg: dict) -> dict:
     """One LLM research call for one equity. Returns {ticker, card} or {ticker, error}."""
     ticker = equity["ticker"]
+    # Data-quality gate: never research a name without verified financials.
+    if not _has_verified_financials(equity):
+        return {"ticker": ticker, "error": "insufficient verified data — skipped"}
     system = RESEARCH_SYSTEM_PROMPT.format(
         max_break_signals=cfg["max_break_signals"],
         allowed_fields=", ".join(sorted(_ALLOWED_SIGNAL_FIELDS)),
