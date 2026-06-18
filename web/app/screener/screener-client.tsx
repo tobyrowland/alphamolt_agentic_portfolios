@@ -28,6 +28,8 @@ import {
 } from "@/lib/screen/config";
 import { BUDGET, type ResearchCard } from "@/lib/screen/score";
 import type { ScreenHolding } from "@/lib/screen/holdings-query";
+import type { PsPoint } from "@/lib/screen/ps-history-query";
+import ScreenSparkline from "@/components/screen-sparkline";
 
 interface Row {
   rank: number;
@@ -106,8 +108,6 @@ function fmtSigned(v: number | null, dp = 1): string {
 const PAGE_SIZE = 250;
 // Default portfolio for the read-only holdings overlay (brief §4).
 const DEFAULT_PORTFOLIO = "test-portfolio-toby";
-// localStorage key for the viewer's chosen extra result columns (survives refresh).
-const COLS_STORAGE_KEY = "alphamolt:screener:cols";
 // localStorage key for the viewer's last screen recipe (filters/weights), so a
 // bare /screener visit restores it instead of resetting to the default preset.
 const CONFIG_STORAGE_KEY = "alphamolt:screener:config";
@@ -123,17 +123,13 @@ function isCustomConfig(c: ScreenConfig): boolean {
   return !c.preset || c.preset === "custom" || !PRESETS[c.preset];
 }
 
-// Hover explanations for the result columns (header mouseover).
-const COL_HELP: Record<string, string> = {
+// Hover explanations for the three rhead metric columns (header mouseover).
+const COL_HELP = {
   ps: "Price-to-sales — market cap ÷ trailing-12-month revenue. Lower is cheaper on sales.",
-  rev_growth_ttm: "Revenue growth — trailing twelve months, year over year.",
-  gross_margin: "Gross margin — gross profit ÷ revenue.",
   rule_of_40:
     "Rule of 40 — revenue growth % + free-cash-flow margin %. ≥ 40 is the bar for a healthy growth-vs-profitability balance.",
-  fcf_margin: "Free-cash-flow margin — free cash flow ÷ revenue.",
-  ret_52w: "Trailing 52-week price return — the raw move, not measured against the market.",
   perf_52w_vs_spy:
-    "Alpha vs SPY — the stock's trailing 52-week return minus SPY's over the same window. Positive = beat the market. This is what the Momentum score ranks on.",
+    "Alpha vs SPY — the stock's trailing 52-week return minus SPY's over the same window. Positive = beat the market. This is what the Momentum lens ranks on.",
 };
 
 // Hover explanations for the (jargon-y) ranking controls.
@@ -156,33 +152,10 @@ const TOPN_HELP =
 const INTRO_MAX_VIEWS = 3;
 const INTRO_KEY = "screenerIntroViews";
 
-interface Col {
-  key: string;
-  label: string;
-  green?: boolean; // force green text (a "more = better" metric)
-  signed?: (r: Row) => number | null; // colour the cell green/red by this value's sign
-  help?: string; // header mouseover explaining the column
-  render: (r: Row) => string;
-}
-// "vs SPY" (alpha) is a base column: it's the Momentum driver, so showing it by
-// default makes the ranking legible without opening the column picker.
-const BASE_COLS: Col[] = [
-  { key: "ps", label: "P/S", help: COL_HELP.ps, render: (r) => fmt(r.ps, { mult: true }) },
-  { key: "rev_growth_ttm", label: "Rev gr%", green: true, help: COL_HELP.rev_growth_ttm, render: (r) => fmt(r.rev_growth_ttm, { pct: true }) },
-  { key: "gross_margin", label: "GM%", green: true, help: COL_HELP.gross_margin, render: (r) => fmt(r.gross_margin, { pct: true }) },
-  { key: "rule_of_40", label: "R40", green: true, help: COL_HELP.rule_of_40, render: (r) => fmt(r.rule_of_40, { dp: 0 }) },
-  { key: "perf_52w_vs_spy", label: "vs SPY", help: COL_HELP.perf_52w_vs_spy, signed: (r) => r.perf_52w_vs_spy, render: (r) => fmtSigned(r.perf_52w_vs_spy) },
-];
-const EXTRA_COLS: Col[] = [
-  { key: "fcf_margin", label: "FCF M%", green: true, help: COL_HELP.fcf_margin, render: (r) => fmt(r.fcf_margin, { pct: true }) },
-  { key: "ret_52w", label: "52w%", help: COL_HELP.ret_52w, signed: (r) => r.ret_52w, render: (r) => fmtSigned(r.ret_52w, 0) },
-  { key: "net_margin", label: "Net M%", green: true, render: (r) => fmt(r.net_margin, { pct: true }) },
-  { key: "operating_margin", label: "Op M%", green: true, render: (r) => fmt(r.operating_margin, { pct: true }) },
-  { key: "price", label: "Price", render: (r) => (r.price == null ? "—" : `$${r.price.toFixed(2)}`) },
-  { key: "sector", label: "Sector", render: (r) => r.sector ?? "—" },
-  { key: "country", label: "Country", render: (r) => r.country ?? "—" },
-  { key: "industry", label: "Industry", render: (r) => r.industry ?? "—" },
-];
+// Grid columns shared by the card header (`.thead`) and each row's `.rhead` so
+// they line up: # · Ticker · Score · P/S · R40 · vs SPY · AI durability · chev.
+// Written as a literal Tailwind arbitrary-value class in both places (the JIT
+// scanner needs the full class string): grid-cols-[30px_1fr_92px_56px_46px_64px_150px_30px]
 
 export default function ScreenerClient({
   initialConfig,
@@ -233,8 +206,6 @@ export default function ScreenerClient({
   const [shareMsg, setShareMsg] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [colsOpen, setColsOpen] = useState(false);
-  const [extraCols, setExtraCols] = useState<Set<string>>(new Set());
   const [visible, setVisible] = useState(PAGE_SIZE);
   // View filters (redesign brief §3/§4) — purely client-side, never bust cache.
   const [view, setView] = useState<"all" | "researched">("all");
@@ -245,8 +216,10 @@ export default function ScreenerClient({
   // page is identical for everyone.
   const [portfolioSlug, setPortfolioSlug] = useState(DEFAULT_PORTFOLIO);
   const [holdings, setHoldings] = useState<Record<string, ScreenHolding>>({});
+  // Lazy P/S sparkline series, per ticker, fetched on first row-expand (the
+  // series isn't in the matview — brief §5). "loading" while in flight.
+  const [psHistory, setPsHistory] = useState<Record<string, PsPoint[] | "loading">>({});
   const firstRender = useRef(true);
-  const colsHydrated = useRef(false);
   const configHydrated = useRef(false);
   const customHydrated = useRef(false);
 
@@ -254,33 +227,26 @@ export default function ScreenerClient({
   // the first page whenever the ranking changes.
   useEffect(() => setVisible(PAGE_SIZE), [data]);
 
-  // The chosen extra columns are a per-viewer VIEW preference (not part of the
-  // shareable screen recipe), so they persist in localStorage rather than the
-  // URL — otherwise a refresh silently drops them. Hydrate after mount (so the
-  // server/client first paint match), then mirror every change back.
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(COLS_STORAGE_KEY);
-      if (raw) {
-        const keys = (JSON.parse(raw) as string[]).filter((k) =>
-          EXTRA_COLS.some((c) => c.key === k),
-        );
-        if (keys.length) setExtraCols(new Set(keys));
+  // Fetch a ticker's 12-mo P/S series once, on first expand. Cached in state so
+  // re-opening a row is instant; never blocks the cached page.
+  const psRequested = useRef<Set<string>>(new Set());
+  const loadPsHistory = useCallback((ticker: string) => {
+    const t = ticker.toUpperCase();
+    if (psRequested.current.has(t)) return; // already loading/loaded
+    psRequested.current.add(t);
+    setPsHistory((prev) => ({ ...prev, [t]: "loading" }));
+    (async () => {
+      try {
+        const res = await fetch(`/api/screen/ps-history?ticker=${encodeURIComponent(t)}`, {
+          cache: "force-cache",
+        });
+        const json = res.ok ? ((await res.json()) as { history?: PsPoint[] }) : null;
+        setPsHistory((prev) => ({ ...prev, [t]: json?.history ?? [] }));
+      } catch {
+        setPsHistory((prev) => ({ ...prev, [t]: [] }));
       }
-    } catch {
-      /* ignore malformed/blocked storage — just start with no extra columns */
-    }
-    colsHydrated.current = true;
+    })();
   }, []);
-
-  useEffect(() => {
-    if (!colsHydrated.current) return; // don't overwrite storage with the pre-hydration empty set
-    try {
-      localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify([...extraCols]));
-    } catch {
-      /* storage unavailable (private mode / quota) — non-fatal */
-    }
-  }, [extraCols]);
 
   // The filters/weights ARE the shareable recipe, so an explicit URL
   // (?config/?preset/?screen/?sector) always wins. But on a bare /screener
@@ -654,8 +620,6 @@ export default function ScreenerClient({
   }
 
   const usedFields = useMemo(() => new Set(config.filters.map((f) => f.field)), [config.filters]);
-  const cols = useMemo(() => [...BASE_COLS, ...EXTRA_COLS.filter((c) => extraCols.has(c.key))], [extraCols]);
-  const metricColCount = 1 + cols.length; // Score + metric cols
   // "Run as a portfolio" applies this screen as the portfolio's selection
   // recipe (screen_config) and lands on the portfolio page — see
   // app/screener/run/route.ts.
@@ -1047,87 +1011,43 @@ export default function ScreenerClient({
         </span>
       </div>
 
-      {/* Results */}
-      <div className={`${card} overflow-hidden`}>
-        <table className="w-full border-collapse" aria-label="Screened equities ranked by your composite">
-          <thead>
-            <tr className="bg-white/[0.02]">
-              <Th className="text-left w-7">#</Th>
-              <Th className="text-left">Ticker</Th>
-              <Th help={RANKING_HELP}>Score</Th>
-              {cols.map((c) => (
-                <Th key={c.key} help={c.help}>{c.label}</Th>
-              ))}
-              <Th
-                className="text-left"
-                help="AI durability — moat (scored), growth (read-only, in R40), earnings (scored), balance-sheet (gated). Compiled from the research card, never generated at render."
-              >
-                AI durability
-              </Th>
-              <th className="relative font-mono text-[10px] text-text-muted font-normal px-2 py-2.5 text-right">
-                <button
-                  type="button"
-                  onClick={() => setColsOpen((v) => !v)}
-                  aria-expanded={colsOpen}
-                  className="hover:text-text"
-                >
-                  cols ▾
-                </button>
-                {colsOpen && (
-                  <div className="absolute right-0 z-30 mt-1 w-40 rounded-xl border border-white/10 bg-[#0b1214] shadow-2xl p-1 text-left">
+      {/* Results — rows-as-cards (redesign brief §3). Each row expands in place
+          to a full research card; the holdings overlay + P/S sparkline paint in
+          client-side after the cached page. */}
+      <div className="hidden md:grid grid-cols-[30px_1fr_92px_56px_46px_64px_150px_30px] gap-3.5 items-end px-3.5 pb-2 pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-text-muted border-b border-white/10">
+        <span className="text-right">#</span>
+        <span>Ticker</span>
+        <span className="text-right cursor-help underline decoration-dotted decoration-white/25 underline-offset-2" title={RANKING_HELP}>Score</span>
+        <span className="text-right cursor-help underline decoration-dotted decoration-white/25 underline-offset-2" title={COL_HELP.ps}>P/S</span>
+        <span className="text-right cursor-help underline decoration-dotted decoration-white/25 underline-offset-2" title={COL_HELP.rule_of_40}>R40</span>
+        <span className="text-right cursor-help underline decoration-dotted decoration-white/25 underline-offset-2" title={COL_HELP.perf_52w_vs_spy}>vs SPY</span>
+        <span className="cursor-help underline decoration-dotted decoration-white/25 underline-offset-2" title="AI durability — moat (scored), growth (read-only, in R40), earnings (scored), balance-sheet (gated). Compiled from the research card, never generated at render.">AI durability</span>
+        <span />
+      </div>
 
-                    {EXTRA_COLS.map((c) => (
-                      <label
-                        key={c.key}
-                        className="flex items-center gap-2 text-[11px] font-mono text-text-dim hover:bg-white/5 rounded px-2 py-1.5 cursor-pointer"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={extraCols.has(c.key)}
-                          onChange={(e) =>
-                            setExtraCols((prev) => {
-                              const next = new Set(prev);
-                              if (e.target.checked) next.add(c.key);
-                              else next.delete(c.key);
-                              return next;
-                            })
-                          }
-                        />
-                        {c.label}
-                      </label>
-                    ))}
-                  </div>
-                )}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.slice(0, visible).map((r, i) => (
-              <RowView
-                key={r.ticker}
-                r={r}
-                cols={cols}
-                cut={i === data.cut_index && data.cut_index < rows.length}
-                dim={i >= data.cut_index}
-                spanCols={metricColCount + 4}
-                topN={config.topN}
-                runHref={runHref}
-                hasPage={linkable.has(r.ticker.toUpperCase())}
-                canExclude={signedIn}
-                exclBusy={exclBusy}
-                onExclude={onExclude}
-                holding={holdings[r.ticker.toUpperCase()] ?? null}
-              />
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={metricColCount + 4} className="p-6 text-center text-sm text-text-muted">
-                  No matches — loosen your filters.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      <div className="flex flex-col gap-1.5 mt-1.5">
+        {rows.slice(0, visible).map((r, i) => (
+          <RowView
+            key={r.ticker}
+            r={r}
+            cut={i === data.cut_index && data.cut_index < rows.length}
+            dim={i >= data.cut_index}
+            topN={config.topN}
+            runHref={runHref}
+            hasPage={linkable.has(r.ticker.toUpperCase())}
+            canExclude={signedIn}
+            exclBusy={exclBusy}
+            onExclude={onExclude}
+            holding={holdings[r.ticker.toUpperCase()] ?? null}
+            psHistory={psHistory[r.ticker.toUpperCase()]}
+            onExpand={loadPsHistory}
+          />
+        ))}
+        {rows.length === 0 && (
+          <div className="p-10 text-center font-mono text-[12px] text-text-muted">
+            No matches — loosen your filters.
+          </div>
+        )}
       </div>
 
       {rows.length > visible && (
@@ -1478,31 +1398,6 @@ function AdvancedAdd({ onAdd }: { onAdd: (f: Filter) => void }) {
   );
 }
 
-function Th({
-  children,
-  className = "",
-  help,
-}: {
-  children: React.ReactNode;
-  className?: string;
-  help?: string;
-}) {
-  return (
-    <th className={`font-mono text-[10px] tracking-[0.04em] text-text-muted font-normal px-2 py-2.5 text-right ${className}`}>
-      {help ? (
-        <span
-          title={help}
-          className="cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
-        >
-          {children}
-        </span>
-      ) : (
-        children
-      )}
-    </th>
-  );
-}
-
 // ---- single-score display helpers (mirror the v8 mockup) ------------------
 const sgn = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
 
@@ -1636,36 +1531,29 @@ function ScoreLedger({ r }: { r: Row }) {
   );
 }
 
-/** Value block: P/S vs own 12-mo median + vs peer (sector/industry) median —
- *  display only (brief §5). */
-function ValueBlock({ r }: { r: Row }) {
-  const cheapVs = (median: number | null) =>
-    r.ps != null && median != null && median > 0
-      ? r.ps < median
-        ? "cheap"
-        : "rich"
-      : null;
-  const ownTone = cheapVs(r.ps_median_12m);
-  const peerTone = cheapVs(r.peer_ps_median);
-  const tone = (v: string | null) =>
-    v === "cheap" ? "text-green" : v === "rich" ? "text-[var(--color-red,#FF3333)]" : "text-text-muted";
+/** Value block: a P/S sparkline (own 12-mo median + sector/peer median
+ *  reference lines) + a cheap/rich readout — display only (brief §5). The
+ *  series is fetched lazily on row-expand (`psHistory`); medians come off the
+ *  row (already materialized). */
+function ValueBlock({
+  r,
+  psHistory,
+}: {
+  r: Row;
+  psHistory: PsPoint[] | "loading" | undefined;
+}) {
   return (
-    <div className="rounded-lg border border-white/10 bg-black/20 p-2.5 space-y-1 font-mono text-[11px]">
-      <div className="uppercase tracking-[0.1em] text-text-muted mb-1 text-[10px]">Value</div>
-      <div className="flex justify-between">
-        <span className="text-text-muted">P/S</span>
-        <span className="text-text">{fmt(r.ps, { mult: true })}</span>
+    <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
+      <div className="font-mono uppercase tracking-[0.1em] text-text-muted mb-2 text-[10px]">
+        P/S — own history &amp; {r.peer_basis ?? "sector"}
       </div>
-      <div className="flex justify-between">
-        <span className="text-text-muted">vs own 12-mo median ({fmt(r.ps_median_12m, { mult: true })})</span>
-        <span className={tone(ownTone)}>{ownTone ?? "—"}</span>
-      </div>
-      <div className="flex justify-between">
-        <span className="text-text-muted">
-          vs {r.peer_basis ?? "sector"} median ({fmt(r.peer_ps_median, { mult: true })})
-        </span>
-        <span className={tone(peerTone)}>{peerTone ?? "—"}</span>
-      </div>
+      <ScreenSparkline
+        points={Array.isArray(psHistory) ? psHistory : []}
+        ownMedian={r.ps_median_12m}
+        sectorMedian={r.peer_ps_median}
+        sectorBasis={r.peer_basis}
+        loading={psHistory === "loading" || psHistory === undefined}
+      />
     </div>
   );
 }
@@ -1801,10 +1689,8 @@ function HoldingPill({ h }: { h: ScreenHolding | null }) {
 
 function RowView({
   r,
-  cols,
   cut,
   dim,
-  spanCols,
   topN,
   runHref,
   hasPage,
@@ -1812,12 +1698,12 @@ function RowView({
   exclBusy,
   onExclude,
   holding,
+  psHistory,
+  onExpand,
 }: {
   r: Row;
-  cols: Col[];
   cut: boolean;
   dim: boolean;
-  spanCols: number;
   topN: number;
   runHref: string;
   hasPage: boolean;
@@ -1827,177 +1713,199 @@ function RowView({
   onExclude: (ticker: string) => void;
   /** Holdings overlay entry for this name (null = not in the portfolio). */
   holding: ScreenHolding | null;
+  /** Lazy P/S series for the sparkline ("loading"/undefined before fetch). */
+  psHistory: PsPoint[] | "loading" | undefined;
+  /** Called on first expand to kick the P/S history fetch. */
+  onExpand: (ticker: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  // AI direction stripe (teal lift / red cut / none uncarded).
-  const edge = !r.has_card
-    ? "border-l-2 border-l-transparent"
+  const carded = r.has_card;
+  const demoted = carded && r.adj_z < 0;
+  // Left-edge AI-direction stripe + carded/demoted tint (mockup .row.carded).
+  const edgeCls = !carded
+    ? "bg-transparent"
     : r.adj_z > 0
-      ? "border-l-2 border-l-[var(--color-cyan)]"
+      ? "bg-[var(--color-cyan)]/60"
       : r.adj_z < 0
-        ? "border-l-2 border-l-[var(--color-red,#FF3333)]"
-        : "border-l-2 border-l-white/15";
-  const adjTone =
-    !r.has_card
-      ? "text-text-muted/50"
-      : r.adj_z > 0
-        ? "text-green"
-        : r.adj_z < 0
-          ? "text-[var(--color-red,#FF3333)]"
-          : "text-text-muted";
+        ? "bg-[var(--color-red,#FF3333)]/55"
+        : "bg-white/15";
+  // Carded/demoted left-gradient tint (mockup .row.carded / .row.demoted).
+  const tintStyle: React.CSSProperties | undefined = carded
+    ? {
+        background: demoted
+          ? "linear-gradient(90deg, rgba(226,101,95,.07), transparent 38%)"
+          : "linear-gradient(90deg, rgba(93,202,165,.08), transparent 38%)",
+      }
+    : undefined;
+  const adjTone = r.adj_z > 0 ? "text-green" : r.adj_z < 0 ? "text-[var(--color-red,#FF3333)]" : "text-text-muted/60";
+  const spyTone = (r.perf_52w_vs_spy ?? 0) >= 0 ? "text-green" : "text-[var(--color-red,#FF3333)]";
+
+  function toggle() {
+    setOpen((v) => {
+      if (!v) onExpand(r.ticker);
+      return !v;
+    });
+  }
+
   return (
     <>
       {cut && (
-        <tr>
-          <td colSpan={spanCols} className="p-0 border-t border-green/45">
-            <div className="flex justify-between items-center gap-2 flex-wrap bg-green/[0.07] px-2.5 py-1.5">
-              <span className="font-mono text-[10px] text-green tracking-[0.05em]">
-                ▲ TOP {topN} — what flows to a portfolio
-              </span>
-              <Link href={runHref} className="font-mono text-[10px] text-green hover:underline">
-                Run as a portfolio →
-              </Link>
-            </div>
-          </td>
-        </tr>
+        <div className="flex justify-between items-center gap-2 flex-wrap bg-green/[0.07] border border-green/45 rounded-lg px-2.5 py-1.5 mt-1">
+          <span className="font-mono text-[10px] text-green tracking-[0.05em]">
+            ▲ TOP {topN} — what flows to a portfolio
+          </span>
+          <Link href={runHref} className="font-mono text-[10px] text-green hover:underline">
+            Run as a portfolio →
+          </Link>
+        </div>
       )}
-      <tr className={`hover:bg-white/[0.025] ${dim ? "opacity-50" : ""}`}>
-        <td className={`px-2 py-2.5 text-left font-mono text-text-muted text-xs border-t border-white/10 ${edge}`}>
-          {r.rank}
-        </td>
-        <td className="px-2 py-2.5 text-left border-t border-white/10 max-w-[280px]">
-          <div className="flex items-center">
-            {hasPage ? (
-              <Link href={`/company/${r.ticker}`} className="hover:text-[var(--color-cyan)]">
-                <span className="font-mono text-text text-[12.5px]">{r.ticker}</span>{" "}
-                <span className="text-[11px] text-text-muted">{r.name}</span>
-              </Link>
-            ) : (
-              <span title="No analysis page for this name yet">
-                <span className="font-mono text-text text-[12.5px]">{r.ticker}</span>{" "}
-                <span className="text-[11px] text-text-muted">{r.name}</span>
+      <div
+        style={tintStyle}
+        className={`relative rounded-lg border border-white/10 hover:border-white/20 overflow-hidden ${
+          dim ? "opacity-50" : ""
+        }`}
+      >
+        <span className={`absolute left-0 top-0 bottom-0 w-1 ${edgeCls}`} aria-hidden />
+        {/* Collapsed row head — click toggles the expand. */}
+        <div
+          role="button"
+          tabIndex={0}
+          aria-expanded={open}
+          onClick={toggle}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              toggle();
+            }
+          }}
+          className="flex md:grid md:grid-cols-[30px_1fr_92px_56px_46px_64px_150px_30px] items-center gap-3 md:gap-3.5 px-3.5 py-2.5 cursor-pointer"
+        >
+          <span className="font-mono text-[12px] text-text-muted text-right">{r.rank}</span>
+          <div className="min-w-0 flex-1 md:flex-none">
+            <span>
+              {hasPage ? (
+                <Link
+                  href={`/company/${r.ticker}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="hover:text-[var(--color-cyan)]"
+                >
+                  <span className="font-mono font-semibold text-text text-[14px] tracking-[0.02em]">{r.ticker}</span>
+                </Link>
+              ) : (
+                <span className="font-mono font-semibold text-text text-[14px] tracking-[0.02em]" title="No analysis page for this name yet">
+                  {r.ticker}
+                </span>
+              )}
+              <span className="text-text-muted text-[12px] ml-2 hidden sm:inline">{r.name}</span>
+              <HoldingPill h={holding} />
+            </span>
+            <span className="block text-text-muted text-[12.5px] mt-0.5 leading-snug line-clamp-1">
+              {carded ? compileThesis(r) : (
+                <>
+                  <span className="text-text-muted/70">
+                    {r.sector ?? "—"}
+                    {r.industry && r.industry !== "—" ? ` · ${r.industry}` : ""}
+                  </span>{" "}
+                  — ranked on quant only
+                </>
+              )}
+            </span>
+          </div>
+          {/* Score */}
+          <div className="text-right font-mono">
+            <span className="text-[14px] font-semibold text-text">
+              {r.final_pct}
+              <span className="text-[9px] text-text-muted font-normal">th</span>
+            </span>
+            {carded ? (
+              <span className={`block text-[10px] mt-px ${adjTone}`}>
+                AI {sgn(r.adj_z)}σ
+                {r.capped && <sup className="text-[8px] ml-0.5">cap</sup>}
+                {r.floored && <sup className="text-[8px] ml-0.5">flr</sup>}
               </span>
+            ) : (
+              <span className="block text-[10px] mt-px text-text-muted/50">quant</span>
             )}
-            <HoldingPill h={holding} />
           </div>
-          <p className="text-[10.5px] text-text-muted/80 mt-0.5 truncate" title={compileThesis(r)}>
-            {compileThesis(r)}
-          </p>
-        </td>
-        <td className="px-2 py-2.5 text-right font-mono border-t border-white/10">
-          <div className="text-[var(--color-cyan)] text-[13px] leading-none">
-            {r.final_pct}
-            <span className="text-[8.5px] align-top">th</span>
-          </div>
-          {r.has_card ? (
-            <div className={`text-[9px] mt-0.5 ${adjTone}`}>
-              AI {sgn(r.adj_z)}σ
-              {r.capped && <sup className="ml-0.5">cap</sup>}
-              {r.floored && <sup className="ml-0.5">flr</sup>}
-            </div>
-          ) : (
-            <div className="text-[9px] mt-0.5 text-text-muted/40">quant</div>
-          )}
-        </td>
-        {cols.map((c) => {
-          const sv = c.signed ? c.signed(r) : null;
-          const tone = c.signed
-            ? sv == null
-              ? "text-text-muted"
-              : sv >= 0
-                ? "text-green"
-                : "text-[var(--color-red,#FF3333)]"
-            : c.green
-              ? "text-green"
-              : "text-text";
-          return (
-            <td
-              key={c.key}
-              className={`px-2 py-2.5 text-right text-[12.5px] font-mono border-t border-white/10 ${tone}`}
-            >
-              {c.render(r)}
-            </td>
-          );
-        })}
-        <td className="px-2 py-2.5 text-left border-t border-white/10">
-          <DurabilityBadge r={r} />
-        </td>
-        <td className="border-t border-white/10 text-right pr-2 whitespace-nowrap">
-          {canExclude && (
-            <button
-              type="button"
-              disabled={exclBusy}
-              onClick={() => onExclude(r.ticker)}
-              title={`Remove ${r.ticker} from the screener for 1 year — also blocks the agents from buying it`}
-              aria-label={`Remove ${r.ticker} for a year`}
-              className="font-mono text-[12px] text-text-muted/50 hover:text-[var(--color-red,#FF3333)] disabled:opacity-40 mr-1.5"
-            >
-              ✕
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            aria-label={open ? `Collapse ${r.ticker}` : `Expand ${r.ticker}`}
-            className="font-mono text-[12px] text-text-muted hover:text-text"
-          >
-            {open ? "▾" : "▸"}
-          </button>
-        </td>
-      </tr>
-      {open && (
-        <tr>
-          <td colSpan={spanCols} className="border-t border-white/10 bg-black/20 px-3 py-3">
-            {r.has_card && r.research_card ? (
-              <div className="space-y-3">
-                <div className="grid gap-2 sm:grid-cols-3">
+          {/* P/S · R40 · vs SPY — hidden on mobile (mockup .sechide) */}
+          <span className="hidden md:block text-right font-mono text-[13px] text-text">{fmt(r.ps, { mult: true })}</span>
+          <span className="hidden md:block text-right font-mono text-[13px] text-green">{fmt(r.rule_of_40, { dp: 0 })}</span>
+          <span className={`hidden md:block text-right font-mono text-[13px] ${spyTone}`}>{fmtSigned(r.perf_52w_vs_spy)}</span>
+          {/* AI durability badge */}
+          <span className="hidden md:flex items-center"><DurabilityBadge r={r} /></span>
+          {/* chevron + owner exclude */}
+          <span className="flex items-center justify-end gap-1.5">
+            {canExclude && (
+              <button
+                type="button"
+                disabled={exclBusy}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExclude(r.ticker);
+                }}
+                title={`Remove ${r.ticker} from the screener for 1 year — also blocks the agents from buying it`}
+                aria-label={`Remove ${r.ticker} for a year`}
+                className="font-mono text-[12px] text-text-muted/50 hover:text-[var(--color-red,#FF3333)] disabled:opacity-40"
+              >
+                ✕
+              </button>
+            )}
+            <span className={`font-mono text-text-muted transition-transform ${open ? "rotate-90" : ""}`} aria-hidden>
+              ›
+            </span>
+          </span>
+        </div>
+
+        {/* Expand-in-place card (every row, carded or not) */}
+        {open && (
+          <div className="border-t border-white/10 px-4 pt-1 pb-4 grid gap-6 lg:grid-cols-[1fr_320px]">
+            <div>
+              {carded && r.research_card ? (
+                <>
                   <DimCard label="Moat" dim={r.research_card.moat} />
                   <DimCard label="Growth durability" dim={r.research_card.growth_durability} readOnly />
                   <DimCard label="Earnings quality" dim={r.research_card.earnings_quality} />
-                </div>
-                <DimCard label="Balance-sheet risk" gated />
-                {(r.research_card.break_signals?.length ?? 0) > 0 && (
-                  <div className="rounded-lg border border-[var(--color-red,#FF3333)]/30 bg-[var(--color-red,#FF3333)]/[0.04] p-2.5">
-                    <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#f5a623] mb-1.5">
+                  <DimCard label="Balance-sheet risk" gated />
+                  <div className="mt-4 border-t border-white/10 pt-3">
+                    <div className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-[#e0a23c] mb-2">
                       Break signals
                     </div>
-                    <ul className="space-y-1">
-                      {r.research_card.break_signals!.map((b, i) => (
-                        <li key={i} className="text-[11px] text-text-dim flex gap-2">
-                          <span className="text-[var(--color-red,#FF3333)]">⚑</span>
-                          {b.description ?? `${b.field ?? ""} ${b.op ?? ""} ${b.value ?? ""}`}
-                        </li>
-                      ))}
-                    </ul>
+                    {(r.research_card.break_signals?.length ?? 0) > 0 ? (
+                      <ul className="space-y-1.5">
+                        {r.research_card.break_signals!.map((b, i) => (
+                          <li key={i} className="text-[12.5px] text-text-dim flex gap-2">
+                            <span className="text-[#e0a23c]">⚑</span>
+                            {b.description ?? `${b.field ?? ""} ${b.op ?? ""} ${b.value ?? ""}`.trim()}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-[12px] text-text-muted">None tripped.</p>
+                    )}
                   </div>
-                )}
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <ScoreLedger r={r} />
-                  <ValueBlock r={r} />
-                  <QuantBlock r={r} />
-                </div>
-                {holding && <PositionBlock h={holding} />}
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-[11.5px] text-text-muted leading-relaxed max-w-prose">
-                  No research card yet — ranked on quant alone. A full AI durability
-                  read (moat, earnings quality, break signals) is added when the
-                  rotating analysis reaches this name. The quant facts below are
-                  universe-wide.
+                </>
+              ) : (
+                <p className="text-text-muted text-[12.5px] leading-relaxed max-w-[90%] my-3.5">
+                  No research card yet — ranked on quant alone. A full AI durability read
+                  (moat, earnings quality, break signals) is added when the rotating
+                  analysis reaches this name. The quant facts on the right are universe-wide.
                 </p>
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <ScoreLedger r={r} />
-                  <ValueBlock r={r} />
-                  <QuantBlock r={r} />
-                </div>
-                {holding && <PositionBlock h={holding} />}
-              </div>
-            )}
-          </td>
-        </tr>
-      )}
+              )}
+            </div>
+            <div className="space-y-4">
+              {holding && <PositionBlock h={holding} />}
+              {carded && <ScoreLedger r={r} />}
+              <ValueBlock r={r} psHistory={psHistory} />
+              <QuantBlock r={r} />
+            </div>
+            <div className="lg:col-span-2 mt-1 border-t border-white/10 pt-2.5 font-mono text-[10.5px] text-text-muted">
+              {carded
+                ? "Card compiled from stored evidence, not generated at render · balance-sheet dimension gated until cash/debt/shares backfill"
+                : "No AI card yet · quant facts from screen_facts_mv"}
+            </div>
+          </div>
+        )}
+      </div>
     </>
   );
 }
