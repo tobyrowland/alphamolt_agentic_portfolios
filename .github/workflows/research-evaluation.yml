@@ -17,11 +17,23 @@ on:
         required: false
         type: boolean
         default: false
+      limit:
+        description: "Tickers per round (blank = default 100)"
+        required: false
+        type: string
+        default: ""
+      rounds:
+        description: "Sequential rounds this dispatch (each persists; for a full backfill try limit=200, rounds=15)"
+        required: false
+        type: string
+        default: "1"
 
 jobs:
   research-eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Daily run is one batch of 100; a manual full-backfill dispatch loops many
+    # rounds, so allow a multi-hour job (under the 360-min Actions cap).
+    timeout-minutes: 350
 
     steps:
       - name: Checkout repository
@@ -45,11 +57,32 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           RESEARCH_DRY_RUN: ${{ inputs.dry_run }}
+          # Manual-dispatch backfill knobs (empty/1 on the scheduled run).
+          LIMIT: ${{ inputs.limit }}
+          ROUNDS: ${{ inputs.rounds }}
         run: |
           set -u
-          ARGS=()
-          if [ "${RESEARCH_DRY_RUN}" = "true" ]; then ARGS+=(--dry-run); fi
-          python research_evaluation.py ${ARGS[@]+"${ARGS[@]}"}
+          # Each round writes its batch at the end (single end-of-run upsert), and
+          # rotation picks the stalest-by-researched_at names — so consecutive
+          # rounds walk the universe without re-doing names, and a killed job
+          # keeps every completed round.
+          for i in $(seq 1 "${ROUNDS:-1}"); do
+            ARGS=()
+            if [ "${RESEARCH_DRY_RUN}" = "true" ]; then ARGS+=(--dry-run); fi
+            if [ -n "${LIMIT}" ]; then ARGS+=(--limit "${LIMIT}"); fi
+            echo "=== research round ${i} / ${ROUNDS:-1} ==="
+            python research_evaluation.py ${ARGS[@]+"${ARGS[@]}"} || echo "round ${i} failed, continuing"
+          done
+
+      - name: Refresh screener matview
+        # Surface the freshly-written cards on /screener immediately instead of
+        # waiting for the next prices-daily run. Skipped on a dry run.
+        if: ${{ inputs.dry_run != true }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python -c "from db import SupabaseDB; SupabaseDB().refresh_screen_facts()"
+
 
       - name: Upload logs
         if: always()
