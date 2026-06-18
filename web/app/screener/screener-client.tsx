@@ -1160,74 +1160,43 @@ function PresetCards({
   onSelectCustom: () => void;
 }) {
   const presets = Object.values(PRESETS);
+  // Shared pill styling so the preset selector reads like the filter chips.
+  const pill = "rounded-full border px-3 py-1.5 font-mono text-[11.5px] transition-colors cursor-pointer";
+  const activeCls = "border-[var(--color-cyan)]/60 bg-[var(--color-cyan)]/[0.08] text-[var(--color-cyan)]";
+  const idleCls = "border-white/10 bg-white/[0.02] text-text-muted hover:text-text hover:border-white/20";
   return (
-    <div className="mb-4">
-      <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-muted mb-2">
-        Start from a preset
-      </div>
-      <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-        {presets.map((p) => {
-          const active = !customActive && activePreset === p.id;
-          return (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => onSelect(p.id)}
-              aria-pressed={active}
-              className={`text-left rounded-xl border p-3.5 transition-colors ${
-                active
-                  ? "border-[var(--color-cyan)]/60 bg-[var(--color-cyan)]/[0.08]"
-                  : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/20"
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span
-                  className={`font-semibold text-[13.5px] ${active ? "text-[var(--color-cyan)]" : "text-text"}`}
-                >
-                  {p.label}
-                </span>
-                {active && (
-                  <span className="text-[var(--color-cyan)] text-[11px]" aria-hidden>
-                    ●
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-text-muted mt-1 leading-relaxed line-clamp-2">
-                {p.description}
-              </p>
-            </button>
-          );
-        })}
-
-        {/* Custom — restores the viewer's own filters/weights and opens the
-            editable filter bar below. */}
-        <button
-          type="button"
-          onClick={onSelectCustom}
-          aria-pressed={customActive}
-          className={`text-left rounded-xl border p-3.5 transition-colors ${
-            customActive
-              ? "border-[var(--color-cyan)]/60 bg-[var(--color-cyan)]/[0.08]"
-              : "border-dashed border-white/15 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/25"
-          }`}
-        >
-          <div className="flex items-center justify-between gap-2">
-            <span
-              className={`font-semibold text-[13.5px] ${customActive ? "text-[var(--color-cyan)]" : "text-text"}`}
-            >
-              Custom
-            </span>
-            {customActive && (
-              <span className="text-[var(--color-cyan)] text-[11px]" aria-hidden>
-                ●
-              </span>
-            )}
-          </div>
-          <p className="text-[11px] text-text-muted mt-1 leading-relaxed line-clamp-2">
-            Your own filters &amp; weights — build a screen from scratch.
-          </p>
-        </button>
-      </div>
+    <div className="mb-3 flex items-center gap-2 flex-wrap">
+      <span className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-muted">
+        Preset
+      </span>
+      {presets.map((p) => {
+        const active = !customActive && activePreset === p.id;
+        return (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => onSelect(p.id)}
+            aria-pressed={active}
+            title={p.description}
+            className={`${pill} ${active ? activeCls : idleCls}`}
+          >
+            {p.label}
+          </button>
+        );
+      })}
+      {/* Custom — restores the viewer's own filters/weights and opens the
+          editable filter bar below. Dashed to read as "build your own". */}
+      <button
+        type="button"
+        onClick={onSelectCustom}
+        aria-pressed={customActive}
+        title="Your own filters & weights — build a screen from scratch."
+        className={`${pill} border-dashed ${
+          customActive ? activeCls : "border-white/15 bg-white/[0.02] text-text-muted hover:text-text hover:border-white/25"
+        }`}
+      >
+        Custom
+      </button>
     </div>
   );
 }
