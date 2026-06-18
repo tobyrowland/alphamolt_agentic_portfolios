@@ -26,6 +26,8 @@ import {
   type FilterOp,
   type ScreenConfig,
 } from "@/lib/screen/config";
+import { BUDGET, type ResearchCard } from "@/lib/screen/score";
+import type { ScreenHolding } from "@/lib/screen/holdings-query";
 
 interface Row {
   rank: number;
@@ -38,6 +40,7 @@ interface Row {
   price_asof: string | null;
   score: number;
   ps: number | null;
+  ps_median_12m: number | null;
   rev_growth_ttm: number | null;
   gross_margin: number | null;
   fcf_margin: number | null;
@@ -48,6 +51,27 @@ interface Row {
   perf_52w_vs_spy: number | null;
   bull: boolean | null;
   bear: boolean | null;
+  // Single-score fields (migration 057).
+  base_z: number;
+  adj_z: number;
+  moat_z: number;
+  earn_z: number;
+  break_z: number;
+  base_pct: number;
+  final_pct: number;
+  capped: boolean;
+  floored: boolean;
+  quality_score: number | null;
+  moat_score: number | null;
+  earnings_score: number | null;
+  growth_score: number | null;
+  break_count: number | null;
+  has_card: boolean;
+  research_card: ResearchCard | null;
+  industry_ps_median: number | null;
+  sector_ps_median: number | null;
+  peer_ps_median: number | null;
+  peer_basis: string | null;
 }
 interface ScreenData {
   rows: Row[];
@@ -80,6 +104,8 @@ function fmtSigned(v: number | null, dp = 1): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(dp)}%`;
 }
 const PAGE_SIZE = 250;
+// Default portfolio for the read-only holdings overlay (brief §4).
+const DEFAULT_PORTFOLIO = "test-portfolio-toby";
 // localStorage key for the viewer's chosen extra result columns (survives refresh).
 const COLS_STORAGE_KEY = "alphamolt:screener:cols";
 // localStorage key for the viewer's last screen recipe (filters/weights), so a
@@ -120,9 +146,9 @@ const WEIGHT_HELP: Record<"quality" | "value" | "momentum", string> = {
     "Momentum — trailing 52-week return vs SPY (alpha), collared so falling knives and blow-off tops don't dominate. Raise it to favour names beating the market.",
 };
 const RANKING_HELP =
-  "Each name's Score is a percentile blend of Quality, Value and Momentum, weighted by these sliders, relative to the names matching your filters — so it's this screen's own ranking, not a fixed house score.";
+  "Each name's Score is a single number: a cross-sectional z-score blend of Quality, Value and Momentum (the 'base'), adjusted by the AI's read of durability, shown as a universe percentile. A research tool, not a recommendation.";
 const AI_HELP =
-  "Multiply each Score by the AI bull/bear verdict: dual-positive ×1.30, story-but-red-flags ×0.70, avoid ×0.40, sound-or-unrated ×1.00. Uncheck to ignore the AI overlay.";
+  "AI authority is the maximum the research card can move a name, in standard deviations: a strong, unbroken card lifts up to +0.7σ; a weak moat or break signals cut it (floored at −1.5σ). Fixed server-side so the ranking stays canonical — growth durability is never scored (already in R40).";
 const TOPN_HELP =
   "The top N ranked names become your buyer's candidate pool — the cut line in the table. Only these feed the swarm.";
 
@@ -210,6 +236,15 @@ export default function ScreenerClient({
   const [colsOpen, setColsOpen] = useState(false);
   const [extraCols, setExtraCols] = useState<Set<string>>(new Set());
   const [visible, setVisible] = useState(PAGE_SIZE);
+  // View filters (redesign brief §3/§4) — purely client-side, never bust cache.
+  const [view, setView] = useState<"all" | "researched">("all");
+  const [moatOnly, setMoatOnly] = useState(false);
+  const [newOnly, setNewOnly] = useState(false);
+  // Read-only holdings overlay, per selected portfolio (brief §4). Default to
+  // the house test portfolio; resolved client-side after paint so the cached
+  // page is identical for everyone.
+  const [portfolioSlug, setPortfolioSlug] = useState(DEFAULT_PORTFOLIO);
+  const [holdings, setHoldings] = useState<Record<string, ScreenHolding>>({});
   const firstRender = useRef(true);
   const colsHydrated = useRef(false);
   const configHydrated = useRef(false);
@@ -401,6 +436,46 @@ export default function ScreenerClient({
     }
   }, [signedIn, refetch]);
 
+  // Holdings overlay: fetch per selected portfolio AFTER the cached page paints
+  // (brief §4). Never via the matview/ISR cache — holdings are portfolio-
+  // specific and live. Tag held names with break signals as "review".
+  useEffect(() => {
+    let cancelled = false;
+    if (!portfolioSlug) {
+      setHoldings({});
+      return;
+    }
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/screen/holdings?portfolio=${encodeURIComponent(portfolioSlug)}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) return;
+        const json = (await res.json()) as {
+          holdings?: Record<string, ScreenHolding>;
+        };
+        if (cancelled) return;
+        const h = json.holdings ?? {};
+        // Mark held names whose card has break signals as "review" (amber).
+        const breakSet = new Set(
+          data.rows
+            .filter((r) => (r.break_count ?? 0) > 0)
+            .map((r) => r.ticker.toUpperCase()),
+        );
+        for (const k of Object.keys(h)) {
+          if (h[k].state === "held" && breakSet.has(k)) h[k].has_break_signals = true;
+        }
+        setHoldings(h);
+      } catch {
+        /* overlay is best-effort — leave it empty on failure */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [portfolioSlug, data.rows]);
+
   const excludedSet = useMemo(
     () => new Set(excluded.map((t) => t.toUpperCase())),
     [excluded],
@@ -438,16 +513,21 @@ export default function ScreenerClient({
     return [...manual, ...agent].sort((a, b) => a.ticker.localeCompare(b.ticker));
   }, [excludedSet, rejected, config.hideRejected]);
 
-  // Rows actually shown: drop any optimistically-excluded ticker. In steady
-  // state the server already filtered these, so this only hides the just-
-  // clicked name in the window before the refetch settles.
-  const rows = useMemo(
-    () =>
-      excludedSet.size
-        ? data.rows.filter((r) => !excludedSet.has(r.ticker.toUpperCase()))
-        : data.rows,
-    [data.rows, excludedSet],
-  );
+  // Rows actually shown: drop optimistically-excluded tickers, then apply the
+  // client-side view filters (researched-only, moat ≥ 4 with null=pass,
+  // new-candidates hides held names). The moat filter NEVER hides an uncarded
+  // name — a null card passes (brief §2/§10).
+  const rows = useMemo(() => {
+    let list = excludedSet.size
+      ? data.rows.filter((r) => !excludedSet.has(r.ticker.toUpperCase()))
+      : data.rows;
+    if (view === "researched") list = list.filter((r) => r.has_card);
+    if (moatOnly) list = list.filter((r) => !r.has_card || (r.moat_score ?? 0) >= 4);
+    if (newOnly) {
+      list = list.filter((r) => holdings[r.ticker.toUpperCase()]?.state !== "held");
+    }
+    return list;
+  }, [data.rows, excludedSet, view, moatOnly, newOnly, holdings]);
 
   // Optimistic: hide the row immediately (excludedSet filters the table), then
   // persist. Roll back + surface the reason on failure so it's never silent.
@@ -744,7 +824,7 @@ export default function ScreenerClient({
           <span>⚙ Configure scoring</span>
           <span className="text-text-muted/60">
             Q {config.weights.quality} · V {config.weights.value} · M {config.weights.momentum}
-            {config.aiMultiplier ? " · AI×" : ""} · top {config.topN} ▾
+            {" · "}AI ±{BUDGET}σ · top {config.topN} ▾
           </span>
         </summary>
         <div className="px-3 pb-3 sm:max-w-[520px]">
@@ -756,18 +836,12 @@ export default function ScreenerClient({
               This screen&apos;s own ranking{" "}
               <span aria-hidden className="text-text-muted/50 no-underline">ⓘ</span>
             </span>
-            <label
+            <span
               title={AI_HELP}
-              className="font-mono text-[10.5px] text-[var(--color-cyan)] inline-flex items-center gap-1.5 cursor-help shrink-0"
+              className="font-mono text-[10px] text-text-muted/70 cursor-help shrink-0"
             >
-              <input
-                type="checkbox"
-                checked={config.aiMultiplier}
-                onChange={(e) => patch({ aiMultiplier: e.target.checked })}
-                className="accent-[var(--color-cyan)]"
-              />
-              AI bull/bear ×
-            </label>
+              AI authority ±{BUDGET}σ (fixed)
+            </span>
           </div>
           <div className="flex items-center justify-end mt-2">
             <label
@@ -914,6 +988,65 @@ export default function ScreenerClient({
         </div>
       )}
 
+      {/* View controls (client-side; never bust the cache) — researched-only,
+          moat ≥ 4 (null passes), holdings portfolio + new-candidates. */}
+      <div className="flex items-center gap-2 flex-wrap mb-2 font-mono text-[10.5px]">
+        <div className="inline-flex rounded-md border border-white/10 overflow-hidden">
+          {(["all", "researched"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              aria-pressed={view === v}
+              className={`px-2.5 py-1 ${
+                view === v
+                  ? "bg-[var(--color-cyan)]/15 text-[var(--color-cyan)]"
+                  : "text-text-muted hover:text-text"
+              }`}
+            >
+              {v === "all" ? "All names" : "Researched"}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => setMoatOnly((v) => !v)}
+          aria-pressed={moatOnly}
+          title="Keep names with an AI moat score of 4+ — un-researched names pass through (never hidden)."
+          className={`rounded-md border px-2.5 py-1 ${
+            moatOnly
+              ? "border-[var(--color-cyan)]/50 text-[var(--color-cyan)] bg-[var(--color-cyan)]/10"
+              : "border-white/10 text-text-muted hover:text-text"
+          }`}
+        >
+          moat ≥ 4
+        </button>
+        <span className="ml-auto flex items-center gap-2">
+          <label className="text-text-muted">
+            Holdings:{" "}
+            <input
+              value={portfolioSlug}
+              onChange={(e) => setPortfolioSlug(e.target.value.trim())}
+              aria-label="Portfolio slug for the holdings overlay"
+              className="w-[150px] bg-black/30 border border-white/10 rounded px-1.5 py-0.5 text-text"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => setNewOnly((v) => !v)}
+            aria-pressed={newOnly}
+            title="Hide names this portfolio already holds — show only new candidates."
+            className={`rounded-md border px-2.5 py-1 ${
+              newOnly
+                ? "border-green/50 text-green bg-green/10"
+                : "border-white/10 text-text-muted hover:text-text"
+            }`}
+          >
+            new candidates
+          </button>
+        </span>
+      </div>
+
       {/* Results */}
       <div className={`${card} overflow-hidden`}>
         <table className="w-full border-collapse" aria-label="Screened equities ranked by your composite">
@@ -925,6 +1058,12 @@ export default function ScreenerClient({
               {cols.map((c) => (
                 <Th key={c.key} help={c.help}>{c.label}</Th>
               ))}
+              <Th
+                className="text-left"
+                help="AI durability — moat (scored), growth (read-only, in R40), earnings (scored), balance-sheet (gated). Compiled from the research card, never generated at render."
+              >
+                AI durability
+              </Th>
               <th className="relative font-mono text-[10px] text-text-muted font-normal px-2 py-2.5 text-right">
                 <button
                   type="button"
@@ -970,18 +1109,19 @@ export default function ScreenerClient({
                 cols={cols}
                 cut={i === data.cut_index && data.cut_index < rows.length}
                 dim={i >= data.cut_index}
-                spanCols={metricColCount + 3}
+                spanCols={metricColCount + 4}
                 topN={config.topN}
                 runHref={runHref}
                 hasPage={linkable.has(r.ticker.toUpperCase())}
                 canExclude={signedIn}
                 exclBusy={exclBusy}
                 onExclude={onExclude}
+                holding={holdings[r.ticker.toUpperCase()] ?? null}
               />
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={metricColCount + 3} className="p-6 text-center text-sm text-text-muted">
+                <td colSpan={metricColCount + 4} className="p-6 text-center text-sm text-text-muted">
                   No matches — loosen your filters.
                 </td>
               </tr>
@@ -1363,6 +1503,302 @@ function Th({
   );
 }
 
+// ---- single-score display helpers (mirror the v8 mockup) ------------------
+const sgn = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
+
+/** The signal chip text/tone for a carded row (brief §3). */
+function sigOf(r: Row): [tone: string, label: string] | null {
+  if (!r.has_card) return null;
+  if ((r.break_count ?? 0) > 0) return ["flags", "AI flags"];
+  if (r.base_pct < 60 && r.adj_z > 0) return ["turn", "turnaround"];
+  if (r.capped || r.adj_z >= BUDGET * 0.8) return ["backs", "AI backs"];
+  if (r.adj_z > 0) return ["lifts", "AI lifts"];
+  return ["agrees", "AI agrees"];
+}
+
+const SIG_TONE: Record<string, string> = {
+  flags: "text-[var(--color-red,#FF3333)] border-[var(--color-red,#FF3333)]/40",
+  turn: "text-[var(--color-cyan)] border-[var(--color-cyan)]/40",
+  backs: "text-green border-green/40",
+  lifts: "text-green border-green/40",
+  agrees: "text-text-muted border-white/15",
+};
+
+/** One scored dim's evidence/rationale → a compiled thesis line (brief §3:
+ *  compile from stored evidence, never generate at render). */
+function compileThesis(r: Row): string {
+  if (r.has_card && r.research_card) {
+    const c = r.research_card;
+    const best = [c.moat, c.earnings_quality]
+      .filter((d): d is NonNullable<typeof d> => !!d && !!d.rationale)
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+    if (best?.rationale) return best.rationale;
+  }
+  const sec = r.sector ?? "—";
+  const ind = r.industry ?? "—";
+  return `${sec} · ${ind} — ranked on quant only`;
+}
+
+/** Four micro-bars: moat (scored), growth (read-only), earnings (scored),
+ *  balance-sheet (gated). Plus a break-signal pip + the signal chip. */
+function DurabilityBadge({ r }: { r: Row }) {
+  if (!r.has_card || !r.research_card) {
+    return <span className="font-mono text-[10px] text-text-muted/50">—</span>;
+  }
+  const c = r.research_card;
+  const bar = (score: number | null | undefined, kind: "scored" | "read" | "gated", tip: string) => {
+    const h = score ? Math.max(2, Math.round((score / 5) * 14)) : 3;
+    const cls =
+      kind === "gated"
+        ? "border border-dashed border-white/25 bg-transparent"
+        : kind === "read"
+          ? "bg-white/25"
+          : "bg-[var(--color-cyan)]";
+    return (
+      <span title={tip} className="inline-flex items-end" style={{ height: 14 }}>
+        <span className={`inline-block w-[5px] rounded-[1px] ${cls}`} style={{ height: h }} />
+      </span>
+    );
+  };
+  const sig = sigOf(r);
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="inline-flex items-end gap-[2px]">
+        {bar(c.moat?.score, "scored", `Moat ${c.moat?.score ?? "—"}/5 · scored · ${sgn(r.moat_z)}σ`)}
+        {bar(c.growth_durability?.score, "read", `Growth ${c.growth_durability?.score ?? "—"}/5 · read-only — already in R40, not scored`)}
+        {bar(c.earnings_quality?.score, "scored", `Earnings ${c.earnings_quality?.score ?? "—"}/5 · scored · ${sgn(r.earn_z)}σ`)}
+        {bar(null, "gated", "Balance-sheet risk · gated, awaiting cash/debt/shares")}
+      </span>
+      {(r.break_count ?? 0) > 0 && (
+        <span
+          title={`${r.break_count} break signal${(r.break_count ?? 0) > 1 ? "s" : ""}`}
+          className="text-[10px] text-[var(--color-red,#FF3333)]"
+        >
+          ⚑
+        </span>
+      )}
+      {sig && (
+        <span
+          className={`font-mono text-[9px] rounded px-1 py-[1px] border ${SIG_TONE[sig[0]]}`}
+        >
+          {sig[1]}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** "How this score is built" ledger — base_z + adj_z → final, in z/σ. */
+function ScoreLedger({ r }: { r: Row }) {
+  const Line = ({ label, v, tone }: { label: string; v: string; tone?: string }) => (
+    <div className={`flex justify-between font-mono text-[11px] ${tone ?? "text-text-dim"}`}>
+      <span>{label}</span>
+      <span>{v}</span>
+    </div>
+  );
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 p-2.5 space-y-1">
+      <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-text-muted mb-1">
+        How this score is built
+      </div>
+      <Line label="Base (Quality · Value · Momentum)" v={`${sgn(r.base_z)}σ → ${r.base_pct}th`} />
+      {r.has_card && (
+        <>
+          <Line
+            label={`Moat ${r.moat_score ?? "—"}/5`}
+            v={`${sgn(r.moat_z)}σ`}
+            tone={r.moat_z >= 0 ? "text-green" : "text-[var(--color-red,#FF3333)]"}
+          />
+          <Line
+            label={`Earnings quality ${r.earnings_score ?? "—"}/5`}
+            v={`${sgn(r.earn_z)}σ`}
+            tone={r.earn_z >= 0 ? "text-green" : "text-[var(--color-red,#FF3333)]"}
+          />
+          {(r.break_count ?? 0) > 0 && (
+            <Line
+              label={`Break signals ×${r.break_count}`}
+              v={`${sgn(r.break_z)}σ`}
+              tone="text-[var(--color-red,#FF3333)]"
+            />
+          )}
+          {r.capped && <Line label="at +budget ceiling" v={`+${BUDGET}σ`} tone="text-text-muted" />}
+          {r.floored && <Line label="at floor" v="−1.50σ" tone="text-text-muted" />}
+          <Line label={`AI adjustment (budget ${BUDGET}σ)`} v={`${sgn(r.adj_z)}σ`} />
+        </>
+      )}
+      <div className="flex justify-between font-mono text-[11px] text-text border-t border-white/10 pt-1 mt-1">
+        <span>Final</span>
+        <span>
+          {sgn(r.base_z + r.adj_z)}σ → {r.final_pct}th percentile
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** Value block: P/S vs own 12-mo median + vs peer (sector/industry) median —
+ *  display only (brief §5). */
+function ValueBlock({ r }: { r: Row }) {
+  const cheapVs = (median: number | null) =>
+    r.ps != null && median != null && median > 0
+      ? r.ps < median
+        ? "cheap"
+        : "rich"
+      : null;
+  const ownTone = cheapVs(r.ps_median_12m);
+  const peerTone = cheapVs(r.peer_ps_median);
+  const tone = (v: string | null) =>
+    v === "cheap" ? "text-green" : v === "rich" ? "text-[var(--color-red,#FF3333)]" : "text-text-muted";
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 p-2.5 space-y-1 font-mono text-[11px]">
+      <div className="uppercase tracking-[0.1em] text-text-muted mb-1 text-[10px]">Value</div>
+      <div className="flex justify-between">
+        <span className="text-text-muted">P/S</span>
+        <span className="text-text">{fmt(r.ps, { mult: true })}</span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-text-muted">vs own 12-mo median ({fmt(r.ps_median_12m, { mult: true })})</span>
+        <span className={tone(ownTone)}>{ownTone ?? "—"}</span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-text-muted">
+          vs {r.peer_basis ?? "sector"} median ({fmt(r.peer_ps_median, { mult: true })})
+        </span>
+        <span className={tone(peerTone)}>{peerTone ?? "—"}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Quant detail block — the universe-wide facts behind the base score. */
+function QuantBlock({ r }: { r: Row }) {
+  const Row2 = ({ k, v, tone }: { k: string; v: string; tone?: string }) => (
+    <div className="flex justify-between">
+      <span className="text-text-muted">{k}</span>
+      <span className={tone ?? "text-text"}>{v}</span>
+    </div>
+  );
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 p-2.5 space-y-1 font-mono text-[11px]">
+      <div className="uppercase tracking-[0.1em] text-text-muted mb-1 text-[10px]">Quant</div>
+      <Row2 k="Rule of 40" v={fmt(r.rule_of_40, { dp: 0 })} tone="text-green" />
+      <Row2 k="Rev growth (TTM)" v={fmt(r.rev_growth_ttm, { pct: true })} tone="text-green" />
+      <Row2 k="Gross margin" v={fmt(r.gross_margin, { pct: true })} tone="text-green" />
+      <Row2 k="FCF margin" v={fmt(r.fcf_margin, { pct: true })} tone="text-green" />
+      <Row2
+        k="52-wk vs SPY"
+        v={fmtSigned(r.perf_52w_vs_spy)}
+        tone={
+          (r.perf_52w_vs_spy ?? 0) >= 0 ? "text-green" : "text-[var(--color-red,#FF3333)]"
+        }
+      />
+    </div>
+  );
+}
+
+/** A scored / read-only / gated dimension card. */
+function DimCard({
+  label,
+  dim,
+  readOnly,
+  gated,
+}: {
+  label: string;
+  dim?: { score?: number; rationale?: string; evidence?: string } | null;
+  readOnly?: boolean;
+  gated?: boolean;
+}) {
+  if (gated) {
+    return (
+      <div className="rounded-lg border border-dashed border-white/20 bg-black/10 p-2.5">
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-[11px] text-text-muted">{label}</span>
+          <span className="font-mono text-[9px] text-text-muted/70">gated · awaiting cash/debt/shares</span>
+        </div>
+        <p className="text-[11px] text-text-muted/70 mt-1 leading-relaxed">
+          Not scored — verified inputs absent. Never inferred from missing data.
+        </p>
+      </div>
+    );
+  }
+  if (!dim) return null;
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[11px] text-text">{label}</span>
+        <span className="font-mono text-[11px] text-text-muted">
+          {dim.score ?? "—"}/5
+          {readOnly && <span className="ml-1.5 text-[9px] text-text-muted/70">read-only · in R40</span>}
+        </span>
+      </div>
+      {dim.rationale && <p className="text-[11px] text-text-dim mt-1 leading-relaxed">{dim.rationale}</p>}
+      {dim.evidence && (
+        <p className="text-[10.5px] text-text-muted mt-1 leading-relaxed">{dim.evidence}</p>
+      )}
+    </div>
+  );
+}
+
+/** The position block on a held/sold row's expand (holdings overlay, brief §4). */
+function PositionBlock({ h }: { h: ScreenHolding }) {
+  const money = (n: number | null) =>
+    n == null ? "—" : `$${Math.round(n).toLocaleString()}`;
+  if (h.state === "sold") {
+    return (
+      <div className="rounded-lg border border-white/10 bg-black/20 p-2.5 font-mono text-[11px] space-y-1">
+        <div className="uppercase tracking-[0.1em] text-text-muted mb-1 text-[10px]">Position · sold</div>
+        <div className="flex justify-between">
+          <span className="text-text-muted">Exit date</span>
+          <span className="text-text">
+            {h.exit_date
+              ? new Date(h.exit_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+              : "—"}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-text-muted">Thesis</span>
+          <span className="text-text-muted">closed</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 p-2.5 font-mono text-[11px] space-y-1">
+      <div className="uppercase tracking-[0.1em] text-text-muted mb-1 text-[10px]">
+        Position {h.has_break_signals ? "· review" : "· held"}
+      </div>
+      <div className="flex justify-between"><span className="text-text-muted">Shares</span><span className="text-text">{h.quantity?.toLocaleString() ?? "—"}</span></div>
+      <div className="flex justify-between"><span className="text-text-muted">Avg cost</span><span className="text-text">{h.avg_cost_usd != null ? `$${h.avg_cost_usd.toFixed(2)}` : "—"}</span></div>
+      <div className="flex justify-between"><span className="text-text-muted">Last</span><span className="text-text">{h.last_price_usd != null ? `$${h.last_price_usd.toFixed(2)}` : "—"}</span></div>
+      <div className="flex justify-between"><span className="text-text-muted">Market value</span><span className="text-text">{money(h.market_value_usd)}</span></div>
+      <div className="flex justify-between">
+        <span className="text-text-muted">Unrealized P&L</span>
+        <span className={(h.unrealized_pnl_usd ?? 0) >= 0 ? "text-green" : "text-[var(--color-red,#FF3333)]"}>
+          {h.unrealized_pnl_usd != null ? `${h.unrealized_pnl_usd >= 0 ? "+" : ""}${money(h.unrealized_pnl_usd)}` : "—"}
+        </span>
+      </div>
+      <div className="flex justify-between"><span className="text-text-muted">Thesis</span><span className="text-text-muted">{h.thesis_status ?? "—"}</span></div>
+    </div>
+  );
+}
+
+/** Holdings pill for the ticker cell. */
+function HoldingPill({ h }: { h: ScreenHolding | null }) {
+  if (!h) return null;
+  const map = {
+    held: ["held", "text-[var(--color-cyan)] border-[var(--color-cyan)]/40"],
+    review: ["review", "text-[#f5a623] border-[#f5a623]/45"],
+    sold: ["sold", "text-text-muted border-white/15"],
+  } as const;
+  const key = h.state === "held" && h.has_break_signals ? "review" : h.state;
+  const [label, cls] = map[key];
+  return (
+    <span className={`ml-1.5 font-mono text-[9px] rounded px-1 py-[1px] border align-middle ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
 function RowView({
   r,
   cols,
@@ -1375,6 +1811,7 @@ function RowView({
   canExclude,
   exclBusy,
   onExclude,
+  holding,
 }: {
   r: Row;
   cols: Col[];
@@ -1388,7 +1825,26 @@ function RowView({
   canExclude: boolean;
   exclBusy: boolean;
   onExclude: (ticker: string) => void;
+  /** Holdings overlay entry for this name (null = not in the portfolio). */
+  holding: ScreenHolding | null;
 }) {
+  const [open, setOpen] = useState(false);
+  // AI direction stripe (teal lift / red cut / none uncarded).
+  const edge = !r.has_card
+    ? "border-l-2 border-l-transparent"
+    : r.adj_z > 0
+      ? "border-l-2 border-l-[var(--color-cyan)]"
+      : r.adj_z < 0
+        ? "border-l-2 border-l-[var(--color-red,#FF3333)]"
+        : "border-l-2 border-l-white/15";
+  const adjTone =
+    !r.has_card
+      ? "text-text-muted/50"
+      : r.adj_z > 0
+        ? "text-green"
+        : r.adj_z < 0
+          ? "text-[var(--color-red,#FF3333)]"
+          : "text-text-muted";
   return (
     <>
       {cut && (
@@ -1406,24 +1862,42 @@ function RowView({
         </tr>
       )}
       <tr className={`hover:bg-white/[0.025] ${dim ? "opacity-50" : ""}`}>
-        <td className="px-2 py-2.5 text-left font-mono text-text-muted text-xs border-t border-white/10">
+        <td className={`px-2 py-2.5 text-left font-mono text-text-muted text-xs border-t border-white/10 ${edge}`}>
           {r.rank}
         </td>
-        <td className="px-2 py-2.5 text-left border-t border-white/10">
-          {hasPage ? (
-            <Link href={`/company/${r.ticker}`} className="hover:text-[var(--color-cyan)]">
-              <span className="font-mono text-text text-[12.5px]">{r.ticker}</span>{" "}
-              <span className="text-[11px] text-text-muted">{r.name}</span>
-            </Link>
-          ) : (
-            <span title="No analysis page for this name yet">
-              <span className="font-mono text-text text-[12.5px]">{r.ticker}</span>{" "}
-              <span className="text-[11px] text-text-muted">{r.name}</span>
-            </span>
-          )}
+        <td className="px-2 py-2.5 text-left border-t border-white/10 max-w-[280px]">
+          <div className="flex items-center">
+            {hasPage ? (
+              <Link href={`/company/${r.ticker}`} className="hover:text-[var(--color-cyan)]">
+                <span className="font-mono text-text text-[12.5px]">{r.ticker}</span>{" "}
+                <span className="text-[11px] text-text-muted">{r.name}</span>
+              </Link>
+            ) : (
+              <span title="No analysis page for this name yet">
+                <span className="font-mono text-text text-[12.5px]">{r.ticker}</span>{" "}
+                <span className="text-[11px] text-text-muted">{r.name}</span>
+              </span>
+            )}
+            <HoldingPill h={holding} />
+          </div>
+          <p className="text-[10.5px] text-text-muted/80 mt-0.5 truncate" title={compileThesis(r)}>
+            {compileThesis(r)}
+          </p>
         </td>
-        <td className="px-2 py-2.5 text-right text-[12.5px] font-mono border-t border-white/10 text-[var(--color-cyan)]">
-          {fmt(r.score, { dp: 1 })}
+        <td className="px-2 py-2.5 text-right font-mono border-t border-white/10">
+          <div className="text-[var(--color-cyan)] text-[13px] leading-none">
+            {r.final_pct}
+            <span className="text-[8.5px] align-top">th</span>
+          </div>
+          {r.has_card ? (
+            <div className={`text-[9px] mt-0.5 ${adjTone}`}>
+              AI {sgn(r.adj_z)}σ
+              {r.capped && <sup className="ml-0.5">cap</sup>}
+              {r.floored && <sup className="ml-0.5">flr</sup>}
+            </div>
+          ) : (
+            <div className="text-[9px] mt-0.5 text-text-muted/40">quant</div>
+          )}
         </td>
         {cols.map((c) => {
           const sv = c.signed ? c.signed(r) : null;
@@ -1445,7 +1919,10 @@ function RowView({
             </td>
           );
         })}
-        <td className="border-t border-white/10 text-right pr-2">
+        <td className="px-2 py-2.5 text-left border-t border-white/10">
+          <DurabilityBadge r={r} />
+        </td>
+        <td className="border-t border-white/10 text-right pr-2 whitespace-nowrap">
           {canExclude && (
             <button
               type="button"
@@ -1453,13 +1930,74 @@ function RowView({
               onClick={() => onExclude(r.ticker)}
               title={`Remove ${r.ticker} from the screener for 1 year — also blocks the agents from buying it`}
               aria-label={`Remove ${r.ticker} for a year`}
-              className="font-mono text-[12px] text-text-muted/50 hover:text-[var(--color-red,#FF3333)] disabled:opacity-40"
+              className="font-mono text-[12px] text-text-muted/50 hover:text-[var(--color-red,#FF3333)] disabled:opacity-40 mr-1.5"
             >
               ✕
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            aria-label={open ? `Collapse ${r.ticker}` : `Expand ${r.ticker}`}
+            className="font-mono text-[12px] text-text-muted hover:text-text"
+          >
+            {open ? "▾" : "▸"}
+          </button>
         </td>
       </tr>
+      {open && (
+        <tr>
+          <td colSpan={spanCols} className="border-t border-white/10 bg-black/20 px-3 py-3">
+            {r.has_card && r.research_card ? (
+              <div className="space-y-3">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <DimCard label="Moat" dim={r.research_card.moat} />
+                  <DimCard label="Growth durability" dim={r.research_card.growth_durability} readOnly />
+                  <DimCard label="Earnings quality" dim={r.research_card.earnings_quality} />
+                </div>
+                <DimCard label="Balance-sheet risk" gated />
+                {(r.research_card.break_signals?.length ?? 0) > 0 && (
+                  <div className="rounded-lg border border-[var(--color-red,#FF3333)]/30 bg-[var(--color-red,#FF3333)]/[0.04] p-2.5">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#f5a623] mb-1.5">
+                      Break signals
+                    </div>
+                    <ul className="space-y-1">
+                      {r.research_card.break_signals!.map((b, i) => (
+                        <li key={i} className="text-[11px] text-text-dim flex gap-2">
+                          <span className="text-[var(--color-red,#FF3333)]">⚑</span>
+                          {b.description ?? `${b.field ?? ""} ${b.op ?? ""} ${b.value ?? ""}`}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <ScoreLedger r={r} />
+                  <ValueBlock r={r} />
+                  <QuantBlock r={r} />
+                </div>
+                {holding && <PositionBlock h={holding} />}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-[11.5px] text-text-muted leading-relaxed max-w-prose">
+                  No research card yet — ranked on quant alone. A full AI durability
+                  read (moat, earnings quality, break signals) is added when the
+                  rotating analysis reaches this name. The quant facts below are
+                  universe-wide.
+                </p>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <ScoreLedger r={r} />
+                  <ValueBlock r={r} />
+                  <QuantBlock r={r} />
+                </div>
+                {holding && <PositionBlock h={holding} />}
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
     </>
   );
 }

@@ -30,6 +30,7 @@ const DISPLAY = [
   "price_asof",
   "score",
   "ps",
+  "ps_median_12m",
   "rev_growth_ttm",
   "gross_margin",
   "fcf_margin",
@@ -40,6 +41,28 @@ const DISPLAY = [
   "perf_52w_vs_spy",
   "bull",
   "bear",
+  // Single-score fields (migration 057) — the score column + AI-durability badge.
+  "base_z",
+  "adj_z",
+  "moat_z",
+  "earn_z",
+  "break_z",
+  "base_pct",
+  "final_pct",
+  "capped",
+  "floored",
+  "quality_score",
+  "moat_score",
+  "earnings_score",
+  "growth_score",
+  "break_count",
+  "has_card",
+  "research_card",
+  // Peer median P/S (display only, brief §5).
+  "industry_ps_median",
+  "sector_ps_median",
+  "peer_ps_median",
+  "peer_basis",
 ] as const;
 
 export async function GET(req: Request) {

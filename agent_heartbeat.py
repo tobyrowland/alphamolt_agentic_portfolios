@@ -471,7 +471,7 @@ def _run_portfolio_swarm(
     if llm_buyers:
         candidate_rows = candidate_rows[:MAX_SWARM_EVAL]
     cand_map = {
-        str(r["ticker"]).upper(): f"screen rank #{r['rank']} · score {r['score']:.1f}"
+        str(r["ticker"]).upper(): f"screen rank #{r['rank']} · {r.get('final_pct', 0)}th pct"
         for r in candidate_rows
     }  # {ticker: rationale}
     fact_rows = {str(r.get("ticker") or "").upper(): r for r in candidate_rows}
