@@ -26,6 +26,7 @@ The config is a plain dict (a portfolio's `screen_config`):
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 logger = logging.getLogger("screen")
@@ -41,11 +42,45 @@ TEXT_FIELDS = {"sector", "country"}
 MOM_FLOOR = -50.0  # falling-knife collar
 MOM_CAP = 40.0     # blow-off-top collar
 
+# ---- single-score constants (migration 057 / screener redesign brief §2) ----
+# One ordering score: final_z = base_z + adj_z, displayed as a universe
+# percentile round(Φ(final_z)·100). These MUST match web/lib/screen/score.ts.
+W_MOAT = 0.58       # AI moat weight inside the trajectory adjustment
+W_EARN = 0.42       # AI earnings-quality weight
+K_BREAK = 0.5       # per-break-signal penalty (additive — decision 3)
+FLOOR = -1.5        # asymmetric floor on adj_z (in σ)
+BUDGET = 0.7        # AI authority ceiling (in σ) — fixed server constant (decision 1)
+LENS_NAMES = ("quality", "value", "momentum")
+
+
+# ---- normal CDF (Abramowitz–Stegun erf), ported from the v8 mockup ----------
+# Both scorers use the identical approximation so round(Φ(z)·100) is byte-equal.
+
+def _erf(x: float) -> float:
+    s = -1.0 if x < 0 else 1.0
+    x = abs(x)
+    a1, a2, a3, a4, a5, p = (
+        0.254829592, -0.284496736, 1.421413741,
+        -1.453152027, 1.061405429, 0.3275911,
+    )
+    t = 1.0 / (1.0 + p * x)
+    y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * math.exp(-x * x)
+    return s * y
+
+
+def phi(z: float) -> float:
+    """Standard-normal CDF Φ(z) ∈ (0,1)."""
+    return 0.5 * (1.0 + _erf(z / math.sqrt(2.0)))
+
 
 # ---- pure scoring ---------------------------------------------------------
 
 def _percentiles(values: list[float | None]) -> list[float | None]:
-    """value -> 0..1 empirical percentile over a column (nulls stay None)."""
+    """value -> 0..1 empirical percentile over a column (nulls stay None).
+
+    Retained for back-compat / external callers; the single-score path uses
+    cross-sectional z-scores (compute_lens_stats), not per-column percentiles.
+    """
     present = sorted(v for v in values if v is not None)
     n = len(present)
     if n == 0:
@@ -94,32 +129,6 @@ def apply_filters(facts: list[dict], filters: list[dict]) -> list[dict]:
     return [r for r in facts if all(_matches(r, f) for f in filters)]
 
 
-def _ai_multiplier(bull: bool | None, bear: bool | None) -> float:
-    if bull is None or bear is None:
-        return 1.0
-    if bull and bear:
-        return 1.3
-    if (not bull) and bear:
-        return 1.0
-    if bull and (not bear):
-        return 0.7
-    return 0.4
-
-
-# Research-card business-quality tilt (migration 056). Gentle ±20% so it nudges
-# the rank rather than dominating; neutral (1.0) when a name has no card yet, so
-# the research rollout never penalises unresearched names. Mirror of
-# web/lib/screen/score.ts qualityMultiplier().
-_QUALITY_MULT = {1: 0.8, 2: 0.9, 3: 1.0, 4: 1.1, 5: 1.2}
-
-
-def _quality_multiplier(quality_score: Any) -> float:
-    try:
-        return _QUALITY_MULT.get(int(quality_score), 1.0)
-    except (TypeError, ValueError):
-        return 1.0
-
-
 def _f(v: Any) -> float | None:
     if v is None:
         return None
@@ -130,56 +139,143 @@ def _f(v: Any) -> float | None:
     return x if x == x else None  # drop NaN
 
 
-def score_screen(facts: list[dict], config: dict) -> list[dict]:
-    """Return the ranked rows (each a copy of the fact dict + score/rank)."""
+# ---- raw lens values (brief §2) -------------------------------------------
+# Each lens is a single raw scalar, standardized against materialized universe
+# moments (compute_lens_stats). The derivations here MUST match score.ts.
+
+def _lens_values(row: dict) -> tuple[float | None, float | None, float | None]:
+    """(xQuality, xValue, xMomentum) raw lens values for a fact row, or None
+    per lens when its inputs are absent."""
+    r40 = _f(row.get("rule_of_40"))
+    fcf = _f(row.get("fcf_margin"))
+    gm = _f(row.get("gross_margin"))
+    # Quality: weighted blend; null only when ALL three components are missing
+    # (fundamentals arrive as a unit). A missing component contributes 0.
+    if r40 is None and fcf is None and gm is None:
+        xq: float | None = None
+    else:
+        xq = 0.60 * (r40 or 0) + 0.25 * (fcf or 0) + 0.15 * (gm or 0)
+    # Value: −(P/S ÷ own 12-mo median) so cheaper ⇒ higher. Median falls back to
+    # raw P/S; denominator guarded so ps=0 yields None (unscoreable), not NaN.
+    ps = _f(row.get("ps"))
+    med = _f(row.get("ps_median_12m"))
+    denom = med if (med and med > 0) else ps
+    xv = -(ps / denom) if (ps is not None and denom) else None
+    # Momentum: collared alpha vs SPY (perf_52w_vs_spy = ret_52w − SPY 52w).
+    perf = _f(row.get("perf_52w_vs_spy"))
+    xm = None if perf is None else max(MOM_FLOOR, min(MOM_CAP, perf))
+    return xq, xv, xm
+
+
+def _stats_from_values(vals: list[float]) -> dict:
+    """Population μ/σ over the present values; σ guarded ≥ tiny so z is finite."""
+    n = len(vals)
+    if n == 0:
+        return {"mu": 0.0, "sigma": 1.0, "n": 0}
+    mu = sum(vals) / n
+    var = sum((v - mu) ** 2 for v in vals) / n
+    sigma = math.sqrt(var)
+    if not (sigma > 0):  # no spread (or NaN) → neutral scale
+        sigma = 1.0
+    return {"mu": mu, "sigma": sigma, "n": n}
+
+
+def lens_stats_from_facts(facts: list[dict]) -> dict[str, dict]:
+    """μ/σ/n per lens over the (pre-filter) universe of fact rows. Used as the
+    in-memory fallback when screen_lens_stats hasn't been materialized yet; the
+    same derivation both scorers apply, so parity holds."""
+    cols: dict[str, list[float]] = {k: [] for k in LENS_NAMES}
+    for r in facts:
+        xq, xv, xm = _lens_values(r)
+        if xq is not None:
+            cols["quality"].append(xq)
+        if xv is not None:
+            cols["value"].append(xv)
+        if xm is not None:
+            cols["momentum"].append(xm)
+    return {k: _stats_from_values(cols[k]) for k in LENS_NAMES}
+
+
+def _z(x: float | None, st: dict | None) -> float:
+    """Winsorized z-score of a raw lens value (None ⇒ 0 = at the mean)."""
+    if x is None or not st:
+        return 0.0
+    sigma = st.get("sigma") or 1.0
+    return max(-3.0, min(3.0, (x - st.get("mu", 0.0)) / sigma))
+
+
+def _adj_z(row: dict, budget: float = BUDGET) -> dict:
+    """AI trajectory adjustment (brief §2). Only for carded names; otherwise 0.
+    Growth durability is deliberately NOT in the formula (already in R40)."""
+    moat = _f(row.get("moat_score"))
+    earn = _f(row.get("earnings_score"))
+    has_card = bool(row.get("has_card")) and moat is not None and earn is not None
+    if not has_card:
+        return {"adj_z": 0.0, "moat_z": 0.0, "earn_z": 0.0, "break_z": 0.0,
+                "capped": False, "floored": False, "has_card": False}
+    nbreak = _f(row.get("break_count")) or 0.0
+    u_moat = (moat - 3) / 2
+    u_earn = (earn - 3) / 2
+    moat_z = budget * W_MOAT * u_moat
+    earn_z = budget * W_EARN * u_earn
+    break_z = -budget * K_BREAK * nbreak
+    smooth_unit = W_MOAT * u_moat + W_EARN * u_earn  # natural max = 1.0 ⇒ +budget
+    adj = moat_z + earn_z + break_z
+    floored = adj < FLOOR
+    if floored:
+        adj = FLOOR
+    # Upward bound is structural: the smooth part maxes at +budget (both u=1),
+    # break signals only subtract — so adj never exceeds +budget. `capped` is a
+    # display flag for a name that hit that natural ceiling.
+    capped = (nbreak == 0 and smooth_unit >= 0.999 and budget > 0)
+    return {"adj_z": adj, "moat_z": moat_z, "earn_z": earn_z, "break_z": break_z,
+            "capped": capped, "floored": floored, "has_card": True}
+
+
+def score_screen(facts: list[dict], config: dict,
+                 stats: dict[str, dict] | None = None) -> list[dict]:
+    """Return the ranked rows (each a copy of the fact dict + score fields).
+
+    Single ordering score (brief §2): final_z = base_z + adj_z, ranked on it,
+    surfaced as a universe percentile. `stats` are the materialized lens μ/σ
+    (screen_lens_stats); when omitted they're derived from the full `facts` set
+    (the graceful fallback before materialization) — identically in score.ts.
+    """
     filters = config.get("filters") or []
     weights = config.get("weights") or {"quality": 45, "value": 25, "momentum": 20}
+    if stats is None:
+        stats = lens_stats_from_facts(facts)
     subset = apply_filters(facts, filters)
-
-    ps_ratio = []
-    mom = []
-    for r in subset:
-        ps = _f(r.get("ps"))
-        med = _f(r.get("ps_median_12m"))
-        # P/S relative to its own 12-mo median; fall back to a neutral 1.0
-        # (ps/ps) when the median is missing. Guard the denominator so a
-        # ps of 0 (or 0 fallback) doesn't divide by zero — just unscoreable.
-        denom = med if (med and med > 0) else ps
-        ps_ratio.append(ps / denom if (ps is not None and denom) else None)
-        # Momentum is alpha vs SPY (perf_52w_vs_spy = ret_52w − SPY's 52w
-        # return, derived in load_facts), collared — so a name that only rode
-        # the market up doesn't read as momentum.
-        ret = _f(r.get("perf_52w_vs_spy"))
-        mom.append(None if ret is None else max(MOM_FLOOR, min(MOM_CAP, ret)))
-
-    p_r40 = _percentiles([_f(r.get("rule_of_40")) for r in subset])
-    p_fcf = _percentiles([_f(r.get("fcf_margin")) for r in subset])
-    p_gm = _percentiles([_f(r.get("gross_margin")) for r in subset])
-    p_val = _percentiles(ps_ratio)
-    p_mom = _percentiles(mom)
 
     wq = float(weights.get("quality", 0))
     wv = float(weights.get("value", 0))
     wm = float(weights.get("momentum", 0))
     wsum = wq + wv + wm or 1.0
-    ai_on = bool(config.get("aiMultiplier", True))
-    quality_on = bool(config.get("qualityMultiplier", True))
 
     scored: list[dict] = []
-    for i, r in enumerate(subset):
-        quality = 0.6 * (p_r40[i] or 0) + 0.25 * (p_fcf[i] or 0) + 0.15 * (p_gm[i] or 0)
-        value = 0.0 if p_val[i] is None else 1 - p_val[i]
-        momentum = p_mom[i] or 0
-        score = ((wq * quality + wv * value + wm * momentum) / wsum) * 100
-        if ai_on:
-            score *= _ai_multiplier(r.get("bull"), r.get("bear"))
-        if quality_on and r.get("quality_score") is not None:
-            score *= _quality_multiplier(r.get("quality_score"))
+    for r in subset:
+        xq, xv, xm = _lens_values(r)
+        zq = _z(xq, stats.get("quality"))
+        zv = _z(xv, stats.get("value"))
+        zm = _z(xm, stats.get("momentum"))
+        base_z = (wq * zq + wv * zv + wm * zm) / wsum
+        a = _adj_z(r)
+        final_z = base_z + a["adj_z"]
         row = dict(r)
-        row["score"] = score
-        row["quality_pct"] = round(quality * 100)
-        row["value_pct"] = round(value * 100)
-        row["momentum_pct"] = round(momentum * 100)
+        row["base_z"] = base_z
+        row["adj_z"] = a["adj_z"]
+        row["moat_z"] = a["moat_z"]
+        row["earn_z"] = a["earn_z"]
+        row["break_z"] = a["break_z"]
+        row["capped"] = a["capped"]
+        row["floored"] = a["floored"]
+        row["quality_z"] = zq
+        row["value_z"] = zv
+        row["momentum_z"] = zm
+        row["base_pct"] = round(phi(base_z) * 100)
+        row["final_pct"] = round(phi(final_z) * 100)
+        # `score` stays the canonical sort key (now = final_z, the single score).
+        row["score"] = final_z
         scored.append(row)
 
     sort = config.get("sort") or {}
@@ -262,12 +358,17 @@ def load_facts(db) -> list[dict]:
         facts = [r for r in facts if (r.get("ticker") or "").upper() not in excluded]
     spy = _spy_ret_52w(db)
     for r in facts:
-        v = overlay.get(r["ticker"])
-        r["bull"] = (v or {}).get("bull")
-        r["bear"] = (v or {}).get("bear")
-        # quality_score from the research card (migration 056) — Python reads it
-        # off the overlay so the buyer gets it without waiting on the matview rebuild.
-        r["quality_score"] = (v or {}).get("quality_score")
+        v = overlay.get(r["ticker"]) or {}
+        r["bull"] = v.get("bull")
+        r["bear"] = v.get("bear")
+        # Research-card scalars from the overlay (migration 057) — Python reads
+        # them here so the buyer scores the same adj_z without the matview wait.
+        r["quality_score"] = v.get("quality_score")
+        r["moat_score"] = v.get("moat_score")
+        r["earnings_score"] = v.get("earnings_score")
+        r["growth_score"] = v.get("growth_score")
+        r["break_count"] = v.get("break_count")
+        r["has_card"] = bool(v.get("has_card"))
         # Derived "vs SPY" — kept in lockstep with query.ts so the buyer ranks
         # the identical filtered set.
         ret = _f(r.get("ret_52w"))
@@ -277,9 +378,46 @@ def load_facts(db) -> list[dict]:
     return facts
 
 
+def load_lens_stats(db) -> dict[str, dict] | None:
+    """Read the materialized universe lens μ/σ (screen_lens_stats, migration
+    057). Returns None when the table is empty/unavailable, so score_screen
+    falls back to deriving moments from the loaded facts."""
+    try:
+        resp = db.client.table("screen_lens_stats").select("lens, mu, sigma, n").execute()
+    except Exception:  # noqa: BLE001
+        return None
+    rows = resp.data or []
+    if not rows:
+        return None
+    out: dict[str, dict] = {}
+    for r in rows:
+        lens = r.get("lens")
+        if lens in LENS_NAMES:
+            out[lens] = {"mu": _f(r.get("mu")) or 0.0,
+                         "sigma": _f(r.get("sigma")) or 1.0,
+                         "n": int(r.get("n") or 0)}
+    return out or None
+
+
+def compute_lens_stats(db, *, dry_run: bool = False) -> dict[str, dict]:
+    """Compute the universe μ/σ of each raw lens value over Tier 1 and upsert
+    screen_lens_stats (migration 057). The single source of moments both scorers
+    read, so the cross-sectional z-scores agree. Reuses load_facts (which folds
+    in the SPY-adjusted momentum), so the lens derivations match the scorer
+    exactly. Called by prices_daily_updater after the matview refresh."""
+    from datetime import datetime, timezone
+    stats = lens_stats_from_facts(load_facts(db))
+    if not dry_run:
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [{"lens": k, "mu": stats[k]["mu"], "sigma": stats[k]["sigma"],
+                 "n": stats[k]["n"], "computed_at": now} for k in LENS_NAMES]
+        db.client.table("screen_lens_stats").upsert(rows).execute()
+    return stats
+
+
 def run_screen(db, config: dict) -> list[dict]:
     """Ranked rows for a config (the full matched subset)."""
-    return score_screen(load_facts(db), config)
+    return score_screen(load_facts(db), config, load_lens_stats(db))
 
 
 def top_n_tickers(db, config: dict, n: int | None = None) -> list[str]:
@@ -318,7 +456,7 @@ def portfolio_screen_candidates(db, portfolio_id: str | None) -> dict[str, str |
     Empty when the portfolio has no screen configured.
     """
     return {
-        r["ticker"]: f"screen rank #{r['rank']} · score {r['score']:.1f}"
+        r["ticker"]: f"screen rank #{r['rank']} · {r.get('final_pct', 0)}th pct"
         for r in portfolio_screen_candidate_rows(db, portfolio_id)
     }
 

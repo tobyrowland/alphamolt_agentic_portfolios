@@ -22,8 +22,31 @@ def facts(*rows: dict) -> list[dict]:
         "operating_margin": None, "rule_of_40": None, "ps": None,
         "ps_median_12m": None, "ret_52w": None, "perf_52w_vs_spy": None,
         "bull": None, "bear": None, "quality_score": None,
+        # Research-card scalars (migration 057). has_card False ⇒ adj_z = 0.
+        "moat_score": None, "earnings_score": None, "growth_score": None,
+        "break_count": None, "has_card": False,
+        "industry_ps_median": None, "sector_ps_median": None,
+        "peer_ps_median": None, "peer_basis": None,
     }
     return [{**base, **r} for r in rows]
+
+
+# A unit-scale stats fixture: μ=0, σ=1 per lens, so a raw lens value passes
+# straight through as its own z-score (winsorized to ±3). Lets the single-score
+# tests assert exact adj_z magnitudes against a known base_z.
+UNIT_STATS = {
+    "quality": {"mu": 0.0, "sigma": 1.0, "n": 100},
+    "value": {"mu": 0.0, "sigma": 1.0, "n": 100},
+    "momentum": {"mu": 0.0, "sigma": 1.0, "n": 100},
+}
+
+
+def carded(**card) -> dict:
+    """Mark a row as having a research card with the given dim scores."""
+    d = {"has_card": True, "moat_score": 3, "earnings_score": 3,
+         "growth_score": 3, "break_count": 0}
+    d.update(card)
+    return d
 
 
 class TestFilters(unittest.TestCase):
@@ -59,126 +82,157 @@ class TestPercentiles(unittest.TestCase):
         self.assertEqual(screen._percentiles([None, None]), [None, None])
 
 
-class TestScoring(unittest.TestCase):
+class TestSingleScore(unittest.TestCase):
+    """Single ordering score (migration 057): final_z = base_z + adj_z, ranked on
+    final_z, surfaced as round(Φ(final_z)·100)."""
+
     def test_quality_winner_ranks_first(self):
         rows = facts(
-            {"ticker": "HI", "rule_of_40": 80, "fcf_margin": 40, "gross_margin": 90, "ps": 5, "ps_median_12m": 5, "ret_52w": 10},
-            {"ticker": "LO", "rule_of_40": 5, "fcf_margin": -10, "gross_margin": 20, "ps": 5, "ps_median_12m": 5, "ret_52w": 10},
+            {"ticker": "HI", "rule_of_40": 80, "fcf_margin": 40, "gross_margin": 90, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0},
+            {"ticker": "LO", "rule_of_40": 5, "fcf_margin": -10, "gross_margin": 20, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0},
         )
-        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False}
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}}
         out = screen.score_screen(rows, cfg)
         self.assertEqual(out[0]["ticker"], "HI")
         self.assertEqual(out[0]["rank"], 1)
         self.assertGreater(out[0]["score"], out[1]["score"])
 
     def test_value_inversion_cheaper_wins(self):
-        # Lower P/S vs its median = cheaper = higher value score.
+        # Lower P/S vs its median = cheaper = higher value lens.
         rows = facts(
             {"ticker": "CHEAP", "ps": 4, "ps_median_12m": 8, "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1},
             {"ticker": "RICH", "ps": 12, "ps_median_12m": 8, "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1},
         )
-        cfg = {"weights": {"quality": 0, "value": 100, "momentum": 0}, "aiMultiplier": False}
+        cfg = {"weights": {"quality": 0, "value": 100, "momentum": 0}}
         out = screen.score_screen(rows, cfg)
         self.assertEqual(out[0]["ticker"], "CHEAP")
 
     def test_momentum_collar(self):
-        # A huge winner is capped, a crash floored — both still rank by collar.
-        # Momentum scores on alpha vs SPY (perf_52w_vs_spy), not the raw return.
+        # A huge winner caps at +40, a crash floors at −50 — both rank by collar.
         rows = facts(
             {"ticker": "MOON", "perf_52w_vs_spy": 500, "rule_of_40": 1, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
             {"ticker": "KNIFE", "perf_52w_vs_spy": -90, "rule_of_40": 1, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
         )
-        cfg = {"weights": {"quality": 0, "value": 0, "momentum": 100}, "aiMultiplier": False}
+        cfg = {"weights": {"quality": 0, "value": 0, "momentum": 100}}
         out = screen.score_screen(rows, cfg)
         self.assertEqual(out[0]["ticker"], "MOON")
         self.assertEqual(out[1]["ticker"], "KNIFE")
 
-    def test_ai_multiplier_dual_positive_boost(self):
+    def test_uncarded_adj_zero_and_ranks_on_base(self):
+        # An uncarded name has adj_z exactly 0 and ranks on base_z alone
+        # (final_pct == base_pct). Acceptance criterion (brief §10).
         rows = facts(
-            {"ticker": "DP", "rule_of_40": 50, "fcf_margin": 20, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "bull": True, "bear": True},
-            {"ticker": "AV", "rule_of_40": 50, "fcf_margin": 20, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "bull": False, "bear": False},
+            {"ticker": "NOCARD", "rule_of_40": 50, "fcf_margin": 10, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0},
         )
-        on = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": True}
-        out = screen.score_screen(rows, on)
-        dp = next(r for r in out if r["ticker"] == "DP")
-        av = next(r for r in out if r["ticker"] == "AV")
-        # identical quality percentiles (both p100), so the multiplier decides
-        self.assertAlmostEqual(dp["score"] / av["score"], 1.3 / 0.4, places=5)
+        out = screen.score_screen(rows, {"weights": {"quality": 60, "value": 25, "momentum": 15}}, UNIT_STATS)
+        self.assertEqual(out[0]["adj_z"], 0.0)
+        self.assertEqual(out[0]["final_pct"], out[0]["base_pct"])
+        self.assertAlmostEqual(out[0]["score"], out[0]["base_z"], places=9)
 
-    def test_quality_multiplier_tilts_by_score(self):
-        # Identical quantitative quality (both p100); the research-card
-        # quality_score (migration 056) tilts the rank: 5 → ×1.2, 1 → ×0.8.
+    def test_growth_durability_never_moves_score(self):
+        # Two identical carded names differing ONLY in growth_score must score
+        # identically — growth is read-only, already captured by R40 (brief §10).
         rows = facts(
-            {"ticker": "HIQ", "rule_of_40": 50, "fcf_margin": 20, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "quality_score": 5},
-            {"ticker": "LOQ", "rule_of_40": 50, "fcf_margin": 20, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "quality_score": 1},
+            {"ticker": "G3", "rule_of_40": 40, "fcf_margin": 10, "gross_margin": 50, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0, **carded(moat_score=4, earnings_score=4, growth_score=1)},
+            {"ticker": "G5", "rule_of_40": 40, "fcf_margin": 10, "gross_margin": 50, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0, **carded(moat_score=4, earnings_score=4, growth_score=5)},
         )
-        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "qualityMultiplier": True}
-        out = screen.score_screen(rows, cfg)
-        hiq = next(r for r in out if r["ticker"] == "HIQ")
-        loq = next(r for r in out if r["ticker"] == "LOQ")
-        self.assertEqual(out[0]["ticker"], "HIQ")
-        self.assertAlmostEqual(hiq["score"] / loq["score"], 1.2 / 0.8, places=5)
+        out = screen.score_screen(rows, {"weights": {"quality": 60, "value": 25, "momentum": 15}}, UNIT_STATS)
+        g3 = next(r for r in out if r["ticker"] == "G3")
+        g5 = next(r for r in out if r["ticker"] == "G5")
+        self.assertAlmostEqual(g3["score"], g5["score"], places=12)
+        self.assertAlmostEqual(g3["adj_z"], g5["adj_z"], places=12)
 
-    def test_quality_multiplier_neutral_for_no_card_and_when_off(self):
-        # A name with no card is neutral (×1.0); the toggle off disables entirely.
-        rows = facts(
-            {"ticker": "CARD", "rule_of_40": 50, "fcf_margin": 20, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "quality_score": 1},
-            {"ticker": "NONE", "rule_of_40": 50, "fcf_margin": 20, "gross_margin": 60, "ps": 5, "ps_median_12m": 5, "quality_score": None},
-        )
-        off = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "qualityMultiplier": False}
-        out = screen.score_screen(rows, off)
-        # toggle off → identical scores (multiplier never applied)
-        self.assertAlmostEqual(out[0]["score"], out[1]["score"], places=5)
-        on = {**off, "qualityMultiplier": True}
-        out2 = screen.score_screen(rows, on)
-        none_row = next(r for r in out2 if r["ticker"] == "NONE")
-        card_row = next(r for r in out2 if r["ticker"] == "CARD")
-        # no-card name unchanged vs toggle-off; carded 1/5 name is penalised
-        self.assertGreater(none_row["score"], card_row["score"])
+    def test_strong_card_lift_bounded_at_budget(self):
+        # moat=5, earn=5, no breaks → adj_z hits the natural +budget ceiling and
+        # the `capped` flag is set; a no-quant base keeps base_z=0 so the lift is
+        # exactly the budget.
+        rows = facts({"ticker": "STRONG", **carded(moat_score=5, earnings_score=5, break_count=0)})
+        out = screen.score_screen(rows, {"weights": {"quality": 60, "value": 25, "momentum": 15}}, UNIT_STATS)
+        self.assertAlmostEqual(out[0]["adj_z"], screen.BUDGET, places=9)
+        self.assertTrue(out[0]["capped"])
+        self.assertFalse(out[0]["floored"])
 
-    def test_outlier_r40_does_not_blow_up_scale(self):
-        # Empirical-percentile scoring: a 26000 R40 just pins to p100.
+    def test_weak_moat_with_breaks_demotes_and_floors(self):
+        # moat=1, earn=1, 3 break signals → adj_z below FLOOR → clamped to FLOOR.
+        rows = facts({"ticker": "WEAK", **carded(moat_score=1, earnings_score=1, break_count=3)})
+        out = screen.score_screen(rows, {"weights": {"quality": 60, "value": 25, "momentum": 15}}, UNIT_STATS)
+        self.assertEqual(out[0]["adj_z"], screen.FLOOR)
+        self.assertTrue(out[0]["floored"])
+
+    def test_break_signal_additive_penalty(self):
+        # One break signal subtracts budget·K_BREAK from adj_z (additive — not a
+        # hard cap; decision 3). Neutral 3/3 card → adj_z = −budget·K_BREAK.
+        rows = facts({"ticker": "BRK", **carded(moat_score=3, earnings_score=3, break_count=1)})
+        out = screen.score_screen(rows, {"weights": {"quality": 100, "value": 0, "momentum": 0}}, UNIT_STATS)
+        self.assertAlmostEqual(out[0]["adj_z"], -screen.BUDGET * 0.5, places=9)
+
+    def test_carded_lift_beats_uncarded_same_base(self):
+        # A low-base strong-card name lifts above a same-base uncarded name.
         rows = facts(
-            {"ticker": "OUT", "rule_of_40": 26000, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
-            {"ticker": "NORM", "rule_of_40": 40, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
+            {"ticker": "LIFT", "rule_of_40": 0, "fcf_margin": 0, "gross_margin": 0, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0, **carded(moat_score=5, earnings_score=5, break_count=0)},
+            {"ticker": "FLAT", "rule_of_40": 0, "fcf_margin": 0, "gross_margin": 0, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0},
         )
-        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False}
-        out = screen.score_screen(rows, cfg)
-        self.assertLessEqual(out[0]["score"], 100.0001)
-        self.assertEqual(out[0]["ticker"], "OUT")
+        out = screen.score_screen(rows, {"weights": {"quality": 60, "value": 25, "momentum": 15}}, UNIT_STATS)
+        self.assertEqual(out[0]["ticker"], "LIFT")
+        self.assertGreater(out[0]["score"], out[1]["score"])
+
+    def test_winsor_clips_outlier_z(self):
+        # A huge raw quality value pins to +3σ (winsor), not an unbounded z.
+        rows = facts(
+            {"ticker": "OUT", "rule_of_40": 26000, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0},
+        )
+        out = screen.score_screen(rows, {"weights": {"quality": 100, "value": 0, "momentum": 0}}, UNIT_STATS)
+        self.assertLessEqual(out[0]["quality_z"], 3.0 + 1e-9)
+        self.assertLessEqual(out[0]["base_z"], 3.0 + 1e-9)
+
+    def test_final_pct_is_normal_cdf_percentile(self):
+        # A row with no scoreable lens (all inputs null) → every zL = 0 →
+        # base_z = 0 → Φ(0) = 0.5 → 50th percentile.
+        rows = facts({"ticker": "MID"})
+        out = screen.score_screen(rows, {"weights": {"quality": 60, "value": 25, "momentum": 15}}, UNIT_STATS)
+        self.assertEqual(out[0]["base_z"], 0.0)
+        self.assertEqual(out[0]["final_pct"], 50)
 
     def test_ticker_tiebreak_ascending_on_score_desc(self):
         rows = facts(
-            {"ticker": "ZZZ", "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
-            {"ticker": "AAA", "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
+            {"ticker": "ZZZ", "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0},
+            {"ticker": "AAA", "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0},
         )
-        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False}
-        out = screen.score_screen(rows, cfg)
+        out = screen.score_screen(rows, {"weights": {"quality": 100, "value": 0, "momentum": 0}}, UNIT_STATS)
         # equal scores → AAA before ZZZ
         self.assertEqual([r["ticker"] for r in out], ["AAA", "ZZZ"])
 
     def test_zero_ps_without_median_does_not_crash(self):
-        # A P/S of 0 with no recorded median used to divide 0/0 and crash the
-        # whole screen (ZeroDivisionError). It must score as unscoreable-on-value
-        # and rank alongside the rest, not blow up.
         rows = facts(
-            {"ticker": "ZERO", "ps": 0, "ps_median_12m": None, "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ret_52w": 1},
-            {"ticker": "NORM", "ps": 5, "ps_median_12m": 4, "rule_of_40": 20, "fcf_margin": 1, "gross_margin": 1, "ret_52w": 1},
+            {"ticker": "ZERO", "ps": 0, "ps_median_12m": None, "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "perf_52w_vs_spy": 1},
+            {"ticker": "NORM", "ps": 5, "ps_median_12m": 4, "rule_of_40": 20, "fcf_margin": 1, "gross_margin": 1, "perf_52w_vs_spy": 1},
         )
-        cfg = {"weights": {"quality": 45, "value": 25, "momentum": 20}, "aiMultiplier": False}
+        cfg = {"weights": {"quality": 45, "value": 25, "momentum": 20}}
         out = screen.score_screen(rows, cfg)
         self.assertEqual(len(out), 2)
 
     def test_topn_helper_via_run(self):
         rows = facts(
-            {"ticker": "A", "rule_of_40": 90, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
-            {"ticker": "B", "rule_of_40": 50, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
-            {"ticker": "C", "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
+            {"ticker": "A", "rule_of_40": 90, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0},
+            {"ticker": "B", "rule_of_40": 50, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0},
+            {"ticker": "C", "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0},
         )
-        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "topN": 2}
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "topN": 2}
         ranked = screen.score_screen(rows, cfg)
         top2 = [r["ticker"] for r in ranked[: cfg["topN"]]]
         self.assertEqual(top2, ["A", "B"])
+
+    def test_materialized_stats_used_when_passed(self):
+        # The same row scores differently against different materialized moments
+        # (the stats are read, not recomputed from the candidate set).
+        rows = facts({"ticker": "X", "rule_of_40": 100, "fcf_margin": 0, "gross_margin": 0, "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0})
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}}
+        lo = {**UNIT_STATS, "quality": {"mu": 0.0, "sigma": 1.0, "n": 100}}
+        hi = {**UNIT_STATS, "quality": {"mu": 0.0, "sigma": 1000.0, "n": 100}}
+        out_lo = screen.score_screen(rows, cfg, lo)
+        out_hi = screen.score_screen(rows, cfg, hi)
+        # bigger σ → smaller z → lower base_z
+        self.assertGreater(out_lo[0]["base_z"], out_hi[0]["base_z"])
 
 
 class _FakeDB:

@@ -743,7 +743,7 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
         return result
 
     combined_rationale: dict[str, str] = {
-        r["ticker"]: f"screen rank #{r['rank']} · score {r['score']:.1f}"
+        r["ticker"]: f"screen rank #{r['rank']} · {r.get('final_pct', 0)}th pct"
         for r in candidate_rows
     }
 

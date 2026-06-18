@@ -24,14 +24,19 @@
  */
 
 import { getSupabase } from "@/lib/supabase";
-import { scoreScreen, type ScreenFacts, type ScreenResult } from "@/lib/screen/score";
+import {
+  scoreScreen,
+  type LensStats,
+  type ScreenFacts,
+  type ScreenResult,
+} from "@/lib/screen/score";
 import type { ScreenConfig } from "@/lib/screen/config";
 
 const PAGE = 1000;
 const TTL_MS = 5 * 60 * 1000;
 
-let cache: { at: number; data: ScreenFacts[] } | null = null;
-let inflight: Promise<ScreenFacts[]> | null = null;
+let cache: { at: number; data: ScreenFacts[]; stats: LensStats | undefined } | null = null;
+let inflight: Promise<{ data: ScreenFacts[]; stats: LensStats | undefined }> | null = null;
 
 async function fetchFacts(): Promise<ScreenFacts[]> {
   const supabase = getSupabase();
@@ -81,8 +86,45 @@ async function fetchFacts(): Promise<ScreenFacts[]> {
       bull: (r.bull as boolean | null) ?? null,
       bear: (r.bear as boolean | null) ?? null,
       quality_score: num(r.quality_score),
+      moat_score: num(r.moat_score),
+      earnings_score: num(r.earnings_score),
+      growth_score: num(r.growth_score),
+      break_count: num(r.break_count),
+      has_card: Boolean(r.has_card),
+      research_card: (r.research_card as ScreenFacts["research_card"]) ?? null,
+      industry_ps_median: num(r.industry_ps_median),
+      sector_ps_median: num(r.sector_ps_median),
+      peer_ps_median: num(r.peer_ps_median),
+      peer_basis: (r.peer_basis as string | null) ?? null,
     } satisfies ScreenFacts;
   });
+}
+
+/**
+ * The materialized universe lens μ/σ (screen_lens_stats, migration 057) — the
+ * moments both scorers standardize against. Returns undefined when the table is
+ * empty/unavailable so scoreScreen falls back to deriving them from the facts.
+ */
+async function fetchLensStats(): Promise<LensStats | undefined> {
+  try {
+    const { data, error } = await getSupabase()
+      .from("screen_lens_stats")
+      .select("lens, mu, sigma, n");
+    if (error || !data || !data.length) return undefined;
+    const out = {} as LensStats;
+    for (const row of data as { lens: string; mu: unknown; sigma: unknown; n: unknown }[]) {
+      if (row.lens === "quality" || row.lens === "value" || row.lens === "momentum") {
+        out[row.lens] = {
+          mu: num(row.mu) ?? 0,
+          sigma: num(row.sigma) ?? 1,
+          n: num(row.n) ?? 0,
+        };
+      }
+    }
+    return out.quality && out.value && out.momentum ? out : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -117,26 +159,36 @@ async function fetchSpyRet52w(): Promise<number | null> {
   return (latest / ago - 1) * 100;
 }
 
-/** Cached facts load — fresh within TTL, otherwise refetched. Concurrent calls
- *  share one in-flight fetch. */
-export async function loadFacts(): Promise<ScreenFacts[]> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.data;
+/** Cached facts + lens-stats load — fresh within TTL, otherwise refetched.
+ *  Concurrent calls share one in-flight fetch. */
+async function loadFactsAndStats(): Promise<{
+  data: ScreenFacts[];
+  stats: LensStats | undefined;
+}> {
+  if (cache && Date.now() - cache.at < TTL_MS) {
+    return { data: cache.data, stats: cache.stats };
+  }
   if (inflight) return inflight;
   inflight = (async () => {
     try {
-      const data = await fetchFacts();
-      cache = { at: Date.now(), data };
-      return data;
+      const [data, stats] = await Promise.all([fetchFacts(), fetchLensStats()]);
+      cache = { at: Date.now(), data, stats };
+      return { data, stats };
     } catch (err) {
       // Never let a transient fetch failure throw the whole page; serve the
       // last good snapshot if we have one, else an empty set.
       console.error("loadFacts failed:", err);
-      return cache?.data ?? [];
+      return { data: cache?.data ?? [], stats: cache?.stats };
     } finally {
       inflight = null;
     }
   })();
   return inflight;
+}
+
+/** Backwards-compatible facts-only accessor (callers that don't need stats). */
+export async function loadFacts(): Promise<ScreenFacts[]> {
+  return (await loadFactsAndStats()).data;
 }
 
 export interface ScreenResponse extends ScreenResult {
@@ -181,8 +233,8 @@ export async function runScreen(
   config: ScreenConfig,
   rejected?: Set<string>,
 ): Promise<ScreenResponse> {
-  const [allFacts, excluded] = await Promise.all([
-    loadFacts(),
+  const [{ data: allFacts, stats }, excluded] = await Promise.all([
+    loadFactsAndStats(),
     activeExclusions(),
   ]);
   let facts = excluded.size
@@ -191,7 +243,9 @@ export async function runScreen(
   if (config.hideRejected !== false && rejected && rejected.size) {
     facts = facts.filter((f) => !rejected.has(f.ticker.toUpperCase()));
   }
-  const result = scoreScreen(facts, config, facts.length);
+  // Stats are computed over the full materialized universe (screen_lens_stats),
+  // not the post-exclusion subset — the canonical moments both scorers read.
+  const result = scoreScreen(facts, config, facts.length, stats);
   const data_asof = facts.reduce<string | null>((acc, f) => {
     if (f.price_asof && (!acc || f.price_asof > acc)) return f.price_asof;
     return acc;
