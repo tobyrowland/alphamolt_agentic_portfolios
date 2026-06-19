@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any
 
@@ -29,6 +30,7 @@ from llm_picker import (
 )
 from llm_providers import LLMProviderError, call_llm
 from portfolio import PortfolioError
+from web_search import recent_developments
 
 
 # Narrative + AI-overlay fields pulled from the legacy `companies` row to
@@ -122,6 +124,14 @@ LLM_WATCHLIST_BUYER_DEFAULTS: dict[str, Any] = {
     "max_tokens_phase2": 16384,
     "temperature": 0.2,
     "max_signals_per_kind": 5,      # cap LLM-emitted signal arrays
+    # Per-name web search at buy time (SerpAPI). Each candidate is enriched with
+    # a compact "recent developments" block the LLM uses for entry TIMING /
+    # near-term CATALYST / RISK — NOT to re-derive business quality (that's the
+    # shared research card's job). Auto-no-ops when SERPAPI_API_KEY is unset, so
+    # it's safe to leave on everywhere. Deduped per heartbeat run (module cache).
+    "news_search": True,
+    "news_queries": 1,              # SerpAPI queries per candidate (1 = cheapest)
+    "news_max_chars": 1500,         # truncation cap for the injected block
 }
 
 
@@ -164,6 +174,7 @@ Discipline:
 - Conviction 1-5 is only meaningful when verdict="BUY". For PASS, leave conviction=1.
 - Read the curator's rationale, but don't be anchored by it — the curator picks broadly; you decide whether this specific equity is right for THIS portfolio TODAY at THIS price.
 - Read the prior in-house BUY/BEAR verdicts and the research card as data points, not directives.
+- RECENT DEVELOPMENTS (a web-search snippet) may be provided. Use it for entry TIMING and near-term CATALYST / RISK — is now a good moment to add, or is there a fresh red flag? It does NOT override the research card's business-quality read; it's news headlines, so weigh it for what it is and don't over-trade on a single snippet.
 
 Thesis discipline (BUY only):
 - thesis_text: 2-4 sentences. WHAT you expect this equity to do (growth trajectory, margin path, valuation re-rating) and WHY.
@@ -199,6 +210,9 @@ PRIOR IN-HOUSE VERDICTS (from the screening pipeline — treat as data, not dire
 
 SHARED RESEARCH CARD (pre-computed business assessment — your starting point; decide mandate-fit + entry, don't re-derive these):
 {research_card}
+
+RECENT DEVELOPMENTS (web search — use for entry TIMING / near-term CATALYST / RISK, NOT to re-derive business quality):
+{recent_news}
 
 EQUITY DATA (extended-tier snapshot, today's universe):
 {equity_data_json}
@@ -366,6 +380,10 @@ def _evaluate_ticker(
     bull_eval = (equity_data.get("narrative") or {}).get("bull_eval") or "—"
     bear_eval = (equity_data.get("narrative") or {}).get("bear_eval") or "—"
     research = equity_data.get("research")
+    recent_news = equity_data.get("recent_news") or "(no recent web results)"
+    # The news already renders as its own readable block — keep it out of the
+    # equity-data JSON so it isn't injected twice.
+    equity_for_json = {k: v for k, v in equity_data.items() if k != "recent_news"}
 
     pc = _portfolio_context(portfolio)
     cash_pct = (pc["cash_usd"] / pc["total_value_usd"] * 100) if pc["total_value_usd"] else 0.0
@@ -381,7 +399,8 @@ def _evaluate_ticker(
         bull_eval=bull_eval,
         bear_eval=bear_eval,
         research_card=_format_research_card(research),
-        equity_data_json=json.dumps(equity_data, default=str, ensure_ascii=False),
+        recent_news=recent_news,
+        equity_data_json=json.dumps(equity_for_json, default=str, ensure_ascii=False),
     )
 
     try:
@@ -585,6 +604,70 @@ def build_candidate_data(
         for t in candidates
         if t in fact_rows
     }
+
+
+# Process-level cache so a ticker searched for one portfolio/buyer is reused by
+# every other portfolio/buyer in the SAME heartbeat run. Each heartbeat is a
+# fresh process, so the cache lives for exactly one run — no stale-news risk.
+_NEWS_RUN_CACHE: dict[str, str] = {}
+
+
+def serpapi_key() -> str:
+    """SerpAPI key from the environment (matches update_ai_narratives.py)."""
+    return os.environ.get("SERPAPI_API_KEY", "") or os.environ.get("SERP_API_KEY", "")
+
+
+def attach_recent_news(
+    by_ticker_data: dict[str, dict],
+    *,
+    api_key: str,
+    concurrency: int = 5,
+    logger: logging.Logger = logger,
+    cache: dict[str, str] | None = None,
+    max_queries: int = 1,
+    max_chars: int = 1500,
+) -> int:
+    """Enrich each candidate's ``equity_data`` with a ``recent_news`` block, in place.
+
+    Per-name SerpAPI fetch at buy time, run in parallel. Deduped via ``cache``
+    (defaults to the process-level run cache) so a ticker is searched at most
+    once per heartbeat run across all portfolios/buyers. No-op (returns 0) when
+    ``api_key`` is falsy. Best-effort: a failed fetch leaves the ticker without
+    news rather than aborting the run.
+
+    Returns the number of live SerpAPI fetches performed (cache hits excluded).
+    """
+    if not api_key:
+        return 0
+    if cache is None:
+        cache = _NEWS_RUN_CACHE
+
+    to_fetch = [t for t in by_ticker_data if t not in cache]
+
+    def _fetch(t: str) -> tuple[str, str]:
+        try:
+            company = (by_ticker_data[t] or {}).get("company_name")
+            text = recent_developments(
+                company, t, api_key=api_key, logger=logger,
+                max_queries=max_queries, max_chars=max_chars,
+            )
+        except Exception as exc:  # defensive — search is never load-bearing
+            logger.warning("recent_developments failed for %s: %s", t, exc)
+            text = ""
+        return t, text
+
+    fetched = 0
+    if to_fetch:
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+            for t, text in pool.map(_fetch, to_fetch):
+                cache[t] = text
+                fetched += 1
+
+    for t, data in by_ticker_data.items():
+        news = cache.get(t)
+        if news:
+            data["recent_news"] = news
+    return fetched
 
 
 def evaluate_candidates(
@@ -819,6 +902,22 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
     if not candidates:
         result.notes["reason"] = "no Level 0 facts for any candidate"
         return result
+
+    # Per-name web search at buy time — enrich each candidate with a compact
+    # "recent developments" block the LLM weighs for entry timing / catalysts /
+    # near-term risk. Auto-no-ops when SERPAPI_API_KEY is unset.
+    if params.get("news_search"):
+        key = serpapi_key()
+        if key:
+            news_fetched = attach_recent_news(
+                {t: by_ticker_data[t] for t in candidates},
+                api_key=key,
+                concurrency=int(params["concurrency"]),
+                logger=logger,
+                max_queries=int(params.get("news_queries", 1)),
+                max_chars=int(params.get("news_max_chars", 1500)),
+            )
+            result.notes["news_fetched"] = news_fetched
 
     evaluations, eval_notes = evaluate_candidates(
         provider=provider,
