@@ -12,16 +12,15 @@ import json
 import logging
 import os
 import sys
-import re
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import requests
 from dateutil import parser as dateparser
 from dotenv import load_dotenv
 
 from db import SupabaseDB
+from web_search import gather_web_context
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -32,7 +31,6 @@ STALENESS_DAYS = 90
 # names each run so the first pass over the ~3k universe doesn't fire thousands
 # of LLM calls at once — keeps daily cost flat, never-narrated names go first.
 TIER1_NARRATIVE_BATCH = 100
-SERPAPI_ENDPOINT = "https://serpapi.com/search"
 GEMINI_MODEL = "gemini-2.5-flash"
 DELAY_BETWEEN_CALLS = 2  # seconds between tickers
 RETRY_DELAY = 10  # seconds between retries
@@ -91,126 +89,6 @@ def setup_logging() -> logging.Logger:
     logger.addHandler(sh)
 
     return logger
-
-
-# ---------------------------------------------------------------------------
-# SerpAPI web search
-# ---------------------------------------------------------------------------
-
-
-def serpapi_search(query: str, api_key: str, logger: logging.Logger) -> str:
-    """Run a SerpAPI Google search and return concatenated snippets."""
-    try:
-        resp = requests.get(
-            SERPAPI_ENDPOINT,
-            params={"q": query, "api_key": api_key, "num": 5, "engine": "google"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        logger.warning("SerpAPI search failed for query '%s': %s", query, exc)
-        return ""
-
-    organic = data.get("organic_results", [])
-    snippets = []
-    total_chars = 0
-    for result in organic[:5]:
-        snippet = result.get("snippet", "")
-        title = result.get("title", "")
-        entry = f"- {title}: {snippet}"
-        if total_chars + len(entry) > 2000:
-            break
-        snippets.append(entry)
-        total_chars += len(entry)
-
-    return "\n".join(snippets)
-
-
-# Map terse flag keywords to natural-language search terms
-_EVENT_TYPE_MAP = {
-    "margin swing":   "one-time charge margin impact",
-    "other inc/exp":  "other income expense non-recurring charge",
-    "write-down":     "write-down impairment",
-    "restructuring":  "restructuring charge",
-    "settlement":     "legal settlement",
-    "acquisition":    "acquisition one-time cost",
-    "divestiture":    "divestiture asset sale",
-    "goodwill":       "goodwill impairment write-off",
-    "tax":            "one-time tax benefit charge",
-    "ipo":            "IPO related expenses",
-    "sbc":            "stock-based compensation charge",
-}
-
-# Quarter mapping from month numbers
-_MONTH_TO_QUARTER = {
-    "01": "Q1", "02": "Q1", "03": "Q1",
-    "04": "Q2", "05": "Q2", "06": "Q2",
-    "07": "Q3", "08": "Q3", "09": "Q3",
-    "10": "Q4", "11": "Q4", "12": "Q4",
-}
-
-
-def _build_event_search_query(company: str, ticker: str, event_text: str) -> str:
-    """Turn terse analyst flag text into a useful Google search query.
-
-    Flags look like: '\u2b07 margin swing -22pp vs norm (2025-09)'
-    We want: 'Celsius Holdings CELH one-time charge margin impact Q3 2025'
-    """
-    # Extract date if present -- formats like (2025-09) or (2024-12)
-    date_match = re.search(r"\((\d{4})-(\d{2})\)", event_text)
-    quarter_str = ""
-    if date_match:
-        year = date_match.group(1)
-        month = date_match.group(2)
-        quarter_str = f"{_MONTH_TO_QUARTER.get(month, '')} {year}"
-
-    # Find matching event type from our map
-    event_lower = event_text.lower()
-    search_terms = "one-time non-recurring charge"  # default
-    for key, val in _EVENT_TYPE_MAP.items():
-        if key in event_lower:
-            search_terms = val
-            break
-
-    return f"{company} {ticker} {search_terms} {quarter_str}".strip()
-
-
-def gather_web_context(
-    company: str, ticker: str, api_key: str, logger: logging.Logger,
-    one_time_event: str = "",
-) -> str:
-    """Run SerpAPI searches and merge results.
-
-    When a one_time_event flag is provided, runs an additional targeted search
-    to find context about the specific event (write-down, settlement, etc.).
-    """
-    current_year = date.today().year
-    prev_year = current_year - 1
-
-    q1 = f"{company} {ticker} earnings results {prev_year} {current_year}"
-    q2 = f"{company} {ticker} outlook forecast analyst {current_year}"
-
-    s1 = serpapi_search(q1, api_key, logger)
-    time.sleep(1)
-    s2 = serpapi_search(q2, api_key, logger)
-
-    parts = []
-    if s1:
-        parts.append(f"EARNINGS SEARCH:\n{s1}")
-    if s2:
-        parts.append(f"OUTLOOK SEARCH:\n{s2}")
-
-    # Targeted search for the one-time event to give the model real context
-    if one_time_event:
-        q3 = _build_event_search_query(company, ticker, one_time_event)
-        time.sleep(1)
-        s3 = serpapi_search(q3, api_key, logger)
-        if s3:
-            parts.append(f"ONE-TIME EVENT SEARCH:\n{s3}")
-            logger.info("  Found web context for one-time event on %s", ticker)
-
-    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

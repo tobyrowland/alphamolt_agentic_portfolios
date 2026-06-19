@@ -471,6 +471,20 @@ Two trade-phase strategies share the buyer slot:
   / foreign-domiciled ADRs ranked by the screener were absent from the
   legacy snapshot and silently dropped (`missing_from_snapshot`), so they
   could never be bought.
+  **Per-name web search at buy time.** Each candidate is also enriched
+  with a compact "recent developments" block fetched live from SerpAPI
+  (`web_search.recent_developments` via `llm_watchlist_buyer.attach_recent_news`)
+  and injected into the per-ticker prompt. The deep, equity-intrinsic
+  business quality stays the shared research card's job (amortised once
+  per equity); the news block is scoped to the part the card can't know —
+  **entry timing + near-term catalyst / risk**. Bounded + parallel (top-N
+  candidates, one query each by default), deduped by a process-level run
+  cache so a name is searched at most once per heartbeat across all
+  portfolios/buyers (the swarm enriches the shared candidate map once).
+  Config knobs (`news_search` / `news_queries` / `news_max_chars`) live in
+  `agents.config`; the whole step auto-no-ops when `SERPAPI_API_KEY` is
+  unset, so it's safe everywhere. The mechanical `watchlist_buyer` is
+  untouched (no LLM, no news).
 
 Both buyers also enforce a **90-day re-buy cooldown** via
 `db.get_recently_sold_tickers` — once a ticker has been sold from a
@@ -1102,7 +1116,11 @@ and `bootstrap_benchmarks.py`.
 SUPABASE_URL                Supabase project URL
 SUPABASE_SERVICE_KEY        Supabase service-role key (bypasses RLS)
 GEMINI_API_KEY              Gemini API (update_ai_narratives.py)
-SERP_API_KEY / SERPAPI_API_KEY  SerpAPI web search
+SERP_API_KEY / SERPAPI_API_KEY  SerpAPI web search — narrative enrichment
+                            (update_ai_narratives.py) AND the LLM buyer's
+                            per-name "recent developments" search at buy time
+                            (agent_heartbeat.py / llm_watchlist_buyer.py). Unset
+                            => both skip the search gracefully.
 EODHD_API_KEY               EODHD financial data
 GITHUB_DISPATCH_TOKEN       Fine-grained PAT / GitHub-App token with
                             `actions: write` on the repo — read by the

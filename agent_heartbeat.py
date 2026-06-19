@@ -503,6 +503,23 @@ def _run_portfolio_swarm(
         by_ticker_data = _llm_buyer.build_candidate_data(db, fact_rows, eval_pool)
         eval_pool = [t for t in eval_pool if t in by_ticker_data]
 
+        # Per-name web search at buy time — enrich the shared candidate data ONCE
+        # (every co-briefed buyer reads the same dict; the run cache dedupes across
+        # portfolios). Auto-no-ops when SERPAPI_API_KEY is unset. Uses the buyer
+        # default knobs since the enrichment is shared, not per-buyer.
+        _news_defaults = _llm_buyer.LLM_WATCHLIST_BUYER_DEFAULTS
+        if _news_defaults.get("news_search"):
+            _key = _llm_buyer.serpapi_key()
+            if _key:
+                _llm_buyer.attach_recent_news(
+                    by_ticker_data,
+                    api_key=_key,
+                    concurrency=int(_news_defaults["concurrency"]),
+                    logger=logger,
+                    max_queries=int(_news_defaults.get("news_queries", 1)),
+                    max_chars=int(_news_defaults.get("news_max_chars", 1500)),
+                )
+
     total_value = float(book.get("total_value_usd") or 0)
     cash = float(book.get("cash_usd") or 0)
     n = len(draftable)
