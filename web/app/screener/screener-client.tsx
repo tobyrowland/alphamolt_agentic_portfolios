@@ -1028,14 +1028,10 @@ export default function ScreenerClient({
       </div>
 
       <div className="flex flex-col gap-1.5 mt-1.5">
-        {rows.slice(0, visible).map((r, i) => (
+        {rows.slice(0, visible).map((r) => (
           <RowView
             key={r.ticker}
             r={r}
-            cut={i === data.cut_index && data.cut_index < rows.length}
-            dim={i >= data.cut_index}
-            topN={config.topN}
-            runHref={runHref}
             hasPage={linkable.has(r.ticker.toUpperCase())}
             canExclude={signedIn}
             exclBusy={exclBusy}
@@ -1661,10 +1657,6 @@ function HoldingPill({ h }: { h: ScreenHolding | null }) {
 
 function RowView({
   r,
-  cut,
-  dim,
-  topN,
-  runHref,
   hasPage,
   canExclude,
   exclBusy,
@@ -1674,10 +1666,6 @@ function RowView({
   onExpand,
 }: {
   r: Row;
-  cut: boolean;
-  dim: boolean;
-  topN: number;
-  runHref: string;
   hasPage: boolean;
   /** Owner-only: show the ✕ "remove from screener for a year" control. */
   canExclude: boolean;
@@ -1721,21 +1709,9 @@ function RowView({
 
   return (
     <>
-      {cut && (
-        <div className="flex justify-between items-center gap-2 flex-wrap bg-green/[0.07] border border-green/45 rounded-lg px-2.5 py-1.5 mt-1">
-          <span className="font-mono text-[10px] text-green tracking-[0.05em]">
-            ▲ TOP {topN} — what flows to a portfolio
-          </span>
-          <Link href={runHref} className="font-mono text-[10px] text-green hover:underline">
-            Run as a portfolio →
-          </Link>
-        </div>
-      )}
       <div
         style={tintStyle}
-        className={`relative rounded-lg border border-white/10 hover:border-white/20 overflow-hidden ${
-          dim ? "opacity-50" : ""
-        }`}
+        className="relative rounded-lg border border-white/10 hover:border-white/20 overflow-hidden"
       >
         <span className={`absolute left-0 top-0 bottom-0 w-1 ${edgeCls}`} aria-hidden />
         {/* Collapsed row head — click toggles the expand. */}
