@@ -1481,8 +1481,8 @@ function ScoreLedger({ r }: { r: Row }) {
           {(r.break_count ?? 0) > 0 && (
             <Line
               label={`Break signals ×${r.break_count}`}
-              v={`${sgn(r.break_z)}σ`}
-              tone="text-[var(--color-red,#FF3333)]"
+              v="watch-only"
+              tone="text-text-muted"
             />
           )}
           {r.capped && <Line label="at +budget ceiling" v={`+${BUDGET}σ`} tone="text-text-muted" />}

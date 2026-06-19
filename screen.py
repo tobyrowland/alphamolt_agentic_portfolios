@@ -47,7 +47,7 @@ MOM_CAP = 40.0     # blow-off-top collar
 # percentile round(Φ(final_z)·100). These MUST match web/lib/screen/score.ts.
 W_MOAT = 0.58       # AI moat weight inside the trajectory adjustment
 W_EARN = 0.42       # AI earnings-quality weight
-K_BREAK = 0.5       # per-break-signal penalty (additive — decision 3)
+# (break-count penalty removed from the screen score — see _adj_z)
 FLOOR = -1.5        # asymmetric floor on adj_z (in σ)
 BUDGET = 0.7        # AI authority ceiling (in σ) — fixed server constant (decision 1)
 LENS_NAMES = ("quality", "value", "momentum")
@@ -213,21 +213,23 @@ def _adj_z(row: dict, budget: float = BUDGET) -> dict:
     if not has_card:
         return {"adj_z": 0.0, "moat_z": 0.0, "earn_z": 0.0, "break_z": 0.0,
                 "capped": False, "floored": False, "has_card": False}
-    nbreak = _f(row.get("break_count")) or 0.0
     u_moat = (moat - 3) / 2
     u_earn = (earn - 3) / 2
     moat_z = budget * W_MOAT * u_moat
     earn_z = budget * W_EARN * u_earn
-    break_z = -budget * K_BREAK * nbreak
+    # Break signals are forward-looking watch-conditions (e.g. "fcf_margin < 5%"),
+    # not faults that are currently true — and every card ships a base set of 3+.
+    # Counting them sank EVERY researched name below the unresearched ones, so the
+    # screen score no longer penalizes them. They stay visible on the card + the
+    # badge flag pip, and still drive the buyer/reviewer.
+    break_z = 0.0
     smooth_unit = W_MOAT * u_moat + W_EARN * u_earn  # natural max = 1.0 ⇒ +budget
-    adj = moat_z + earn_z + break_z
+    adj = moat_z + earn_z
     floored = adj < FLOOR
     if floored:
         adj = FLOOR
-    # Upward bound is structural: the smooth part maxes at +budget (both u=1),
-    # break signals only subtract — so adj never exceeds +budget. `capped` is a
-    # display flag for a name that hit that natural ceiling.
-    capped = (nbreak == 0 and smooth_unit >= 0.999 and budget > 0)
+    # Upward bound is structural: the smooth part maxes at +budget (both u=1).
+    capped = (smooth_unit >= 0.999 and budget > 0)
     return {"adj_z": adj, "moat_z": moat_z, "earn_z": earn_z, "break_z": break_z,
             "capped": capped, "floored": floored, "has_card": True}
 
