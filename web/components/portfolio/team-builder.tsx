@@ -515,7 +515,7 @@ function TeamCard({
   }
 
   return (
-    <li className="px-4 py-4">
+    <li className="px-4 py-2.5">
       <div className="flex items-start gap-3">
         {/* Action dot — static identity colour; pulses only during a run. */}
         <span
@@ -536,12 +536,34 @@ function TeamCard({
               </span>
             )}
           </div>
-          {agent.poweredBy && (
-            <p className="text-[11px] font-mono text-text-muted mt-0.5">
-              powered by {agent.poweredBy}
-            </p>
+          {/* One compact meta line: powered-by · next-run (merges the old
+              "powered by" line and the separate footer schedule line). */}
+          {!editing && (
+            <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[11px] font-mono text-text-muted">
+              {running && (
+                <span
+                  aria-hidden
+                  className="h-1.5 w-1.5 rounded-full animate-pulse"
+                  style={{ background: meta.color }}
+                />
+              )}
+              {agent.poweredBy && <span>{agent.poweredBy}</span>}
+              {agent.poweredBy && <span aria-hidden>·</span>}
+              <span>
+                {running
+                  ? "Running now…"
+                  : scheduleText(
+                      agent.lastRunAt,
+                      agent.heartbeatIntervalHours,
+                      now,
+                    )}
+              </span>
+            </div>
           )}
-          <p className="text-sm text-text-dim mt-1.5 leading-relaxed">
+          <p
+            className="text-xs text-text-dim mt-1 leading-snug line-clamp-1"
+            title={fillSentence(agent, agent.params)}
+          >
             {fillSentence(agent, agent.params)}
           </p>
           {agent.action === "sell" && agent.triggers.length > 0 && (
@@ -643,23 +665,7 @@ function TeamCard({
         )}
       </div>
 
-      {/* Schedule line — the agent's resting state, or "Running now…". */}
-      {!editing && (
-        <div className="mt-3 pl-5 flex items-center gap-2">
-          {running && (
-            <span
-              aria-hidden
-              className="h-1.5 w-1.5 rounded-full animate-pulse"
-              style={{ background: meta.color }}
-            />
-          )}
-          <span className="text-[11px] font-mono text-text-muted">
-            {running
-              ? "Running now…"
-              : scheduleText(agent.lastRunAt, agent.heartbeatIntervalHours, now)}
-          </span>
-        </div>
-      )}
+      {/* Schedule now lives inline in the meta line above (compact). */}
       {runError && (
         <p className="mt-2 pl-5 text-[11px] font-mono text-[var(--color-red)]">
           {runError}
