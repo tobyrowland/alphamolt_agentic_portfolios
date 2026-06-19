@@ -11,12 +11,15 @@ import screen  # noqa: E402
 fx = json.load(open(os.path.join(os.path.dirname(__file__), "parity_fixture.json")))
 ts = json.load(open(sys.argv[1]))
 
-ranked = screen.score_screen(fx["rows"], fx["config"], fx["stats"])
+ranked = screen.score_screen(fx["rows"], fx["config"])
 py = {
     r["ticker"]: {
         "final_pct": r["final_pct"],
         "base_pct": r["base_pct"],
         "rank": r["rank"],
+        "quality_pct": r["quality_pct"],
+        "value_pct": r["value_pct"],
+        "momentum_pct": r["momentum_pct"],
         "adj_z": round(r["adj_z"], 6),
         "base_z": round(r["base_z"], 6),
         "firing_breaks": r["firing_breaks"],
@@ -32,7 +35,8 @@ for row in ts:
         print(f"MISSING in python: {t}")
         ok = False
         continue
-    for k in ("final_pct", "base_pct", "rank", "firing_breaks"):
+    for k in ("final_pct", "base_pct", "rank", "firing_breaks",
+              "quality_pct", "value_pct", "momentum_pct"):
         if row[k] != p[k]:
             print(f"DIVERGE {t}.{k}: ts={row[k]} py={p[k]}")
             ok = False

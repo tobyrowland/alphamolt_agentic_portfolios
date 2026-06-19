@@ -9,16 +9,19 @@ const jiti = createJiti(import.meta.url, { alias: { "@": process.cwd() } });
 const { scoreScreen } = await jiti.import("./lib/screen/score.ts");
 
 import { readFileSync } from "node:fs";
-const { rows, config, stats } = JSON.parse(readFileSync("parity_fixture.json", "utf8"));
+const { rows, config } = JSON.parse(readFileSync("parity_fixture.json", "utf8"));
 
-// score.ts ScreenFacts expects the full row shape; the fixture already provides
-// every field. scoreScreen(facts, config, total, stats).
-const res = scoreScreen(rows, config, rows.length, stats);
+// score.ts ScreenFacts expects the full row shape; the fixture provides it.
+// The percentile base needs no stats — scoreScreen(facts, config, total).
+const res = scoreScreen(rows, config, rows.length);
 const out = res.rows.map((r) => ({
   ticker: r.ticker,
   final_pct: r.final_pct,
   base_pct: r.base_pct,
   rank: r.rank,
+  quality_pct: r.quality_pct,
+  value_pct: r.value_pct,
+  momentum_pct: r.momentum_pct,
   adj_z: Math.round(r.adj_z * 1e6) / 1e6,
   base_z: Math.round(r.base_z * 1e6) / 1e6,
   firing_breaks: r.firing_breaks,

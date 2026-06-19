@@ -85,27 +85,21 @@ export interface ScreenFacts {
 export interface ScoredRow extends ScreenFacts {
   rank: number;
   score: number; // = final_z, the single ordering score
-  base_z: number;
   adj_z: number;
   moat_z: number;
   earn_z: number;
   break_z: number;
   capped: boolean;
   floored: boolean;
-  quality_z: number;
-  value_z: number;
-  momentum_z: number;
-  base_pct: number; // round(Φ(base_z)·100)
+  quality_pct: number; // lens empirical percentile (0–100) over the universe
+  value_pct: number;
+  momentum_pct: number;
+  base_score: number; // weighted blend of lens percentiles, ∈ [0,1]
+  base_z: number; // probit(base_score)
+  base_pct: number; // round(base_score·100) — the quant percentile
   final_pct: number; // round(Φ(final_z)·100) — the displayed Score
   firing_breaks: number; // break signals currently firing against the row's facts
 }
-
-export interface LensStat {
-  mu: number;
-  sigma: number;
-  n: number;
-}
-export type LensStats = Record<"quality" | "value" | "momentum", LensStat>;
 
 // Momentum collar (brief): a falling knife floors, a blow-off top caps — applied
 // to the raw lens value before standardizing. Momentum is alpha vs SPY.
@@ -136,15 +130,62 @@ function erf(x: number): number {
 }
 export const Phi = (z: number): number => 0.5 * (1 + erf(z / Math.SQRT2));
 
-// ---- raw lens values (brief §2) — must match screen.py _lens_values ---------
+// Inverse normal CDF Φ⁻¹(p) — Acklam's approximation. Maps a blended percentile
+// back to σ-space so the AI adjustment adds consistently. Mirrors screen.py probit().
+function probit(p: number): number {
+  const a = [-3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2,
+    1.38357751867269e2, -3.066479806614716e1, 2.506628277459239];
+  const b = [-5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2,
+    6.680131188771972e1, -1.328068155288572e1];
+  const c = [-7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838,
+    -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996,
+    3.754408661907416];
+  const pl = 0.02425, ph = 1 - 0.02425;
+  let q: number, r: number;
+  if (p < pl) {
+    q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+      ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+  }
+  if (p <= ph) {
+    q = p - 0.5;
+    r = q * q;
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+      (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+  }
+  q = Math.sqrt(-2 * Math.log(1 - p));
+  return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+    ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+}
+
+/** Empirical percentile of x within a pre-sorted universe (∈[0,1]); missing
+ *  value or empty universe ⇒ 0.5. Mirrors screen.py _pct_rank (bisect_right/n). */
+function pctRank(sortedVals: number[], x: number | null): number {
+  if (x == null || sortedVals.length === 0) return 0.5;
+  let lo = 0, hi = sortedVals.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sortedVals[mid] <= x) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo / sortedVals.length;
+}
+
+// ---- raw lens values — must match screen.py _lens_values --------------------
 function lensValues(r: ScreenFacts): {
   xQ: number | null;
   xV: number | null;
   xM: number | null;
 } {
-  const r40 = num(r.rule_of_40);
   const fcf = num(r.fcf_margin);
   const gm = num(r.gross_margin);
+  // Growth-capped Rule-of-40 (cap the YoY-growth component at +100%) so
+  // micro-revenue artifacts don't poison the Quality lens. Falls back to the
+  // stored R40 when rev_growth/net_margin aren't both present. Matches screen.py.
+  const revG = num(r.rev_growth_ttm);
+  const netM = num(r.net_margin);
+  const r40 = revG != null && netM != null ? Math.min(revG, 100) + netM : num(r.rule_of_40);
   let xQ: number | null;
   if (r40 == null && fcf == null && gm == null) xQ = null;
   else xQ = 0.6 * (r40 ?? 0) + 0.25 * (fcf ?? 0) + 0.15 * (gm ?? 0);
@@ -157,39 +198,6 @@ function lensValues(r: ScreenFacts): {
   const perf = num(r.perf_52w_vs_spy);
   const xM = perf == null ? null : Math.max(MOM_FLOOR, Math.min(MOM_CAP, perf));
   return { xQ, xV, xM };
-}
-
-function statsFromValues(vals: number[]): LensStat {
-  const n = vals.length;
-  if (n === 0) return { mu: 0, sigma: 1, n: 0 };
-  const mu = vals.reduce((a, b) => a + b, 0) / n;
-  const variance = vals.reduce((a, v) => a + (v - mu) * (v - mu), 0) / n;
-  let sigma = Math.sqrt(variance);
-  if (!(sigma > 0)) sigma = 1; // no spread (or NaN) → neutral scale
-  return { mu, sigma, n };
-}
-
-/** Per-lens μ/σ over the (pre-filter) facts — the in-memory fallback before the
- *  stats table is materialized. Identical derivation to screen.py so parity holds. */
-export function lensStatsFromFacts(facts: ScreenFacts[]): LensStats {
-  const cols: Record<string, number[]> = { quality: [], value: [], momentum: [] };
-  for (const r of facts) {
-    const { xQ, xV, xM } = lensValues(r);
-    if (xQ != null) cols.quality.push(xQ);
-    if (xV != null) cols.value.push(xV);
-    if (xM != null) cols.momentum.push(xM);
-  }
-  return {
-    quality: statsFromValues(cols.quality),
-    value: statsFromValues(cols.value),
-    momentum: statsFromValues(cols.momentum),
-  } as LensStats;
-}
-
-function z(x: number | null, st: LensStat | undefined): number {
-  if (x == null || !st) return 0;
-  const sigma = st.sigma || 1;
-  return Math.max(-3, Math.min(3, (x - st.mu) / sigma));
 }
 
 interface Adj {
@@ -316,34 +324,49 @@ export interface ScreenResult {
 
 /**
  * Rank the universe for a config. `total` is the full Tier 1 count (pre-filter)
- * for the `total_universe` field; defaults to facts.length. `stats` are the
- * materialized lens μ/σ (screen_lens_stats); when omitted they're derived from
- * the full `facts` set — identically to screen.py, so parity holds.
+ * for the `total_universe` field; defaults to facts.length. The quant base ranks
+ * each lens by its EMPIRICAL PERCENTILE over the loaded universe (outlier-robust),
+ * blends them, then probit-maps to σ. Identical to screen.py over the same
+ * universe, so parity holds.
  */
 export function scoreScreen(
   facts: ScreenFacts[],
   config: ScreenConfig,
   total?: number,
-  stats?: LensStats,
 ): ScreenResult {
-  const st = stats ?? lensStatsFromFacts(facts);
-  const subset = applyFilters(facts, config.filters);
+  // Lens distributions over the FULL universe (pre-filter) — a name's percentile
+  // is its standing in the whole set, deterministic across TS/Python.
+  const uq: number[] = [];
+  const uv: number[] = [];
+  const um: number[] = [];
+  for (const r of facts) {
+    const { xQ, xV, xM } = lensValues(r);
+    if (xQ != null) uq.push(xQ);
+    if (xV != null) uv.push(xV);
+    if (xM != null) um.push(xM);
+  }
+  uq.sort((p, q) => p - q);
+  uv.sort((p, q) => p - q);
+  um.sort((p, q) => p - q);
 
+  const subset = applyFilters(facts, config.filters);
   const { quality: wq, value: wv, momentum: wm } = config.weights;
   const wsum = wq + wv + wm || 1;
 
   const scored: ScoredRow[] = subset.map((r) => {
     const { xQ, xV, xM } = lensValues(r);
-    const zq = z(xQ, st.quality);
-    const zv = z(xV, st.value);
-    const zm = z(xM, st.momentum);
-    const base_z = (wq * zq + wv * zv + wm * zm) / wsum;
+    const pq = pctRank(uq, xQ);
+    const pv = pctRank(uv, xV);
+    const pm = pctRank(um, xM);
+    const base_score = (wq * pq + wv * pv + wm * pm) / wsum; // ∈ [0,1]
+    const base_z = probit(Math.min(Math.max(base_score, 0.001), 0.999));
     const a = adjZ(r);
     const final_z = base_z + a.adj_z;
     return {
       ...r,
       rank: 0,
       score: final_z,
+      base_score,
       base_z,
       adj_z: a.adj_z,
       moat_z: a.moat_z,
@@ -351,10 +374,10 @@ export function scoreScreen(
       break_z: a.break_z,
       capped: a.capped,
       floored: a.floored,
-      quality_z: zq,
-      value_z: zv,
-      momentum_z: zm,
-      base_pct: Math.round(Phi(base_z) * 100),
+      quality_pct: Math.round(pq * 100),
+      value_pct: Math.round(pv * 100),
+      momentum_pct: Math.round(pm * 100),
+      base_pct: Math.round(base_score * 100),
       final_pct: Math.round(Phi(final_z) * 100),
       firing_breaks: firingBreakCount(r, r.research_card),
     };

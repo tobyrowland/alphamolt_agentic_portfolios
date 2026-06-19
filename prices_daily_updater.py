@@ -165,15 +165,10 @@ def main() -> None:
             logger.info("Refreshed screen_facts_mv")
         except Exception as exc:  # noqa: BLE001 — non-fatal
             logger.warning("Could not refresh screen_facts_mv: %s", exc)
-        # Recompute the screener's universe lens μ/σ (migration 057) over the
-        # freshly-refreshed facts, so both scorers standardize against current
-        # moments. Non-fatal: a stale stats row just shifts all scores together.
-        try:
-            import screen
-            screen.compute_lens_stats(db)
-            logger.info("Recomputed screen_lens_stats")
-        except Exception as exc:  # noqa: BLE001 — non-fatal
-            logger.warning("Could not recompute screen_lens_stats: %s", exc)
+        # NOTE: the screener base score now ranks each lens by its EMPIRICAL
+        # PERCENTILE over the loaded universe (outlier-robust), so it no longer
+        # needs materialized lens μ/σ — the old screen_lens_stats recompute was
+        # removed here. The table is left in place (vestigial) for a later cleanup.
 
 
 if __name__ == "__main__":

@@ -73,6 +73,33 @@ def phi(z: float) -> float:
     return 0.5 * (1.0 + _erf(z / math.sqrt(2.0)))
 
 
+def probit(p: float) -> float:
+    """Inverse normal CDF Φ⁻¹(p), p ∈ (0,1) — Acklam's approximation. Maps a
+    blended percentile back to σ-space so the AI adjustment adds consistently.
+    Mirrors web/lib/screen/score.ts probit()."""
+    a = [-3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2,
+         1.38357751867269e2, -3.066479806614716e1, 2.506628277459239]
+    b = [-5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2,
+         6.680131188771972e1, -1.328068155288572e1]
+    c = [-7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838,
+         -2.549732539343734, 4.374664141464968, 2.938163982698783]
+    d = [7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996,
+         3.754408661907416]
+    pl, ph = 0.02425, 1 - 0.02425
+    if p < pl:
+        q = math.sqrt(-2 * math.log(p))
+        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+               ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+    if p <= ph:
+        q = p - 0.5
+        r = q * q
+        return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
+               (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1)
+    q = math.sqrt(-2 * math.log(1 - p))
+    return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+
+
 # ---- pure scoring ---------------------------------------------------------
 
 def _percentiles(values: list[float | None]) -> list[float | None]:
@@ -149,12 +176,21 @@ def _lens_values(row: dict) -> tuple[float | None, float | None, float | None]:
     r40 = _f(row.get("rule_of_40"))
     fcf = _f(row.get("fcf_margin"))
     gm = _f(row.get("gross_margin"))
+    # Growth-capped Rule-of-40 for the Quality lens: R40 = rev_growth + net_margin
+    # (eodhd_updater), but micro-revenue names post absurd YoY growth (e.g. FDMT
+    # +383,561%) that blow R40 to 6 figures and poison the lens. Cap the growth
+    # component at +100% so the quality read reflects a real business, not a
+    # tiny-denominator artifact. Falls back to the stored R40 when the components
+    # aren't both present. Screener-local — stored rule_of_40 is untouched.
+    rev_g = _f(row.get("rev_growth_ttm"))
+    net_m = _f(row.get("net_margin"))
+    r40_eff = (min(rev_g, 100.0) + net_m) if (rev_g is not None and net_m is not None) else r40
     # Quality: weighted blend; null only when ALL three components are missing
     # (fundamentals arrive as a unit). A missing component contributes 0.
-    if r40 is None and fcf is None and gm is None:
+    if r40_eff is None and fcf is None and gm is None:
         xq: float | None = None
     else:
-        xq = 0.60 * (r40 or 0) + 0.25 * (fcf or 0) + 0.15 * (gm or 0)
+        xq = 0.60 * (r40_eff or 0) + 0.25 * (fcf or 0) + 0.15 * (gm or 0)
     # Value: −(P/S ÷ own 12-mo median) so cheaper ⇒ higher. Median falls back to
     # raw P/S; denominator guarded so ps=0 yields None (unscoreable), not NaN.
     ps = _f(row.get("ps"))
@@ -291,21 +327,46 @@ def _adj_z(row: dict, budget: float = BUDGET) -> dict:
             "capped": capped, "floored": floored, "has_card": True}
 
 
+def _pct_rank(sorted_vals: list[float], x: float | None) -> float:
+    """Empirical percentile of x within a pre-sorted universe (∈[0,1]); a missing
+    value or empty universe ⇒ 0.5 (neutral, at the median)."""
+    if x is None or not sorted_vals:
+        return 0.5
+    import bisect
+    return bisect.bisect_right(sorted_vals, x) / len(sorted_vals)
+
+
 def score_screen(facts: list[dict], config: dict,
                  stats: dict[str, dict] | None = None) -> list[dict]:
     """Return the ranked rows (each a copy of the fact dict + score fields).
 
-    Single ordering score (brief §2): final_z = base_z + adj_z, ranked on it,
-    surfaced as a universe percentile. `stats` are the materialized lens μ/σ
-    (screen_lens_stats); when omitted they're derived from the full `facts` set
-    (the graceful fallback before materialization) — identically in score.ts.
+    Single ordering score: final_z = base_z + adj_z, ranked on it, surfaced as a
+    universe percentile. The quant **base** is built from EMPIRICAL PERCENTILES of
+    each lens over the full universe (outlier-robust), blended by the weights, then
+    mapped back to σ via probit so the AI `adj_z` adds consistently. `stats` is
+    accepted but ignored (the percentile base needs no materialized μ/σ); kept for
+    signature back-compat. Mirrors web/lib/screen/score.ts.
     """
     filters = config.get("filters") or []
     weights = config.get("weights") or {"quality": 45, "value": 25, "momentum": 20}
-    if stats is None:
-        stats = lens_stats_from_facts(facts)
-    subset = apply_filters(facts, filters)
 
+    # Lens distributions over the FULL universe (pre-filter) — so a name's
+    # percentile is its standing in the whole Tier-1 set, not the filtered subset,
+    # and is deterministic (TS and Python load the same universe → parity).
+    uq: list[float] = []
+    uv: list[float] = []
+    um: list[float] = []
+    for r in facts:
+        xq, xv, xm = _lens_values(r)
+        if xq is not None:
+            uq.append(xq)
+        if xv is not None:
+            uv.append(xv)
+        if xm is not None:
+            um.append(xm)
+    uq.sort(); uv.sort(); um.sort()
+
+    subset = apply_filters(facts, filters)
     wq = float(weights.get("quality", 0))
     wv = float(weights.get("value", 0))
     wm = float(weights.get("momentum", 0))
@@ -314,13 +375,15 @@ def score_screen(facts: list[dict], config: dict,
     scored: list[dict] = []
     for r in subset:
         xq, xv, xm = _lens_values(r)
-        zq = _z(xq, stats.get("quality"))
-        zv = _z(xv, stats.get("value"))
-        zm = _z(xm, stats.get("momentum"))
-        base_z = (wq * zq + wv * zv + wm * zm) / wsum
+        pq = _pct_rank(uq, xq)
+        pv = _pct_rank(uv, xv)
+        pm = _pct_rank(um, xm)
+        base_score = (wq * pq + wv * pv + wm * pm) / wsum     # ∈ [0,1]
+        base_z = probit(min(max(base_score, 0.001), 0.999))    # back to σ-space
         a = _adj_z(r)
         final_z = base_z + a["adj_z"]
         row = dict(r)
+        row["base_score"] = base_score
         row["base_z"] = base_z
         row["adj_z"] = a["adj_z"]
         row["moat_z"] = a["moat_z"]
@@ -328,10 +391,10 @@ def score_screen(facts: list[dict], config: dict,
         row["break_z"] = a["break_z"]
         row["capped"] = a["capped"]
         row["floored"] = a["floored"]
-        row["quality_z"] = zq
-        row["value_z"] = zv
-        row["momentum_z"] = zm
-        row["base_pct"] = round(phi(base_z) * 100)
+        row["quality_pct"] = round(pq * 100)
+        row["value_pct"] = round(pv * 100)
+        row["momentum_pct"] = round(pm * 100)
+        row["base_pct"] = round(base_score * 100)
         row["final_pct"] = round(phi(final_z) * 100)
         # Count of break signals currently firing (display: the red "AI flags"
         # chip / pip), distinct from break_count (how many are defined).
@@ -478,8 +541,9 @@ def compute_lens_stats(db, *, dry_run: bool = False) -> dict[str, dict]:
 
 
 def run_screen(db, config: dict) -> list[dict]:
-    """Ranked rows for a config (the full matched subset)."""
-    return score_screen(load_facts(db), config, load_lens_stats(db))
+    """Ranked rows for a config (the full matched subset). The percentile base
+    needs no materialized lens stats — it ranks over the loaded universe."""
+    return score_screen(load_facts(db), config)
 
 
 def top_n_tickers(db, config: dict, n: int | None = None) -> list[str]:
