@@ -55,6 +55,12 @@ export default function ScreenSparkline({
 
   const last = points[n - 1];
   const current = last.ps;
+  const fmtDate = (d: string) => {
+    const dt = new Date(d);
+    return Number.isNaN(dt.getTime())
+      ? d
+      : dt.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  };
   const pctVs = (median: number | null) =>
     median != null && median > 0 ? (current / median - 1) * 100 : null;
   const ownPct = pctVs(ownMedian);
@@ -98,6 +104,11 @@ export default function ScreenSparkline({
         <polyline points={poly} fill="none" stroke="var(--color-cyan)" strokeWidth="1.6" />
         <circle cx={x(n - 1)} cy={y(current)} r="2.6" fill="var(--color-cyan)" />
       </svg>
+
+      <div className="flex justify-between mt-0.5 font-mono text-[9px] text-text-muted">
+        <span>{fmtDate(points[0].date)}</span>
+        <span>{fmtDate(last.date)}</span>
+      </div>
 
       <div className="flex gap-3.5 mt-1.5 font-mono text-[10px] text-text-muted">
         <span className="inline-flex items-center gap-1.5">

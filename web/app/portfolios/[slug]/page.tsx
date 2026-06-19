@@ -289,7 +289,7 @@ export default async function PortfolioPage({ params }: PageParams) {
           {/* SUMMARY — paper value, unrealized P&L, holdings, team (brief §5).
               Honest: no invented alpha. */}
           {snapshot && (
-            <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-10 sm:mb-12">
+            <section className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mb-6 sm:mb-8">
               <PaperValueCard
                 total={totalValue}
                 equity={equityValue}
@@ -431,11 +431,11 @@ function SummaryCard({
         ? "text-[var(--color-red)]"
         : "text-text";
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3.5">
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3.5 py-2.5">
       <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-muted">
         {label}
       </p>
-      <p className={`font-mono text-xl sm:text-2xl font-bold tabular-nums ${color} mt-1`}>
+      <p className={`font-mono text-lg sm:text-xl font-bold tabular-nums ${color} mt-0.5`}>
         {value}
       </p>
       {sub && (
@@ -462,15 +462,15 @@ function PaperValueCard({
 }) {
   const pct = Math.max(0, Math.min(100, equityPct));
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-3.5">
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3.5 py-2.5">
       <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-muted">
         Paper value
       </p>
-      <p className="font-mono text-xl sm:text-2xl font-bold tabular-nums text-text mt-1">
+      <p className="font-mono text-lg sm:text-xl font-bold tabular-nums text-text mt-0.5">
         {formatUsd(total)}
       </p>
       <div
-        className="mt-2.5 h-1.5 w-full rounded-full bg-white/10 overflow-hidden"
+        className="mt-2 h-1.5 w-full rounded-full bg-white/10 overflow-hidden"
         role="img"
         aria-label={`${pct.toFixed(0)}% invested in equities, the rest in cash`}
       >
