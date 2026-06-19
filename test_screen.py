@@ -152,19 +152,35 @@ class TestSingleScore(unittest.TestCase):
         self.assertTrue(out[0]["capped"])
         self.assertFalse(out[0]["floored"])
 
-    def test_weak_moat_with_breaks_demotes_and_floors(self):
-        # moat=1, earn=1, 3 break signals → adj_z below FLOOR → clamped to FLOOR.
+    def test_weak_moat_demotes_without_floor(self):
+        # moat=1, earn=1 → both u=−1 → adj_z = budget·(W_MOAT·−1 + W_EARN·−1) = −budget.
+        # Break signals no longer subtract, so it demotes but does NOT hit the floor.
         rows = facts({"ticker": "WEAK", **carded(moat_score=1, earnings_score=1, break_count=3)})
         out = screen.score_screen(rows, {"weights": {"quality": 60, "value": 25, "momentum": 15}}, UNIT_STATS)
-        self.assertEqual(out[0]["adj_z"], screen.FLOOR)
-        self.assertTrue(out[0]["floored"])
+        self.assertAlmostEqual(out[0]["adj_z"], -screen.BUDGET, places=9)
+        self.assertFalse(out[0]["floored"])
 
-    def test_break_signal_additive_penalty(self):
-        # One break signal subtracts budget·K_BREAK from adj_z (additive — not a
-        # hard cap; decision 3). Neutral 3/3 card → adj_z = −budget·K_BREAK.
-        rows = facts({"ticker": "BRK", **carded(moat_score=3, earnings_score=3, break_count=1)})
+    def test_break_signals_do_not_affect_score(self):
+        # Break signals are watch-only — the screen score ignores their count.
+        # A 3/3 card with 3 breaks and one with 0 breaks score identically (≈0).
+        rows = facts(
+            {"ticker": "BRK", **carded(moat_score=3, earnings_score=3, break_count=3)},
+            {"ticker": "NOBRK", **carded(moat_score=3, earnings_score=3, break_count=0)},
+        )
         out = screen.score_screen(rows, {"weights": {"quality": 100, "value": 0, "momentum": 0}}, UNIT_STATS)
-        self.assertAlmostEqual(out[0]["adj_z"], -screen.BUDGET * 0.5, places=9)
+        brk = next(r for r in out if r["ticker"] == "BRK")
+        nob = next(r for r in out if r["ticker"] == "NOBRK")
+        self.assertAlmostEqual(brk["adj_z"], 0.0, places=9)
+        self.assertAlmostEqual(brk["adj_z"], nob["adj_z"], places=12)
+        self.assertEqual(brk["break_z"], 0.0)
+
+    def test_strong_card_with_breaks_still_caps(self):
+        # A perfect 5/5 card lifts to +budget even WITH break signals (breaks no
+        # longer demote) — the fix that keeps researched names from sinking.
+        rows = facts({"ticker": "STRONGBRK", **carded(moat_score=5, earnings_score=5, break_count=4)})
+        out = screen.score_screen(rows, {"weights": {"quality": 60, "value": 25, "momentum": 15}}, UNIT_STATS)
+        self.assertAlmostEqual(out[0]["adj_z"], screen.BUDGET, places=9)
+        self.assertTrue(out[0]["capped"])
 
     def test_carded_lift_beats_uncarded_same_base(self):
         # A low-base strong-card name lifts above a same-base uncarded name.

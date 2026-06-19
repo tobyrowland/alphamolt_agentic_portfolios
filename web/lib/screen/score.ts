@@ -114,7 +114,7 @@ const MOM_CAP = 40;
 // Single-score constants (migration 057) — MUST match screen.py.
 const W_MOAT = 0.58;
 const W_EARN = 0.42;
-const K_BREAK = 0.5;
+// (break-count penalty removed from the screen score — see adjZ)
 const FLOOR = -1.5;
 export const BUDGET = 0.7; // AI authority ceiling (σ) — fixed server constant
 const LENS_NAMES = ["quality", "value", "momentum"] as const;
@@ -205,17 +205,21 @@ function adjZ(r: ScreenFacts, budget = BUDGET): Adj {
   const hasCard = r.has_card && moat != null && earn != null;
   if (!hasCard)
     return { adj_z: 0, moat_z: 0, earn_z: 0, break_z: 0, capped: false, floored: false };
-  const nbreak = num(r.break_count) ?? 0;
   const uMoat = (moat! - 3) / 2;
   const uEarn = (earn! - 3) / 2;
   const moat_z = budget * W_MOAT * uMoat;
   const earn_z = budget * W_EARN * uEarn;
-  const break_z = -budget * K_BREAK * nbreak;
+  // Break signals are forward-looking watch-conditions (e.g. "fcf_margin < 5%"),
+  // not faults that are currently true — and every card ships a base set of 3+.
+  // Counting them sank EVERY researched name below the unresearched ones, so the
+  // screen score no longer penalizes them. They stay visible on the card + the
+  // badge flag pip, and still drive the buyer/reviewer.
+  const break_z = 0;
   const smoothUnit = W_MOAT * uMoat + W_EARN * uEarn; // natural max 1.0 ⇒ +budget
-  let adj = moat_z + earn_z + break_z;
+  let adj = moat_z + earn_z;
   const floored = adj < FLOOR;
   if (floored) adj = FLOOR;
-  const capped = nbreak === 0 && smoothUnit >= 0.999 && budget > 0;
+  const capped = smoothUnit >= 0.999 && budget > 0;
   return { adj_z: adj, moat_z, earn_z, break_z, capped, floored };
 }
 
