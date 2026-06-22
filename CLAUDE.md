@@ -138,7 +138,9 @@ ranks the whole Tier 1 universe for a given config. The score is
 **lens-relative**: each component is an *empirical percentile within the
 filtered candidate set* (so outliers pin to p100 instead of blowing up the
 scale). Composite = weighted blend of Quality (0.60·R40 + 0.25·FCF + 0.15·GM),
-Value (inverse P/S ÷ 12-mo median) and Momentum (collared 52-week return vs
+Value (inverse P/S, blended 50/50 against the name's own 12-mo median AND its
+peer-group median `peer_ps_median` — migration 058; pure self-relative fallback
+when a name has no peer median) and Momentum (collared 52-week return vs
 SPY — `perf_52w_vs_spy`, derived from `benchmark_prices`),
 ×optional AI bull/bear multiplier ×optional research-card quality multiplier
 (migration 056: `quality_score` 1-5 → ×0.8–1.2, gated by the `qualityMultiplier`
@@ -752,7 +754,7 @@ cash, debt, shares_out, eps, opex_pct_rev — PK (ticker, period_end)
 **`valuation`** (multiples + P/S series)
 ```
 ticker (FK), date, ps, pe, ev_sales, p_fcf, ps_high_52w, ps_low_52w, ps_median_12m,
-ps_ath, ps_pct_of_ath, history_json, source, fetched_at — PK (ticker, date)
+ps_trend_pct, ps_ath, ps_pct_of_ath, history_json, source, fetched_at — PK (ticker, date)
 ```
 
 **`estimates`** (optional, latest per ticker) `ticker (PK), consensus_rating, price_target, eps_revisions_4w, source, fetched_at`
@@ -1090,7 +1092,7 @@ and `bootstrap_benchmarks.py`.
 
 **Composite score base (0–90):**
 - *Quality* (45) — 0.60·pct(R40) + 0.25·pct(FCF margin) + 0.15·pct(gross margin)
-- *Value* (25) — inverse percentile of P/S ÷ 12-mo P/S median (relative to own history, not absolute)
+- *Value* (25) — inverse percentile of P/S, blended 50/50 against the name's own 12-mo P/S median (relative to own history) and its peer-group median (`peer_ps_median`, sector/industry — migration 058); pure self-relative when no peer median
 - *Momentum* (20) — percentile of perf_52w_vs_spy (collared)
 
 **AI verdict multiplier (bull × bear, applied to base):**

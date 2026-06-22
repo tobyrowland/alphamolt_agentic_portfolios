@@ -77,6 +77,7 @@ async function fetchFacts(): Promise<ScreenFacts[]> {
       rule_of_40: num(r.rule_of_40),
       ps: num(r.ps),
       ps_median_12m: num(r.ps_median_12m),
+      ps_trend_pct: num(r.ps_trend_pct),
       ret_52w: ret52w,
       perf_52w_vs_spy:
         ret52w != null && spyRet != null
