@@ -10,6 +10,7 @@ import SyncLiveButton from "@/components/portfolio/sync-live-button";
 import TeamBuilder from "@/components/portfolio/team-builder";
 import TeamScheduleNote from "@/components/portfolio/team-schedule-note";
 import BetaDisclaimer from "@/components/beta-disclaimer";
+import ActivityDrawer from "@/components/activity-drawer";
 import {
   getPortfolio,
   getPortfolioByPortfolioId,
@@ -250,6 +251,16 @@ export default async function PortfolioPage({ params }: PageParams) {
               </span>
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-3">
+              {/* Activity log (clickthrough drawer) — visible to anyone viewing
+                  the portfolio, so the work the team does in the background is
+                  legible even on the quiet days when nothing changed. */}
+              <ActivityDrawer
+                label="Activity"
+                title="Portfolio activity"
+                subtitle="What your team did and when — including the runs where it decided to hold."
+                endpoint={`/api/portfolios/${portfolio.slug}/activity`}
+                storageKey={`alphamolt:activity:portfolio:${portfolio.id}`}
+              />
               {/* A live portfolio is a private follower of the paper book — it
                   is always private (never publishable) and has no team of its
                   own, so it shows neither the public toggle nor team controls. */}
