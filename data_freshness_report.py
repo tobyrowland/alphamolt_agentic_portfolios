@@ -163,13 +163,17 @@ def gather(db: SupabaseDB) -> list[Row]:
     total = len(tier1)
     rows: list[Row] = []
 
-    # 1. Current price (securities.price) — the headline canary, intraday cadence.
+    # 1. Current price (securities.price) — the headline canary. EOD close for
+    # the WHOLE Tier-1 set (prices_daily_updater), overlaid intraday on the
+    # liquid subset. Not "expected_daily": markets close on weekends, so price
+    # freshness is judged by age (weekend-tolerant), not a 24h-refresh count —
+    # a genuinely dead feed still trips once the newest price ages past window.
     priced = [s for s in tier1 if db.safe_float(s.get("price"))]
     newest, oldest, r24 = _summarize_map([s.get("price_asof") for s in priced], now)
     rows.append(_row(
         "Current price", have=len(priced), total=total,
         newest=newest, oldest=oldest, refreshed_24h=r24, now=now,
-        expected_daily=True, max_stale_days=4, min_coverage=0.5,
+        expected_daily=False, max_stale_days=5, min_coverage=0.9,
     ))
 
     # 2. Daily prices (prices_daily) — EOD layer. Newest date + recent coverage.

@@ -91,6 +91,17 @@ def daily_increment(db: SupabaseDB, client: EODHDClient, tier1: set[str],
                 rows.append(mapped)
     if rows and not dry_run:
         db.upsert_prices_daily_batch(rows)
+        # Stamp the Level 0 "current price" canary (securities.price) from the
+        # EOD close for the WHOLE Tier 1 set — so every name has a price even
+        # when the 15-min intraday feed (which only returns the liquid subset)
+        # doesn't. intraday_prices.py overlays that subset with fresher quotes
+        # during market hours; here we guarantee full coverage at the daily close.
+        sec_rows = [
+            {"ticker": m["ticker"], "price": m["close"],
+             "price_asof": f"{m['date']}T20:00:00+00:00"}
+            for m in rows
+        ]
+        db.bulk_upsert_security_prices(sec_rows)
     logger.info("Daily increment: %d Tier 1 rows for %s",
                 len(rows), bulk[0].get("date") if bulk else "?")
     return len(rows)
