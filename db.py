@@ -538,6 +538,33 @@ class SupabaseDB:
             page += 1
         return latest
 
+    def get_ai_analysis_freshness(self) -> dict[str, str]:
+        """Return the latest `analyzed_at` per ticker from `ai_analysis`.
+
+        Used by the daily data-freshness report. `ai_analysis` is one row per
+        ticker (PK), so this is a straight paginated read of (ticker,
+        analyzed_at).
+        """
+        latest: dict[str, str] = {}
+        page = 0
+        page_size = 1000
+        while True:
+            resp = (
+                self.client.table("ai_analysis")
+                .select("ticker, analyzed_at")
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            batch = resp.data or []
+            for row in batch:
+                t = row.get("ticker")
+                if t and row.get("analyzed_at"):
+                    latest[t] = row["analyzed_at"]
+            if len(batch) < page_size:
+                break
+            page += 1
+        return latest
+
     # --- valuation ---
 
     def upsert_valuation_batch(self, rows: list[dict]) -> None:
