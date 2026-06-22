@@ -79,6 +79,12 @@ def _build_equity_data(fact_row: dict, company: dict | None) -> dict:
         "valuation": {
             "ps": fact_row.get("ps"),
             "ps_median_12m": fact_row.get("ps_median_12m"),
+            # Peer-group context (migration 058): how the P/S compares to the
+            # sector/industry, and the DIRECTION of the multiple (trailing-
+            # quarter % change — >0 re-rating up, <0 compressing).
+            "peer_ps_median": fact_row.get("peer_ps_median"),
+            "peer_basis": fact_row.get("peer_basis"),
+            "ps_trend_pct": fact_row.get("ps_trend_pct"),
             "price": fact_row.get("price"),
         },
         "momentum": {
@@ -175,6 +181,7 @@ Discipline:
 - Read the curator's rationale, but don't be anchored by it — the curator picks broadly; you decide whether this specific equity is right for THIS portfolio TODAY at THIS price.
 - Read the prior in-house BUY/BEAR verdicts and the research card as data points, not directives.
 - RECENT DEVELOPMENTS (a web-search snippet) may be provided. Use it for entry TIMING and near-term CATALYST / RISK — is now a good moment to add, or is there a fresh red flag? It does NOT override the research card's business-quality read; it's news headlines, so weigh it for what it is and don't over-trade on a single snippet.
+- VALUATION read the multiple in CONTEXT, not in isolation: valuation.ps vs ps_median_12m (the name's own history) AND vs peer_ps_median (its sector/industry peers, basis in peer_basis) tells you cheap-or-rich; ps_trend_pct is the DIRECTION of the multiple over the last quarter (>0 re-rating up, <0 compressing). A name cheap vs peers AND stabilising can be a good entry; cheap AND still de-rating can be a value trap; expensive but re-rating up needs the growth/quality to justify it. Weigh this for entry quality — it is not a hard gate.
 
 Thesis discipline (BUY only):
 - thesis_text: 2-4 sentences. WHAT you expect this equity to do (growth trajectory, margin path, valuation re-rating) and WHY.

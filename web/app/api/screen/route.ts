@@ -31,6 +31,7 @@ const DISPLAY = [
   "score",
   "ps",
   "ps_median_12m",
+  "ps_trend_pct",
   "rev_growth_ttm",
   "gross_margin",
   "fcf_margin",

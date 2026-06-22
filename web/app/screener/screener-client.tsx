@@ -43,6 +43,7 @@ interface Row {
   score: number;
   ps: number | null;
   ps_median_12m: number | null;
+  ps_trend_pct: number | null;
   rev_growth_ttm: number | null;
   gross_margin: number | null;
   fcf_margin: number | null;
@@ -1522,6 +1523,17 @@ function ValueBlock({
         sectorBasis={r.peer_basis}
         loading={psHistory === "loading" || psHistory === undefined}
       />
+      {r.ps_trend_pct != null && (
+        <div className="mt-2 font-mono text-[10px] text-text-muted">
+          multiple{" "}
+          <span className={r.ps_trend_pct >= 0 ? "text-emerald-400" : "text-rose-400"}>
+            {r.ps_trend_pct >= 0 ? "▲ re-rating up" : "▼ compressing"}{" "}
+            {r.ps_trend_pct >= 0 ? "+" : ""}
+            {r.ps_trend_pct.toFixed(1)}%
+          </span>{" "}
+          <span className="text-text-muted/60">/ last quarter</span>
+        </div>
+      )}
     </div>
   );
 }

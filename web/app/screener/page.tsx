@@ -200,6 +200,7 @@ export default async function ScreenerPage({
                 score: r.score,
                 ps: r.ps,
                 ps_median_12m: r.ps_median_12m,
+                ps_trend_pct: r.ps_trend_pct,
                 rev_growth_ttm: r.rev_growth_ttm,
                 gross_margin: r.gross_margin,
                 fcf_margin: r.fcf_margin,

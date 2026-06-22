@@ -20,7 +20,8 @@ def facts(*rows: dict) -> list[dict]:
         "price": 10, "price_asof": "2026-06-03", "rev_growth_ttm": None,
         "gross_margin": None, "fcf_margin": None, "net_margin": None,
         "operating_margin": None, "rule_of_40": None, "ps": None,
-        "ps_median_12m": None, "ret_52w": None, "perf_52w_vs_spy": None,
+        "ps_median_12m": None, "ps_trend_pct": None,
+        "ret_52w": None, "perf_52w_vs_spy": None,
         "bull": None, "bear": None, "quality_score": None,
         # Research-card scalars (migration 057). has_card False ⇒ adj_z = 0.
         "moat_score": None, "earnings_score": None, "growth_score": None,
@@ -90,6 +91,26 @@ class TestScore(unittest.TestCase):
         rows = facts(
             {"ticker": "CHEAP", "ps": 4, "ps_median_12m": 8},
             {"ticker": "RICH", "ps": 12, "ps_median_12m": 8},
+        )
+        out = screen.score_screen(rows, {"weights": {"quality": 0, "value": 100, "momentum": 0}})
+        self.assertEqual(out[0]["ticker"], "CHEAP")
+
+    def test_value_peer_relative_breaks_self_tie(self):
+        # Two names identically priced vs their OWN history (ps == median) tie on
+        # the self-relative read; the peer-group median (migration 058) breaks
+        # the tie — the one cheap vs its peers wins.
+        rows = facts(
+            {"ticker": "PEERCHEAP", "ps": 6, "ps_median_12m": 6, "peer_ps_median": 12},
+            {"ticker": "PEERRICH", "ps": 6, "ps_median_12m": 6, "peer_ps_median": 3},
+        )
+        out = screen.score_screen(rows, {"weights": {"quality": 0, "value": 100, "momentum": 0}})
+        self.assertEqual(out[0]["ticker"], "PEERCHEAP")
+
+    def test_value_missing_peer_falls_back_to_self(self):
+        # No peer median ⇒ pure self-relative (no crash, lens still scoreable).
+        rows = facts(
+            {"ticker": "CHEAP", "ps": 4, "ps_median_12m": 8, "peer_ps_median": None},
+            {"ticker": "RICH", "ps": 12, "ps_median_12m": 8, "peer_ps_median": None},
         )
         out = screen.score_screen(rows, {"weights": {"quality": 0, "value": 100, "momentum": 0}})
         self.assertEqual(out[0]["ticker"], "CHEAP")

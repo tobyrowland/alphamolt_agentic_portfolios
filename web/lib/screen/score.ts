@@ -60,6 +60,9 @@ export interface ScreenFacts {
   rule_of_40: number | null;
   ps: number | null;
   ps_median_12m: number | null;
+  /** Trailing-quarter % change of the P/S multiple (migration 058). >0 = the
+   *  multiple is re-rating up, <0 = compressing. Display + LLM only, not scored. */
+  ps_trend_pct: number | null;
   ret_52w: number | null;
   /** 52-week return minus SPY's; derived in the loader, not a raw fact column. */
   perf_52w_vs_spy: number | null;
@@ -105,6 +108,12 @@ export interface ScoredRow extends ScreenFacts {
 // to the raw lens value before standardizing. Momentum is alpha vs SPY.
 const MOM_FLOOR = -50;
 const MOM_CAP = 40;
+
+// Value lens blend (migration 058) — cheapness vs the name's own 12-mo median
+// AND vs its peer-group median P/S. Equal-weight; pure self-relative fallback
+// when no peer median. MUST match screen.py.
+const VAL_W_SELF = 0.5;
+const VAL_W_PEER = 0.5;
 
 // Single-score constants (migration 057) — MUST match screen.py.
 const W_MOAT = 0.58;
@@ -192,8 +201,19 @@ function lensValues(r: ScreenFacts): {
 
   const ps = num(r.ps);
   const med = num(r.ps_median_12m);
-  const denom = med && med > 0 ? med : ps;
-  const xV = ps != null && denom ? -(ps / denom) : null;
+  const peer = num(r.peer_ps_median);
+  const selfDenom = med && med > 0 ? med : ps;
+  let xV: number | null;
+  if (ps == null || !selfDenom) {
+    xV = null;
+  } else {
+    const selfRatio = ps / selfDenom;
+    if (peer && peer > 0) {
+      xV = -(VAL_W_SELF * selfRatio + VAL_W_PEER * (ps / peer));
+    } else {
+      xV = -selfRatio;
+    }
+  }
 
   const perf = num(r.perf_52w_vs_spy);
   const xM = perf == null ? null : Math.max(MOM_FLOOR, Math.min(MOM_CAP, perf));
