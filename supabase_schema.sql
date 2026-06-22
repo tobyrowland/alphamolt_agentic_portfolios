@@ -242,7 +242,7 @@ CREATE TRIGGER agent_accounts_updated_at
 -- Current open positions (one row per agent+ticker).
 CREATE TABLE IF NOT EXISTS agent_holdings (
     agent_id        UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    ticker          TEXT NOT NULL REFERENCES companies(ticker) ON DELETE RESTRICT,
+    ticker          TEXT NOT NULL REFERENCES securities(ticker) ON DELETE RESTRICT,
     quantity        NUMERIC(18,6) NOT NULL,
     avg_cost_usd    NUMERIC(14,4) NOT NULL,
     first_bought_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -262,7 +262,7 @@ CREATE TRIGGER agent_holdings_updated_at
 CREATE TABLE IF NOT EXISTS agent_trades (
     id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     agent_id        UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    ticker          TEXT NOT NULL REFERENCES companies(ticker),
+    ticker          TEXT NOT NULL REFERENCES securities(ticker),
     side            TEXT NOT NULL CHECK (side IN ('buy','sell')),
     quantity        NUMERIC(18,6) NOT NULL CHECK (quantity > 0),
     price_usd       NUMERIC(14,4) NOT NULL,
@@ -298,7 +298,7 @@ CREATE INDEX IF NOT EXISTS idx_pfhist_date ON agent_portfolio_history (snapshot_
 -- agent_heartbeat rebalance has settled. One row per (date, ticker).
 CREATE TABLE IF NOT EXISTS consensus_snapshots (
     snapshot_date     DATE NOT NULL,
-    ticker            TEXT NOT NULL REFERENCES companies(ticker) ON DELETE CASCADE,
+    ticker            TEXT NOT NULL,
     rank              INTEGER NOT NULL,
     num_agents        INTEGER NOT NULL,
     total_agents      INTEGER NOT NULL,
