@@ -35,7 +35,7 @@ GEMINI_TIMEOUT = 300  # seconds
 MAX_RETRIES = 3
 RETRY_DELAY = 15
 DELAY_BETWEEN_CALLS = 2
-TOP_N = 100
+TOP_N = 300  # stalest Tier-1 names refreshed per run (rotation batch)
 NULL_VALUE = "\u2014"
 
 # Columns to EXCLUDE from the data sent to Gemini

@@ -34,7 +34,7 @@ CLAUDE_MODEL = "claude-opus-4-6"
 CLAUDE_TIMEOUT = 300  # seconds
 MAX_RETRIES = 3
 RETRY_DELAY = 15
-TOP_N = 100
+TOP_N = 300  # stalest Tier-1 names refreshed per run (rotation batch)
 
 # Columns to EXCLUDE from the data sent to Claude
 EXCLUDED_COLUMNS = {

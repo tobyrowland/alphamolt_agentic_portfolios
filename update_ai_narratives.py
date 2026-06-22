@@ -30,7 +30,7 @@ STALENESS_DAYS = 90
 # Per-run cap for --tier1 rotation (Stage A2): narrate the N oldest Tier-1
 # names each run so the first pass over the ~3k universe doesn't fire thousands
 # of LLM calls at once — keeps daily cost flat, never-narrated names go first.
-TIER1_NARRATIVE_BATCH = 100
+TIER1_NARRATIVE_BATCH = 300
 GEMINI_MODEL = "gemini-2.5-flash"
 DELAY_BETWEEN_CALLS = 2  # seconds between tickers
 RETRY_DELAY = 10  # seconds between retries
