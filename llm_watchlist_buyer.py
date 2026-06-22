@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any
 
 from agent_strategies import RebalanceContext, RebalanceResult
+from db import SupabaseDB
 from llm_picker import (
     _mandate_block,
     _parse_with_retry,
@@ -114,6 +115,13 @@ LLM_WATCHLIST_BUYER_DEFAULTS: dict[str, Any] = {
     "target_position_pct": 4.0,     # target weight per BUY
     "min_position_pct": 2.0,        # floor on the last (partial) BUY
     "min_conviction": 5,            # hard gate
+    # Value gate: minimum discount to the name's own TTM P/S median required
+    # before a BUY. 0 = OFF (current behaviour — buy regardless of valuation).
+    # When > 0, a name must trade at/below median*(1 - pct/100) to be eligible,
+    # and a name with no usable P/S median is EXCLUDED (no valuation read).
+    # Applied as a candidate filter BEFORE the LLM eval (standalone) and as a
+    # per-buyer filter on the conviction map (swarm) — see passes_value_gate.
+    "min_ps_discount_pct": 0.0,
     # Screener rejection hide (migration 051): how long a PASSed-on name is
     # hidden. Short window so it tracks the daily re-rank / quarterly-earnings
     # cadence rather than outliving the reason it was passed on. (The separate
@@ -312,6 +320,34 @@ def _validate_signals(
 def _truncate(text: str, limit: int = 2000) -> str:
     text = text or ""
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def passes_value_gate(ps: Any, median: Any, min_discount_pct: float) -> bool:
+    """Is this name cheap enough vs its own 12-mo P/S median to be buyable?
+
+    The synchronous value gate (no standing orders): a name is eligible only
+    when its current P/S is at least ``min_discount_pct`` below its trailing
+    12-month median P/S — i.e. ``ps <= median * (1 - pct/100)``.
+
+    - ``min_discount_pct <= 0`` → gate OFF: always True (exact current
+      behaviour, nobody excluded).
+    - gate ON + no usable ``ps``/``median`` → False: a name with no valuation
+      read is EXCLUDED for a value-disciplined buyer (decided in design).
+
+    Shared by the standalone strategy (pre-LLM filter) and the swarm
+    (per-buyer filter on the conviction map).
+    """
+    try:
+        pct = float(min_discount_pct)
+    except (TypeError, ValueError):
+        return True
+    if pct <= 0:
+        return True
+    ps_f = SupabaseDB.safe_float(ps)
+    med_f = SupabaseDB.safe_float(median)
+    if not ps_f or not med_f or ps_f <= 0 or med_f <= 0:
+        return False
+    return ps_f <= med_f * (1.0 - pct / 100.0)
 
 
 _RESEARCH_CARD_LABELS = {
@@ -884,6 +920,27 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
     if skipped_cooldown:
         result.notes["skipped_recent_sell_cooldown"] = skipped_cooldown
     candidates = [t for t in candidates if t not in recently_sold]
+
+    # Filter: value gate. Drop names not at least `min_ps_discount_pct` below
+    # their own 12-mo P/S median — entry-price discipline at buy time (synchronous,
+    # no standing orders). No-op when the gate is OFF (default 0). Applied BEFORE
+    # the LLM eval so we don't pay for evaluations on names that fail the value
+    # bar. A filtered name is NOT recorded as a rejection, so it stays eligible and
+    # auto-buys on a later heartbeat once it drifts cheap enough.
+    min_ps_discount_pct = float(params["min_ps_discount_pct"])
+    if min_ps_discount_pct > 0:
+        skipped_value: list[str] = []
+        kept: list[str] = []
+        for t in candidates:
+            fr = fact_rows.get(t) or {}
+            if passes_value_gate(fr.get("ps"), fr.get("ps_median_12m"), min_ps_discount_pct):
+                kept.append(t)
+            else:
+                skipped_value.append(t)
+        if skipped_value:
+            result.notes["skipped_value_gate"] = skipped_value
+            result.notes["min_ps_discount_pct"] = min_ps_discount_pct
+        candidates = kept
 
     if not candidates:
         result.notes["reason"] = "no candidates after filters"

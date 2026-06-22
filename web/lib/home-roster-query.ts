@@ -7,9 +7,9 @@
  * from the in-app library. The four-card layout is the canonical structure
  * from the reference; live records flow into the slots they back:
  *
- *   - Conviction Buyer  ← the "Conviction Buyer · <model>" buy family,
- *                         collapsed to one card whose model chips are the
- *                         variants (a 5th variant ⇒ a 5th chip).
+ *   - Buyer             ← the "Buyer · <model>" buy family, collapsed to one
+ *                         card whose model chips are the variants (a 5th
+ *                         variant ⇒ a 5th chip).
  *   - Portfolio Review  ← the sell-role reviewer.
  *   - 200-Week Sniper   ← a rules-based buy teaser (reference copy; the real
  *                         roster has no rules engine yet — "more in training").
@@ -76,7 +76,7 @@ export interface RosterData {
 // library backing, or when the whole read fails.
 
 const STATIC_CONVICTION: Omit<ConvictionBuyerCard, "nextRun"> = {
-  title: "Conviction Buyer",
+  title: "Buyer",
   description:
     "Each night, weighs every watchlist equity against your mandate, ranks its picks — and buys only its highest-conviction names, up to 5% per position.",
   chips: [
@@ -160,9 +160,9 @@ export async function getRosterData(now: number = Date.now()): Promise<RosterDat
   const buyers = library.filter((a) => a.action === "buy");
   const sellers = library.filter((a) => a.action === "sell");
 
-  // Conviction Buyer family — the multi-brain LLM buyer, one record per model.
+  // Buyer family — the multi-brain LLM buyer, one record per model.
   const family = buyers.filter((a) =>
-    a.displayName.toLowerCase().startsWith("conviction buyer"),
+    a.displayName.toLowerCase().startsWith("buyer"),
   );
 
   const convictionBuyer: ConvictionBuyerCard = (() => {
@@ -180,7 +180,7 @@ export async function getRosterData(now: number = Date.now()): Promise<RosterDat
     chips.sort((a, b) => brandRank(a.label) - brandRank(b.label));
     if (chips.length === 0) chips.push(...STATIC_CONVICTION.chips);
     return {
-      title: "Conviction Buyer",
+      title: "Buyer",
       description:
         nonEmpty(family[0].description) ?? STATIC_CONVICTION.description,
       chips,
