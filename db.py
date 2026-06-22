@@ -113,6 +113,29 @@ class SupabaseDB:
         if cleaned:
             self.client.table("companies").upsert(cleaned).execute()
 
+    def bulk_upsert_security_prices(self, rows: list[dict]) -> None:
+        """Write only the live price columns (price, price_asof) onto many
+        `securities` rows in one batch — the Level 0 home for the latest quote
+        (companies-retirement, migration 058).
+
+        Mirrors `bulk_upsert_company_prices`: intraday_prices.py writes the
+        most-recent quote here so mark-to-market and trade pricing read it off
+        Level 0 instead of `companies`. Defensive column whitelist so a stray
+        key can never clobber identity/gate columns; each row needs `ticker`.
+        """
+        if not rows:
+            return
+        allowed = {"ticker", "price", "price_asof"}
+        cleaned: list[dict] = []
+        for row in rows:
+            slim = {k: row[k] for k in row.keys() & allowed}
+            if "ticker" not in slim or slim.get("price") is None:
+                continue
+            self._sanitize(slim)
+            cleaned.append(slim)
+        if cleaned:
+            self.client.table("securities").upsert(cleaned).execute()
+
     # ------------------------------------------------------------------
     # Price-Sales
     # ------------------------------------------------------------------
@@ -368,16 +391,25 @@ class SupabaseDB:
         return {}
 
     def get_level0_close(self, ticker: str) -> float | None:
-        """Latest USD close for a ticker from the Level 0 price layer.
+        """Latest USD price for a ticker from the Level 0 price layer.
 
-        The trading layer's fallback when a ticker isn't in `companies` (e.g. a
-        Tier-1 name the legacy pipeline never covered). Prefers the most-recent
-        `prices_daily` close; falls back to the gate-stamped `securities.
-        last_close`. Returns None when neither has a usable value.
+        The single price source the trading layer reads once `companies` is
+        retired (migration 058). Preference order, freshest first:
+          1. `securities.price` — the most-recent quote (intraday during US
+             market hours, rolled forward to the prior close otherwise),
+             written by intraday_prices.py.
+          2. most-recent `prices_daily` close — the EOD layer.
+          3. gate-stamped `securities.last_close` — weekly affordability input.
+        Returns None when none has a usable value.
         """
         if not ticker:
             return None
         try:
+            sec = self.get_security(ticker.upper())
+            if sec:
+                live = SupabaseDB.safe_float(sec.get("price"))
+                if live and live > 0:
+                    return live
             resp = (
                 self.client.table("prices_daily")
                 .select("close")
@@ -390,7 +422,6 @@ class SupabaseDB:
                 close = SupabaseDB.safe_float(resp.data[0].get("close"))
                 if close and close > 0:
                     return close
-            sec = self.get_security(ticker.upper())
             if sec:
                 lc = SupabaseDB.safe_float(sec.get("last_close"))
                 if lc and lc > 0:
@@ -480,6 +511,35 @@ class SupabaseDB:
             q = q.limit(1)
         resp = q.execute()
         return resp.data or []
+
+    def get_all_valuation_latest(self) -> dict[str, dict]:
+        """Return the latest valuation row per ticker, keyed by ticker.
+
+        The Level 0 replacement for `get_all_price_sales()` — used by
+        price_sales_updater.py to read each ticker's prior P/S state (history /
+        ATH / as-of date) for incremental updates. Paginates the whole table and
+        keeps the newest `date` per ticker.
+        """
+        latest: dict[str, dict] = {}
+        page = 0
+        page_size = 1000
+        while True:
+            resp = (
+                self.client.table("valuation")
+                .select("ticker, date, ps, ps_ath, history_json")
+                .order("date", desc=True)
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            batch = resp.data or []
+            for row in batch:
+                t = row.get("ticker")
+                if t and t not in latest:  # rows arrive newest-first
+                    latest[t] = row
+            if len(batch) < page_size:
+                break
+            page += 1
+        return latest
 
     def get_valuation_tickers(self) -> set[str]:
         """Return the set of tickers that have at least one valuation row."""
@@ -1034,26 +1094,50 @@ class SupabaseDB:
     # Swarm Consensus
     # ------------------------------------------------------------------
 
-    def fetch_holdings_with_agent_company(self) -> list[dict]:
-        """Return every agent_holdings row joined to its agent + company.
+    def _security_meta_map(self, tickers) -> dict[str, dict]:
+        """Return {ticker: {"name", "price"}} from Level 0 `securities` for a
+        set of tickers (name + latest quote). The replacement for the legacy
+        `companies(company_name, price)` PostgREST embed now that consensus
+        reads identity/price off Level 0 (companies retirement)."""
+        wanted = sorted({(t or "").upper() for t in tickers if t})
+        if not wanted:
+            return {}
+        out: dict[str, dict] = {}
+        # Chunk to keep the IN list well under PostgREST limits.
+        for i in range(0, len(wanted), 500):
+            chunk = wanted[i : i + 500]
+            resp = (
+                self.client.table("securities")
+                .select("ticker, name, price")
+                .in_("ticker", chunk)
+                .execute()
+            )
+            for r in resp.data or []:
+                out[r["ticker"]] = {"name": r.get("name"), "price": r.get("price")}
+        return out
 
-        One round-trip; the consensus aggregation runs in Python afterwards.
-        Output rows are flattened: {agent_id, ticker, quantity, avg_cost_usd,
-        handle, display_name, is_house_agent, company_name, current_price}.
+    def fetch_holdings_with_agent_company(self) -> list[dict]:
+        """Return every agent_holdings row joined to its agent + Level 0 identity.
+
+        The consensus aggregation runs in Python afterwards. Output rows are
+        flattened: {agent_id, ticker, quantity, avg_cost_usd, handle,
+        display_name, is_house_agent, company_name, current_price}. Name +
+        current price come from `securities` (Level 0), not legacy `companies`.
         """
         resp = (
             self.client.table("agent_holdings")
             .select(
                 "agent_id, ticker, quantity, avg_cost_usd, "
-                "agents(handle, display_name, is_house_agent), "
-                "companies(company_name, price)"
+                "agents(handle, display_name, is_house_agent)"
             )
             .execute()
         )
+        rows = resp.data or []
+        meta = self._security_meta_map([r.get("ticker") for r in rows])
         out: list[dict] = []
-        for r in resp.data or []:
+        for r in rows:
             agent = r.get("agents") or {}
-            company = r.get("companies") or {}
+            sec = meta.get((r.get("ticker") or "").upper(), {})
             out.append({
                 "agent_id": r.get("agent_id"),
                 "ticker": r.get("ticker"),
@@ -1062,8 +1146,8 @@ class SupabaseDB:
                 "handle": agent.get("handle"),
                 "display_name": agent.get("display_name"),
                 "is_house_agent": agent.get("is_house_agent"),
-                "company_name": company.get("company_name"),
-                "current_price": company.get("price"),
+                "company_name": sec.get("name"),
+                "current_price": sec.get("price"),
             })
         return out
 
@@ -1072,9 +1156,9 @@ class SupabaseDB:
     ) -> tuple[list[dict], str | None]:
         """Return the highest-conviction tickers from the latest snapshot.
 
-        Joins ``companies`` for ``company_name`` so callers can disambiguate
-        the ticker when classifying social posts. Used by the Bluesky
-        heartbeat's equity-targeting phase.
+        Resolves ``company_name`` from Level 0 ``securities`` so callers can
+        disambiguate the ticker when classifying social posts. Used by the
+        Bluesky heartbeat's equity-targeting phase.
         """
         latest = (
             self.client.table("consensus_snapshots")
@@ -1091,20 +1175,22 @@ class SupabaseDB:
             self.client.table("consensus_snapshots")
             .select(
                 "rank, ticker, num_agents, total_agents, pct_agents, "
-                "swarm_pnl_pct, companies(company_name)"
+                "swarm_pnl_pct"
             )
             .eq("snapshot_date", snapshot_date)
             .order("rank", desc=False)
             .limit(limit)
             .execute()
         )
+        data = resp.data or []
+        meta = self._security_meta_map([r.get("ticker") for r in data])
         rows: list[dict] = []
-        for r in resp.data or []:
-            company = r.get("companies") or {}
+        for r in data:
+            sec = meta.get((r.get("ticker") or "").upper(), {})
             rows.append({
                 "rank": r.get("rank"),
                 "ticker": r.get("ticker"),
-                "company_name": company.get("company_name") or r.get("ticker"),
+                "company_name": sec.get("name") or r.get("ticker"),
                 "num_agents": r.get("num_agents"),
                 "total_agents": r.get("total_agents"),
                 "pct_agents": r.get("pct_agents"),

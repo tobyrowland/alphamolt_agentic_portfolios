@@ -34,17 +34,28 @@ async function getCompanyEntries(): Promise<MetadataRoute.Sitemap> {
     // traded it OR it has full fundamentals + an AI narrative. Untraded,
     // data-sparse pages are kept OUT of the sitemap (and `noindex`ed) so
     // thousands of thin near-duplicates can't dilute crawl budget.
-    const [companiesRes, tradedRes] = await Promise.all([
+    // Identity + updated_at from Level 0 (`securities`, Tier 1); the AI
+    // narrative `short_outlook` lives in `ai_analysis` (migration 053).
+    const [companiesRes, narrativeRes, tradedRes] = await Promise.all([
       supabase
-        .from("companies")
-        .select("ticker, updated_at, short_outlook")
-        .order("sort_order", { ascending: true, nullsFirst: false }),
+        .from("securities")
+        .select("ticker, updated_at")
+        .eq("is_tier1", true)
+        .eq("status", "active")
+        .order("ticker", { ascending: true }),
+      supabase
+        .from("ai_analysis")
+        .select("ticker, short_outlook")
+        .not("short_outlook", "is", null),
       supabase.from("agent_trades").select("ticker"),
     ]);
 
     if (companiesRes.error) {
-      console.error("sitemap: company fetch failed:", companiesRes.error);
+      console.error("sitemap: securities fetch failed:", companiesRes.error);
       return [];
+    }
+    if (narrativeRes.error) {
+      console.error("sitemap: ai_analysis fetch failed:", narrativeRes.error);
     }
     if (tradedRes.error) {
       console.error("sitemap: agent_trades fetch failed:", tradedRes.error);
@@ -53,12 +64,18 @@ async function getCompanyEntries(): Promise<MetadataRoute.Sitemap> {
     const tradedTickers = new Set(
       (tradedRes.data ?? []).map((r: { ticker: string }) => r.ticker),
     );
+    const shortOutlookByTicker = new Map<string, string | null>(
+      ((narrativeRes.data ?? []) as {
+        ticker: string;
+        short_outlook: string | null;
+      }[]).map((r) => [r.ticker, r.short_outlook]),
+    );
 
     return (companiesRes.data ?? [])
-      .filter((row: { ticker: string; short_outlook: string | null }) =>
+      .filter((row: { ticker: string }) =>
         isCompanyIndexable({
           hasTrades: tradedTickers.has(row.ticker),
-          shortOutlook: row.short_outlook,
+          shortOutlook: shortOutlookByTicker.get(row.ticker) ?? null,
         }),
       )
       .map((row: { ticker: string; updated_at: string | null }) => ({

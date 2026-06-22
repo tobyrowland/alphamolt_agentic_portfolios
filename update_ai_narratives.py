@@ -429,28 +429,22 @@ def main():
     # Connect to Supabase
     db = SupabaseDB()
 
-    # Get companies needing update
+    # Get equities needing update. The legacy companies stale/force rotation is
+    # retired — narratives rotate over the full Tier-1 universe from Level 0
+    # (oldest-narrated first, capped per run so the daily LLM cost stays flat).
+    import level0_eval
     if args.ticker:
-        company = db.get_company(args.ticker)
+        company = db.get_security(args.ticker)
         if not company:
-            logger.error("Ticker %s not found in database", args.ticker)
+            logger.error("Ticker %s not found in securities", args.ticker)
             sys.exit(1)
         companies_to_update = [company]
         logger.info("Single-ticker mode: processing %s", args.ticker)
-    elif args.tier1:
-        # Stage A2: narrate the full Tier-1 universe, oldest-narrated first.
-        # Capped per run (rotation) so the first pass over ~3k names doesn't
-        # fire thousands of LLM calls at once — keeps the daily cost flat.
-        import level0_eval
+    else:
         companies_to_update = level0_eval.tier1_eval_candidates(
             db, "narrative", TIER1_NARRATIVE_BATCH)
-        logger.info("Tier-1 mode: narrating %d oldest names (cap %d)",
+        logger.info("Narrating %d oldest Tier-1 names (cap %d)",
                     len(companies_to_update), TIER1_NARRATIVE_BATCH)
-    elif args.force:
-        companies_to_update = db.get_all_companies()
-        logger.info("Force mode: refreshing all %d companies", len(companies_to_update))
-    else:
-        companies_to_update = db.get_stale_companies("ai_analyzed_at", STALENESS_DAYS)
 
     logger.info("Found %d companies needing update", len(companies_to_update))
 
@@ -468,12 +462,8 @@ def main():
                 company, serpapi_key, args.dry_run, logger
             )
             if update_fields and not args.dry_run:
-                # ai_analysis is the Level 0 home (migrations 053/054): always
-                # write the narrative + its rotation clock (narrated_at). In
-                # --tier1 mode that's the only write (the name may not exist in
-                # companies); otherwise dual-write companies for legacy surfaces.
-                if not args.tier1:
-                    db.upsert_company(ticker, update_fields)
+                # ai_analysis is the Level 0 home (migrations 053/054) and now
+                # the sole home: write the narrative + its rotation clock.
                 db.upsert_ai_analysis(ticker, {
                     "short_outlook": update_fields.get("short_outlook"),
                     "full_outlook": update_fields.get("full_outlook"),

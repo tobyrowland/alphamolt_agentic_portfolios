@@ -472,12 +472,32 @@ def main():
 
     db = SupabaseDB()
 
-    # Read inputs
-    ticker_list = db.get_all_companies(columns="ticker, exchange, company_name")
-    logger.info("Read %d tickers from companies table", len(ticker_list))
+    # Read inputs from Level 0 (the legacy companies/price_sales are retired).
+    # Universe = active Tier 1 securities; map `name` → company_name for the
+    # downstream P/S computation that expects that key.
+    sec_rows = db.get_all_securities(
+        columns="ticker, exchange, name, is_tier1", status="active"
+    )
+    ticker_list = [
+        {"ticker": s["ticker"], "exchange": s.get("exchange", ""),
+         "company_name": s.get("name", "")}
+        for s in sec_rows
+        if s.get("is_tier1")
+    ]
+    logger.info("Read %d Tier 1 tickers from securities", len(ticker_list))
 
-    ps_map = db.get_all_price_sales()
-    logger.info("Read %d existing price-sales rows", len(ps_map))
+    # Prior P/S state per ticker from `valuation` (latest row), shaped to the
+    # keys compute_ps_for_ticker expects (history_json / ath / last_updated).
+    val_latest = db.get_all_valuation_latest()
+    ps_map = {
+        t: {
+            "history_json": v.get("history_json"),
+            "ath": v.get("ps_ath"),
+            "last_updated": v.get("date"),
+        }
+        for t, v in val_latest.items()
+    }
+    logger.info("Read %d existing valuation rows", len(ps_map))
 
     # Filter to specific tickers if requested
     if args.tickers:
@@ -534,10 +554,25 @@ def main():
             errors += 1
             continue
 
-        # Write to Supabase via upsert
+        # Write to the Level 0 `valuation` table — this script is now the daily
+        # P/S maintainer for valuation (the legacy `companies`/`price_sales`
+        # tables are retired). Map the computed P/S series onto valuation cols.
         result_mode = result.pop("mode")
+        val_row = {
+            "ticker": ticker,
+            "date": today_str,
+            "ps": result.get("ps_now"),
+            "ps_high_52w": result.get("high_52w"),
+            "ps_low_52w": result.get("low_52w"),
+            "ps_median_12m": result.get("median_12m"),
+            "ps_ath": result.get("ath"),
+            "ps_pct_of_ath": result.get("pct_of_ath"),
+            "history_json": result.get("history_json"),
+            "source": "price_sales_updater",
+            "fetched_at": datetime.utcnow().isoformat(),
+        }
         try:
-            db.upsert_price_sales(ticker, result)
+            db.upsert_valuation_batch([val_row])
             if result_mode == "backfill":
                 backfilled += 1
             else:

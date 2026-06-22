@@ -56,10 +56,10 @@ export async function addToWatchlist(input: {
 
   const supabase = getSupabase();
 
-  // The ticker must exist in the screened universe — the FK would reject
+  // The ticker must exist in the Level 0 universe — the FK would reject
   // an unknown ticker anyway, but checking first gives a clean message.
   const { data: company } = await supabase
-    .from("companies")
+    .from("securities")
     .select("ticker")
     .eq("ticker", ticker)
     .maybeSingle();

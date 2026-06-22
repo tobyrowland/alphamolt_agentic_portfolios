@@ -1,9 +1,9 @@
 name: Nightly TradingView Screen
 
+# RETIRED (companies retirement): the legacy TradingView screen wrote the
+# companies table, now superseded by Level 0 (universe_sync + the screener).
+# Scheduled run disabled; manual dispatch kept for archival/debugging only.
 on:
-  schedule:
-    # Runs at 3:00 AM UTC (4:00 AM BST) — before EODHD at 5:00 AM
-    - cron: "0 3 * * *"
   workflow_dispatch: # Allow manual trigger from GitHub UI
 
 jobs:

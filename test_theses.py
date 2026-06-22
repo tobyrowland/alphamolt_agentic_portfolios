@@ -101,6 +101,12 @@ class _StubDB:
         self.canned_selects: dict = {}
         # Catalogue of company rows (ticker → row dict) for get_company.
         self.companies: dict[str, dict] = {}
+        # Level 0 catalogues — build_snapshot reads these now (companies
+        # retirement). Keyed by ticker.
+        self.securities: dict[str, dict] = {}
+        self.fundamentals: dict[str, dict] = {}
+        self.valuation: dict[str, dict] = {}
+        self.ai_analysis: dict[str, dict] = {}
         self.client = self  # so theses.py's `db.client.table(...)` resolves to us
 
     def table(self, name):
@@ -108,6 +114,25 @@ class _StubDB:
 
     def get_company(self, ticker):
         return self.companies.get(ticker)
+
+    # --- Level 0 reads used by build_snapshot ---
+    def get_security(self, ticker):
+        return self.securities.get(ticker)
+
+    def get_level0_close(self, ticker):
+        s = self.securities.get(ticker)
+        return s.get("price") if s else None
+
+    def get_fundamentals(self, ticker, latest_only=False):
+        r = self.fundamentals.get(ticker)
+        return [r] if r else []
+
+    def get_valuation(self, ticker, latest_only=True):
+        r = self.valuation.get(ticker)
+        return [r] if r else []
+
+    def get_ai_analysis(self, tickers):
+        return {t: self.ai_analysis[t] for t in tickers if t in self.ai_analysis}
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +163,40 @@ def _company(ticker="NVDA", **overrides) -> dict:
     return base
 
 
+def _seed_level0(db, ticker="NVDA", **overrides) -> dict:
+    """Populate the stub's Level 0 catalogues so build_snapshot (which now reads
+    securities + fundamentals + valuation + ai_analysis) produces a snapshot
+    equivalent to the old companies row. Maps companies' *_pct column names onto
+    the Level 0 bare names."""
+    row = _company(ticker=ticker, **overrides)
+    db.securities[ticker] = {
+        "ticker": ticker, "name": row.get("company_name"),
+        "country": row.get("country"), "gics_sector": row.get("sector"),
+        "price": row.get("price"),
+    }
+    db.fundamentals[ticker] = {
+        "rule_of_40": row.get("rule_of_40"),
+        "rev_growth_ttm": row.get("rev_growth_ttm_pct"),
+        "rev_growth_qoq": row.get("rev_growth_qoq_pct"),
+        "rev_cagr": row.get("rev_cagr_pct"),
+        "gross_margin": row.get("gross_margin_pct"),
+        "operating_margin": row.get("operating_margin_pct"),
+        "net_margin": row.get("net_margin_pct"),
+        "fcf_margin": row.get("fcf_margin_pct"),
+        "opex_pct_rev": row.get("opex_pct_revenue"),
+        "eps": row.get("eps_only"),
+    }
+    db.valuation[ticker] = {"ps": row.get("ps_now")}
+    db.ai_analysis[ticker] = {
+        "short_outlook": row.get("short_outlook"),
+        "key_risks": row.get("key_risks"),
+        "full_outlook": row.get("full_outlook"),
+        "bull_eval": row.get("bull_eval"),
+        "bear_eval": row.get("bear_eval"),
+    }
+    return row
+
+
 # ---------------------------------------------------------------------------
 # build_snapshot
 # ---------------------------------------------------------------------------
@@ -146,7 +205,7 @@ def _company(ticker="NVDA", **overrides) -> dict:
 class BuildSnapshotTests(unittest.TestCase):
     def test_returns_only_declared_fields(self):
         db = _StubDB()
-        db.companies["NVDA"] = _company()
+        _seed_level0(db, "NVDA")
         snap = theses.build_snapshot(db, "NVDA")
         # Exactly the field set, no more, no less.
         self.assertEqual(set(snap.keys()), set(theses._SNAPSHOT_FIELDS))
@@ -157,7 +216,7 @@ class BuildSnapshotTests(unittest.TestCase):
     def test_missing_fields_become_none(self):
         # Sparse companies row — fields that don't exist on the row are None.
         db = _StubDB()
-        db.companies["AAPL"] = {"ticker": "AAPL", "price": 200.0}
+        db.securities["AAPL"] = {"ticker": "AAPL", "price": 200.0}
         snap = theses.build_snapshot(db, "AAPL")
         self.assertEqual(snap["ticker"], "AAPL")
         self.assertEqual(snap["price"], 200.0)
@@ -375,8 +434,7 @@ class CheckThesisTests(unittest.TestCase):
     def test_active_when_no_signals_triggered(self):
         db = _StubDB()
         snap = _company(fcf_margin_pct=48.0)
-        cur = _company(fcf_margin_pct=47.5)  # tiny drift, no signal triggered
-        db.companies["NVDA"] = cur
+        _seed_level0(db, "NVDA", fcf_margin_pct=47.5)  # tiny drift, no signal
         _seed_thesis_row(
             db, thesis_id=7, ticker="NVDA", snapshot=snap,
             break_signals=[{"field": "fcf_margin_pct", "op": "<", "value": 40}],
@@ -390,8 +448,7 @@ class CheckThesisTests(unittest.TestCase):
     def test_broken_when_break_signal_triggers(self):
         db = _StubDB()
         snap = _company(fcf_margin_pct=48.0)
-        cur = _company(fcf_margin_pct=30.0)  # collapse
-        db.companies["NVDA"] = cur
+        _seed_level0(db, "NVDA", fcf_margin_pct=30.0)  # collapse
         _seed_thesis_row(
             db, thesis_id=7, ticker="NVDA", snapshot=snap,
             break_signals=[
@@ -406,8 +463,7 @@ class CheckThesisTests(unittest.TestCase):
     def test_improved_when_extend_triggers_and_break_clean(self):
         db = _StubDB()
         snap = _company(rev_growth_ttm_pct=60.0)
-        cur = _company(rev_growth_ttm_pct=120.0)  # accelerated
-        db.companies["NVDA"] = cur
+        _seed_level0(db, "NVDA", rev_growth_ttm_pct=120.0)  # accelerated
         _seed_thesis_row(
             db, thesis_id=8, ticker="NVDA", snapshot=snap,
             extend_signals=[
@@ -422,8 +478,7 @@ class CheckThesisTests(unittest.TestCase):
         # Both triggered → 'broken' wins (downside risk dominates).
         db = _StubDB()
         snap = _company(fcf_margin_pct=48.0, rev_growth_ttm_pct=60.0)
-        cur = _company(fcf_margin_pct=30.0, rev_growth_ttm_pct=120.0)
-        db.companies["NVDA"] = cur
+        _seed_level0(db, "NVDA", fcf_margin_pct=30.0, rev_growth_ttm_pct=120.0)
         _seed_thesis_row(
             db, thesis_id=9, ticker="NVDA", snapshot=snap,
             break_signals=[{"field": "fcf_margin_pct", "op": "<", "value": 40}],
@@ -436,8 +491,7 @@ class CheckThesisTests(unittest.TestCase):
         # source='auto' row — no signals at all — verdict is 'active'.
         db = _StubDB()
         snap = _company()
-        cur = _company(fcf_margin_pct=10.0)  # huge drift, but no signal cares
-        db.companies["NVDA"] = cur
+        _seed_level0(db, "NVDA", fcf_margin_pct=10.0)  # huge drift, no signal cares
         _seed_thesis_row(
             db, thesis_id=10, ticker="NVDA", snapshot=snap,
             break_signals=None, extend_signals=None,

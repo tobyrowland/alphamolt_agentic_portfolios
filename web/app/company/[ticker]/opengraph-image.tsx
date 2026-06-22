@@ -53,6 +53,13 @@ export default async function Image({
     sort_order: number | null;
   };
   let company: CompanyShape | null = null;
+  type SecurityRow = {
+    name: string | null;
+    exchange: string | null;
+    country: string | null;
+    gics_sector: string | null;
+    price: number | null;
+  };
   let snapshot: Awaited<ReturnType<typeof getCompanySwarmSnapshot>> | null =
     null;
   let holders: Awaited<ReturnType<typeof getCompanyHolders>> = [];
@@ -63,9 +70,11 @@ export default async function Image({
   try {
     const supabase = getSupabase();
     const [companyRes, snap, hldrs, trds, rats, countRes] = await Promise.all([
+      // Identity + price from Level 0 (`securities`). `sort_order` has no
+      // Level 0 equivalent, so the OG rank label is omitted.
       supabase
-        .from("companies")
-        .select("company_name, exchange, country, sector, price, sort_order")
+        .from("securities")
+        .select("name, exchange, country, gics_sector, price")
         .eq("ticker", ticker)
         .maybeSingle(),
       getCompanySwarmSnapshot(ticker),
@@ -74,14 +83,24 @@ export default async function Image({
       // action even for stocks with thousands of historical trades.
       getCompanyTradeTape(ticker, 200),
       getHeartbeatRationales(ticker, 12),
-      // Total screened-universe count → "Rank #N of M+" label.
+      // Total Tier 1 universe count → "Rank #N of M+" label.
       supabase
-        .from("companies")
+        .from("securities")
         .select("ticker", { count: "exact", head: true })
-        .eq("in_tv_screen", true),
+        .eq("is_tier1", true)
+        .eq("status", "active"),
     ]);
-    company =
-      (companyRes.data as CompanyShape | null) ?? null;
+    const sec = (companyRes.data as SecurityRow | null) ?? null;
+    company = sec
+      ? {
+          company_name: sec.name,
+          exchange: sec.exchange,
+          country: sec.country,
+          sector: sec.gics_sector,
+          price: sec.price == null ? null : Number(sec.price),
+          sort_order: null,
+        }
+      : null;
     snapshot = snap;
     holders = hldrs;
     trades = trds;

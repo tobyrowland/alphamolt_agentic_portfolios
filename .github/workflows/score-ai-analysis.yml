@@ -1,9 +1,9 @@
 name: Get TV data and score
 
+# RETIRED (companies retirement): scored/ranked into the companies table, now
+# superseded by the Level 0 screener (deterministic score off screen_facts_mv).
+# Scheduled run disabled; manual dispatch kept for archival only.
 on:
-  schedule:
-    # Runs at 5:00 AM UTC daily (after all data updates)
-    - cron: "0 5 * * *"
   workflow_dispatch: # Allow manual trigger from GitHub UI
 
 jobs:

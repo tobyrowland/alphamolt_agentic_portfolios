@@ -251,10 +251,10 @@ export async function sellHolding(input: {
     return { ok: false, error: "Position quantity is zero or invalid." };
   }
 
-  // Latest price from companies.price (15-min delayed during market
-  // hours, close-of-business otherwise — see intraday_prices.py).
+  // Latest price from the Level 0 price home (`securities.price`, migration
+  // 058 — 15-min delayed during market hours, close-of-business otherwise).
   const { data: company, error: companyErr } = await supabase
-    .from("companies")
+    .from("securities")
     .select("price")
     .eq("ticker", ticker)
     .maybeSingle();

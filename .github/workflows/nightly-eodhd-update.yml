@@ -1,9 +1,8 @@
 name: EODHD Update
 
+# RETIRED (companies retirement): wrote companies fundamentals, now superseded
+# by Level 0 (the fundamentals table). Scheduled run disabled; manual only.
 on:
-  schedule:
-    # Runs at 3:30 AM UTC daily (after TradingView screen at 3:00)
-    - cron: "30 3 * * *"
   workflow_dispatch:
     inputs:
       force:

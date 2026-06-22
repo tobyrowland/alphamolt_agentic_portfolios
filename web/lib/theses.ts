@@ -17,6 +17,7 @@
  */
 
 import { getSupabase } from "@/lib/supabase";
+import { getEquityL0 } from "@/lib/level0-query";
 
 export interface ThesisSignal {
   field: string;
@@ -57,25 +58,91 @@ const SNAPSHOT_FIELDS = [
   "flags", "ai_analyzed_at",
 ] as const;
 
-/** Read the latest companies row + reduce it to the snapshot field set. */
+/**
+ * Build the buy-time snapshot from the Level 0 fact store rather than the
+ * legacy `companies` table:
+ *   - identity / fundamentals / valuation → `api_universe_facts` (getEquityL0)
+ *   - bull/bear + narrative → `ai_analysis`
+ *
+ * Maps each snapshot field name (kept in lock-step with theses.py) onto its
+ * Level 0 source. Fields with no Level 0 equivalent (`composite_score`,
+ * `rating`, `flags`, `gm_trend`, the revenue-consistency / opex / sm_rd
+ * efficiency columns, `eps_yoy_pct`, `price_pct_of_52w_high`,
+ * `perf_52w_vs_spy`, `qrtrs_to_profitability`, `r40_score`) are stored as
+ * null in the frozen snapshot.
+ */
 async function buildSnapshot(ticker: string): Promise<Record<string, unknown>> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("companies")
-    .select("*")
-    .eq("ticker", ticker)
-    .limit(1)
-    .maybeSingle();
-  if (error || !data) {
+  const t = ticker.toUpperCase();
+
+  const [equity, aiRes] = await Promise.all([
+    getEquityL0(t),
+    supabase
+      .from("ai_analysis")
+      .select(
+        "bull_eval, bear_eval, short_outlook, key_risks, full_outlook, analyzed_at",
+      )
+      .eq("ticker", t)
+      .maybeSingle(),
+  ]);
+
+  if (!equity) {
     // Caller should already have validated the ticker (buy() resolves the
     // price via getPrice first), so this is a hard error. Still throw a
     // recognisable shape so callers can decide whether to swallow.
-    throw new Error(`buildSnapshot: no companies row for ${ticker}`);
+    throw new Error(`buildSnapshot: no Level 0 facts for ${ticker}`);
   }
-  const row = data as Record<string, unknown>;
+
+  const ai = (aiRes.data as Record<string, unknown> | null) ?? {};
+
+  // Map each snapshot field to its Level 0 source value.
+  const sourced: Record<string, unknown> = {
+    // Identity / overview
+    ticker: equity.ticker,
+    company_name: equity.company_name,
+    country: equity.country,
+    sector: equity.sector,
+    // Fundamentals
+    rating: null,
+    r40_score: null,
+    rule_of_40: equity.rule_of_40,
+    rev_growth_ttm_pct: equity.rev_growth_ttm_pct,
+    rev_growth_qoq_pct: equity.rev_growth_qoq_pct,
+    rev_cagr_pct: equity.rev_cagr_pct,
+    rev_consistency_score: null,
+    gross_margin_pct: equity.gross_margin_pct,
+    operating_margin_pct: equity.operating_margin_pct,
+    net_margin_pct: equity.net_margin_pct,
+    net_margin_yoy_pct: null,
+    fcf_margin_pct: equity.fcf_margin_pct,
+    opex_pct_revenue: null,
+    sm_rd_pct_revenue: null,
+    eps_only: equity.eps_only,
+    eps_yoy_pct: null,
+    qrtrs_to_profitability: null,
+    gm_trend: null,
+    // Valuation
+    price: equity.price,
+    ps_now: equity.ps_now,
+    price_pct_of_52w_high: null,
+    // Momentum
+    perf_52w_vs_spy: null,
+    composite_score: null,
+    // Narrative
+    short_outlook: ai.short_outlook ?? null,
+    key_risks: ai.key_risks ?? null,
+    full_outlook: ai.full_outlook ?? null,
+    bull_eval: ai.bull_eval ?? null,
+    bear_eval: ai.bear_eval ?? null,
+    status: equity.status,
+    // Quality flags + audit
+    flags: null,
+    ai_analyzed_at: ai.analyzed_at ?? null,
+  };
+
   const snapshot: Record<string, unknown> = {};
   for (const field of SNAPSHOT_FIELDS) {
-    snapshot[field] = row[field] ?? null;
+    snapshot[field] = sourced[field] ?? null;
   }
   return snapshot;
 }

@@ -171,17 +171,17 @@ def main() -> int:
         return 1
 
     db = SupabaseDB()
-    companies = db.get_all_companies()
-    if not companies:
-        logger.warning("No companies — nothing to do")
-        return 0
-
-    eligible = [c for c in companies if c.get("in_tv_screen")]
+    # Universe = active Tier 1 securities (Level 0). The legacy companies table
+    # (and its in_tv_screen flag) is retired.
+    securities = db.get_all_securities(
+        columns="ticker, exchange, is_tier1", status="active"
+    )
+    eligible = [s for s in securities if s.get("is_tier1")]
     if args.tickers:
         wanted = {t.upper() for t in args.tickers}
-        eligible = [c for c in eligible if c["ticker"].upper() in wanted]
+        eligible = [s for s in eligible if s["ticker"].upper() in wanted]
     if not eligible:
-        logger.warning("No eligible tickers after filtering")
+        logger.warning("No eligible Tier 1 tickers after filtering")
         return 0
 
     logger.info(
@@ -253,8 +253,10 @@ def main() -> int:
         logger.warning("No updates to write")
         return 0
 
-    db.bulk_upsert_company_prices(updates)
-    logger.info("Wrote %d price updates", len(updates))
+    # Write the live quote to the Level 0 home (securities.price) — the single
+    # source MTM/trading read now that companies is retired.
+    db.bulk_upsert_security_prices(updates)
+    logger.info("Wrote %d price updates to securities", len(updates))
     return 0
 
 

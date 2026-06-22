@@ -228,7 +228,7 @@ class ReportData:
         if not tickers:
             return out
         resp = (
-            self.c.table("companies")
+            self.c.table("securities")
             .select("ticker, price")
             .in_("ticker", list({t for t in tickers if t}))
             .execute()
