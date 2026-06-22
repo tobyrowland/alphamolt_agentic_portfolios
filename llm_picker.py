@@ -28,7 +28,7 @@ import logging
 import math
 from typing import Any
 
-from agent_strategies import US_EXCHANGES, RebalanceContext, RebalanceResult
+from agent_strategies import RebalanceContext, RebalanceResult
 from db import SupabaseDB
 from llm_providers import (
     ENV_VAR_FOR_PROVIDER,
@@ -91,19 +91,20 @@ def _slice_tickers(snapshot_json: dict, tickers: set[str]) -> dict:
 
 
 def _us_listed_tickers(db: SupabaseDB) -> set[str]:
-    """Tickers in `companies` whose exchange is a US venue.
+    """US-listed (USD-priced) tickers — the universe the picker/reviewer may
+    consider.
 
-    Used to filter snapshots before they're sent to LLM agents — the
-    portfolio layer treats every price as USD, so non-US listings
-    (priced in their native currency) would silently mis-cost trades.
-    Until we add proper FX, agents see US-listed tickers (incl. ADRs,
-    which trade on NYSE/NASDAQ) only.
+    Sourced from Level 0 `securities`, which is US-exchange-listed **by
+    construction** (universe_sync keeps only US-exchange listings; OTC/pink and
+    foreign-primary names are excluded). Every active security therefore trades
+    on a US venue in USD, so it's safe to treat as USD — the same FX guard the
+    old `companies`-exchange filter provided. (Replaces a read of the retired
+    `companies` table — see the Level 0 migration.)
     """
     return {
-        str(c["ticker"]).upper()
-        for c in db.get_all_companies()
-        if c.get("ticker")
-        and str(c.get("exchange") or "").strip().upper() in US_EXCHANGES
+        str(s["ticker"]).upper()
+        for s in db.get_all_securities(columns="ticker", status="active")
+        if s.get("ticker")
     }
 
 
