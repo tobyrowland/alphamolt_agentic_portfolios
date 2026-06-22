@@ -21,19 +21,37 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
+import smtplib
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.message import EmailMessage
 
 from db import SupabaseDB
-from user_report import deliver_slack, _deliver_resend, _deliver_smtp
+from user_report import deliver_slack
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("data_freshness")
 
 OK, WATCH, STALE, INFO = "OK", "WATCH", "STALE", "INFO"
 _EMOJI = {OK: "🟢", WATCH: "🟡", STALE: "🔴", INFO: "⚪"}
+_COLOR = {OK: "#1a7f37", WATCH: "#9a6700", STALE: "#cf222e", INFO: "#57606a"}
+
+# Which GitHub Action(s) keep each dataset fresh — surfaced in the report so a
+# red row points straight at the workflow to check.
+SOURCE = {
+    "Current price": "intraday-prices.yml",
+    "Daily prices": "prices-daily.yml",
+    "Valuation / P-S": "daily-price-sales.yml",
+    "Fundamentals": "fundamentals-update.yml",
+    "AI analysis": "bull-evaluation · bear-evaluation · update-narratives · research-evaluation",
+    "Estimates": "— (no ingest)",
+    "Events": "— (no ingest)",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +97,7 @@ class Row:
     refreshed_24h: str
     status: str
     note: str = ""
+    source: str = ""
 
 
 def _parse(ts) -> datetime | None:
@@ -205,6 +224,8 @@ def gather(db: SupabaseDB) -> list[Row]:
                         refreshed_24h="—", status=INFO,
                         note="no ingest job yet"))
 
+    for r in rows:
+        r.source = SOURCE.get(r.name, "—")
     return rows
 
 
@@ -232,10 +253,14 @@ def _row(name, *, have, total, newest, oldest, refreshed_24h, now,
 # ---------------------------------------------------------------------------
 
 
-def render(rows: list[Row]) -> tuple[str, int]:
-    """Return (plain-text report, issue_count)."""
+def _issue_count(rows: list[Row]) -> int:
+    return sum(1 for r in rows if r.status in (WATCH, STALE))
+
+
+def render_text(rows: list[Row]) -> tuple[str, int]:
+    """Plain-text report (stdout + Slack + email text-fallback)."""
     now = datetime.now(timezone.utc)
-    issues = sum(1 for r in rows if r.status in (WATCH, STALE))
+    issues = _issue_count(rows)
     headline = "✅ all data fresh" if issues == 0 else f"⚠️ {issues} item(s) need attention"
 
     w_name = max(len("Data"), *(len(r.name) for r in rows))
@@ -257,7 +282,8 @@ def render(rows: list[Row]) -> tuple[str, int]:
             f"  {r.name:<{w_name}}  {r.coverage:<{w_cov}}  {r.freshest:<{w_fresh}}  "
             f"{r.stalest:<{w_stale}}  {r.refreshed_24h:>{w_24}}  {_EMOJI[r.status]} {r.status}"
         )
-    # Notes for any flagged or annotated row.
+    lines += ["", "Maintained by:"]
+    lines += [f"  · {r.name}: {r.source}" for r in rows]
     notes = [f"  · {r.name}: {r.note}" for r in rows if r.note and r.status != OK]
     if notes:
         lines += ["", "Notes:"] + notes
@@ -269,19 +295,137 @@ def render(rows: list[Row]) -> tuple[str, int]:
     return "\n".join(lines), issues
 
 
+def _esc(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def render_html(rows: list[Row]) -> str:
+    """Styled HTML email — table with colored status badges + the maintaining
+    Action per dataset. Inline styles only (email-client-safe)."""
+    now = datetime.now(timezone.utc)
+    issues = _issue_count(rows)
+    banner_bg, banner_fg, banner = (
+        ("#dafbe1", "#1a7f37", "✅ All data fresh")
+        if issues == 0
+        else ("#fff8c5", "#9a6700", f"⚠️ {issues} item(s) need attention")
+    )
+
+    th = ('style="text-align:left;padding:8px 10px;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;'
+          'color:#57606a;border-bottom:2px solid #d0d7de;text-transform:uppercase;letter-spacing:.04em"')
+    td = 'style="padding:8px 10px;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;color:#1f2328;border-bottom:1px solid #eaeef2;vertical-align:top"'
+    tdmuted = 'style="padding:8px 10px;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:#57606a;border-bottom:1px solid #eaeef2;vertical-align:top"'
+
+    body = [
+        '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:760px;margin:0 auto;color:#1f2328">',
+        f'<h2 style="margin:0 0 2px;font-size:18px">AlphaMolt — Level&nbsp;0 data freshness</h2>',
+        f'<p style="margin:0 0 14px;color:#57606a;font-size:13px">{now:%Y-%m-%d %H:%M UTC}</p>',
+        f'<div style="display:inline-block;padding:6px 12px;border-radius:6px;background:{banner_bg};'
+        f'color:{banner_fg};font-weight:600;font-size:14px;margin-bottom:16px">{banner}</div>',
+        '<table style="border-collapse:collapse;width:100%">',
+        f'<tr><th {th}>Data</th><th {th}>Maintained by</th><th {th}>Coverage</th>'
+        f'<th {th}>Freshest</th><th {th}>Stalest</th><th {th}>24h</th><th {th}>Status</th></tr>',
+    ]
+    for r in rows:
+        badge = (f'<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-weight:600;'
+                 f'font-size:12px;color:#fff;background:{_COLOR[r.status]}">{_EMOJI[r.status]} {r.status}</span>')
+        body.append(
+            f"<tr><td {td}><b>{_esc(r.name)}</b></td>"
+            f"<td {tdmuted}>{_esc(r.source)}</td>"
+            f"<td {td}>{_esc(r.coverage)}</td>"
+            f"<td {td}>{_esc(r.freshest)}</td>"
+            f"<td {td}>{_esc(r.stalest)}</td>"
+            f"<td {td}>{_esc(r.refreshed_24h)}</td>"
+            f"<td {td}>{badge}</td></tr>"
+        )
+    body.append("</table>")
+
+    notes = [r for r in rows if r.note and r.status != OK]
+    if notes:
+        body.append('<p style="margin:16px 0 4px;font-weight:600;font-size:13px">Notes</p><ul style="margin:0;padding-left:18px;color:#57606a;font-size:13px">')
+        body += [f"<li><b>{_esc(r.name)}:</b> {_esc(r.note)}</li>" for r in notes]
+        body.append("</ul>")
+
+    body.append(
+        '<p style="margin:18px 0 0;color:#8c959f;font-size:12px">'
+        "Coverage = names with this fact / Tier-1 universe. "
+        "24h = rows refreshed in the last day (pipeline-alive signal). "
+        "Rotation feeds (fundamentals, AI) refresh a slice daily, so their stalest age "
+        "nears the cycle length by design.</p>"
+        "</div>"
+    )
+    return "\n".join(body)
+
+
 # ---------------------------------------------------------------------------
-# Delivery
+# Delivery (HTML email, reusing the report env vars)
 # ---------------------------------------------------------------------------
 
 
-def deliver_email(report: str, subject: str, to_override: str | None) -> bool:
+def deliver_email(text: str, html: str, subject: str, to_override: str | None) -> bool:
     recipient = (to_override or os.environ.get("REPORT_EMAIL_TO", "")).strip()
     if os.environ.get("RESEND_API_KEY", "").strip():
-        return _deliver_resend(report, subject, recipient)
+        return _resend_html(text, html, subject, recipient)
     if os.environ.get("SMTP_HOST", "").strip():
-        return _deliver_smtp(report, subject, recipient)
+        return _smtp_html(text, html, subject, recipient)
     logger.warning("--email skipped; set RESEND_API_KEY (+ REPORT_EMAIL_FROM/_TO) or SMTP_*.")
     return False
+
+
+def _resend_html(text: str, html: str, subject: str, recipient: str) -> bool:
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    sender = os.environ.get("REPORT_EMAIL_FROM", "").strip()
+    if not sender or not recipient:
+        logger.warning("Resend email skipped; need REPORT_EMAIL_FROM + REPORT_EMAIL_TO/--email.")
+        return False
+    payload = json.dumps(
+        {"from": sender, "to": [recipient], "subject": subject, "html": html, "text": text}
+    ).encode()
+    req = urllib.request.Request(
+        "https://api.resend.com/emails", data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Resend sits behind Cloudflare, which 403s the default urllib UA.
+            "User-Agent": "AlphaMolt-FreshnessReport/1.0 (+https://alphamolt.ai)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            ok = 200 <= resp.status < 300
+        logger.info("Resend email %s to %s", "accepted" if ok else "rejected", recipient)
+        return ok
+    except urllib.error.HTTPError as exc:
+        logger.error("Resend email failed (%s): %s", exc.code, exc.read().decode(errors="replace")[:300])
+        return False
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Resend email failed: %s", exc)
+        return False
+
+
+def _smtp_html(text: str, html: str, subject: str, recipient: str) -> bool:
+    host = os.environ.get("SMTP_HOST", "").strip()
+    user = os.environ.get("SMTP_USER", "").strip()
+    password = os.environ.get("SMTP_PASSWORD", "").strip()
+    sender = os.environ.get("REPORT_EMAIL_FROM", user).strip()
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    if not (host and user and password and recipient):
+        logger.warning("SMTP email skipped; need SMTP_HOST/USER/PASSWORD + recipient.")
+        return False
+    msg = EmailMessage()
+    msg["Subject"], msg["From"], msg["To"] = subject, sender, recipient
+    msg.set_content(text)
+    msg.add_alternative(html, subtype="html")
+    try:
+        with smtplib.SMTP(host, port, timeout=30) as s:
+            s.starttls()
+            s.login(user, password)
+            s.send_message(msg)
+        logger.info("SMTP email delivered to %s", recipient)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.error("SMTP email delivery failed: %s", exc)
+        return False
 
 
 def main() -> int:
@@ -293,15 +437,15 @@ def main() -> int:
 
     db = SupabaseDB()
     rows = gather(db)
-    report, issues = render(rows)
-    print(report)
+    text, issues = render_text(rows)
+    print(text)
 
     if args.slack:
-        deliver_slack(report)
+        deliver_slack(text)
     if args.email is not None:
         subject = (f"AlphaMolt data freshness · {datetime.now(timezone.utc):%Y-%m-%d}"
                    f" · {'all green' if issues == 0 else f'{issues} issue(s)'}")
-        deliver_email(report, subject, args.email or None)
+        deliver_email(text, render_html(rows), subject, args.email or None)
     return 0
 
 
