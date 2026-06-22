@@ -1,0 +1,70 @@
+name: Fundamentals Update (Level 0)
+
+# Daily ROTATING refresh of the Level 0 `fundamentals` table — refreshes the N
+# stalest Tier-1 names per run (oldest fundamentals.fetched_at first) so the
+# whole universe cycles and the screener's Quality/Value lenses never go stale.
+# Replaces the retired legacy eodhd_updater (which only fed `companies`).
+
+on:
+  schedule:
+    # 03:30 UTC daily (the slot the retired nightly-eodhd-update used).
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "Stalest names to refresh this run"
+        type: string
+        default: "150"
+      tickers:
+        description: "Explicit space-separated tickers (blank = rotation)"
+        type: string
+        default: ""
+      dry_run:
+        description: "Fetch + log, but write nothing"
+        type: boolean
+        default: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Level 0 fundamentals refresh
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.batch }}" ]; then
+            ARGS="$ARGS --batch ${{ github.event.inputs.batch }}"
+          fi
+          if [ -n "${{ github.event.inputs.tickers }}" ]; then
+            ARGS="$ARGS --tickers ${{ github.event.inputs.tickers }}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python fundamentals_updater.py $ARGS
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: fundamentals-update-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30

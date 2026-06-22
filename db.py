@@ -13,7 +13,7 @@ import json
 import math
 import os
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -21,6 +21,23 @@ from supabase import create_client, Client
 load_dotenv()
 
 NULL_VALUE = "\u2014"  # em-dash — consistent placeholder for missing data
+
+
+def _utcnow_iso() -> str:
+    """Current UTC instant as an ISO string — the Level 0 'collected at' stamp."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _stamp_rows(rows: list[dict], *fields: str) -> None:
+    """Level 0 freshness contract: ensure each row carries a collected-at
+    timestamp in every named field. Sets it to now() when the caller omitted it
+    or left it null, so no Level 0 fact is ever written without a freshness
+    stamp. Call AFTER sanitization (which nulls em-dash/NaN placeholders)."""
+    now = _utcnow_iso()
+    for row in rows:
+        for f in fields:
+            if row.get(f) is None:
+                row[f] = now
 
 
 class SupabaseDB:
@@ -133,6 +150,10 @@ class SupabaseDB:
                 continue
             self._sanitize(slim)
             cleaned.append(slim)
+        # Freshness contract: a price must always carry its as-of stamp, so the
+        # current-price canary is auditable. Default to now() if the caller
+        # didn't supply one.
+        _stamp_rows(cleaned, "price_asof")
         if cleaned:
             self.client.table("securities").upsert(cleaned).execute()
 
@@ -348,6 +369,7 @@ class SupabaseDB:
             return
         for r in rows:
             self._sanitize(r)
+        _stamp_rows(rows, "analyzed_at", "updated_at")  # freshness contract
         try:
             self.client.table("ai_analysis").upsert(
                 rows, on_conflict="ticker"
@@ -440,6 +462,7 @@ class SupabaseDB:
         """
         for row in rows:
             self._sanitize(row)
+        _stamp_rows(rows, "fetched_at")  # freshness contract
         if rows:
             (
                 self.client.table("fundamentals")
@@ -486,12 +509,42 @@ class SupabaseDB:
             page += 1
         return tickers
 
+    def get_fundamentals_freshness(self) -> dict[str, str]:
+        """Return the latest `fetched_at` per ticker from `fundamentals`.
+
+        The rotation clock for the daily fundamentals refresher
+        (fundamentals_updater.py): names with the oldest stamp (or none) are
+        refreshed first. Paginates the whole table and keeps the newest
+        fetched_at per ticker.
+        """
+        latest: dict[str, str] = {}
+        page = 0
+        page_size = 1000
+        while True:
+            resp = (
+                self.client.table("fundamentals")
+                .select("ticker, fetched_at")
+                .order("fetched_at", desc=True)
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            batch = resp.data or []
+            for row in batch:
+                t = row.get("ticker")
+                if t and t not in latest and row.get("fetched_at"):
+                    latest[t] = row["fetched_at"]  # rows arrive newest-first
+            if len(batch) < page_size:
+                break
+            page += 1
+        return latest
+
     # --- valuation ---
 
     def upsert_valuation_batch(self, rows: list[dict]) -> None:
         """Insert or update valuation rows (conflict on ticker,date)."""
         for row in rows:
             self._sanitize(row)
+        _stamp_rows(rows, "fetched_at")  # freshness contract
         if rows:
             (
                 self.client.table("valuation")

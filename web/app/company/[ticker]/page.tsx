@@ -231,6 +231,11 @@ export default async function CompanyPage({
               traded={activity.traded}
             />
 
+            <FreshnessStrip
+              company={company}
+              valuationAsOf={priceSales?.last_updated ?? null}
+            />
+
             {compiledClauses.length >= 3 && (
               <CompiledSummary clauses={compiledClauses} />
             )}
@@ -504,6 +509,56 @@ function CompiledSummary({ clauses }: { clauses: string[] }) {
 // ---------------------------------------------------------------------------
 // P/S header line
 // ---------------------------------------------------------------------------
+
+/**
+ * Per-ticker data-freshness strip (Level 0 freshness audit surface). Headlines
+ * the current share price's as-of — the quick-to-eyeball canary — alongside the
+ * collected-at stamp of every other fact, so anyone can audit how fresh this
+ * page's data is. Mirrors the `level0_freshness` DB view (migration 062).
+ */
+function FreshnessStrip({
+  company,
+  valuationAsOf,
+}: {
+  company: Company;
+  valuationAsOf: string | null;
+}) {
+  const items: { label: string; at: string | null }[] = [
+    { label: "Price", at: company.price_asof },
+    { label: "Fundamentals", at: company.data_updated_at },
+    { label: "Valuation", at: valuationAsOf },
+    { label: "AI analysis", at: company.ai_analyzed_at },
+  ];
+  return (
+    <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] px-3.5 py-2.5">
+      <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-text-muted">
+        Data freshness
+      </p>
+      <div className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1.5">
+        {items.map((it) => (
+          <span key={it.label} className="text-[11px] font-mono text-text-muted">
+            {it.label}:{" "}
+            <span className="text-text">{fmtFreshness(it.at)}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function fmtFreshness(iso: string | null): string {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const datestr = new Date(t).toLocaleDateString("en-US", {
+    timeZone: "UTC",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  const days = Math.floor((Date.now() - t) / 86_400_000);
+  return days <= 0 ? `${datestr} · today` : `${datestr} · ${days}d ago`;
+}
 
 function PsHeader({ priceSales, psNow }: { priceSales: PriceSales; psNow: number | null }) {
   const ps = psNow ?? priceSales.ps_now;
