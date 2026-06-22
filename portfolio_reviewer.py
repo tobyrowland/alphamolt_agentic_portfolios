@@ -20,13 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any
 
 from agent_strategies import RebalanceContext, RebalanceResult
-from llm_picker import (
-    _filter_snapshot_us_only,
-    _load_latest_snapshot,
-    _mandate_block,
-    _parse_with_retry,
-    _us_listed_tickers,
-)
+from llm_picker import _mandate_block, _parse_with_retry
 from llm_providers import LLMProviderError, call_llm
 from portfolio import PortfolioError
 
@@ -369,24 +363,35 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
     # Theses for context (and to mark broken later).
     active_theses = _active_theses_by_ticker(ctx.db, ctx.portfolio_id)
 
-    # Extended snapshot once for the whole batch.
-    snap_row = _load_latest_snapshot(ctx.db, "extended")
-    if not snap_row:
-        result.errors.append(
-            "no extended universe snapshot — build one via build_universe_snapshot.py"
-        )
+    # Per-equity data straight from Level 0 — the same facts the buyer reasons
+    # over (fundamentals + valuation + momentum + AI narrative/bull-bear +
+    # research card), built once for the held names. Replaces the retired
+    # universe-snapshot dependency, and covers the whole Tier-1 universe
+    # (including foreign ADRs the old snapshot never carried). Imported lazily
+    # to avoid an import cycle with the buyer/strategies modules.
+    import screen as _screen
+    from llm_watchlist_buyer import build_candidate_data
+
+    held_tickers = [
+        str(h.get("ticker") or "").upper()
+        for h in holdings
+        if h.get("ticker") and float(h.get("quantity") or 0) > 0
+    ]
+    try:
+        fact_map = {
+            str(r.get("ticker") or "").upper(): r
+            for r in _screen.load_facts(ctx.db)
+            if r.get("ticker")
+        }
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"failed to load Level 0 facts: {exc}")
         return result
-    us_tickers = _us_listed_tickers(ctx.db)
-    snapshot_json = _filter_snapshot_us_only(snap_row["json"], us_tickers)
-    by_ticker_data: dict[str, dict] = {
-        str(t.get("ticker") or "").upper(): t
-        for t in (snapshot_json.get("tickers") or [])
-        if t.get("ticker")
-    }
+    fact_rows = {t: fact_map[t] for t in held_tickers if t in fact_map}
+    by_ticker_data = build_candidate_data(ctx.db, fact_rows, held_tickers)
 
     # Per-position context bundles.
     work: list[dict] = []
-    missing_snapshot: list[str] = []
+    missing_facts: list[str] = []
     missing_price: list[str] = []
     for h in holdings:
         ticker = str(h.get("ticker") or "").upper()
@@ -406,7 +411,7 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
 
         current_data = by_ticker_data.get(ticker)
         if not current_data:
-            missing_snapshot.append(ticker)
+            missing_facts.append(ticker)
             continue
 
         thesis = active_theses.get(ticker)
@@ -435,11 +440,11 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
 
     if missing_price:
         result.notes["unpriced"] = missing_price
-    if missing_snapshot:
-        result.notes["missing_from_snapshot"] = missing_snapshot
+    if missing_facts:
+        result.notes["missing_facts"] = missing_facts
 
     if not work:
-        result.notes["reason"] = "no priceable + snapshotted positions"
+        result.notes["reason"] = "no priceable positions with Level 0 facts"
         return result
 
     concurrency = max(1, int(params["concurrency"]))
