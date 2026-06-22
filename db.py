@@ -113,6 +113,29 @@ class SupabaseDB:
         if cleaned:
             self.client.table("companies").upsert(cleaned).execute()
 
+    def bulk_upsert_security_prices(self, rows: list[dict]) -> None:
+        """Write only the live price columns (price, price_asof) onto many
+        `securities` rows in one batch — the Level 0 home for the latest quote
+        (companies-retirement, migration 058).
+
+        Mirrors `bulk_upsert_company_prices`: intraday_prices.py writes the
+        most-recent quote here so mark-to-market and trade pricing read it off
+        Level 0 instead of `companies`. Defensive column whitelist so a stray
+        key can never clobber identity/gate columns; each row needs `ticker`.
+        """
+        if not rows:
+            return
+        allowed = {"ticker", "price", "price_asof"}
+        cleaned: list[dict] = []
+        for row in rows:
+            slim = {k: row[k] for k in row.keys() & allowed}
+            if "ticker" not in slim or slim.get("price") is None:
+                continue
+            self._sanitize(slim)
+            cleaned.append(slim)
+        if cleaned:
+            self.client.table("securities").upsert(cleaned).execute()
+
     # ------------------------------------------------------------------
     # Price-Sales
     # ------------------------------------------------------------------
@@ -368,16 +391,25 @@ class SupabaseDB:
         return {}
 
     def get_level0_close(self, ticker: str) -> float | None:
-        """Latest USD close for a ticker from the Level 0 price layer.
+        """Latest USD price for a ticker from the Level 0 price layer.
 
-        The trading layer's fallback when a ticker isn't in `companies` (e.g. a
-        Tier-1 name the legacy pipeline never covered). Prefers the most-recent
-        `prices_daily` close; falls back to the gate-stamped `securities.
-        last_close`. Returns None when neither has a usable value.
+        The single price source the trading layer reads once `companies` is
+        retired (migration 058). Preference order, freshest first:
+          1. `securities.price` — the most-recent quote (intraday during US
+             market hours, rolled forward to the prior close otherwise),
+             written by intraday_prices.py.
+          2. most-recent `prices_daily` close — the EOD layer.
+          3. gate-stamped `securities.last_close` — weekly affordability input.
+        Returns None when none has a usable value.
         """
         if not ticker:
             return None
         try:
+            sec = self.get_security(ticker.upper())
+            if sec:
+                live = SupabaseDB.safe_float(sec.get("price"))
+                if live and live > 0:
+                    return live
             resp = (
                 self.client.table("prices_daily")
                 .select("close")
@@ -390,7 +422,6 @@ class SupabaseDB:
                 close = SupabaseDB.safe_float(resp.data[0].get("close"))
                 if close and close > 0:
                     return close
-            sec = self.get_security(ticker.upper())
             if sec:
                 lc = SupabaseDB.safe_float(sec.get("last_close"))
                 if lc and lc > 0:

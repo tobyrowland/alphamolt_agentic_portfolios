@@ -187,36 +187,39 @@ class DbPortfolioHelpersTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# PortfolioManager.get_price — companies primary, Level 0 fallback
+# PortfolioManager.get_price — Level 0 primary, legacy companies fallback
 # ---------------------------------------------------------------------------
 
 
 class GetPriceFallbackTests(unittest.TestCase):
-    """A ticker absent from `companies` (e.g. a Tier-1 name the legacy pipeline
-    never covered) must still price off Level 0 so it's tradable + valuable."""
+    """Pricing now reads Level 0 first (migration 058), so every Tier-1 name is
+    priceable for trading + MTM; `companies.price` is only a transitional
+    fallback until that table is retired."""
 
-    def _pm(self, company, level0):
+    def _pm(self, company, level0, security=None):
         pm = portfolio_module.PortfolioManager.__new__(
             portfolio_module.PortfolioManager
         )
         pm.db = SimpleNamespace(
             get_company=lambda t: company,
             get_level0_close=lambda t: level0,
+            get_security=lambda t: security,
         )
         return pm
 
-    def test_companies_price_wins(self):
-        self.assertEqual(self._pm({"price": 42.0}, 99.0).get_price("AAA"), 42.0)
+    def test_level0_price_wins(self):
+        # Level 0 is primary now — it beats a (stale) legacy companies.price.
+        self.assertEqual(self._pm({"price": 42.0}, 99.0).get_price("AAA"), 99.0)
 
-    def test_level0_fallback_when_absent(self):
+    def test_level0_prices_names_absent_from_companies(self):
         self.assertEqual(self._pm(None, 180.5).get_price("TSM"), 180.5)
 
-    def test_level0_fallback_when_price_null(self):
-        self.assertEqual(self._pm({"price": None}, 12.3).get_price("BBB"), 12.3)
+    def test_companies_fallback_when_level0_empty(self):
+        self.assertEqual(self._pm({"price": 42.0}, None).get_price("AAA"), 42.0)
 
     def test_unknown_ticker_raises(self):
         with self.assertRaises(portfolio_module.PortfolioError):
-            self._pm(None, None).get_price("ZZZ")
+            self._pm(None, None, security=None).get_price("ZZZ")
 
 
 # PortfolioManager._ensure_portfolio_for_agent — creates the 1:1 shim

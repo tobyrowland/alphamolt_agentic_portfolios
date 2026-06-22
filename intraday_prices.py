@@ -253,8 +253,12 @@ def main() -> int:
         logger.warning("No updates to write")
         return 0
 
+    # Write the live quote to the Level 0 home (securities.price — the source
+    # MTM/trading now read) and, transitionally, to legacy companies.price so
+    # any not-yet-repointed reader stays fresh until companies is retired.
+    db.bulk_upsert_security_prices(updates)
     db.bulk_upsert_company_prices(updates)
-    logger.info("Wrote %d price updates", len(updates))
+    logger.info("Wrote %d price updates (securities + companies)", len(updates))
     return 0
 
 

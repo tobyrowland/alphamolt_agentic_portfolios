@@ -169,24 +169,25 @@ class PortfolioManager:
     def get_price(self, ticker: str) -> float:
         """Return the latest price for a ticker (treated as USD).
 
-        Primary source is `companies.price`. Falls back to the Level 0 price
-        layer (`prices_daily` latest close / `securities.last_close`) when the
-        ticker isn't in `companies` or its price is unusable — so Tier-1 names
-        the legacy pipeline never covered (US-listed financials, foreign-
-        domiciled ADRs) are still priceable for both trading and MTM.
+        Primary source is the Level 0 price layer (`securities.price` latest
+        quote → `prices_daily` close → `securities.last_close`), so every Tier-1
+        name is priceable for trading and MTM regardless of whether the legacy
+        pipeline covered it. `companies.price` remains a transitional fallback
+        until that table is retired (migration 058+).
         """
+        level0_price = self.db.get_level0_close(ticker)
+        if level0_price is not None and level0_price > 0:
+            return level0_price
+        # Transitional fallback: legacy companies.price (removed once retired).
         company = self.db.get_company(ticker)
         price = SupabaseDB.safe_float(company.get("price")) if company else None
         if price is not None and price > 0:
             return price
-        # Fallback: Level 0. Covers names absent from companies entirely.
-        level0_price = self.db.get_level0_close(ticker)
-        if level0_price is not None and level0_price > 0:
-            return level0_price
-        if not company:
+        # Unknown to Level 0 and absent from companies → genuinely unpriceable.
+        if not company and not self.db.get_security(ticker.upper()):
             raise PortfolioError(f"Unknown ticker: {ticker}")
         raise PortfolioError(
-            f"No usable price for {ticker} (companies.price and Level 0 both empty)"
+            f"No usable price for {ticker} (Level 0 and companies both empty)"
         )
 
     # ------------------------------------------------------------------
