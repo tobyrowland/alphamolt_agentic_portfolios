@@ -606,7 +606,7 @@ class SupabaseDB:
         while True:
             resp = (
                 self.client.table("valuation")
-                .select("ticker, date, ps, ps_ath, history_json")
+                .select("ticker, date, ps, ps_ath, history_json, fetched_at")
                 .order("date", desc=True)
                 .range(page * page_size, (page + 1) * page_size - 1)
                 .execute()

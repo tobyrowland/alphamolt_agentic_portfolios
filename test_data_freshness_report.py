@@ -36,6 +36,20 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(
             _c(stalest_age_days=20, max_stale_days=30, refreshed_24h=150), OK)
 
+    def test_rotation_stale_tail_is_watch_not_stale(self):
+        # Rotation feed actively refreshing but with a far-past-window tail
+        # (dropped-from-universe names) → WATCH, never STALE.
+        self.assertEqual(
+            _c(rotation=True, stalest_age_days=100, max_stale_days=30,
+               refreshed_24h=200), WATCH)
+
+    def test_non_rotation_far_past_window_still_stale(self):
+        # Same numbers without rotation → STALE (a full-universe daily feed
+        # really should have refreshed every name).
+        self.assertEqual(
+            _c(rotation=False, stalest_age_days=100, max_stale_days=30,
+               refreshed_24h=200), STALE)
+
     def test_non_daily_feed_zero_24h_not_auto_stale(self):
         # expected_daily=False → 0 in 24h is not penalised on that rule alone.
         self.assertEqual(_c(expected_daily=False, refreshed_24h=0), OK)

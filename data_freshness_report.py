@@ -68,13 +68,24 @@ def classify(
     expected_daily: bool,
     max_stale_days: float,
     min_coverage: float,
+    rotation: bool = False,
 ) -> str:
-    """RAG status for one data type. Pure → unit-tested."""
+    """RAG status for one data type. Pure → unit-tested.
+
+    `rotation` feeds (fundamentals, AI) refresh a slice of the universe each day,
+    so their STALEST row legitimately lags by ~a cycle and for names that have
+    left the universe. Judge those by "is it still refreshing?" (24h) — a stale
+    tail is at most WATCH, never STALE.
+    """
     if have == 0:
         return STALE
     if expected_daily and refreshed_24h is not None and refreshed_24h == 0:
         return STALE
-    if stalest_age_days is not None and stalest_age_days > max_stale_days * 1.5:
+    if (
+        not rotation
+        and stalest_age_days is not None
+        and stalest_age_days > max_stale_days * 1.5
+    ):
         return STALE
     if stalest_age_days is not None and stalest_age_days > max_stale_days:
         return WATCH
@@ -199,7 +210,7 @@ def gather(db: SupabaseDB) -> list[Row]:
     rows.append(_row(
         "Fundamentals", have=len(fund), total=total,
         newest=newest, oldest=oldest, refreshed_24h=r24, now=now,
-        expected_daily=True, max_stale_days=30, min_coverage=0.5,
+        expected_daily=True, max_stale_days=30, min_coverage=0.5, rotation=True,
         note="rotation: stalest nears the cycle length by design",
     ))
 
@@ -209,8 +220,8 @@ def gather(db: SupabaseDB) -> list[Row]:
     rows.append(_row(
         "AI analysis", have=len(ai), total=total,
         newest=newest, oldest=oldest, refreshed_24h=r24, now=now,
-        expected_daily=True, max_stale_days=30, min_coverage=0.3,
-        note="rotation",
+        expected_daily=True, max_stale_days=30, min_coverage=0.3, rotation=True,
+        note="rotation: refreshing daily; stalest tail is dropped-from-universe names",
     ))
 
     # 6. Estimates / Events — not ingested yet (informational).
@@ -230,12 +241,13 @@ def gather(db: SupabaseDB) -> list[Row]:
 
 
 def _row(name, *, have, total, newest, oldest, refreshed_24h, now,
-         expected_daily, max_stale_days, min_coverage, note="") -> Row:
+         expected_daily, max_stale_days, min_coverage, rotation=False, note="") -> Row:
     status = classify(
         have=have, total=total,
         stalest_age_days=_age_days(oldest, now),
         refreshed_24h=refreshed_24h, expected_daily=expected_daily,
         max_stale_days=max_stale_days, min_coverage=min_coverage,
+        rotation=rotation,
     )
     return Row(
         name=name,
