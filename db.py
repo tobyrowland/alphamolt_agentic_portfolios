@@ -1065,26 +1065,50 @@ class SupabaseDB:
     # Swarm Consensus
     # ------------------------------------------------------------------
 
-    def fetch_holdings_with_agent_company(self) -> list[dict]:
-        """Return every agent_holdings row joined to its agent + company.
+    def _security_meta_map(self, tickers) -> dict[str, dict]:
+        """Return {ticker: {"name", "price"}} from Level 0 `securities` for a
+        set of tickers (name + latest quote). The replacement for the legacy
+        `companies(company_name, price)` PostgREST embed now that consensus
+        reads identity/price off Level 0 (companies retirement)."""
+        wanted = sorted({(t or "").upper() for t in tickers if t})
+        if not wanted:
+            return {}
+        out: dict[str, dict] = {}
+        # Chunk to keep the IN list well under PostgREST limits.
+        for i in range(0, len(wanted), 500):
+            chunk = wanted[i : i + 500]
+            resp = (
+                self.client.table("securities")
+                .select("ticker, name, price")
+                .in_("ticker", chunk)
+                .execute()
+            )
+            for r in resp.data or []:
+                out[r["ticker"]] = {"name": r.get("name"), "price": r.get("price")}
+        return out
 
-        One round-trip; the consensus aggregation runs in Python afterwards.
-        Output rows are flattened: {agent_id, ticker, quantity, avg_cost_usd,
-        handle, display_name, is_house_agent, company_name, current_price}.
+    def fetch_holdings_with_agent_company(self) -> list[dict]:
+        """Return every agent_holdings row joined to its agent + Level 0 identity.
+
+        The consensus aggregation runs in Python afterwards. Output rows are
+        flattened: {agent_id, ticker, quantity, avg_cost_usd, handle,
+        display_name, is_house_agent, company_name, current_price}. Name +
+        current price come from `securities` (Level 0), not legacy `companies`.
         """
         resp = (
             self.client.table("agent_holdings")
             .select(
                 "agent_id, ticker, quantity, avg_cost_usd, "
-                "agents(handle, display_name, is_house_agent), "
-                "companies(company_name, price)"
+                "agents(handle, display_name, is_house_agent)"
             )
             .execute()
         )
+        rows = resp.data or []
+        meta = self._security_meta_map([r.get("ticker") for r in rows])
         out: list[dict] = []
-        for r in resp.data or []:
+        for r in rows:
             agent = r.get("agents") or {}
-            company = r.get("companies") or {}
+            sec = meta.get((r.get("ticker") or "").upper(), {})
             out.append({
                 "agent_id": r.get("agent_id"),
                 "ticker": r.get("ticker"),
@@ -1093,8 +1117,8 @@ class SupabaseDB:
                 "handle": agent.get("handle"),
                 "display_name": agent.get("display_name"),
                 "is_house_agent": agent.get("is_house_agent"),
-                "company_name": company.get("company_name"),
-                "current_price": company.get("price"),
+                "company_name": sec.get("name"),
+                "current_price": sec.get("price"),
             })
         return out
 
@@ -1103,9 +1127,9 @@ class SupabaseDB:
     ) -> tuple[list[dict], str | None]:
         """Return the highest-conviction tickers from the latest snapshot.
 
-        Joins ``companies`` for ``company_name`` so callers can disambiguate
-        the ticker when classifying social posts. Used by the Bluesky
-        heartbeat's equity-targeting phase.
+        Resolves ``company_name`` from Level 0 ``securities`` so callers can
+        disambiguate the ticker when classifying social posts. Used by the
+        Bluesky heartbeat's equity-targeting phase.
         """
         latest = (
             self.client.table("consensus_snapshots")
@@ -1122,20 +1146,22 @@ class SupabaseDB:
             self.client.table("consensus_snapshots")
             .select(
                 "rank, ticker, num_agents, total_agents, pct_agents, "
-                "swarm_pnl_pct, companies(company_name)"
+                "swarm_pnl_pct"
             )
             .eq("snapshot_date", snapshot_date)
             .order("rank", desc=False)
             .limit(limit)
             .execute()
         )
+        data = resp.data or []
+        meta = self._security_meta_map([r.get("ticker") for r in data])
         rows: list[dict] = []
-        for r in resp.data or []:
-            company = r.get("companies") or {}
+        for r in data:
+            sec = meta.get((r.get("ticker") or "").upper(), {})
             rows.append({
                 "rank": r.get("rank"),
                 "ticker": r.get("ticker"),
-                "company_name": company.get("company_name") or r.get("ticker"),
+                "company_name": sec.get("name") or r.get("ticker"),
                 "num_agents": r.get("num_agents"),
                 "total_agents": r.get("total_agents"),
                 "pct_agents": r.get("pct_agents"),
