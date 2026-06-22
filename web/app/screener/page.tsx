@@ -12,6 +12,7 @@ import { listActiveExclusions } from "@/lib/screen/exclusions-query";
 import { getSupabase } from "@/lib/supabase";
 import { screenConfigSchema, type ScreenConfig } from "@/lib/screen/config";
 import ScreenerClient from "@/app/screener/screener-client";
+import ActivityDrawer from "@/components/activity-drawer";
 
 // Re-rank is live client-side; the SSR paint is cached for crawlers + first
 // load. 300s matches the intraday price cadence.
@@ -105,18 +106,31 @@ function formatAsOf(s: string): string {
 }
 
 /**
- * Tickers that have a /company/<ticker> page (the legacy `companies` table).
- * The screener ranks the full Level 0 Tier 1 universe, which is broader than
- * `companies`, so names outside this set would 404 — we render them as plain
- * text instead of a broken link.
+ * Tickers that have a /company/<ticker> page. The page now renders any active
+ * Tier 1 security straight from the Level 0 fact store, so EVERY name the
+ * screener ranks is linkable — gate on `securities.is_tier1` (active), which
+ * is the same universe the screen ranks over.
  */
 async function getCompanyTickers(): Promise<string[]> {
-  const { data, error } = await getSupabase().from("companies").select("ticker");
-  if (error) {
-    console.error("getCompanyTickers failed:", error);
-    return [];
+  const tickers: string[] = [];
+  const supabase = getSupabase();
+  const PAGE = 1000;
+  for (let page = 0; ; page++) {
+    const { data, error } = await supabase
+      .from("securities")
+      .select("ticker")
+      .eq("is_tier1", true)
+      .eq("status", "active")
+      .range(page * PAGE, (page + 1) * PAGE - 1);
+    if (error) {
+      console.error("getCompanyTickers failed:", error);
+      break;
+    }
+    const batch = (data ?? []) as { ticker: string }[];
+    tickers.push(...batch.map((r) => r.ticker));
+    if (batch.length < PAGE) break;
   }
-  return ((data ?? []) as { ticker: string }[]).map((r) => r.ticker);
+  return tickers;
 }
 
 export default async function ScreenerPage({
@@ -152,11 +166,23 @@ export default async function ScreenerPage({
               All US-listed equities (incl. ADRs), ranked by a composite you
               control · a research tool, not a recommendation.
             </p>
-            {initial.data_asof && (
-              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
-                Last refreshed {formatAsOf(initial.data_asof)}
-              </p>
-            )}
+            <div className="mt-1.5 flex flex-wrap items-center gap-3">
+              {initial.data_asof && (
+                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
+                  Last refreshed {formatAsOf(initial.data_asof)}
+                </p>
+              )}
+              {/* Activity log (clickthrough drawer) — the background data
+                  refreshes that shape these rankings, so the screen's freshness
+                  is legible, not just asserted. */}
+              <ActivityDrawer
+                label="Activity log"
+                title="Screener activity"
+                subtitle="Background data refreshes that shape these rankings."
+                endpoint="/api/screen/activity"
+                storageKey="alphamolt:activity:screener"
+              />
+            </div>
           </header>
 
           <ScreenerClient
@@ -174,6 +200,7 @@ export default async function ScreenerPage({
                 score: r.score,
                 ps: r.ps,
                 ps_median_12m: r.ps_median_12m,
+                ps_trend_pct: r.ps_trend_pct,
                 rev_growth_ttm: r.rev_growth_ttm,
                 gross_margin: r.gross_margin,
                 fcf_margin: r.fcf_margin,

@@ -104,8 +104,8 @@ async function buildStory(thesis: ThesisRow): Promise<SoldStory | null> {
   const sell = ((sellRows ?? [])[0] as TradeRow | undefined) ?? null;
 
   const { data: company } = await supabase
-    .from("companies")
-    .select("company_name, exchange")
+    .from("securities")
+    .select("name, exchange")
     .eq("ticker", thesis.ticker)
     .maybeSingle();
 
@@ -132,8 +132,8 @@ async function buildStory(thesis: ThesisRow): Promise<SoldStory | null> {
   return {
     thesisId: thesis.id,
     ticker: thesis.ticker,
-    companyName: company?.company_name ?? null,
-    exchange: company?.exchange ?? null,
+    companyName: (company as { name?: string } | null)?.name ?? null,
+    exchange: (company as { exchange?: string | null } | null)?.exchange ?? null,
     thesisText: thesis.thesis_text,
     breakSignals: thesis.break_signals ?? [],
     buyerName,

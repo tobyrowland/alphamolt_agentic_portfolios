@@ -35,7 +35,7 @@ GEMINI_TIMEOUT = 300  # seconds
 MAX_RETRIES = 3
 RETRY_DELAY = 15
 DELAY_BETWEEN_CALLS = 2
-TOP_N = 100
+TOP_N = 300  # stalest Tier-1 names refreshed per run (rotation batch)
 NULL_VALUE = "\u2014"
 
 # Columns to EXCLUDE from the data sent to Gemini
@@ -349,20 +349,11 @@ def main():
     # Connect to Supabase
     db = SupabaseDB()
 
-    if args.tier1:
-        # Stage A2: rotate over the full Tier-1 universe (ai_analysis clock).
-        import level0_eval
-        top_equities = level0_eval.tier1_eval_candidates(db, "bear", TOP_N)
-        logger.info("Selected %d Tier-1 tickers for bear evaluation (rotation by ai_analysis.bear_at)", len(top_equities))
-    else:
-        all_companies = db.get_all_companies()
-        logger.info("Read %d companies from database", len(all_companies))
-        if not all_companies:
-            logger.error("No companies found in database")
-            sys.exit(1)
-        # Select rotation batch (oldest bear_eval_at first, NULLs first)
-        top_equities = select_rotation_batch(all_companies)
-        logger.info("Selected %d tickers for bear evaluation (rotation by bear_eval_at)", len(top_equities))
+    # Rotate over the full Tier-1 universe from Level 0 (ai_analysis clock). The
+    # legacy `companies` rotation path is retired — ai_analysis is the only home.
+    import level0_eval
+    top_equities = level0_eval.tier1_eval_candidates(db, "bear", TOP_N)
+    logger.info("Selected %d Tier-1 tickers for bear evaluation (rotation by ai_analysis.bear_at)", len(top_equities))
 
     if not top_equities:
         logger.warning("No in-screen non-excluded tickers found. Nothing to do.")
@@ -422,15 +413,8 @@ def main():
         ticker = (company.get("ticker") or "").strip()
         verdict = verdicts.get(ticker)
         if verdict:
-            # ai_analysis is the Level 0 home (migrations 053/054): always write
-            # the bear verdict + its rotation clock (bear_at). In --tier1 mode
-            # that's the only write (the name may not exist in companies);
-            # otherwise dual-write companies for the legacy surfaces.
-            if not args.tier1:
-                db.upsert_company(ticker, {
-                    "bear_eval": verdict,
-                    "bear_eval_at": today_str,
-                })
+            # ai_analysis is the Level 0 home (migrations 053/054) and now the
+            # sole home: write the bear verdict + its rotation clock (bear_at).
             db.upsert_ai_analysis(ticker, {
                 "bear_eval": verdict,
                 "bear_at": today_str,

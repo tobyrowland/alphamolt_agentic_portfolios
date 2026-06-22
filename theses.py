@@ -72,31 +72,92 @@ def build_snapshot(db, ticker: str) -> dict:
     ``snapshot`` JSONB column.
 
     Returns a dict containing exactly the fields in ``_SNAPSHOT_FIELDS``
-    (missing fields become None). Primary source is ``companies``; for a
-    Tier-1 name absent from ``companies`` (the legacy pipeline never covered
-    it) it falls back to a minimal Level 0 snapshot (identity + price) so the
-    thesis still records — rather than raising and dropping the audit row.
-    """
-    company = db.get_company(ticker)
-    if company:
-        return {k: company.get(k) for k in _SNAPSHOT_FIELDS}
+    (missing fields become None). Built PRIMARILY from the Level 0 fact
+    store (securities + fundamentals + valuation + ai_analysis) as part of
+    retiring the legacy ``companies`` / ``price_sales`` tables; each
+    ``_SNAPSHOT_FIELDS`` key is mapped to its Level 0 source below.
 
-    # Level 0 fallback — identity from securities + latest close, rest None.
-    # Fully defensive: a thesis snapshot must never fail to build (it would
-    # drop the audit row), so any read error yields a minimal ticker-only snap.
-    snapshot = {k: None for k in _SNAPSHOT_FIELDS}
+    Fields with no Level 0 equivalent (``composite_score``, ``rating``,
+    ``sort_order``, ``status`` and several pipeline-derived
+    ``companies``-only columns) stay None.
+
+    Fully defensive: a thesis snapshot must never raise (that would drop the
+    audit row), so every Level 0 read is guarded and any error yields the
+    partial snapshot built so far (at minimum a ticker-only snap).
+    """
+    ticker = (ticker or "").upper()
+    snapshot: dict = {k: None for k in _SNAPSHOT_FIELDS}
     snapshot["ticker"] = ticker
+
+    # --- Identity (securities) ---
     try:
         sec = db.get_security(ticker)
-        if sec:
-            snapshot["company_name"] = sec.get("name")
-            snapshot["country"] = sec.get("country")
-            snapshot["sector"] = sec.get("gics_sector")
-        price = db.get_level0_close(ticker)
-        if price is not None:
-            snapshot["price"] = price
     except Exception:  # noqa: BLE001
-        pass
+        sec = None
+    if sec:
+        snapshot["company_name"] = sec.get("name")
+        snapshot["country"] = sec.get("country")
+        snapshot["sector"] = sec.get("gics_sector")
+
+    # --- Latest price (Level 0 price layer: securities.price → prices_daily) ---
+    try:
+        price = db.get_level0_close(ticker)
+    except Exception:  # noqa: BLE001
+        price = None
+    if price is not None:
+        snapshot["price"] = price
+
+    # --- Fundamentals (latest `fundamentals` row) ---
+    # Level 0 column names differ from companies' *_pct columns — they carry
+    # bare margin/growth names already expressed as percentages (same
+    # convention screen.py / llm_watchlist_buyer._build_equity_data reuse).
+    try:
+        fund_rows = db.get_fundamentals(ticker, latest_only=True)
+    except Exception:  # noqa: BLE001
+        fund_rows = []
+    fund = fund_rows[0] if fund_rows else {}
+    if fund:
+        snapshot["rule_of_40"] = fund.get("rule_of_40")
+        # r40_score is the legacy companies alias for the same metric.
+        snapshot["r40_score"] = fund.get("rule_of_40")
+        snapshot["rev_growth_ttm_pct"] = fund.get("rev_growth_ttm")
+        snapshot["rev_growth_qoq_pct"] = fund.get("rev_growth_qoq")
+        snapshot["rev_cagr_pct"] = fund.get("rev_cagr")
+        snapshot["gross_margin_pct"] = fund.get("gross_margin")
+        snapshot["operating_margin_pct"] = fund.get("operating_margin")
+        snapshot["net_margin_pct"] = fund.get("net_margin")
+        snapshot["fcf_margin_pct"] = fund.get("fcf_margin")
+        snapshot["opex_pct_revenue"] = fund.get("opex_pct_rev")
+        snapshot["eps_only"] = fund.get("eps")
+
+    # --- Valuation (latest `valuation` row) ---
+    try:
+        val_rows = db.get_valuation(ticker, latest_only=True)
+    except Exception:  # noqa: BLE001
+        val_rows = []
+    val = val_rows[0] if val_rows else {}
+    if val:
+        snapshot["ps_now"] = val.get("ps")
+
+    # --- AI narrative + bull/bear (Level 0 `ai_analysis`) ---
+    try:
+        ai_map = db.get_ai_analysis([ticker])
+        ai = ai_map.get(ticker) or {}
+    except Exception:  # noqa: BLE001
+        ai = {}
+    if ai:
+        snapshot["short_outlook"] = ai.get("short_outlook")
+        snapshot["key_risks"] = ai.get("key_risks")
+        snapshot["full_outlook"] = ai.get("full_outlook")
+        snapshot["bull_eval"] = ai.get("bull_eval")
+        snapshot["bear_eval"] = ai.get("bear_eval")
+
+    # Fields with NO Level 0 source stay None:
+    #   composite_score, rating, status, sort_order (not in _SNAPSHOT_FIELDS),
+    #   rev_consistency_score, net_margin_yoy_pct, sm_rd_pct_revenue,
+    #   eps_yoy_pct, qrtrs_to_profitability, gm_trend, price_pct_of_52w_high,
+    #   perf_52w_vs_spy, flags, ai_analyzed_at — all pipeline-derived columns
+    #   the Level 0 fact store does not (yet) carry.
     return snapshot
 
 
@@ -305,7 +366,11 @@ def check_thesis(db, thesis_id: int) -> dict:
 
     ticker = thesis["ticker"]
     snapshot = thesis.get("snapshot") or {}
-    current_row = db.get_company(ticker) or {}
+    # Current state is assembled from the Level 0 fact store via build_snapshot
+    # (same field mapping the thesis snapshot was frozen with), so the snapshot
+    # vs current comparison stays apples-to-apples now that `companies` is being
+    # retired. build_snapshot is fully defensive and never raises.
+    current_row = build_snapshot(db, ticker) or {}
 
     break_signals = thesis.get("break_signals") or []
     extend_signals = thesis.get("extend_signals") or []

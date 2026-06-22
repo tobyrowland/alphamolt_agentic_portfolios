@@ -42,6 +42,13 @@ TEXT_FIELDS = {"sector", "country"}
 MOM_FLOOR = -50.0  # falling-knife collar
 MOM_CAP = 40.0     # blow-off-top collar
 
+# Value lens blend (migration 058): the lens reads cheapness BOTH vs the name's
+# own 12-mo P/S median (self-relative) AND vs its peer-group median P/S
+# (sector-relative). Equal-weight by default; falls back to pure self-relative
+# when a name has no peer median. MUST match web/lib/screen/score.ts.
+VAL_W_SELF = 0.5
+VAL_W_PEER = 0.5
+
 # ---- single-score constants (migration 057 / screener redesign brief §2) ----
 # One ordering score: final_z = base_z + adj_z, displayed as a universe
 # percentile round(Φ(final_z)·100). These MUST match web/lib/screen/score.ts.
@@ -191,12 +198,24 @@ def _lens_values(row: dict) -> tuple[float | None, float | None, float | None]:
         xq: float | None = None
     else:
         xq = 0.60 * (r40_eff or 0) + 0.25 * (fcf or 0) + 0.15 * (gm or 0)
-    # Value: −(P/S ÷ own 12-mo median) so cheaper ⇒ higher. Median falls back to
-    # raw P/S; denominator guarded so ps=0 yields None (unscoreable), not NaN.
+    # Value: −(P/S ÷ reference) so cheaper ⇒ higher. The reference blends the
+    # name's own 12-mo median (self-relative) with its peer-group median
+    # (sector-relative, migration 058). Self denom falls back to raw P/S; the
+    # peer term is dropped (weight renormalised to self) when no peer median is
+    # available, so coverage gaps never null the lens. ps=0 yields None.
     ps = _f(row.get("ps"))
     med = _f(row.get("ps_median_12m"))
-    denom = med if (med and med > 0) else ps
-    xv = -(ps / denom) if (ps is not None and denom) else None
+    peer = _f(row.get("peer_ps_median"))
+    self_denom = med if (med and med > 0) else ps
+    if ps is None or not self_denom:
+        xv = None
+    else:
+        self_ratio = ps / self_denom
+        if peer and peer > 0:
+            peer_ratio = ps / peer
+            xv = -(VAL_W_SELF * self_ratio + VAL_W_PEER * peer_ratio)
+        else:
+            xv = -self_ratio
     # Momentum: collared alpha vs SPY (perf_52w_vs_spy = ret_52w − SPY 52w).
     perf = _f(row.get("perf_52w_vs_spy"))
     xm = None if perf is None else max(MOM_FLOOR, min(MOM_CAP, perf))

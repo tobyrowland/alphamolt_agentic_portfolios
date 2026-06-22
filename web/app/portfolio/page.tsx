@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { getSupabase } from "@/lib/supabase";
-import { Company, SCREENER_COLUMNS } from "@/lib/types";
+import { Company } from "@/lib/types";
 import { deduplicateByCompany } from "@/lib/dedupe";
+import { runScreen } from "@/lib/screen/query";
+import { configFromParams, DEFAULT_PRESET } from "@/lib/screen/config";
 import Nav from "@/components/nav";
 import DataTable from "@/components/data-table";
 
@@ -21,33 +23,77 @@ export const metadata: Metadata = {
   },
 };
 
-const PASS_EMOJI = "\u2705"; // ✅
 
 async function getPortfolio(): Promise<{
   picks: Company[];
   beforeDedup: number;
 }> {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("companies")
-    .select(SCREENER_COLUMNS)
-    .not("bear_eval", "is", null)
-    .not("bull_eval", "is", null)
-    .order("composite_score", { ascending: false, nullsFirst: false });
+  // Source the dual-positive list from the Level 0 screen (the legacy
+  // `companies` table is retired). The screen ranks the whole Tier 1 universe
+  // and folds in the AI bull/bear booleans from `ai_analysis`; we keep names
+  // that pass BOTH evals, ranked by the screen's single ordering score.
+  const screen = await runScreen(configFromParams({ preset: DEFAULT_PRESET }));
+  const dualRows = screen.rows.filter((r) => r.bull === true && r.bear === true);
 
-  if (error) {
-    console.error("Failed to fetch example agent picks:", error);
-    return { picks: [], beforeDedup: 0 };
+  // Overlay the AI eval text + short_outlook (the DataTable shows the pass/fail
+  // badges + rationale tooltips) from `ai_analysis`.
+  const supabase = getSupabase();
+  const evalByTicker = new Map<
+    string,
+    { bull_eval: string | null; bear_eval: string | null; short_outlook: string | null }
+  >();
+  if (dualRows.length > 0) {
+    const { data: aiRows } = await supabase
+      .from("ai_analysis")
+      .select("ticker, bull_eval, bear_eval, short_outlook")
+      .in(
+        "ticker",
+        dualRows.map((r) => r.ticker),
+      );
+    for (const a of (aiRows ?? []) as {
+      ticker: string;
+      bull_eval: string | null;
+      bear_eval: string | null;
+      short_outlook: string | null;
+    }[]) {
+      evalByTicker.set(a.ticker, {
+        bull_eval: a.bull_eval,
+        bear_eval: a.bear_eval,
+        short_outlook: a.short_outlook,
+      });
+    }
   }
 
-  const rows = (data ?? []) as unknown as Company[];
-  const dualPositive = rows.filter(
-    (c) =>
-      typeof c.bear_eval === "string" &&
-      c.bear_eval.includes(PASS_EMOJI) &&
-      typeof c.bull_eval === "string" &&
-      c.bull_eval.includes(PASS_EMOJI),
-  );
+  // Project each scored row into the partial Company shape the DataTable reads.
+  // Opinionated TradingView-era columns with no Level 0 source are null:
+  //   - composite_score -> the screen's displayed percentile (final_pct)
+  //   - sort_order      -> the screen rank
+  //   - rating          -> null (TradingView only)
+  const dualPositive: Company[] = dualRows.map((r) => {
+    const ai = evalByTicker.get(r.ticker);
+    return {
+      ticker: r.ticker,
+      company_name: r.name ?? r.ticker,
+      country: r.country ?? "",
+      sector: r.sector ?? "",
+      price: r.price,
+      ps_now: r.ps,
+      ps_median_12m: r.ps_median_12m,
+      rev_growth_ttm_pct: r.rev_growth_ttm,
+      gross_margin_pct: r.gross_margin,
+      fcf_margin_pct: r.fcf_margin,
+      rule_of_40: r.rule_of_40,
+      // The DataTable renders perf as `value * 100`, so convert the screen's
+      // already-percentage value back to a fraction.
+      perf_52w_vs_spy: r.perf_52w_vs_spy != null ? r.perf_52w_vs_spy / 100 : null,
+      rating: null,
+      composite_score: r.final_pct,
+      sort_order: r.rank,
+      bull_eval: ai?.bull_eval ?? null,
+      bear_eval: ai?.bear_eval ?? null,
+      short_outlook: ai?.short_outlook ?? "",
+    } as Company;
+  });
 
   const deduped = deduplicateByCompany(dualPositive);
   // Re-sort by composite_score (dedup preserves input order otherwise)

@@ -251,10 +251,10 @@ export async function sellHolding(input: {
     return { ok: false, error: "Position quantity is zero or invalid." };
   }
 
-  // Latest price from companies.price (15-min delayed during market
-  // hours, close-of-business otherwise — see intraday_prices.py).
+  // Latest price from the Level 0 price home (`securities.price`, migration
+  // 058 — 15-min delayed during market hours, close-of-business otherwise).
   const { data: company, error: companyErr } = await supabase
-    .from("companies")
+    .from("securities")
     .select("price")
     .eq("ticker", ticker)
     .maybeSingle();
@@ -493,29 +493,6 @@ export async function setMemberSwarmConfig(input: {
   if (error) {
     console.error("setMemberSwarmConfig failed:", error);
     return { ok: false, error: "Could not update the agent. Try again." };
-  }
-  revalidate(portfolio.slug);
-  return { ok: true };
-}
-
-/** Set (or clear) a portfolio's draft settings — the opt-in switch that turns
- *  the swarm coordination engine on for this portfolio. */
-export async function setDraftConfig(input: {
-  portfolioId: string;
-  draftConfig: Record<string, unknown> | null;
-}): Promise<ActionResult> {
-  const { user } = await requireUser();
-  const portfolio = await resolveOwnedPortfolio(input.portfolioId, user.id);
-  if (!portfolio) return { ok: false, error: NOT_FOUND_ERROR };
-
-  const supabase = getSupabase();
-  const { error } = await supabase
-    .from("portfolios")
-    .update({ draft_config: input.draftConfig })
-    .eq("id", input.portfolioId);
-  if (error) {
-    console.error("setDraftConfig failed:", error);
-    return { ok: false, error: "Could not update draft settings. Try again." };
   }
   revalidate(portfolio.slug);
   return { ok: true };

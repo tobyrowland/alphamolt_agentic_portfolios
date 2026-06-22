@@ -2,8 +2,9 @@
  * Landing-page data fetches for the Arena surface.
  *
  * Everything here is derived from existing tables — there's no new arena
- * data store in Phase 2a.5. The Molt Feed reads the legacy bear/bull eval
- * columns directly on `companies`.
+ * data store in Phase 2a.5. The Molt Feed reads the bear/bull eval columns
+ * from the Level 0 `ai_analysis` home (migration 053); the equity count is
+ * the Tier 1 universe (`securities.is_tier1`).
  */
 
 import { getSupabase } from "@/lib/supabase";
@@ -43,16 +44,20 @@ export async function getArenaStats(): Promise<ArenaStats> {
   const weekAgoIso = weekAgo.toISOString().slice(0, 10); // DATE column
 
   const [equitiesRes, agentsRes, bearRes, bullRes] = await Promise.all([
-    supabase.from("companies").select("ticker", { count: "exact", head: true }),
+    supabase
+      .from("securities")
+      .select("ticker", { count: "exact", head: true })
+      .eq("is_tier1", true)
+      .eq("status", "active"),
     supabase.from("agents").select("id", { count: "exact", head: true }),
     supabase
-      .from("companies")
+      .from("ai_analysis")
       .select("ticker", { count: "exact", head: true })
-      .gte("bear_eval_at", weekAgoIso),
+      .gte("bear_at", weekAgoIso),
     supabase
-      .from("companies")
+      .from("ai_analysis")
       .select("ticker", { count: "exact", head: true })
-      .gte("bull_eval_at", weekAgoIso),
+      .gte("bull_at", weekAgoIso),
   ]);
 
   return {
@@ -65,25 +70,44 @@ export async function getArenaStats(): Promise<ArenaStats> {
 export async function getMoltFeed(limit = 20): Promise<MoltFeedItem[]> {
   const supabase = getSupabase();
 
-  // Pull the latest bear and bull evals separately, then merge client-side.
-  // We over-fetch each side by `limit` so the combined top-N is always correct.
+  // Pull the latest bear and bull evals separately from the Level 0
+  // `ai_analysis` home, then merge client-side. We over-fetch each side by
+  // `limit` so the combined top-N is always correct.
   const [bearRes, bullRes] = await Promise.all([
     supabase
-      .from("companies")
-      .select("ticker, company_name, bear_eval, bear_eval_at")
-      .not("bear_eval_at", "is", null)
-      .order("bear_eval_at", { ascending: false })
+      .from("ai_analysis")
+      .select("ticker, bear_eval, bear_at")
+      .not("bear_at", "is", null)
+      .order("bear_at", { ascending: false })
       .limit(limit),
     supabase
-      .from("companies")
-      .select("ticker, company_name, bull_eval, bull_eval_at")
-      .not("bull_eval_at", "is", null)
-      .order("bull_eval_at", { ascending: false })
+      .from("ai_analysis")
+      .select("ticker, bull_eval, bull_at")
+      .not("bull_at", "is", null)
+      .order("bull_at", { ascending: false })
       .limit(limit),
   ]);
 
   if (bearRes.error || bullRes.error) {
     return [];
+  }
+
+  // `ai_analysis` carries no name — resolve company names from `securities`.
+  const tickers = Array.from(
+    new Set([
+      ...((bearRes.data ?? []) as { ticker: string }[]).map((r) => r.ticker),
+      ...((bullRes.data ?? []) as { ticker: string }[]).map((r) => r.ticker),
+    ]),
+  );
+  const names = new Map<string, string>();
+  if (tickers.length > 0) {
+    const { data: secRows } = await supabase
+      .from("securities")
+      .select("ticker, name")
+      .in("ticker", tickers);
+    for (const s of (secRows ?? []) as { ticker: string; name: string | null }[]) {
+      if (s.name) names.set(s.ticker, s.name);
+    }
   }
 
   const items: MoltFeedItem[] = [];
@@ -93,10 +117,10 @@ export async function getMoltFeed(limit = 20): Promise<MoltFeedItem[]> {
       agent_handle: "fundamental-sentinel",
       agent_display_name: "Fundamental Sentinel",
       ticker: row.ticker as string,
-      company_name: (row.company_name as string) || "",
+      company_name: names.get(row.ticker as string) || "",
       verdict: parseVerdict(row.bear_eval as string | null),
       rationale: extractEvalRationale(row.bear_eval as string | null),
-      at: row.bear_eval_at as string,
+      at: row.bear_at as string,
       side: "bear",
     });
   }
@@ -105,10 +129,10 @@ export async function getMoltFeed(limit = 20): Promise<MoltFeedItem[]> {
       agent_handle: "smash-hit-scout",
       agent_display_name: "Smash-Hit Scout",
       ticker: row.ticker as string,
-      company_name: (row.company_name as string) || "",
+      company_name: names.get(row.ticker as string) || "",
       verdict: parseVerdict(row.bull_eval as string | null),
       rationale: extractEvalRationale(row.bull_eval as string | null),
-      at: row.bull_eval_at as string,
+      at: row.bull_at as string,
       side: "bull",
     });
   }

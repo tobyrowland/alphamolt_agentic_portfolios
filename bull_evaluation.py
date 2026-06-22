@@ -34,7 +34,7 @@ CLAUDE_MODEL = "claude-opus-4-6"
 CLAUDE_TIMEOUT = 300  # seconds
 MAX_RETRIES = 3
 RETRY_DELAY = 15
-TOP_N = 100
+TOP_N = 300  # stalest Tier-1 names refreshed per run (rotation batch)
 
 # Columns to EXCLUDE from the data sent to Claude
 EXCLUDED_COLUMNS = {
@@ -349,20 +349,11 @@ def main():
 
     # Connect to Supabase
     db = SupabaseDB()
-    if args.tier1:
-        # Stage A2: rotate over the full Tier-1 universe (ai_analysis clock).
-        import level0_eval
-        top_equities = level0_eval.tier1_eval_candidates(db, "bull", TOP_N)
-        logger.info("Selected %d Tier-1 tickers for bull evaluation (rotation by ai_analysis.bull_at)", len(top_equities))
-    else:
-        companies = db.get_all_companies()
-        logger.info("Read %d companies from database", len(companies))
-        if not companies:
-            logger.error("No companies found in the database")
-            sys.exit(1)
-        # Select rotation batch (oldest bull_eval_at first, NULLs first)
-        top_equities = select_rotation_batch(companies)
-        logger.info("Selected %d tickers for bull evaluation (rotation by bull_eval_at)", len(top_equities))
+    # Rotate over the full Tier-1 universe from Level 0 (ai_analysis clock). The
+    # legacy `companies` rotation path is retired — ai_analysis is the only home.
+    import level0_eval
+    top_equities = level0_eval.tier1_eval_candidates(db, "bull", TOP_N)
+    logger.info("Selected %d Tier-1 tickers for bull evaluation (rotation by ai_analysis.bull_at)", len(top_equities))
 
     if not top_equities:
         logger.warning("No in-screen non-excluded tickers found. Nothing to do.")
@@ -434,12 +425,8 @@ def main():
 
     logger.info("Writing %d verdicts", matched)
     if updates:
-        # ai_analysis is the Level 0 home (migrations 053/054): write the bull
-        # verdict + its rotation clock (bull_at). In --tier1 mode that's the
-        # only write (names may not exist in companies); otherwise dual-write
-        # companies too for back-compat with the legacy surfaces.
-        if not args.tier1:
-            db.upsert_companies_batch(updates)
+        # ai_analysis is the Level 0 home (migrations 053/054) and now the sole
+        # home: write the bull verdict + its rotation clock (bull_at).
         db.upsert_ai_analysis_batch([
             {"ticker": u["ticker"], "bull_eval": u["bull_eval"],
              "bull_at": u["bull_eval_at"], "analyzed_at": u["bull_eval_at"]}

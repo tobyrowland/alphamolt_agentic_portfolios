@@ -7,7 +7,7 @@ Why this exists
 The screener's **Value** lens reads `valuation.ps` and `valuation.ps_median_12m`
 (inverse P/S ÷ its own 12-month median). Like fundamentals, the Level 0
 `valuation` table was only ever seeded from the legacy `price_sales` table by
-`migrate_companies_to_level0.py` (~936 rows), so the rest of Tier 1 has no P/S
+a since-removed one-off migration (~936 rows), so the rest of Tier 1 has no P/S
 and ranks with a null Value component. This is the companion to
 `backfill_tier1_fundamentals.py`.
 
@@ -23,7 +23,8 @@ Per missing Tier 1 ticker:
      resampled to one point per ISO week, via the same price-ratio method
      `price_sales_updater` uses: `ps_week = ps_now × (week_close / latest_close)`.
   4. Derive `ps_high_52w` / `ps_low_52w` / `ps_median_12m` / `ps_ath` /
-     `ps_pct_of_ath` and write a `valuation` row (`source='eodhd'`).
+     `ps_pct_of_ath` / `ps_trend_pct` (trailing-quarter direction of the
+     multiple — migration 058) and write a `valuation` row (`source='eodhd'`).
 
 Scope / idempotency
 -------------------
@@ -60,6 +61,30 @@ logger = logging.getLogger("backfill_tier1_val")
 DEFAULT_DELAY = 1.0
 BATCH_SIZE = 200
 WEEKS = 52
+TREND_WEEKS = 13  # trailing-quarter window for the P/S direction signal
+
+
+def ps_trend_from_history(history: list, weeks: int = TREND_WEEKS) -> float | None:
+    """Trailing-`weeks` % change of the P/S multiple from a `[[date, ps], …]`
+    series (migration 058). Positive ⇒ the multiple is expanding (re-rating up),
+    negative ⇒ compressing (de-rating). Returns None when the series is too
+    short or the reference point is non-positive.
+
+    Robust to ordering: the series is sorted by date, the latest point is
+    compared against the point ~`weeks` entries earlier.
+    """
+    pts = [p for p in (history or []) if isinstance(p, (list, tuple)) and len(p) >= 2]
+    if len(pts) < weeks + 1:
+        return None
+    pts = sorted(pts, key=lambda p: p[0])
+    try:
+        latest = float(pts[-1][1])
+        prior = float(pts[-(weeks + 1)][1])
+    except (TypeError, ValueError):
+        return None
+    if prior <= 0:
+        return None
+    return round((latest / prior - 1) * 100, 2)
 
 
 def _weekly_points(rows: list[dict], db: SupabaseDB) -> list[tuple[str, float]]:
@@ -180,6 +205,7 @@ def main() -> None:
                     "ps_median_12m": ps_med,
                     "ps_ath": ps_ath,
                     "ps_pct_of_ath": pct_of_ath,
+                    "ps_trend_pct": ps_trend_from_history(history),
                     "history_json": history,
                     "source": "eodhd",
                 }

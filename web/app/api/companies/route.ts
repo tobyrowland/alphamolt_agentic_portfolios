@@ -40,14 +40,23 @@ export async function GET() {
     const supabase = getSupabase();
 
     const { data, error } = await supabase
-      .from("companies")
-      .select("ticker, company_name, updated_at")
+      .from("securities")
+      .select("ticker, name, updated_at")
+      .eq("status", "active")
       .not("ticker", "is", null)
       .order("ticker", { ascending: true });
     if (error) {
       return errorResponse(error.message, 500);
     }
-    const rows = (data ?? []) as unknown as CompanyRow[];
+    const rows = ((data ?? []) as unknown as {
+      ticker: string;
+      name: string | null;
+      updated_at: string | null;
+    }[]).map((r) => ({
+      ticker: r.ticker,
+      company_name: r.name,
+      updated_at: r.updated_at,
+    })) as CompanyRow[];
 
     // Dedupe by ticker (first occurrence wins per the brief).
     const seen = new Set<string>();

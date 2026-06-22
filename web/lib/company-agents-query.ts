@@ -133,7 +133,7 @@ export async function getCompanySwarmSnapshot(
       .select("id", { count: "exact", head: true })
       .not("strategy", "is", null),
     supabase
-      .from("companies")
+      .from("securities")
       .select("price")
       .eq("ticker", ticker)
       .maybeSingle(),
@@ -233,7 +233,7 @@ export async function getCompanyHolders(
       )
       .eq("ticker", ticker),
     supabase
-      .from("companies")
+      .from("securities")
       .select("price")
       .eq("ticker", ticker)
       .maybeSingle(),

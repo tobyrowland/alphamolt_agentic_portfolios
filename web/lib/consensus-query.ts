@@ -179,12 +179,12 @@ async function fetchContestedTicker(): Promise<ContestedTicker | null> {
   if (!best) return null;
 
   const { data: company } = await supabase
-    .from("companies")
-    .select("company_name")
+    .from("securities")
+    .select("name")
     .eq("ticker", best.ticker)
     .maybeSingle();
   const company_name =
-    (company as { company_name?: string } | null)?.company_name ?? best.ticker;
+    (company as { name?: string } | null)?.name ?? best.ticker;
 
   // Neutral copy: the firing break signal isn't persisted at sell time, so we
   // never claim a shared tripped signal we can't prove.
@@ -226,26 +226,26 @@ async function fetchSnapshotRows(
     (r) => (r as unknown as { ticker: string }).ticker,
   );
 
-  // Bulk-fetch company_name + exchange so the page can render
-  // "AAPL · Apple Inc. · NASDAQ".
+  // Bulk-fetch name + exchange from Level 0 (`securities`) so the page can
+  // render "AAPL · Apple Inc. · NASDAQ".
   const meta = new Map<
     string,
     { company_name: string; exchange: string | null }
   >();
   const { data: companies, error: cErr } = await supabase
-    .from("companies")
-    .select("ticker, company_name, exchange")
+    .from("securities")
+    .select("ticker, name, exchange")
     .in("ticker", tickers);
   if (cErr) {
-    throw new Error(`companies lookup: ${cErr.message}`);
+    throw new Error(`securities lookup: ${cErr.message}`);
   }
   for (const c of (companies ?? []) as unknown as {
     ticker: string;
-    company_name: string;
+    name: string;
     exchange: string | null;
   }[]) {
     meta.set(c.ticker, {
-      company_name: c.company_name,
+      company_name: c.name,
       exchange: c.exchange,
     });
   }

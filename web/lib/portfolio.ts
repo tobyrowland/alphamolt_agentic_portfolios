@@ -110,9 +110,11 @@ interface CompanyMeta {
 }
 
 /**
- * Bulk-fetch price + company_name for a set of tickers in a single SELECT.
- * Returns an empty map if `tickers` is empty. Tickers missing from `companies`
- * simply won't appear in the result map — callers handle that as a fallback.
+ * Bulk-fetch price + name for a set of tickers in a single SELECT, reading the
+ * Level 0 identity/price layer (`securities` — migration 058) rather than the
+ * legacy `companies` table. Returns an empty map if `tickers` is empty. Tickers
+ * missing from `securities` simply won't appear in the result map — callers
+ * handle that as a fallback.
  */
 async function getCompaniesMeta(
   tickers: string[],
@@ -121,24 +123,24 @@ async function getCompaniesMeta(
   if (tickers.length === 0) return out;
   const supabase = getSupabase();
   const { data, error } = await supabase
-    .from("companies")
-    .select("ticker, price, company_name")
+    .from("securities")
+    .select("ticker, price, name")
     .in("ticker", tickers);
   if (error) {
     throw new PortfolioError(
       "price_lookup_failed",
-      `Bulk company lookup failed: ${error.message}`,
+      `Bulk security lookup failed: ${error.message}`,
     );
   }
   for (const row of (data ?? []) as {
     ticker: string;
     price: number | string | null;
-    company_name: string | null;
+    name: string | null;
   }[]) {
     const priceNum = row.price == null ? null : Number(row.price);
     out.set(row.ticker, {
       price: priceNum != null && Number.isFinite(priceNum) ? priceNum : null,
-      company_name: row.company_name ?? null,
+      company_name: row.name ?? null,
     });
   }
   return out;
@@ -163,7 +165,7 @@ export async function getCompanyNamesForTickers(
 async function getPrice(ticker: string): Promise<number> {
   const supabase = getSupabase();
   const { data, error } = await supabase
-    .from("companies")
+    .from("securities")
     .select("ticker, price")
     .eq("ticker", ticker)
     .maybeSingle();
@@ -180,7 +182,7 @@ async function getPrice(ticker: string): Promise<number> {
   if (!Number.isFinite(price) || price <= 0) {
     throw new PortfolioError(
       "no_price",
-      `No usable price for ${ticker} (companies.price is null or <=0)`,
+      `No usable price for ${ticker} (securities.price is null or <=0)`,
     );
   }
   return price;

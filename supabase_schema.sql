@@ -242,7 +242,7 @@ CREATE TRIGGER agent_accounts_updated_at
 -- Current open positions (one row per agent+ticker).
 CREATE TABLE IF NOT EXISTS agent_holdings (
     agent_id        UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    ticker          TEXT NOT NULL REFERENCES companies(ticker) ON DELETE RESTRICT,
+    ticker          TEXT NOT NULL REFERENCES securities(ticker) ON DELETE RESTRICT,
     quantity        NUMERIC(18,6) NOT NULL,
     avg_cost_usd    NUMERIC(14,4) NOT NULL,
     first_bought_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -262,7 +262,7 @@ CREATE TRIGGER agent_holdings_updated_at
 CREATE TABLE IF NOT EXISTS agent_trades (
     id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     agent_id        UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    ticker          TEXT NOT NULL REFERENCES companies(ticker),
+    ticker          TEXT NOT NULL REFERENCES securities(ticker),
     side            TEXT NOT NULL CHECK (side IN ('buy','sell')),
     quantity        NUMERIC(18,6) NOT NULL CHECK (quantity > 0),
     price_usd       NUMERIC(14,4) NOT NULL,
@@ -298,7 +298,7 @@ CREATE INDEX IF NOT EXISTS idx_pfhist_date ON agent_portfolio_history (snapshot_
 -- agent_heartbeat rebalance has settled. One row per (date, ticker).
 CREATE TABLE IF NOT EXISTS consensus_snapshots (
     snapshot_date     DATE NOT NULL,
-    ticker            TEXT NOT NULL REFERENCES companies(ticker) ON DELETE CASCADE,
+    ticker            TEXT NOT NULL,
     rank              INTEGER NOT NULL,
     num_agents        INTEGER NOT NULL,
     total_agents      INTEGER NOT NULL,
@@ -373,11 +373,11 @@ BEGIN
     END IF;
 
     SELECT
-        COALESCE(SUM(h.quantity * COALESCE(c.price, h.avg_cost_usd)), 0)::NUMERIC(14,2),
+        COALESCE(SUM(h.quantity * COALESCE(s.price, h.avg_cost_usd)), 0)::NUMERIC(14,2),
         COUNT(*)::INTEGER
       INTO _holdings_value, _num_positions
       FROM agent_holdings h
-      LEFT JOIN companies c ON c.ticker = h.ticker
+      LEFT JOIN securities s ON s.ticker = h.ticker
      WHERE h.agent_id = _agent_id;
 
     _total_value := _cash + _holdings_value;
@@ -863,7 +863,6 @@ ALTER TABLE portfolios ADD COLUMN IF NOT EXISTS screen_config JSONB;
 ALTER TABLE portfolio_agents  ADD COLUMN IF NOT EXISTS role   TEXT;   -- 'buyer' | 'reviewer' | 'manager'
 ALTER TABLE portfolio_agents  ADD COLUMN IF NOT EXISTS remit  TEXT;   -- free-text specialty/focus
 ALTER TABLE portfolio_agents  ADD COLUMN IF NOT EXISTS config JSONB;  -- {convictionGate,maxPerName,cadence,sellRules,brain} + per-instance params
-ALTER TABLE portfolios        ADD COLUMN IF NOT EXISTS draft_config JSONB;  -- {order:'snake',cycle:'daily'}
 ALTER TABLE portfolio_holdings ADD COLUMN IF NOT EXISTS opened_by_agent_id UUID REFERENCES agents(id);
 
 

@@ -86,18 +86,48 @@ export async function GET() {
       );
     }
 
-    // 3. Bulk-fetch name + short_outlook for those tickers.
+    // 3. Bulk-fetch name (Level 0 `securities`) + short_outlook / analyzed_at
+    //    (Level 0 `ai_analysis`) for those tickers.
     const tickers = rows.map((r) => r.ticker);
-    const { data: companies, error: cErr } = await supabase
-      .from("companies")
-      .select("ticker, company_name, short_outlook, ai_analyzed_at")
-      .in("ticker", tickers);
-    if (cErr) {
-      return errorResponse(cErr.message, 500);
+    const [secRes, aiRes] = await Promise.all([
+      supabase.from("securities").select("ticker, name").in("ticker", tickers),
+      supabase
+        .from("ai_analysis")
+        .select("ticker, short_outlook, analyzed_at")
+        .in("ticker", tickers),
+    ]);
+    if (secRes.error) {
+      return errorResponse(secRes.error.message, 500);
+    }
+    if (aiRes.error) {
+      return errorResponse(aiRes.error.message, 500);
     }
     const meta = new Map<string, CompanyRow>();
-    for (const c of (companies ?? []) as unknown as CompanyRow[]) {
-      meta.set(c.ticker, c);
+    for (const s of (secRes.data ?? []) as { ticker: string; name: string | null }[]) {
+      meta.set(s.ticker, {
+        ticker: s.ticker,
+        company_name: s.name,
+        short_outlook: null,
+        ai_analyzed_at: null,
+      });
+    }
+    for (const a of (aiRes.data ?? []) as {
+      ticker: string;
+      short_outlook: string | null;
+      analyzed_at: string | null;
+    }[]) {
+      const existing = meta.get(a.ticker);
+      if (existing) {
+        existing.short_outlook = a.short_outlook;
+        existing.ai_analyzed_at = a.analyzed_at;
+      } else {
+        meta.set(a.ticker, {
+          ticker: a.ticker,
+          company_name: null,
+          short_outlook: a.short_outlook,
+          ai_analyzed_at: a.analyzed_at,
+        });
+      }
     }
 
     // 4. Shape entries. Drop any ticker we can't resolve a name for —

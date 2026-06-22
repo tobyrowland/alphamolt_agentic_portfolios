@@ -8,9 +8,11 @@ name: Universe Snapshot
 # 06:00 UTC — 1h after score_ai_analysis (05:00) so composite_score and
 # rankings are fresh, and 1h before the Sunday 07:00 UTC heartbeat.
 
+# RETIRED (companies retirement): build_universe_snapshot.py reads the legacy
+# companies/price_sales tables. Superseded by Level 0 (the screener + the
+# api_universe_facts RPC behind /api/v1/universe). Scheduled run disabled;
+# manual dispatch kept for archival only.
 on:
-  schedule:
-    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       tier:

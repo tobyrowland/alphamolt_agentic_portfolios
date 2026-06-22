@@ -1,4 +1,4 @@
--- Migration 058: Buyer — settable conviction + P/S-discount value gate; rename.
+-- Migration 064: Buyer — settable conviction + P/S-discount value gate; rename.
 --
 -- The "Conviction Buyer" family (four brains on one strategy, llm_watchlist_buyer)
 -- becomes simply "Buyer", with two newly-exposed team-builder controls beside the

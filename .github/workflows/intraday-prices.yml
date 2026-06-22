@@ -1,17 +1,12 @@
 name: Intraday 15-min prices
 
+# PAUSED — EOD-first price policy. securities.price is now maintained for the
+# WHOLE Tier-1 universe by prices_daily_updater (daily EOD close), so the 15-min
+# intraday overlay (liquid subset only) isn't needed right now. The scheduled
+# run is disabled; manual dispatch stays. Re-enable by restoring the schedule:
+#   schedule:
+#     - cron: "*/15 13-22 * * 1-5"   # every 15 min, 13:00–22:00 UTC, Mon–Fri
 on:
-  schedule:
-    # Every 15 min, 13:00–22:00 UTC, Mon–Fri.
-    # US market hours are 13:30–20:00 UTC during DST (14:30–21:00 UTC outside
-    # DST). We start at 13:00 to catch pre-open and run through 22:00 so the
-    # 21:30 UTC delayed quote settles into the day's final close. Weekends
-    # are skipped — markets are closed.
-    #
-    # GitHub Actions cron is best-effort, not exact — runs may drift by a
-    # few minutes. That's fine because the underlying data is itself 15-min
-    # delayed; a small extra wobble doesn't move the needle.
-    - cron: "*/15 13-22 * * 1-5"
   workflow_dispatch:
 
 jobs:
