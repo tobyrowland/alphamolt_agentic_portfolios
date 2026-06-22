@@ -831,6 +831,7 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
 
     provider = params["provider"]
     model = params["model"]
+    temperature = float(params["temperature"])
     if not provider or not model:
         result.errors.append("agents.config must set provider + model")
         return result
