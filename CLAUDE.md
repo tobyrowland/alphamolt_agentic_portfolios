@@ -455,17 +455,20 @@ Two trade-phase strategies share the buyer slot:
   them. Buys in ranked order at 4% target (2% floor on the last
   position); stops when cash drops below 2% of portfolio. Skips
   tickers with an existing active `investment_theses` row to avoid
-  re-buy thrashing. **Synchronous value gate** (`min_ps_discount_pct`,
-  migration 064, default 0 = off): when set, drops any candidate not at
-  least N% below its own 12-mo P/S median *before* the LLM eval
-  (`passes_value_gate`) — entry-price discipline at buy time with no
-  standing orders. A value-filtered name is NOT recorded as a rejection,
-  so it stays eligible and auto-buys on a later heartbeat once it drifts
-  cheap enough; names with no usable P/S median are excluded while the
-  gate is engaged. AND'd with the conviction gate, the two knobs let one
-  Buyer "pay up" for top-fit names and another demand a discount for
-  lower-conviction ones (the conviction↔price trade-off, composed across
-  the swarm). Reads the portfolio mandate
+  re-buy thrashing. **Optional P/S-vs-median band** (`ps_vs_median_mode`
+  ∈ off|at_most|at_least + signed `ps_vs_median_pct`, migration 064,
+  default off): a synchronous, two-directional valuation gate applied
+  *before* the LLM eval (`passes_ps_band`) — entry-price discipline at
+  buy time with no standing orders. `at_most` buys only when
+  `ps ≤ median·(1+pct/100)` (ceiling / don't-overpay; pct<0 demands a
+  discount, pct>0 tolerates a premium); `at_least` buys only when
+  `ps ≥ median·(1+pct/100)` (floor / "double-positive" premium). A
+  band-filtered name is NOT recorded as a rejection, so it stays eligible
+  and auto-buys on a later heartbeat once it moves into the band; names
+  with no usable P/S median are excluded while the band is engaged. AND'd
+  with the conviction gate, the knobs let one Buyer "pay up" for top-fit
+  names and another demand value (the conviction↔price trade-off,
+  composed across the swarm). Reads the portfolio mandate
   (`portfolios.description`) — the single owner-written brief that
   covers both *what* to own and *how* to evaluate adds.
   **Evaluation data is sourced from Level 0** — the same Tier-1 screen
@@ -861,8 +864,8 @@ managed, no heartbeat). `heartbeat_interval_hours` defaults to 168 (weekly).
 `config` is a JSONB bag for per-agent strategy parameters — the
 `watchlist_curator` strategy uses `{provider, model, watchlist_size}`, the
 `llm_watchlist_buyer` strategy uses `{provider, model, target_position_pct,
-min_conviction, min_ps_discount_pct}` (the last two are the team-builder
-conviction + value-gate knobs, migration 064); the mechanical
+min_conviction, ps_vs_median_mode, ps_vs_median_pct}` (the last three are the
+team-builder conviction + P/S-band knobs, migration 064); the mechanical
 `watchlist_buyer` ignores
 it. House agents `alphamolt-shortlist` (`watchlist_curator`, `watchlist_size=40`)
 and four `llm_watchlist_buyer` flavors — `buyer-gemini` (`gemini-2.5-pro`),
