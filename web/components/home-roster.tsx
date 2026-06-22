@@ -7,7 +7,7 @@
  * agents you add to a team.
  *
  * Data comes from `getRosterData()` (server) so card copy tracks the live
- * agent library. The only client state is the Conviction Buyer's model
+ * agent library. The only client state is the Buyer's model
  * picker — clicking a chip swaps the active state + the "powered by" line.
  * No auto-cycling anywhere; hover lift is disabled under reduced motion.
  */

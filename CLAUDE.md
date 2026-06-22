@@ -455,11 +455,23 @@ Two trade-phase strategies share the buyer slot:
   thinking counterpart: per-ticker LLM evaluation (Gemini 2.5 Pro) of
   every watchlist name not already held at ≥ 4%, returning
   `{verdict, conviction 1-5, thesis_text, extend_signals, break_signals}`.
-  Hard 5/5 conviction gate; if 2+ names qualify a final LLM call ranks
+  Conviction gate defaults to 5/5 but is a settable knob
+  (`min_conviction`, migration 058) so an owner can let a lower
+  conviction buy; if 2+ names qualify a final LLM call ranks
   them. Buys in ranked order at 4% target (2% floor on the last
   position); stops when cash drops below 2% of portfolio. Skips
   tickers with an existing active `investment_theses` row to avoid
-  re-buy thrashing. Reads the portfolio mandate
+  re-buy thrashing. **Synchronous value gate** (`min_ps_discount_pct`,
+  migration 058, default 0 = off): when set, drops any candidate not at
+  least N% below its own 12-mo P/S median *before* the LLM eval
+  (`passes_value_gate`) — entry-price discipline at buy time with no
+  standing orders. A value-filtered name is NOT recorded as a rejection,
+  so it stays eligible and auto-buys on a later heartbeat once it drifts
+  cheap enough; names with no usable P/S median are excluded while the
+  gate is engaged. AND'd with the conviction gate, the two knobs let one
+  Buyer "pay up" for top-fit names and another demand a discount for
+  lower-conviction ones (the conviction↔price trade-off, composed across
+  the swarm). Reads the portfolio mandate
   (`portfolios.description`) — the single owner-written brief that
   covers both *what* to own and *how* to evaluate adds.
   **Evaluation data is sourced from Level 0** — the same Tier-1 screen
@@ -532,13 +544,14 @@ The house agents drive the pipeline:
 
 - `alphamolt-shortlist` — curator, `gemini-2.5-flash`, 24h cadence,
   ~40-name target (migrations 028 + 030)
-- Four buyer flavors, one strategy (`llm_watchlist_buyer`), four
+- Four buyer flavors ("Buyer · <model>", renamed from "Conviction
+  Buyer" in migration 058), one strategy (`llm_watchlist_buyer`), four
   brains (migrations 036 + 037):
-  - `buyer-gemini` — "Buyer (Gemini - latest)", `gemini-2.5-pro`
-  - `buyer-claude` — "Buyer (Claude - latest)", `claude-opus-4-8`
-  - `buyer-chatgpt` — "Buyer (ChatGPT - latest)", `gpt-5`
-  - `buyer-grok` — "Buyer (Grok - latest)", `grok-4`
-  All four 24h cadence, 5/5 hard gate, 4% target, 90-day re-buy
+  - `buyer-gemini` — "Buyer · Gemini", `gemini-2.5-pro`
+  - `buyer-claude` — "Buyer · Claude", `claude-opus-4-8`
+  - `buyer-chatgpt` — "Buyer · GPT-5", `gpt-5`
+  - `buyer-grok` — "Buyer · Grok", `grok-4`
+  All four 24h cadence, 5/5 conviction gate (settable), 4% target, 90-day re-buy
   cooldown. Owners pick one per portfolio.
 - `portfolio-reviewer` — reviewer, `gemini-2.5-pro`, weekly,
   user-mandate-driven (migrations 033 + 034)
@@ -583,7 +596,7 @@ everything a mature human-owned paper portfolio has: a dummy owner (auth user +
 profile, back-dated, lifecycle-email ledger pre-seeded so the crons never email
 it), the portfolios row (mandate, `screen_config`, `mode='paper'`, flipped
 public once ≥15 holdings exist), a $1M `portfolio_accounts` row back-dated ~45
-days, a hired team in `portfolio_agents` (two library Conviction Buyers +
+days, a hired team in `portfolio_agents` (two library Buyers +
 the Reviewer, role-tagged with per-instance config), an `agent_trades` tape
 whose fills use **real historical closes** from `prices_daily` on their
 historical dates (cash-chained end to end), `investment_theses` per BUY
@@ -853,6 +866,9 @@ created_at, updated_at
 managed, no heartbeat). `heartbeat_interval_hours` defaults to 168 (weekly).
 `config` is a JSONB bag for per-agent strategy parameters — the `llm_pick`
 strategy uses `{provider, model, picker_mode, snapshot_tier}`, the
+`llm_watchlist_buyer` strategy uses `{provider, model, target_position_pct,
+min_conviction, min_ps_discount_pct}` (the last two are the team-builder
+conviction + value-gate knobs, migration 058), the
 `watchlist_curator` strategy uses `{provider, model, watchlist_size}`;
 mechanical strategies (`dual_positive`, `momentum`, `watchlist_buyer`) ignore
 it. House agents `alphamolt-shortlist` (`watchlist_curator`, `watchlist_size=40`)

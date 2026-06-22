@@ -369,6 +369,7 @@ def _llm_swarm_convictions(
     bp = {**_llm_buyer.LLM_WATCHLIST_BUYER_DEFAULTS, **cfg}
     mandate_m = _resolve_member_mandate(member_row, portfolio_mandate)
     gate = int(cfg.get("convictionGate") or bp["min_conviction"])
+    min_ps_discount_pct = float(cfg.get("min_ps_discount_pct") or bp["min_ps_discount_pct"])
     max_per = float(cfg.get("target_position_pct", bp["target_position_pct"])) / 100.0
 
     if not eval_pool:
@@ -395,11 +396,23 @@ def _llm_swarm_convictions(
         eval_cache[key] = evals_list
 
     evals_by_ticker = {e["ticker"]: e for e in evals_list}
+
+    # Per-buyer value gate (synchronous entry-price discipline). The shared eval
+    # pool is cached across co-briefed buyers, so this can't pre-filter the pool —
+    # it's applied here, after eval, on THIS buyer's conviction map (its discount
+    # may differ from a co-briefed buyer's). No-op when the gate is OFF (default 0).
+    def _value_ok(ticker: str) -> bool:
+        val = (by_ticker_data.get(ticker) or {}).get("valuation") or {}
+        return _llm_buyer.passes_value_gate(
+            val.get("ps"), val.get("ps_median_12m"), min_ps_discount_pct
+        )
+
     convictions = {
         e["ticker"]: int(e["conviction"])
         for e in evals_list
         if str(e.get("verdict") or "").upper() == "BUY"
         and int(e.get("conviction") or 0) >= gate
+        and _value_ok(e["ticker"])
     }
 
     if not dry_run:
