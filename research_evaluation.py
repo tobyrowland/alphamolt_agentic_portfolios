@@ -46,7 +46,7 @@ logger = logging.getLogger("research_evaluation")
 DEFAULTS = {
     "provider": "google",
     "model": "gemini-2.5-pro",
-    "top_n": 100,
+    "top_n": 300,
     "concurrency": 5,
     "per_call_timeout_sec": 90,
     "max_tokens": 32768,
@@ -274,7 +274,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Research Evaluation — shared per-equity card")
     ap.add_argument("--dry-run", action="store_true", help="evaluate but write nothing")
     ap.add_argument("--limit", type=int, default=DEFAULTS["top_n"],
-                    help="max equities this run (default 100, the rotation batch)")
+                    help="max equities this run (default 300, the rotation batch)")
     ap.add_argument("--tickers", nargs="*", help="evaluate these tickers instead of the rotation")
     ap.add_argument("--model", default=DEFAULTS["model"])
     ap.add_argument("--provider", default=DEFAULTS["provider"])
