@@ -35,7 +35,6 @@ export interface DashPortfolio {
   hasBuyer: boolean;
   hasReviewer: boolean;
   mandateEmpty: boolean;
-  draftEnabled: boolean;
   /**
    * The private real-money Alpaca follower (mode='live', migration 037). Kept
    * out of the paper cards / pulse aggregate / activity feed and surfaced as a
@@ -92,7 +91,7 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
 
   const { data: pRows } = await supabase
     .from("portfolios")
-    .select("id, slug, display_name, is_public, description, draft_config")
+    .select("id, slug, display_name, is_public, description")
     .eq("owner_user_id", userId)
     .order("created_at", { ascending: true });
 
@@ -102,7 +101,6 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     display_name: string;
     is_public: boolean;
     description: string | null;
-    draft_config: Record<string, unknown> | null;
   }>;
   const ids = portfolios.map((p) => p.id);
 
@@ -203,7 +201,6 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
       hasBuyer: roles.buyer,
       hasReviewer: roles.reviewer,
       mandateEmpty: !(p.description && p.description.trim()),
-      draftEnabled: !!p.draft_config,
       isLive: p.id === liveId,
     };
   });

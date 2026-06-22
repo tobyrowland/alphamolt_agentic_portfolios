@@ -197,17 +197,15 @@ mutations}.ts` + the toggle/restore panel in `web/app/screener/screener-client.t
 A portfolio runs a **swarm**: multiple specialist buyers + reviewers over one
 shared cash pool (portfolio page brief). Per-membership config lives on
 `portfolio_agents` (`role` `buyer`|`reviewer`, free-text `remit`, `config`
-knobs: `convictionGate`, `maxPerName`, `cadence`, …); per-portfolio draft
-settings on `portfolios.draft_config`; per-position attribution on
+knobs: `convictionGate`, `maxPerName`, `cadence`, …); per-position attribution on
 `portfolio_holdings.opened_by_agent_id`. See migration 041.
 
 **Coordination is the standard.** `agent_heartbeat._run_portfolio_swarm` runs
 for **any** portfolio with role-tagged buyers — snake-draft buys +
 first-valid-sell, no opt-in (the old `draft_config` "Run as a swarm" toggle was
 removed). Portfolios with no buyer-role members (legacy 1:1 agents / other
-strategies) still fall through to the independent per-member loop. The
-`portfolios.draft_config` column persists on the schema for back-compat but is
-no longer read.
+strategies) still fall through to the independent per-member loop. (The dead
+`portfolios.draft_config` column was dropped in migration 059.)
 
 - **Buy — snake draft** (`swarm.snake_draft_plan`): buyers draft from the
   shared top-N screen candidates one name at a time, order rotating/reversing
@@ -315,14 +313,6 @@ since added. Never blanks an existing sector when EODHD has no classification;
 refreshes `screen_facts` at the end. Flags: `--only-missing`, `--all-securities`
 (Tier 0), `--tickers`, `--limit`, `--dry-run`, `--no-refresh`.
 
-### migrate_companies_to_level0.py (one-off)
-Seeds Level 0 enrichment from the existing pipeline (spec §11 step 4 — reuse
-the ~1k already-enriched rows): copies scalar fundamentals from `companies`
-and the P/S series from `price_sales` onto `fundamentals` / `valuation` for
-tickers present in `securities`. A seed, not historical reconstruction; the
-real EODHD jobs append true `period_end` rows from there. Flags: `--dry-run`,
-`--tier1-only`.
-
 ### nightly_screen.py (03:00 UTC daily)
 TradingView screener over the US-listed universe (NYSE/NASDAQ/AMEX/NYSEARCA/
 BATS/ARCA, incl. ADRs that primary-list on a US exchange).
@@ -414,12 +404,14 @@ The Pass-1 agents loop skips the pipeline strategies `watchlist_curator` /
 `watchlist_buyer` (only meaningful operating a shared human portfolio — they
 run in Pass 2).
 
-Reference strategy `dual_positive` (in `agent_strategies.py`) re-reads the
-`companies` table, picks the top-N tickers with both `bear` ✅ and `bull` ✅
-(deduped by company, US-listing preferred), equal-weights them with a 2%
-cash reserve, and diffs against current holdings. Sells non-targets first so
-cash is available to buy the new additions. Idempotent modulo price drift —
-safe to rerun on an unchanged universe.
+Strategies are registered in `agent_strategies.STRATEGIES`. The live set is the
+human-portfolio pipeline — `watchlist_curator` (curate), `watchlist_buyer` /
+`llm_watchlist_buyer` (buy), `portfolio_reviewer` (sell), plus `ma_sniper` and
+`profit_taker`. Each is idempotent modulo price drift (safe to rerun on an
+unchanged universe), equal-weights with a small cash reserve where applicable,
+and diffs against current holdings (sells before buys so cash frees up for
+rotations). (The legacy mechanical `dual_positive` / `momentum` strategies and
+the snapshot-based `llm_pick` strategy were removed once no agent used them.)
 
 Strategies trade through an account-model-agnostic `ctx.buy/sell/get_book`
 facade on `RebalanceContext` — the same strategy code drives a legacy
@@ -443,11 +435,11 @@ replaces **only its own** `source='agent'` `portfolio_watchlist` rows — keyed
 by `added_by_agent_id`, so several specialist curators can each maintain
 their own slice, and the owner's `source='user'` picks are never touched. It
 reuses `llm_picker`'s snapshot loader and the shared `pick_shortlist_via_llm`
-LLM-call helper; provider/model come from `agents.config` like `llm_pick`.
+LLM-call helper; provider/model come from `agents.config`.
 Two trade-phase strategies share the buyer slot:
 
-- `watchlist_buyer` (community / fallback) is a mechanical buyer modelled
-  on `dual_positive`: it reads the *whole* watchlist (every curator's
+- `watchlist_buyer` (community / fallback) is a mechanical equal-weight
+  buyer: it reads the *whole* watchlist (every curator's
   rows + the owner's), equal-weights it with a 2% cash reserve, diffs
   against the shared book, sells holdings no longer on the watchlist
   (before buys), and buys watchlist tickers — passing a `thesis` kwarg
@@ -645,8 +637,9 @@ assembles a self-describing JSON with grouped fields (fundamentals,
 valuation, momentum, narrative). Compact ≈ 500 tok/ticker, extended ≈ 750
 (adds 5y annual + last 4 quarters + monthly P/S), full ≈ 1300 (adds all
 quarters + weekly P/S). Idempotent — re-running on the same date overwrites.
-Read by the `llm_pick` strategy at heartbeat time and by the public
-`/api/v1/universe` endpoint. Supports `--tier` and `--dry-run` flags.
+Read by the `portfolio_reviewer` strategy at heartbeat time (extended tier, via
+`llm_picker._load_latest_snapshot`) and by the public `/api/v1/universe`
+endpoint. Supports `--tier` and `--dry-run` flags.
 
 ## Portfolio Manager
 
@@ -721,9 +714,8 @@ portfolio — a *team of agents* working to a brief.
 Legacy 1:1 agent portfolios are unchanged. See migrations 023 (profiles +
 auth), 024 (portfolio ownership + visibility), 025 (portfolio trading),
 026 (agent hire consent), 031 (drop launch, add Private/Public hysteresis).
-The `portfolios.launched_at` column and `launch_portfolio()` RPC stay on
-the schema for backward compat but are no longer read anywhere; a later
-cleanup migration will drop them.
+The dead `portfolios.launched_at` column and `launch_portfolio()` RPC were
+dropped in migration 059.
 
 ## Database Tables
 
@@ -853,10 +845,10 @@ created_at, updated_at
 ```
 `strategy` is a key into `agent_strategies.STRATEGIES` (NULL = manually
 managed, no heartbeat). `heartbeat_interval_hours` defaults to 168 (weekly).
-`config` is a JSONB bag for per-agent strategy parameters — the `llm_pick`
-strategy uses `{provider, model, picker_mode, snapshot_tier}`, the
-`watchlist_curator` strategy uses `{provider, model, watchlist_size}`;
-mechanical strategies (`dual_positive`, `momentum`, `watchlist_buyer`) ignore
+`config` is a JSONB bag for per-agent strategy parameters — the
+`watchlist_curator` strategy uses `{provider, model, watchlist_size}`, the
+`llm_watchlist_buyer` uses `{provider, model, …}`;
+the mechanical `watchlist_buyer` ignores
 it. House agents `alphamolt-shortlist` (`watchlist_curator`, `watchlist_size=40`)
 and four `llm_watchlist_buyer` flavors — `buyer-gemini` (`gemini-2.5-pro`),
 `buyer-claude` (`claude-opus-4-8`), `buyer-chatgpt` (`gpt-5`),
@@ -879,7 +871,7 @@ One row per signed-in human (migration 023). Auto-provisioned by a trigger on
 id (UUID PK), slug (UNIQUE), display_name, description,
 owner_agent_id (FK → agents, nullable), owner_user_id (FK → profiles, nullable),
 is_public, mode ('paper' | 'live'), rebalance_cadence ('daily' | 'weekly'),
-launched_at, last_heartbeat_at, created_at, updated_at
+last_heartbeat_at, created_at, updated_at
 ```
 `rebalance_cadence` (migration 051, default `'weekly'`) is the owner-set
 rebalance frequency — the heartbeat re-evaluates the portfolio at most every
@@ -896,8 +888,7 @@ creation via the `create_portfolio_funded` RPC (migration 031).
 `description` is the **mandate**. `is_public` defaults FALSE for new human
 portfolios (legacy agent portfolios are TRUE); see the Private/Public
 hysteresis rules above. Private portfolios are filtered off public
-surfaces. The `launched_at` column persists for back-compat but is no
-longer read. URL: `/portfolios/<slug>`.
+surfaces. URL: `/portfolios/<slug>`.
 
 `mode` (`paper` | `live`, default `paper`; migration 036) is the **owner-only**
 real-money flag. The portfolio stays fully visible under the normal rules
@@ -1067,8 +1058,8 @@ weekday-only Sharpe formula computed against `benchmark_prices`.
 ```
 Three rows per day, one per `detail` tier (`compact` | `extended` | `full`).
 Built by `build_universe_snapshot.py` after `score_ai_analysis.py`. Read by
-the `llm_pick` strategy at heartbeat time and exposed via the public
-`GET /api/v1/universe` endpoint. The JSON is fully self-describing
+the `portfolio_reviewer` strategy at heartbeat time (extended tier) and exposed
+via the public `GET /api/v1/universe` endpoint. The JSON is fully self-describing
 (snapshot_time_utc, universe_filter, ticker_count) so consumers don't
 need sidecars.
 
@@ -1357,7 +1348,6 @@ python universe_sync.py --skip-gate          # identity refresh only
 python prices_daily_updater.py               # daily: Tier 1 EOD prices + 2y backfill for new names
 python prices_daily_updater.py --backfill    # force full 2y for all Tier 1
 python prices_daily_updater.py --tickers NVDA AAPL
-python migrate_companies_to_level0.py        # one-off: seed Level 0 from companies/price_sales
 python test_level0.py                        # Level 0 unit tests
 
 # Portfolio manager
@@ -1395,9 +1385,6 @@ python bootstrap_benchmarks.py              # one-off: seed SPY + URTH from EODH
 python bootstrap_benchmarks.py --dry-run
 python benchmarks_updater.py                # daily: append latest closes
 python benchmarks_updater.py --ticker SPY.US
-
-# One-time migration from Google Sheets (requires GOOGLE_SERVICE_ACCOUNT_JSON)
-python migrate_sheets_to_supabase.py
 ```
 
 ## Coding Conventions

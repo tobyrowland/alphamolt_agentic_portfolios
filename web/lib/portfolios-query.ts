@@ -27,8 +27,6 @@ export interface Portfolio {
   updated_at: string;
   /** The portfolio's selection recipe (migration 040). Non-secret. */
   screen_config: Record<string, unknown> | null;
-  /** Swarm draft settings (migration 041); presence opts into the swarm. */
-  draft_config: Record<string, unknown> | null;
   /** How often the heartbeat re-evaluates this portfolio (migration 051). */
   rebalance_cadence: "daily" | "weekly";
 }
@@ -40,7 +38,7 @@ export interface Portfolio {
  * server serializes to the browser. Read `mode` only via `getPortfolioMode`.
  */
 const PORTFOLIO_COLUMNS =
-  "id, slug, display_name, description, owner_agent_id, owner_user_id, is_public, created_at, updated_at, screen_config, draft_config, rebalance_cadence";
+  "id, slug, display_name, description, owner_agent_id, owner_user_id, is_public, created_at, updated_at, screen_config, rebalance_cadence";
 
 /**
  * The owner-only paper/live mode of a portfolio (migration 036). Gated on a
