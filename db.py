@@ -509,6 +509,35 @@ class SupabaseDB:
             page += 1
         return tickers
 
+    def get_fundamentals_freshness(self) -> dict[str, str]:
+        """Return the latest `fetched_at` per ticker from `fundamentals`.
+
+        The rotation clock for the daily fundamentals refresher
+        (fundamentals_updater.py): names with the oldest stamp (or none) are
+        refreshed first. Paginates the whole table and keeps the newest
+        fetched_at per ticker.
+        """
+        latest: dict[str, str] = {}
+        page = 0
+        page_size = 1000
+        while True:
+            resp = (
+                self.client.table("fundamentals")
+                .select("ticker, fetched_at")
+                .order("fetched_at", desc=True)
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            batch = resp.data or []
+            for row in batch:
+                t = row.get("ticker")
+                if t and t not in latest and row.get("fetched_at"):
+                    latest[t] = row["fetched_at"]  # rows arrive newest-first
+            if len(batch) < page_size:
+                break
+            page += 1
+        return latest
+
     # --- valuation ---
 
     def upsert_valuation_batch(self, rows: list[dict]) -> None:
