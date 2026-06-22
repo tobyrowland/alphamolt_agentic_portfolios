@@ -498,29 +498,6 @@ export async function setMemberSwarmConfig(input: {
   return { ok: true };
 }
 
-/** Set (or clear) a portfolio's draft settings — the opt-in switch that turns
- *  the swarm coordination engine on for this portfolio. */
-export async function setDraftConfig(input: {
-  portfolioId: string;
-  draftConfig: Record<string, unknown> | null;
-}): Promise<ActionResult> {
-  const { user } = await requireUser();
-  const portfolio = await resolveOwnedPortfolio(input.portfolioId, user.id);
-  if (!portfolio) return { ok: false, error: NOT_FOUND_ERROR };
-
-  const supabase = getSupabase();
-  const { error } = await supabase
-    .from("portfolios")
-    .update({ draft_config: input.draftConfig })
-    .eq("id", input.portfolioId);
-  if (error) {
-    console.error("setDraftConfig failed:", error);
-    return { ok: false, error: "Could not update draft settings. Try again." };
-  }
-  revalidate(portfolio.slug);
-  return { ok: true };
-}
-
 // ---- Team builder (migration 045) ----------------------------------------
 //
 // The new portfolio page is a team builder: drag a library agent in, tune its

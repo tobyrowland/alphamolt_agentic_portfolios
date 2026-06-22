@@ -5,8 +5,8 @@ table for Tier 1 securities that have no fundamentals row yet.
 Why this exists
 ---------------
 The recurring `eodhd_updater.py` enriches only the legacy `companies` table.
-The Level 0 `fundamentals` table was ever only *seeded* from `companies` by the
-one-off `migrate_companies_to_level0.py` (~1k rows, all `source='migrated:companies'`).
+The Level 0 `fundamentals` table was ever only *seeded* from `companies` by a
+since-removed one-off migration (~1k rows, all `source='migrated:companies'`).
 So the other Tier 1 names (currently ~2.3k) have daily prices but **no
 fundamentals** — which makes them invisible to the screener, because
 `screen_facts()` INNER JOINs `fundamentals` (a name can only be ranked if it has

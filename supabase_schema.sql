@@ -863,7 +863,6 @@ ALTER TABLE portfolios ADD COLUMN IF NOT EXISTS screen_config JSONB;
 ALTER TABLE portfolio_agents  ADD COLUMN IF NOT EXISTS role   TEXT;   -- 'buyer' | 'reviewer' | 'manager'
 ALTER TABLE portfolio_agents  ADD COLUMN IF NOT EXISTS remit  TEXT;   -- free-text specialty/focus
 ALTER TABLE portfolio_agents  ADD COLUMN IF NOT EXISTS config JSONB;  -- {convictionGate,maxPerName,cadence,sellRules,brain} + per-instance params
-ALTER TABLE portfolios        ADD COLUMN IF NOT EXISTS draft_config JSONB;  -- {order:'snake',cycle:'daily'}
 ALTER TABLE portfolio_holdings ADD COLUMN IF NOT EXISTS opened_by_agent_id UUID REFERENCES agents(id);
 
 

@@ -7,7 +7,7 @@ Why this exists
 The screener's **Value** lens reads `valuation.ps` and `valuation.ps_median_12m`
 (inverse P/S ÷ its own 12-month median). Like fundamentals, the Level 0
 `valuation` table was only ever seeded from the legacy `price_sales` table by
-`migrate_companies_to_level0.py` (~936 rows), so the rest of Tier 1 has no P/S
+a since-removed one-off migration (~936 rows), so the rest of Tier 1 has no P/S
 and ranks with a null Value component. This is the companion to
 `backfill_tier1_fundamentals.py`.
 
