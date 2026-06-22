@@ -12,6 +12,7 @@ import { listActiveExclusions } from "@/lib/screen/exclusions-query";
 import { getSupabase } from "@/lib/supabase";
 import { screenConfigSchema, type ScreenConfig } from "@/lib/screen/config";
 import ScreenerClient from "@/app/screener/screener-client";
+import ActivityDrawer from "@/components/activity-drawer";
 
 // Re-rank is live client-side; the SSR paint is cached for crawlers + first
 // load. 300s matches the intraday price cadence.
@@ -152,11 +153,23 @@ export default async function ScreenerPage({
               All US-listed equities (incl. ADRs), ranked by a composite you
               control · a research tool, not a recommendation.
             </p>
-            {initial.data_asof && (
-              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
-                Last refreshed {formatAsOf(initial.data_asof)}
-              </p>
-            )}
+            <div className="mt-1.5 flex flex-wrap items-center gap-3">
+              {initial.data_asof && (
+                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
+                  Last refreshed {formatAsOf(initial.data_asof)}
+                </p>
+              )}
+              {/* Activity log (clickthrough drawer) — the background data
+                  refreshes that shape these rankings, so the screen's freshness
+                  is legible, not just asserted. */}
+              <ActivityDrawer
+                label="Activity log"
+                title="Screener activity"
+                subtitle="Background data refreshes that shape these rankings."
+                endpoint="/api/screen/activity"
+                storageKey="alphamolt:activity:screener"
+              />
+            </div>
           </header>
 
           <ScreenerClient
