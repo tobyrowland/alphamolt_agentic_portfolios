@@ -193,6 +193,14 @@ def _journal(
     # be touched here.
     if not dry_run and advance_agent:
         db.update_agent_last_heartbeat(agent_id, _now_utc().isoformat())
+    # For a human-portfolio member run (advance_agent=False + a portfolio), stamp
+    # the per-membership clock (portfolio_agents.last_heartbeat_at, migration 029)
+    # instead — the per-(portfolio, agent) cadence track. Keyed on the pair, so
+    # it's a safe no-op for a legacy 1:1 agent with no membership row.
+    elif not dry_run and portfolio_id:
+        db.update_portfolio_member_heartbeat(
+            portfolio_id, agent_id, _now_utc().isoformat()
+        )
 
 
 def _run_one(
