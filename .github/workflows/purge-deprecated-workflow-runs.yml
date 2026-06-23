@@ -34,10 +34,12 @@ jobs:
           # Match deprecated workflows by their (now-deleted) file path. Querying
           # the workflows endpoint returns deleted ones too (state="deleted"),
           # carrying their numeric id, so we can enumerate their runs precisely.
-          PATTERN='(bull-evaluation|bear-evaluation|update-narratives|nightly-eodhd-update|nightly-screen|score-ai-analysis|universe-snapshot)\.yml$'
-
+          # Filter with grep (not jq's test()) to avoid jq string-escape pitfalls
+          # with the regex's "\.".
           IDS=$(gh api --paginate "repos/$REPO/actions/workflows?per_page=100" \
-                  --jq ".workflows[] | select(.path|test(\"$PATTERN\")) | \"\(.id)\t\(.path)\t\(.state)\"")
+                  --jq '.workflows[] | "\(.id)\t\(.path)\t\(.state)"' \
+                | grep -E '/(bull-evaluation|bear-evaluation|update-narratives|nightly-eodhd-update|nightly-screen|score-ai-analysis|universe-snapshot)\.yml' \
+                || true)
 
           if [ -z "$IDS" ]; then
             echo "No deprecated workflows found (already fully purged)."
