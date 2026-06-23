@@ -289,15 +289,14 @@ def main(argv=None) -> int:
         tickers = [t.upper() for t in args.tickers]
         secs = {(s.get("ticker") or "").upper(): s for s in
                 level0_eval._bulk(db, "securities", "ticker,name,country,gics_sector", tickers)}
-        companies = {(c.get("ticker") or "").upper(): c for c in
-                     level0_eval._bulk(db, "companies", "*", tickers)}
         funds = level0_eval._latest_by_ticker(
             level0_eval._bulk(db, "fundamentals", "*", tickers), "period_end")
         vals = level0_eval._latest_by_ticker(
             level0_eval._bulk(db, "valuation", "ticker,date,ps,ps_median_12m", tickers), "date")
         ai = db.get_ai_analysis(tickers)
+        # companies overlay retired — assemble from Level 0 + ai_analysis only.
         batch = [level0_eval._assemble(t, secs.get(t), funds.get(t), vals.get(t),
-                                       companies.get(t), ai.get(t)) for t in tickers]
+                                       None, ai.get(t)) for t in tickers]
     else:
         batch = level0_eval.tier1_eval_candidates(db, "research", args.limit)
 

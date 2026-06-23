@@ -212,15 +212,16 @@ def tier1_eval_candidates(db, kind: str, top_n: int) -> list[dict]:
     secs = {(s.get("ticker") or "").upper(): s
             for s in _bulk(db, "securities",
                            "ticker,name,country,gics_sector", tickers)}
-    companies = {(c.get("ticker") or "").upper(): c
-                 for c in _bulk(db, "companies", "*", tickers)}
     funds = _latest_by_ticker(
         _bulk(db, "fundamentals", "*", tickers), "period_end")
     vals = _latest_by_ticker(
         _bulk(db, "valuation", "ticker,date,ps,ps_median_12m", tickers), "date")
     ai = db.get_ai_analysis(tickers)
+    # The legacy `companies` overlay is retired — prompt rows are assembled from
+    # Level 0 (securities + fundamentals + valuation) and the ai_analysis
+    # narrative/verdict fallback (handled in _assemble when company is None).
     return [
         _assemble(t, secs.get(t), funds.get(t), vals.get(t),
-                  companies.get(t), ai.get(t))
+                  None, ai.get(t))
         for t in tickers
     ]
