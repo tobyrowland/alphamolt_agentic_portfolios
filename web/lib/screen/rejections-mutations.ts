@@ -44,3 +44,32 @@ export async function restoreRejection(
   revalidatePath("/screener");
   return { ok: true };
 }
+
+/**
+ * Bulk-restore every name the owner's buyer auto-passed on (the 90-day hides),
+ * in one shot. Clears only `screener_rejections` — manual `screener_exclusions`
+ * are deliberate and left untouched. Same auth → portfolio → service-role
+ * pattern as `restoreRejection`; sets `restored_at` (soft restore, audit trail
+ * preserved) on the portfolio's open, unexpired rows.
+ */
+export async function restoreAllRejections(): Promise<RejectionResult> {
+  const { user } = await requireUser();
+
+  const portfolio = await getPortfolioForUser(user.id);
+  if (!portfolio) {
+    return { ok: false, error: "No portfolio to restore into." };
+  }
+
+  const { error } = await getSupabase()
+    .from("screener_rejections")
+    .update({ restored_at: new Date().toISOString() })
+    .eq("portfolio_id", portfolio.id)
+    .is("restored_at", null)
+    .gt("expires_at", new Date().toISOString());
+  if (error) {
+    console.error("restoreAllRejections failed:", error);
+    return { ok: false, error: "Could not restore them. Try again." };
+  }
+  revalidatePath("/screener");
+  return { ok: true };
+}

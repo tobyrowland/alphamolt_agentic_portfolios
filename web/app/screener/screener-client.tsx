@@ -8,7 +8,7 @@ import {
   excludeFromScreener,
   unexcludeFromScreener,
 } from "@/lib/screen/exclusions-mutations";
-import { restoreRejection } from "@/lib/screen/rejections-mutations";
+import { restoreRejection, restoreAllRejections } from "@/lib/screen/rejections-mutations";
 import {
   FILTER_FIELDS,
   FILTER_OPS,
@@ -84,7 +84,6 @@ interface ScreenData {
   rows: Row[];
   match_count: number;
   total_universe: number;
-  cut_index: number;
   data_asof: string | null;
   /** Viewer's active per-portfolio rejections (migration 051); only the
    *  /api/screen route populates this (SSR is anonymous). */
@@ -150,8 +149,6 @@ const RANKING_HELP =
   "Each name's Score is a single number: a cross-sectional z-score blend of Quality, Value and Momentum (the 'base'), adjusted by the AI's read of durability, shown as a universe percentile. A research tool, not a recommendation.";
 const AI_HELP =
   "AI authority is the maximum the research card can move a name, in standard deviations: a strong, unbroken card lifts up to +0.7σ; a weak moat or break signals cut it (floored at −1.5σ). Fixed server-side so the ranking stays canonical — growth durability is never scored (already in R40).";
-const TOPN_HELP =
-  "The top N ranked names become your buyer's candidate pool — the cut line in the table. Only these feed the swarm.";
 
 // How many visits the "how this works" intro auto-shows before it stays hidden.
 const INTRO_MAX_VIEWS = 3;
@@ -576,6 +573,29 @@ export default function ScreenerClient({
     }
   }
 
+  // Restore ALL auto-hidden names at once (migration 051). Clears only the
+  // buyer's 90-day rejections; manual exclusions are left in place.
+  async function onRestoreAllRejections() {
+    const prior = rejected;
+    setRejMsg(null);
+    setRejected([]);
+    setRejBusy(true);
+    try {
+      const res = await restoreAllRejections();
+      if (res.ok) {
+        await refetch();
+      } else {
+        setRejected(prior);
+        setRejMsg(res.error || "Couldn’t restore them — try again.");
+      }
+    } catch {
+      setRejected(prior);
+      setRejMsg("Couldn’t restore them — are you signed in?");
+    } finally {
+      setRejBusy(false);
+    }
+  }
+
   function selectPreset(id: string) {
     setConfig(presetConfig(id));
     setSaveLink(null);
@@ -788,13 +808,13 @@ export default function ScreenerClient({
       {/* Configure scoring — sits right above the table it drives */}
       <details className={`mb-2 ${card}`}>
         <summary
-          title="Configure how the Score is computed — the balance of Quality, Value and Momentum, the AI multiplier, and how many top names flow to a portfolio."
+          title="Configure how the Score is computed — the balance of Quality, Value and Momentum, and the AI multiplier."
           className="list-none cursor-pointer font-mono text-[11px] text-[var(--color-cyan)] px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden flex items-center justify-between"
         >
           <span>⚙ Configure scoring</span>
           <span className="text-text-muted/60">
             Q {config.weights.quality} · V {config.weights.value} · M {config.weights.momentum}
-            {" · "}AI ±{BUDGET}σ · top {config.topN} ▾
+            {" · "}AI ±{BUDGET}σ ▾
           </span>
         </summary>
         <div className="px-3 pb-3 sm:max-w-[520px]">
@@ -850,27 +870,6 @@ export default function ScreenerClient({
               />
             </div>
           ))}
-          <div className="mt-3">
-            <div className="flex justify-between font-mono text-[11px] text-text-muted">
-              <span
-                title={TOPN_HELP}
-                className="cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
-              >
-                Top N → portfolio <span aria-hidden className="text-text-muted/50 no-underline">ⓘ</span>
-              </span>
-              <span className="text-[var(--color-cyan)]">{config.topN}</span>
-            </div>
-            <input
-              type="range"
-              min={10}
-              max={100}
-              value={config.topN}
-              onChange={(e) => patch({ topN: Math.max(1, Math.min(200, Number(e.target.value))) })}
-              className="w-full accent-[var(--color-cyan)]"
-              aria-label={`Top N candidates, ${config.topN}`}
-              title={TOPN_HELP}
-            />
-          </div>
         </div>
       </details>
 
@@ -886,6 +885,17 @@ export default function ScreenerClient({
             <span className="text-text-muted/60">manage ▾</span>
           </summary>
           <div className="px-3 pb-3 flex flex-wrap gap-1.5">
+            {hiddenEntries.some((h) => h.source === "agent") && (
+              <button
+                type="button"
+                disabled={rejBusy}
+                onClick={onRestoreAllRejections}
+                title="Restore every name your buyer auto-passed on. Manual removals are left in place."
+                className="basis-full text-left font-mono text-[11px] text-[var(--color-cyan)] hover:underline disabled:opacity-40 mb-0.5"
+              >
+                ↩ restore all auto-hidden ({hiddenEntries.filter((h) => h.source === "agent").length})
+              </button>
+            )}
             {hiddenEntries.map((h) => (
               <span
                 key={h.ticker}

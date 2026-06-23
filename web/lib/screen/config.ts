@@ -65,6 +65,10 @@ export const screenConfigSchema = z.object({
   // Hide names this portfolio's buyer evaluated and passed on, for 90 days
   // (migration 051). On by default; per-portfolio, owner can restore early.
   hideRejected: z.boolean().default(true),
+  // Bounds a portfolio's buyer candidate pool (screen.py:portfolio_screen_
+  // candidate_rows slices ranked[:topN]). Fixed default — no screener UI control;
+  // set only via a portfolio's stored screen_config. Aligns with
+  // agent_heartbeat.MAX_SWARM_EVAL (40).
   topN: z.number().int().min(1).max(200).default(40),
   sort: z
     .object({

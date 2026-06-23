@@ -98,7 +98,6 @@ export async function GET(req: Request) {
         rows,
         match_count: result.match_count,
         total_universe: result.total_universe,
-        cut_index: result.cut_index,
         data_asof: result.data_asof,
         config,
         // The viewer's active per-portfolio rejections (migration 051) — the

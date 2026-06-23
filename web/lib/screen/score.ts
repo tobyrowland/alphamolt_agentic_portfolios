@@ -370,7 +370,6 @@ export interface ScreenResult {
   rows: ScoredRow[];
   match_count: number;
   total_universe: number;
-  cut_index: number; // rows[0..cut_index) are the buyer's candidates (top N)
 }
 
 /**
@@ -455,7 +454,6 @@ export function scoreScreen(
     rows: scored,
     match_count: scored.length,
     total_universe: total ?? facts.length,
-    cut_index: Math.min(config.topN, scored.length),
   };
 }
 

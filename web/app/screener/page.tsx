@@ -238,7 +238,6 @@ export default async function ScreenerPage({
               })),
               match_count: initial.match_count,
               total_universe: initial.total_universe,
-              cut_index: initial.cut_index,
               data_asof: initial.data_asof,
             }}
             sectors={initial.sectors}
