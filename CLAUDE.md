@@ -348,17 +348,18 @@ over **one shared rotation batch** (`level0_eval.tier1_eval_candidates(db,
 "verdict", 300)` — the 300 stalest Tier-1 by the OLDER of `bull_at`/`bear_at`)
 and write both verdicts with the **same timestamp**, so `bull_at == bear_at`
 going forward and the screener never blends two vintages. Reuses the bull/bear
-engines' prompt + parse code (`bull_evaluation` / `bear_evaluation` stay
-importable; their `main()` still works for a manual single-side run). One engine
-failing never loses the other's verdicts. Writes ONLY `ai_analysis`; logs
-`run_logs`. Flags: `--dry-run`, `--only bull|bear`.
+engines' prompt + parse code (`bull_evaluation` / `bear_evaluation` stay as
+importable engines + local scripts; their standalone workflows were removed —
+`--only bull|bear` covers a single-side run). One engine failing never loses the
+other's verdicts. Writes ONLY `ai_analysis`; logs `run_logs`. Flags:
+`--dry-run`, `--only bull|bear`.
 
-### update_ai_narratives.py (manual / legacy only — schedule retired)
+### update_ai_narratives.py (legacy local script — no workflow)
 Legacy Gemini narrative refresher over the `companies` table. **The Tier-1 page
 narrative (short/full outlook + key risks) is now produced by
 `research_evaluation.py`** in the same per-ticker call that scores the research
-card (same Level 0 facts, same Gemini model — no diversity lost). Kept for manual
-runs / the legacy companies path; cron disabled.
+card (same Level 0 facts, same Gemini model — no diversity lost). The workflow
+was removed; the script remains runnable locally for the legacy companies path.
 
 ### price_sales_updater.py (04:30 UTC daily)
 Tracks P/S ratios over time. Backfills 52 weeks of history for new tickers.
@@ -844,9 +845,10 @@ without touching the model diversity:
   (it re-read the same Level 0 facts on the same Gemini model for no diversity
   benefit). Card + narrative share one vintage.
 
-`bull_evaluation` / `bear_evaluation` / `update_ai_narratives` remain importable
-(engines reused) and dispatch-only (schedules retired). Every reader still reads
-`ai_analysis` unchanged — the consolidation is write-side only.
+`bull_evaluation` / `bear_evaluation` / `update_ai_narratives` remain as
+importable engines + local scripts; their standalone workflows were removed.
+Every reader still reads `ai_analysis` unchanged — the consolidation is
+write-side only.
 
 All Level 0 tables: public-read RLS, service-role writes. `metric_stats`
 (distribution percentiles) is reused from migration 038.

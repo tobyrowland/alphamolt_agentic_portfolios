@@ -8,11 +8,8 @@ name: Agent Heartbeat
 # coexist in one portfolio (migration 029).
 #
 # 07:00 UTC daily — runs at the end of the morning data block, after every
-# input the picker depends on has refreshed:
-#   05:00 score-ai-analysis (composite scores + sort_order)
-#   05:30 portfolio-valuation
-#   06:00 universe-snapshot (the JSON the picker reads)
-#   07:00 agent-heartbeat   ← here
+# Level 0 input the swarm depends on has refreshed (prices, fundamentals,
+# valuation/P-S, the verdict + research AI passes).
 
 on:
   schedule:
