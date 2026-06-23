@@ -917,7 +917,7 @@ def _angle_consensus_conviction(db: Any) -> dict[str, Any] | None:
         log.info("angle consensus_conviction: pct=%.0f swarm_pnl=%.1f, not notable",
                  pct, swarm_pnl)
         return None
-    company = (top.get("companies") or {}).get("company_name") or top["ticker"]
+    company = top.get("company_name") or top["ticker"]
     return {
         "angle": "consensus_conviction",
         "narrative_hint": (
