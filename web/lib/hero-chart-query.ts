@@ -1,8 +1,9 @@
 /**
  * Server-side fetch for the homepage hero chart ("Alpha-Pulse").
  *
- * Pulls the top 4 agents by 30d return from `agent_leaderboard`, their
- * last 30 days of `agent_portfolio_history`, and the matching window of
+ * Pulls the top 4 portfolios by 30d return from `agent_leaderboard`,
+ * their last 30 days of `agent_portfolio_history` (joined on the view's
+ * `portfolio_id` — the table's real key), and the matching window of
  * SPY/URTH `benchmark_prices`. Benchmarks are normalised so day-1 sits
  * at $1M — matches the agents' starting cash so all five lines share a
  * common origin and the chart reads as "outperformance vs the index".
@@ -53,7 +54,7 @@ async function fetchHeroChart(): Promise<HeroChartData> {
   // populated so it picks up the slack cleanly.
   const { data: lbData } = await supabase
     .from("agent_leaderboard")
-    .select("handle, display_name, pnl_pct_30d, pnl_pct")
+    .select("handle, display_name, portfolio_id, pnl_pct_30d, pnl_pct")
     .eq("is_public", true)
     .order("pnl_pct_30d", { ascending: false, nullsFirst: false })
     .order("pnl_pct", { ascending: false, nullsFirst: false })
@@ -61,6 +62,7 @@ async function fetchHeroChart(): Promise<HeroChartData> {
   const topRows = (lbData ?? []) as Array<{
     handle: string;
     display_name: string;
+    portfolio_id: string;
   }>;
 
   // 30-day window keyed off today UTC. Pull a day extra so the very first
@@ -69,36 +71,35 @@ async function fetchHeroChart(): Promise<HeroChartData> {
   since.setUTCDate(since.getUTCDate() - (DAYS + 1));
   const sinceIso = since.toISOString().slice(0, 10);
 
-  // Agent histories — resolve handle → id, then bulk-pull snapshots.
+  // Agent histories — keyed by portfolio_id, which is what
+  // agent_portfolio_history actually stores. The leaderboard view's
+  // `handle` is the portfolio *slug* (p.slug), not an agents.handle, so a
+  // handle → agents.id → agent_id resolution silently returns nothing for
+  // human/swarm portfolios (no agents row matches the slug). We use the
+  // view's portfolio_id directly and keep `handle` only as the series key.
   const agentHistory = new Map<string, Map<string, number>>();
   if (topRows.length > 0) {
-    const { data: idRows } = await supabase
-      .from("agents")
-      .select("id, handle")
-      .in(
-        "handle",
-        topRows.map((r) => r.handle),
-      );
     const idToHandle = new Map<string, string>();
-    for (const r of (idRows ?? []) as Array<{ id: string; handle: string }>) {
-      idToHandle.set(r.id, r.handle);
+    for (const r of topRows) {
+      if (!r.portfolio_id) continue;
+      idToHandle.set(r.portfolio_id, r.handle);
+      agentHistory.set(r.handle, new Map());
     }
-    for (const h of idToHandle.values()) agentHistory.set(h, new Map());
 
-    const agentIds = Array.from(idToHandle.keys());
-    if (agentIds.length > 0) {
+    const portfolioIds = Array.from(idToHandle.keys());
+    if (portfolioIds.length > 0) {
       const { data: histData } = await supabase
         .from("agent_portfolio_history")
-        .select("agent_id, snapshot_date, total_value_usd")
-        .in("agent_id", agentIds)
+        .select("portfolio_id, snapshot_date, total_value_usd")
+        .in("portfolio_id", portfolioIds)
         .gte("snapshot_date", sinceIso)
         .order("snapshot_date", { ascending: true });
       for (const row of (histData ?? []) as Array<{
-        agent_id: string;
+        portfolio_id: string;
         snapshot_date: string;
         total_value_usd: number | string;
       }>) {
-        const handle = idToHandle.get(row.agent_id);
+        const handle = idToHandle.get(row.portfolio_id);
         if (!handle) continue;
         agentHistory.get(handle)!.set(row.snapshot_date, Number(row.total_value_usd));
       }
