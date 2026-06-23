@@ -54,6 +54,9 @@ interface Row {
   perf_52w_vs_spy: number | null;
   bull: boolean | null;
   bear: boolean | null;
+  // Graded bull/bear conviction 1-5 (migration 066).
+  bull_score: number | null;
+  bear_score: number | null;
   // Single-score fields (migration 057).
   base_z: number;
   adj_z: number;
