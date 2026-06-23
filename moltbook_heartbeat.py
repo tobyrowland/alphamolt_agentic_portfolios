@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -50,6 +51,7 @@ from moltbook_lib import (
     draft_reply,
     notification_marker,
     post_and_verify,
+    prune_ledger,
 )
 from social_personality import (
     detect_hostility,
@@ -100,6 +102,16 @@ def _quote(text: str) -> str:
 
 def _today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _mark_replied(ledger: dict[str, Any], replied: set[str], notif_id: str) -> None:
+    """Record a notification as handled, in both the in-memory set and the
+    persisted ledger. Dedup now lives in the ledger (capped by
+    ``prune_ledger``) rather than being recovered by scanning issue bodies."""
+    if notif_id in replied:
+        return
+    replied.add(notif_id)
+    ledger.setdefault("replied_notifs", []).append(notif_id)
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +270,7 @@ def _render_failure_issue(
 def _process_notifications(
     client: MoltbookClient,
     gh: GitHubIssuer | None,
-    existing_markers: set[str],
+    replied: set[str],
     ledger: dict[str, Any],
     args: argparse.Namespace,
 ) -> dict[str, int]:
@@ -288,8 +300,7 @@ def _process_notifications(
     skipped = 0
 
     for notif in actionable[: args.max]:
-        marker = notification_marker(notif["id"])
-        if marker in existing_markers:
+        if notif["id"] in replied:
             log.info("skip %s — already processed", notif["id"][:8])
             skipped += 1
             continue
@@ -409,6 +420,7 @@ def _process_notifications(
                     )
                     if issue:
                         gh.close_issue(issue["number"])
+                    _mark_replied(ledger, replied, notif["id"])
                     posted += 1
                 else:
                     log.error("apology post failed: %s", outcome)
@@ -444,6 +456,7 @@ def _process_notifications(
             issue = gh.create_issue(title, body, [MOLTBOOK_ISSUE_LABEL])
             if issue:
                 log.info("created review issue #%s", issue.get("number"))
+                _mark_replied(ledger, replied, notif["id"])
                 posted += 1
             else:
                 failed += 1
@@ -466,6 +479,7 @@ def _process_notifications(
             )
             if issue:
                 gh.close_issue(issue["number"])
+            _mark_replied(ledger, replied, notif["id"])
 
             # Record engagement + cold-start summary for first contact.
             was_new = get_relationship(ledger, author) is None
@@ -507,6 +521,9 @@ def _process_notifications(
             log.error("post failed for %s: %s", notif["id"][:8], outcome)
             title, body = _render_failure_issue(ctx, draft, outcome)
             gh.create_issue(title, body, [MOLTBOOK_ISSUE_LABEL, FAILED_LABEL])
+            # Mark handled so we don't auto-retry — the failure issue carries a
+            # manual retry path (edit draft + add the approve label).
+            _mark_replied(ledger, replied, notif["id"])
             failed += 1
 
     return {"posted": posted, "failed": failed, "skipped": skipped}
@@ -1171,9 +1188,9 @@ def main() -> int:
             dms,
         )
 
-    # GitHub issuer + dedup markers (shared across all phases)
+    # GitHub issuer + engagement ledger (shared across all phases)
     gh: GitHubIssuer | None = None
-    existing_markers: set[str] = set()
+    replied: set[str] = set()
     ledger: dict[str, Any] = {}
     ledger_number: int | None = None
 
@@ -1186,23 +1203,36 @@ def main() -> int:
         gh.ensure_label(FAILED_LABEL, "b60205", "Posting failed — needs attention")
         gh.ensure_label(FEED_COMMENT_LABEL, "c5def5", "Feed comment posted")
 
-        for issue in gh.list_moltbook_issues():
-            body = issue.get("body") or ""
-            for marker_line in body.splitlines():
-                if "moltbook-notif:" in marker_line:
-                    existing_markers.add(marker_line.strip())
-        log.info("existing moltbook issues: %d", len(existing_markers))
-
         ledger_number, ledger = gh.get_or_create_ledger()
+
+        # Notification dedup now lives in the ledger (bounded by prune_ledger),
+        # not in an unbounded scan of issue bodies that silently truncates at
+        # 100 issues. One-time migration: a ledger predating this has no
+        # `replied_notifs` key — seed it from the markers embedded in existing
+        # moltbook-reply issues so we don't re-reply to anything already handled.
+        replied = set(ledger.get("replied_notifs") or [])
+        if "replied_notifs" not in ledger:
+            seeded = 0
+            for issue in gh.list_moltbook_issues():
+                for mid in re.findall(
+                    r"moltbook-notif:\s*([^\s>]+)", issue.get("body") or ""
+                ):
+                    if mid not in replied:
+                        replied.add(mid)
+                        seeded += 1
+            ledger["replied_notifs"] = sorted(replied)
+            log.info("migrated replied_notifs from %d existing markers", seeded)
+
         log.info(
-            "ledger loaded: %d followed, %d upvoted, %d commented",
+            "ledger loaded: %d followed, %d upvoted, %d commented, %d replied",
             len(ledger.get("followed", [])),
             len(ledger.get("upvoted_posts", [])),
             len(ledger.get("commented_posts", [])),
+            len(replied),
         )
 
     # Phase 1 — Notification replies
-    notif_stats = _process_notifications(client, gh, existing_markers, ledger, args)
+    notif_stats = _process_notifications(client, gh, replied, ledger, args)
 
     # Phase 2 — Feed engagement
     engage_stats: dict[str, int] = {"followed": 0, "upvoted": 0, "commented": 0}
@@ -1213,8 +1243,9 @@ def main() -> int:
     if not args.no_original_posts and not args.no_draft:
         _maybe_post_original(client, gh, ledger, dry_run=args.dry_run)
 
-    # Save ledger
+    # Save ledger — prune first so it never outgrows the 64KB issue body.
     if gh and ledger_number is not None:
+        prune_ledger(ledger)
         gh.update_ledger(ledger_number, ledger)
         log.info("ledger saved")
 
