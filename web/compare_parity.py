@@ -21,6 +21,7 @@ py = {
         "value_pct": r["value_pct"],
         "momentum_pct": r["momentum_pct"],
         "adj_z": round(r["adj_z"], 6),
+        "verdict_z": round(r["verdict_z"], 6),
         "base_z": round(r["base_z"], 6),
         "firing_breaks": r["firing_breaks"],
     }
@@ -40,7 +41,7 @@ for row in ts:
         if row[k] != p[k]:
             print(f"DIVERGE {t}.{k}: ts={row[k]} py={p[k]}")
             ok = False
-    for k in ("adj_z", "base_z"):
+    for k in ("adj_z", "verdict_z", "base_z"):
         if abs(row[k] - p[k]) > 1e-6:
             print(f"DIVERGE {t}.{k}: ts={row[k]} py={p[k]}")
             ok = False

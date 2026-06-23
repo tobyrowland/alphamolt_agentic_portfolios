@@ -4,12 +4,14 @@ Verdict Evaluation — the consolidated bull + bear pass.
 
 Bull and bear are an ADVERSARIAL pair run on DIFFERENT models on purpose
 (bull = Claude, bear = Gemini): a different brain arguing each side has
-uncorrelated blind spots, so the screener's bull×bear multiplier multiplies two
-genuinely independent reads. This script keeps that — two models, two calls —
-but runs them over ONE shared rotation batch and stamps both verdicts with the
-SAME timestamp. So `bull_at` and `bear_at` never drift apart (they used to be
-two jobs on two clocks, up to ~4 days out of sync), and the screener always
-reads one vintage.
+uncorrelated blind spots, so the screener's verdict_z tilt blends two genuinely
+independent reads (and bull is the only Claude signal in the rank). Each side
+returns a graded 1-5 conviction (bull: strength of the bull case; bear: red-flag
+severity), written as bull_score / bear_score for the screener's verdict_z.
+This script keeps the two models / two calls but runs them over ONE shared
+rotation batch and stamps both verdicts with the SAME timestamp. So `bull_at`
+and `bear_at` never drift apart (they used to be two jobs on two clocks, up to
+~4 days out of sync), and the screener always reads one vintage.
 
 It replaces the separate `bull-evaluation` + `bear-evaluation` crons. The
 underlying engines (`bull_evaluation` / `bear_evaluation`) stay importable
@@ -52,8 +54,9 @@ def setup_logging() -> logging.Logger:
 
 
 def _run_bull(top_equities: list[dict], api_key: str,
-              logger: logging.Logger) -> dict[str, str]:
-    """Claude bull pass over the shared batch. Returns {ticker: verdict}."""
+              logger: logging.Logger) -> dict[str, dict]:
+    """Claude bull pass over the shared batch.
+    Returns {ticker: {"eval": text, "score": 1-5|None}}."""
     blocks = [bull.build_equity_block(c) for c in top_equities]
     prompt = bull.build_bull_prompt(blocks)
     logger.info("Bull (Claude %s): prompt %d chars for %d equities",
@@ -68,8 +71,9 @@ def _run_bull(top_equities: list[dict], api_key: str,
 
 
 def _run_bear(top_equities: list[dict], api_key: str,
-              logger: logging.Logger) -> dict[str, str]:
-    """Gemini bear pass over the shared batch. Returns {ticker: verdict}."""
+              logger: logging.Logger) -> dict[str, dict]:
+    """Gemini bear pass over the shared batch.
+    Returns {ticker: {"eval": text, "score": 1-5|None}}."""
     blocks = [bear.build_equity_block(c) for c in top_equities]
     prompt = bear.build_bear_prompt(blocks)
     logger.info("Bear (Gemini %s): prompt %d chars for %d equities",
@@ -121,8 +125,8 @@ def main() -> int:
 
     # Each engine runs independently — a failure on one side must not lose the
     # other's verdicts (the whole point of one resilient job over two crons).
-    bull_verdicts: dict[str, str] = {}
-    bear_verdicts: dict[str, str] = {}
+    bull_verdicts: dict[str, dict] = {}
+    bear_verdicts: dict[str, dict] = {}
     if want_bull:
         try:
             bull_verdicts = _run_bull(top_equities, claude_key, logger)
@@ -134,8 +138,8 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             logger.exception("Bear side crashed — continuing with bull only")
 
-    bull_pass = sum(1 for v in bull_verdicts.values() if "✅" in v)
-    bear_pass = sum(1 for v in bear_verdicts.values() if "✅" in v)
+    bull_pass = sum(1 for v in bull_verdicts.values() if "✅" in v["eval"])
+    bear_pass = sum(1 for v in bear_verdicts.values() if "✅" in v["eval"])
     logger.info("Bull: %d verdicts (%d ✅) · Bear: %d verdicts (%d ✅)",
                 len(bull_verdicts), bull_pass, len(bear_verdicts), bear_pass)
 
@@ -148,7 +152,9 @@ def main() -> int:
         return 0
 
     # Merge into one row per ticker, both verdicts stamped with the SAME clock so
-    # bull_at == bear_at going forward.
+    # bull_at == bear_at going forward. Each verdict is {"eval": text, "score":
+    # 1-5|None}; we write the text (display/buyer) AND the graded score (the
+    # screener's verdict_z tilt).
     ts = date.today().isoformat()
     rows: list[dict] = []
     for company in top_equities:
@@ -157,10 +163,12 @@ def main() -> int:
             continue
         row: dict = {"ticker": ticker, "analyzed_at": ts}
         if (bv := bull_verdicts.get(ticker)):
-            row["bull_eval"] = bv
+            row["bull_eval"] = bv["eval"]
+            row["bull_score"] = bv["score"]
             row["bull_at"] = ts
         if (rv := bear_verdicts.get(ticker)):
-            row["bear_eval"] = rv
+            row["bear_eval"] = rv["eval"]
+            row["bear_score"] = rv["score"]
             row["bear_at"] = ts
         # Only write a row that actually carries a verdict.
         if "bull_eval" in row or "bear_eval" in row:

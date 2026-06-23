@@ -88,12 +88,17 @@ competitive position, it passes.
 
 Output Format:
 For every stock in the list, provide the result in this exact format. \
-Use the EXACT ticker as shown in the data header (including numbers and slashes):
+Use the EXACT ticker as shown in the data header (including numbers and slashes). \
+After the tick/cross, give a 1-5 RED-FLAG SEVERITY score for how strong the bear \
+case is (5 = severe, imminent fundamental deterioration; 1 = essentially no \
+concerns). A \u2705 should score LOW (1-2); a \u274c should score HIGH (4-5):
 
-TICKER: \u2705 (Only if the fundamental trajectory is stable/improving)
+TICKER: \u2705 2 (Only if the fundamental trajectory is stable/improving)
 
-TICKER: \u274c (Brief, blunt reason why the business fundamentals are at risk \
+TICKER: \u274c 5 (Brief, blunt reason why the business fundamentals are at risk \
 of deteriorating)
+
+The 1-5 is REQUIRED on every line.
 
 Strict Constraints:
 
@@ -300,7 +305,11 @@ def call_gemini_bear(prompt, api_key, logger):
 
 def parse_bear_results(response_text):
     """
-    Parse Gemini response into {ticker: verdict_string} dict.
+    Parse Gemini response into {ticker: {"eval": str, "score": int|None}}.
+
+    `eval` is the verdict text (emoji + optional 1-5 + reason); `score` is the
+    1-5 red-flag severity if present (5 = strongest bear/deterioration case),
+    else None. Tolerant of an old format with no number (score=None).
 
     Handles tickers that start with letters, numbers, or contain slashes.
     Examples: NVDA, 6857, VISTA/A, A3EGAB, 896047
@@ -311,10 +320,13 @@ def parse_bear_results(response_text):
         r'^([A-Z0-9][A-Z0-9./]*?):\s*([\u2705\u274c].*)$',
         re.MULTILINE,
     )
+    score_re = re.compile(r'^[\u2705\u274c]\s*([1-5])\b')
     for match in pattern.finditer(response_text):
         ticker = match.group(1).strip()
         verdict = match.group(2).strip()
-        results[ticker] = verdict
+        sm = score_re.match(verdict)
+        score = int(sm.group(1)) if sm else None
+        results[ticker] = {"eval": verdict, "score": score}
     return results
 
 
@@ -396,13 +408,13 @@ def main():
         logger.error("First 2000 chars of response:\n%s", response_text[:2000])
         sys.exit(1)
 
-    passed = sum(1 for v in verdicts.values() if "\u2705" in v)
-    failed = sum(1 for v in verdicts.values() if "\u274c" in v)
+    passed = sum(1 for v in verdicts.values() if "\u2705" in v["eval"])
+    failed = sum(1 for v in verdicts.values() if "\u274c" in v["eval"])
     logger.info("Results: %d pass, %d fail", passed, failed)
 
     if args.dry_run:
-        for ticker, verdict in verdicts.items():
-            logger.info("  %s: %s", ticker, verdict)
+        for ticker, v in verdicts.items():
+            logger.info("  %s: %s", ticker, v["eval"])
         logger.info("[DRY RUN] Complete. No writes performed.")
         return
 
@@ -414,9 +426,10 @@ def main():
         verdict = verdicts.get(ticker)
         if verdict:
             # ai_analysis is the Level 0 home (migrations 053/054) and now the
-            # sole home: write the bear verdict + its rotation clock (bear_at).
+            # sole home: write the bear verdict + its 1-5 severity + clock.
             db.upsert_ai_analysis(ticker, {
-                "bear_eval": verdict,
+                "bear_eval": verdict["eval"],
+                "bear_score": verdict["score"],
                 "bear_at": today_str,
                 "analyzed_at": today_str,
             })
