@@ -441,7 +441,7 @@ def main():
         "errors": 0,
         "duration_secs": round(elapsed, 1),
         "details": {
-            "total_companies": len(companies),
+            "total_companies": len(top_equities),
             "batch_size": len(top_equities),
             "verdicts_parsed": len(verdicts),
             "passed": passed,
