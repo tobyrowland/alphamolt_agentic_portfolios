@@ -68,6 +68,42 @@ EXCLUDE_NAME_KEYWORDS = (
 ADR_KEYWORDS = ("ADR", "ADS", "AMERICAN DEPOSITARY")
 REIT_KEYWORDS = ("REIT",)
 
+# --- non-common ticker-suffix gate (preferreds / warrants / units / rights) ---
+# EODHD sometimes mistypes preferred series, warrants and units as
+# "Common Stock" (the Name keywords above then miss them), so they leak into
+# Tier 1 as suffixed tickers: e.g. ALB-PA / BA-PA / BA-P-A (preferred series),
+# ACHR-WS / XYZ-WT (warrants), ABC-U / ABC-UN (units), DEF-R / DEF-RT (rights).
+# We drop these by the *suffix* (everything after the first hyphen). Legitimate
+# dual-class common shares use a single trailing letter (BRK-A / BRK-B /
+# HEI-A / LEN-B / GEF-B) and must be KEPT — so the gate fires only on the
+# known non-common suffix shapes, never on a bare single class letter.
+_PREFERRED_SUFFIX_PREFIX = "P"          # P, PA, PB, P-A … (preferred series)
+_NONCOMMON_SUFFIXES = {
+    "WS", "WT", "W",       # warrants
+    "U", "UN",             # units
+    "R", "RT", "RTS",      # rights
+}
+
+
+def _is_non_common_suffix(code: str) -> bool:
+    """True when a hyphenated ticker's suffix marks a preferred / warrant /
+    unit / rights line rather than a dual-class common share.
+
+    Conservative: a single trailing class letter (A/B/C/K/…) is always kept;
+    only the preferred-series shape (`P…`) and the explicit warrant/unit/rights
+    suffixes are dropped.
+    """
+    if "-" not in code:
+        return False
+    suffix = code.split("-", 1)[1].strip().upper()
+    if not suffix:
+        return False
+    # Preferred series: suffix begins with "P" and is not a lone class letter.
+    # (No common dual-class line uses a "P" class; "P…" is preferred-series.)
+    if suffix.startswith(_PREFERRED_SUFFIX_PREFIX):
+        return True
+    return suffix in _NONCOMMON_SUFFIXES
+
 # --- US-exchange listing gate (Tier 1 = US-exchange-listed only) ---
 # EODHD's "US" symbol list spans every US-market venue: the real exchanges
 # (NYSE / NASDAQ / NYSE MKT (=AMEX) / NYSE ARCA / BATS) PLUS the OTC tiers
@@ -110,6 +146,11 @@ def classify_security(row: dict) -> tuple[str, str | None] | None:
         return None
 
     code = (row.get("Code") or "").strip().upper()
+    # Drop preferred-series / warrant / unit / rights lines that EODHD mistyped
+    # as "Common Stock" — recognised by their ticker suffix (ALB-PA, ACHR-WS,
+    # …). Dual-class common shares (BRK-A / BRK-B) are kept.
+    if _is_non_common_suffix(code):
+        return None
     # Dual-class tickers use a hyphen (BRK-A / BRK-B); the part after the
     # hyphen is the share class. (Preferreds arrive as Type "Preferred Stock"
     # and are already excluded above, so a hyphen here means dual-class.)

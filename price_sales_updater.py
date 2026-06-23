@@ -551,7 +551,11 @@ def main():
             continue
 
         if result is None:
-            errors += 1
+            # Uncomputable, not a failure: no fundamentals, no/zero revenue
+            # (pre-revenue biotech), or no market cap. Count as skipped so the
+            # activity log reads honestly — genuine fetch exceptions above are
+            # the only thing that counts as an error.
+            skipped += 1
             continue
 
         # Write to the Level 0 `valuation` table — this script is now the daily
