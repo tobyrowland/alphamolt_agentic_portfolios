@@ -1,10 +1,11 @@
 name: Bull Evaluation
 
 on:
-  schedule:
-    # Daily 04:30 UTC — rotation batch of 100 oldest bull_eval_at, paired
-    # with bear-evaluation at 04:00. Full universe cycles every ~5 days.
-    - cron: "30 4 * * *"
+  # SCHEDULE RETIRED — the bull side now runs inside verdict-evaluation.yml
+  # (bull + bear over one shared batch / clock). Kept for manual single-side
+  # runs and backfills only.
+  # schedule:
+  #   - cron: "30 4 * * *"
   workflow_dispatch: # Allow manual trigger from GitHub UI
 
 jobs:

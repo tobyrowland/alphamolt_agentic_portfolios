@@ -14,12 +14,18 @@ from raw numbers on every run — so the expensive thinking happens here, once,
 amortized across all users, while the buyer's per-run call shrinks to a
 mandate-fit judgment.
 
+The same per-ticker call also writes the company-page NARRATIVE (short_outlook /
+key_risks / full_outlook) — the descriptive analysis merged in from the retired
+`update_ai_narratives` pass, since it re-read the same Level 0 facts on the same
+model (Gemini) for no diversity benefit. Card + narrative therefore share one
+vintage (`narrated_at` == `researched_at`).
+
 Rotation: the `top_n` stalest Tier-1 names by `ai_analysis.researched_at`
 (NULLs first), via `level0_eval.tier1_eval_candidates(db, "research", N)`.
 Writes ONLY `ai_analysis` (the card is a Level 0 concept). Per-ticker LLM call
 (structured JSON), parallelised — robust to one bad response.
 
-Schedule: daily ~04:15 UTC, alongside bull/bear.
+Schedule: daily ~04:15 UTC, alongside the verdict (bull+bear) pass.
 """
 
 from __future__ import annotations
@@ -150,6 +156,16 @@ Each is {{"field","op","value","description"}}.
 - op MUST be one of: >, >=, <, <=, ==, !=, change_pct_lt, change_pct_gt
 - value MUST be a number (never a string with "%"/"pp").
 
+Finally write a short, plain-language NARRATIVE for the company page (qualitative
+— the page shows live numbers next to it, so do NOT put specific percentages or
+dollar figures in the prose; they would drift out of sync):
+- short_outlook: ONE sentence, max 15 words, starting with 🟢 (positive),
+  🟡 (cautious/mixed) or 🔴 (negative), naming the single most important driver.
+- key_risks: ONE sentence, max 15 words, starting with 🟡 or 🔴, naming the
+  1-2 most specific risks.
+- full_outlook: 3-5 sentences on the fundamental earnings-quality story and the
+  path to (or sustainability of) profitability. No bullet points.
+
 Use ONLY the data provided plus your general knowledge of the sector. Do not
 invent company-specific numbers.
 
@@ -166,7 +182,10 @@ OUTPUT SCHEMA (strict JSON, no other text):
 {{
   "quality_score": <integer 1-5 — your overall read of the business>,
 {dimension_schema}
-  "break_signals": [{{"field": "...", "op": "...", "value": <number>, "description": "..."}}]
+  "break_signals": [{{"field": "...", "op": "...", "value": <number>, "description": "..."}}],
+  "short_outlook": "🟢/🟡/🔴 <max 15 words>",
+  "key_risks": "🟡/🔴 <max 15 words>",
+  "full_outlook": "<3-5 sentences, qualitative, no specific numbers>"
 }}
 Output JSON only."""
 
@@ -229,8 +248,28 @@ def _build_card(parsed: dict, model: str, max_break_signals: int,
     return card
 
 
+def _build_narrative(parsed: dict) -> dict:
+    """Pull the plain-language narrative fields out of the LLM JSON, trimmed.
+
+    Merged in from the retired update_ai_narratives pass — the same deep call
+    that scores the card now also writes the page outlook, so narrative and card
+    share one vintage (narrated_at == researched_at)."""
+    out: dict = {}
+    so = str(parsed.get("short_outlook") or "").strip()
+    kr = str(parsed.get("key_risks") or "").strip()
+    fo = str(parsed.get("full_outlook") or "").strip()
+    if so:
+        out["short_outlook"] = so[:160]
+    if kr:
+        out["key_risks"] = kr[:160]
+    if fo:
+        out["full_outlook"] = fo[:1200]
+    return out
+
+
 def _evaluate_one(equity: dict, cfg: dict) -> dict:
-    """One LLM research call for one equity. Returns {ticker, card} or {ticker, error}."""
+    """One LLM call for one equity → the research card + page narrative.
+    Returns {ticker, card, narrative} or {ticker, error}."""
     ticker = equity["ticker"]
     # Data-quality gate: only score dimensions whose verified inputs are present,
     # and never call the LLM for a name with too little to assess (< 2 dims).
@@ -265,7 +304,7 @@ def _evaluate_one(equity: dict, cfg: dict) -> dict:
     card = _build_card(parsed, cfg["model"], cfg["max_break_signals"], dims)
     if card is None:
         return {"ticker": ticker, "error": "no usable dimension scores"}
-    return {"ticker": ticker, "card": card}
+    return {"ticker": ticker, "card": card, "narrative": _build_narrative(parsed)}
 
 
 def main(argv=None) -> int:
@@ -308,6 +347,7 @@ def main(argv=None) -> int:
 
     start = time.time()
     cards: dict[str, dict] = {}
+    narratives: dict[str, dict] = {}
     errors: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=cfg["concurrency"]) as pool:
         futures = {pool.submit(_evaluate_one, eq, cfg): eq["ticker"] for eq in batch}
@@ -325,6 +365,7 @@ def main(argv=None) -> int:
                 errors[ticker] = res["error"]
             else:
                 cards[ticker] = res["card"]
+                narratives[ticker] = res.get("narrative") or {}
 
     logger.info("scored %d / %d (%d errors)", len(cards), len(batch), len(errors))
     for t, c in list(cards.items())[:10]:
@@ -341,19 +382,28 @@ def main(argv=None) -> int:
         return 0
 
     now = datetime.now(timezone.utc).isoformat()
-    rows = [
-        {"ticker": t, "research_card": c, "researched_at": now, "analyzed_at": now}
-        for t, c in cards.items()
-    ]
+    rows = []
+    narrated = 0
+    for t, c in cards.items():
+        row = {"ticker": t, "research_card": c,
+               "researched_at": now, "analyzed_at": now}
+        nar = narratives.get(t) or {}
+        if nar:
+            row.update(nar)
+            row["narrated_at"] = now  # narrative shares the card's vintage
+            narrated += 1
+        rows.append(row)
     if rows:
         db.upsert_ai_analysis_batch(rows)
     db.log_run("research_evaluation", {
         "updated": len(rows), "skipped": len(batch) - len(rows), "errors": len(errors),
         "duration_secs": round(time.time() - start, 1),
-        "details": {"batch_size": len(batch), "scored": len(cards)},
+        "details": {"batch_size": len(batch), "scored": len(cards),
+                    "narrated": narrated},
     })
-    logger.info("=== Research Evaluation complete: %d cards written (%.1fs) ===",
-                len(rows), time.time() - start)
+    logger.info(
+        "=== Research Evaluation complete: %d cards (%d w/ narrative) (%.1fs) ===",
+        len(rows), narrated, time.time() - start)
     return 0
 
 
