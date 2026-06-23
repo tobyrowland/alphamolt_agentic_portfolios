@@ -1,9 +1,12 @@
 name: AI Narratives Update
 
 on:
-  schedule:
-    # Runs at 4:00 AM UTC daily (after EODHD at 3:30)
-    - cron: "0 4 * * *"
+  # SCHEDULE RETIRED — the page narrative (short/full outlook + key risks) is now
+  # produced by research-evaluation.yml in the same per-ticker call that scores
+  # the research card (same Level 0 facts, same Gemini model). Kept for manual
+  # runs / the legacy companies path only.
+  # schedule:
+  #   - cron: "0 4 * * *"
   workflow_dispatch: # Allow manual trigger from GitHub UI
 
 jobs:

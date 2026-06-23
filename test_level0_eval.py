@@ -63,22 +63,33 @@ class _FakeQ:
     def select(self, *_a, **_k): return self
     def eq(self, *_a, **_k): return self
     def in_(self, *_a, **_k): return self
+    def or_(self, *_a, **_k): return self
     def range(self, *_a, **_k): return self
     def execute(self):
         return SimpleNamespace(data=self._data)
 
 
 class _FakeClient:
-    def __init__(self, securities, ai):
+    def __init__(self, securities, ai, fundamentals):
         self._securities = securities
         self._ai = ai
+        self._fundamentals = fundamentals
     def table(self, name):
-        return _FakeQ(name, self._securities if name == "securities" else self._ai)
+        data = {
+            "securities": self._securities,
+            "fundamentals": self._fundamentals,
+        }.get(name, self._ai)
+        return _FakeQ(name, data)
 
 
 class _FakeDB:
-    def __init__(self, securities, ai):
-        self.client = _FakeClient(securities, ai)
+    def __init__(self, securities, ai, fundamentals=None):
+        # Default: every security has verified fundamentals (so the verified-fact
+        # gate keeps the whole test universe and only the clock ordering is under
+        # test). Pass an explicit list to test the gate itself.
+        if fundamentals is None:
+            fundamentals = [{"ticker": s["ticker"]} for s in securities]
+        self.client = _FakeClient(securities, ai, fundamentals)
     def get_ai_analysis(self, tickers):
         return {}
 
@@ -108,6 +119,33 @@ class StaleOrderingTests(unittest.TestCase):
         db = _FakeDB([], [])
         with self.assertRaises(ValueError):
             L.stale_tier1_tickers(db, "sideways", top_n=1)
+
+    def test_verdict_uses_older_of_bull_and_bear(self):
+        securities = [{"ticker": t} for t in ("AAA", "BBB", "CCC", "DDD")]
+        ai = [
+            # AAA: bull fresh but bear NULL -> never-evaluated group (most stale).
+            {"ticker": "AAA", "bull_at": "2026-06-01T00:00:00Z", "bear_at": None},
+            # BBB: both old -> stale, key = older (2025-01-01).
+            {"ticker": "BBB", "bull_at": "2025-02-01T00:00:00Z",
+             "bear_at": "2025-01-01T00:00:00Z"},
+            # CCC: both recent -> freshest.
+            {"ticker": "CCC", "bull_at": "2026-06-10T00:00:00Z",
+             "bear_at": "2026-06-09T00:00:00Z"},
+            # DDD: no ai row at all -> never-evaluated group.
+        ]
+        db = _FakeDB(securities, ai)
+        order = L.stale_tier1_tickers(db, "verdict", top_n=4)
+        # Never-evaluated (AAA has a NULL clock, DDD has no row) first…
+        self.assertEqual(set(order[:2]), {"AAA", "DDD"})
+        # …then the older-of-the-two before the fresh pair.
+        self.assertEqual(order[2], "BBB")
+        self.assertEqual(order[3], "CCC")
+
+    def test_verified_fact_gate_filters(self):
+        securities = [{"ticker": t} for t in ("AAA", "BBB", "CCC")]
+        # Only BBB has a fundamentals row -> only BBB is eval-eligible.
+        db = _FakeDB(securities, [], fundamentals=[{"ticker": "BBB"}])
+        self.assertEqual(L.stale_tier1_tickers(db, "bull", top_n=10), ["BBB"])
 
 
 if __name__ == "__main__":

@@ -109,11 +109,21 @@ def stale_tier1_tickers(db, kind: str, top_n: int) -> list[str]:
     unverified names re-enter the rotation automatically once their fundamentals
     backfill. Pure read over `securities` + `fundamentals` + `ai_analysis`.
     """
-    clock = _CLOCK_COLUMN.get(kind)
-    if clock is None:
-        raise ValueError(
-            f"unknown kind {kind!r} (expected bull|bear|narrative|research)"
-        )
+    if kind == "verdict":
+        # Combined bull+bear staleness: a name is due when EITHER verdict is
+        # stale, and both are refreshed together (shared clock) so the two never
+        # drift apart — the screener's bull×bear multiplier always reads one
+        # vintage. The bull/bear models stay distinct (the adversarial design);
+        # only the rotation batch + clock are shared.
+        clock_cols = ["bull_at", "bear_at"]
+    else:
+        clock = _CLOCK_COLUMN.get(kind)
+        if clock is None:
+            raise ValueError(
+                f"unknown kind {kind!r} "
+                "(expected bull|bear|narrative|research|verdict)"
+            )
+        clock_cols = [clock]
 
     verified = verified_fact_tickers(db)
 
@@ -138,22 +148,27 @@ def stale_tier1_tickers(db, kind: str, top_n: int) -> list[str]:
             break
         offset += 1000
 
-    # Per-kind clock from ai_analysis (only evaluated names have a row).
-    clocks: dict[str, str | None] = {}
+    # Per-kind clock(s) from ai_analysis (only evaluated names have a row).
+    clocks: dict[str, tuple] = {}
+    select = "ticker," + ",".join(clock_cols)
     for chunk in _chunked(tier1):
         resp = (
             db.client.table("ai_analysis")
-            .select(f"ticker,{clock}")
+            .select(select)
             .in_("ticker", chunk)
             .execute()
         )
         for r in (resp.data or []):
-            clocks[(r.get("ticker") or "").upper()] = r.get(clock)
+            t = (r.get("ticker") or "").upper()
+            clocks[t] = tuple(r.get(c) for c in clock_cols)
 
-    # NULLs (never evaluated) first, then oldest ISO timestamp first.
+    # Never-evaluated (no row, or ANY required clock NULL) first, then oldest
+    # first. For "verdict" the staleness is the OLDER of bull_at / bear_at.
     def _key(t: str):
-        c = clocks.get(t)
-        return (0 if not c else 1, str(c or ""))
+        vals = clocks.get(t)
+        if not vals or any(not v for v in vals):
+            return (0, "")
+        return (1, min(str(v) for v in vals))
 
     return sorted(tier1, key=_key)[:top_n]
 

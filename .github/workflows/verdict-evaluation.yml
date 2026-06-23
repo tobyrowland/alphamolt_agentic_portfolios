@@ -1,0 +1,78 @@
+name: Verdict Evaluation
+
+# Consolidated bull + bear pass. Bull (Claude) and bear (Gemini) stay on
+# DIFFERENT models on purpose — adversarial, uncorrelated reads that the
+# screener's bull×bear multiplier depends on — but run over ONE shared rotation
+# batch and write both verdicts with the SAME clock, so bull_at/bear_at never
+# drift. Replaces the separate bull-evaluation + bear-evaluation crons.
+#
+# Daily 04:00 UTC — 300 stalest Tier-1 by min(bull_at, bear_at).
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Evaluate but write nothing"
+        required: false
+        type: boolean
+        default: false
+      only:
+        description: "Run only one side (bull|bear); blank = both"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  verdict-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Verdict Evaluation
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}  # bull side
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}        # bear side
+          VERDICT_DRY_RUN: ${{ inputs.dry_run }}
+          VERDICT_ONLY: ${{ inputs.only }}
+        run: |
+          set -u
+          ARGS=()
+          if [ "${VERDICT_DRY_RUN}" = "true" ]; then ARGS+=(--dry-run); fi
+          if [ -n "${VERDICT_ONLY}" ]; then ARGS+=(--only "${VERDICT_ONLY}"); fi
+          python verdict_evaluation.py ${ARGS[@]+"${ARGS[@]}"}
+
+      - name: Refresh screener matview
+        # Surface the fresh bull/bear on /screener (the bull×bear multiplier
+        # reads screen_facts_mv). Best-effort — a matview timeout must not
+        # red-flag a clean verdict run.
+        if: ${{ inputs.dry_run != true }}
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python -c "from db import SupabaseDB; SupabaseDB().refresh_screen_facts()"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: verdict-eval-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30

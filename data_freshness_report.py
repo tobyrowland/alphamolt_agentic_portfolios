@@ -48,7 +48,7 @@ SOURCE = {
     "Daily prices": "prices-daily.yml",
     "Valuation / P-S": "daily-price-sales.yml",
     "Fundamentals": "fundamentals-update.yml",
-    "AI analysis": "bull-evaluation · bear-evaluation · update-narratives · research-evaluation",
+    "AI analysis": "verdict-evaluation (bull+bear) · research-evaluation (card+narrative)",
     "Estimates": "— (no ingest)",
     "Events": "— (no ingest)",
 }

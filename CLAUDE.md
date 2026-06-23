@@ -15,10 +15,8 @@ Daily (UTC):
 03:00           nightly_screen.py         TradingView screen → add new tickers to companies table
 03:30           eodhd_updater.py          Fetch 20+ financial metrics from EODHD
 03:45           benchmarks_updater.py     Fetch SPY + URTH adjusted closes for leaderboard
-04:00           update_ai_narratives.py   Gemini refresh of stale narratives (90+ days)
-04:00           bear_evaluation.py        Refresh 100 oldest bear_eval rows (rotation, ~5d full cycle)
-04:15           research_evaluation.py    Shared per-equity research card — 100 stalest Tier-1 (moat/durability/earnings-quality/balance-sheet, scored 1-5 + break signals)
-04:30           bull_evaluation.py        Refresh 100 oldest bull_eval rows (rotation, ~5d full cycle)
+04:00           verdict_evaluation.py     Consolidated bull (Claude) + bear (Gemini) over ONE shared batch/clock — 300 stalest Tier-1 by min(bull_at,bear_at). Models stay distinct (adversarial); only batch+clock shared so bull_at==bear_at
+04:15           research_evaluation.py    Shared per-equity research card (moat/durability/earnings-quality/balance-sheet, 1-5 + break signals) PLUS the page narrative (short/full outlook + key risks) — 300 stalest Tier-1, one per-ticker Gemini call
 04:30           price_sales_updater.py    P/S ratio tracking + 52w history
 05:00           score_ai_analysis.py      Score, rank & assign sort_order
 05:30           portfolio_valuation.py    Mark-to-market every agent + human portfolio
@@ -340,10 +338,27 @@ day's last intraday tick (~21:45 UTC) so `portfolio_valuation.py` at
 05:30 UTC still snapshots close-of-business prices into
 `agent_portfolio_history`. Supports `--dry-run` and `--tickers` flags.
 
-### update_ai_narratives.py (04:00 UTC daily)
-Refreshes stale narratives (90+ days) using Gemini 2.5 Flash.
-Injects full financial context into prompt. Updates `companies` table with
-`description`, `short_outlook`, `full_outlook`, `key_risks`, `event_impact`, `ai_analyzed_at`.
+### verdict_evaluation.py (04:00 UTC daily)
+The **consolidated bull + bear pass** (replaces the separate `bull-evaluation`
++ `bear-evaluation` crons). Bull and bear stay on **different models on purpose**
+— bull = Claude (`claude-opus-4-6`), bear = Gemini (`gemini-2.5-flash`): a
+different brain per side gives **uncorrelated** reads, which is exactly what the
+screener's `bull × bear` multiplier needs. The consolidation is that both run
+over **one shared rotation batch** (`level0_eval.tier1_eval_candidates(db,
+"verdict", 300)` — the 300 stalest Tier-1 by the OLDER of `bull_at`/`bear_at`)
+and write both verdicts with the **same timestamp**, so `bull_at == bear_at`
+going forward and the screener never blends two vintages. Reuses the bull/bear
+engines' prompt + parse code (`bull_evaluation` / `bear_evaluation` stay
+importable; their `main()` still works for a manual single-side run). One engine
+failing never loses the other's verdicts. Writes ONLY `ai_analysis`; logs
+`run_logs`. Flags: `--dry-run`, `--only bull|bear`.
+
+### update_ai_narratives.py (manual / legacy only — schedule retired)
+Legacy Gemini narrative refresher over the `companies` table. **The Tier-1 page
+narrative (short/full outlook + key risks) is now produced by
+`research_evaluation.py`** in the same per-ticker call that scores the research
+card (same Level 0 facts, same Gemini model — no diversity lost). Kept for manual
+runs / the legacy companies path; cron disabled.
 
 ### price_sales_updater.py (04:30 UTC daily)
 Tracks P/S ratios over time. Backfills 52 weeks of history for new tickers.
@@ -813,6 +828,25 @@ mean of the **scored** dimensions (never the model's own rollup). Today
 returns automatically once a balance-sheet backfill lands (a tracked follow-up:
 `backfill_tier1_fundamentals` + `eodhd.py` already have the EODHD fields via
 `price_sales_updater.get_shares_outstanding`).
+
+**Stage A4 — writer consolidation (no schema change).** The four rotation
+writers that all fed `ai_analysis` were collapsed from four Actions to two,
+without touching the model diversity:
+- **`verdict_evaluation.py`** runs bull (Claude) + bear (Gemini) over **one
+  shared batch** and writes both under one clock — distinct models (the
+  adversarial design is the point) but `bull_at == bear_at`, so the screener's
+  `bull × bear` multiplier never blends two vintages. Selection uses the
+  combined `"verdict"` clock = older of `bull_at`/`bear_at`
+  (`level0_eval.tier1_eval_candidates(db, "verdict", N)`).
+- **`research_evaluation.py`** now writes the page **narrative** (short/full
+  outlook + key risks, `narrated_at`) in the same per-ticker call that scores
+  the **research card** — the descriptive `update_ai_narratives` pass merged in
+  (it re-read the same Level 0 facts on the same Gemini model for no diversity
+  benefit). Card + narrative share one vintage.
+
+`bull_evaluation` / `bear_evaluation` / `update_ai_narratives` remain importable
+(engines reused) and dispatch-only (schedules retired). Every reader still reads
+`ai_analysis` unchanged — the consolidation is write-side only.
 
 All Level 0 tables: public-read RLS, service-role writes. `metric_stats`
 (distribution percentiles) is reused from migration 038.
@@ -1349,7 +1383,10 @@ pip install -r requirements.txt
 python nightly_screen.py                   # TradingView screen → add new tickers
 python eodhd_updater.py                    # fetch EODHD financial data
 python eodhd_updater.py --force            # ignore staleness
-python update_ai_narratives.py             # refresh AI narratives
+python verdict_evaluation.py               # consolidated bull (Claude) + bear (Gemini), shared batch/clock
+python verdict_evaluation.py --only bull   # run one side only
+python research_evaluation.py              # research card + page narrative (Gemini, per-ticker)
+python update_ai_narratives.py             # legacy narrative refresh (companies path; schedule retired)
 python score_ai_analysis.py                # score + rank
 python price_sales_updater.py              # P/S update
 python price_sales_updater.py --tickers NVDA AAPL --force
