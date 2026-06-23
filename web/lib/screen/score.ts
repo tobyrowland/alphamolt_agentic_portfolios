@@ -69,6 +69,9 @@ export interface ScreenFacts {
   // AI verdict overlay (lens; Level 0 itself is strategy-neutral)
   bull: boolean | null;
   bear: boolean | null;
+  // Graded bull/bear conviction 1-5 (migration 066) — drive verdict_z.
+  bull_score: number | null;
+  bear_score: number | null;
   // Research-card scalars (migration 057). null ⇒ no card / dim absent.
   quality_score: number | null;
   moat_score: number | null;
@@ -92,6 +95,9 @@ export interface ScoredRow extends ScreenFacts {
   moat_z: number;
   earn_z: number;
   break_z: number;
+  verdict_z: number; // graded bull/bear tilt (migration 066)
+  bull_z: number;
+  bear_z: number;
   capped: boolean;
   floored: boolean;
   quality_pct: number; // lens empirical percentile (0–100) over the universe
@@ -121,6 +127,11 @@ const W_EARN = 0.42;
 // (break-count penalty removed from the screen score — see adjZ)
 const FLOOR = -1.5;
 export const BUDGET = 0.7; // AI authority ceiling (σ) — fixed server constant
+// Verdict tilt (migration 066): graded bull/bear feed the rank as a GENTLE
+// additive term. MUST match screen.py.
+export const VERDICT_BUDGET = 0.3; // bull/bear authority ceiling (σ) — ±0.3 bound
+const W_BULL = 0.5;
+const W_BEAR = 0.5;
 const LENS_NAMES = ["quality", "value", "momentum"] as const;
 
 // ---- normal CDF (Abramowitz–Stegun erf), shared with screen.py --------------
@@ -252,6 +263,26 @@ function adjZ(r: ScreenFacts, budget = BUDGET): Adj {
   return { adj_z: adj, moat_z, earn_z, break_z, capped, floored };
 }
 
+interface Verdict {
+  verdict_z: number;
+  bull_z: number;
+  bear_z: number;
+}
+// Graded bull/bear tilt (migration 066). Neutral (0) unless BOTH scores present —
+// same "no penalty for unevaluated" rule as the card. Bull pushes up, bear
+// (red-flag severity) pushes down; structural bound ±budget. MUST match screen.py.
+function verdictZ(r: ScreenFacts, budget = VERDICT_BUDGET): Verdict {
+  const bull = num(r.bull_score);
+  const bear = num(r.bear_score);
+  if (bull == null || bear == null)
+    return { verdict_z: 0, bull_z: 0, bear_z: 0 };
+  const uBull = (bull - 3) / 2; // ∈ [-1, 1]
+  const uBear = (bear - 3) / 2;
+  const bull_z = budget * W_BULL * uBull;
+  const bear_z = budget * W_BEAR * uBear;
+  return { verdict_z: bull_z - bear_z, bull_z, bear_z };
+}
+
 // ---- break-signal firing (display) ----------------------------------------
 // A research card's break_signals are forward-looking watch-conditions; the
 // screener flags a name red only when one is CURRENTLY firing against its own
@@ -381,7 +412,8 @@ export function scoreScreen(
     const base_score = (wq * pq + wv * pv + wm * pm) / wsum; // ∈ [0,1]
     const base_z = probit(Math.min(Math.max(base_score, 0.001), 0.999));
     const a = adjZ(r);
-    const final_z = base_z + a.adj_z;
+    const vz = verdictZ(r);
+    const final_z = base_z + a.adj_z + vz.verdict_z;
     return {
       ...r,
       rank: 0,
@@ -392,6 +424,9 @@ export function scoreScreen(
       moat_z: a.moat_z,
       earn_z: a.earn_z,
       break_z: a.break_z,
+      verdict_z: vz.verdict_z,
+      bull_z: vz.bull_z,
+      bear_z: vz.bear_z,
       capped: a.capped,
       floored: a.floored,
       quality_pct: Math.round(pq * 100),

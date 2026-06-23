@@ -57,6 +57,14 @@ W_EARN = 0.42       # AI earnings-quality weight
 # (break-count penalty removed from the screen score — see _adj_z)
 FLOOR = -1.5        # asymmetric floor on adj_z (in σ)
 BUDGET = 0.7        # AI authority ceiling (in σ) — fixed server constant (decision 1)
+# ---- verdict tilt (migration 066): graded bull/bear feed the rank ----------
+# final_z = base_z + adj_z + verdict_z. A GENTLE additive tilt from the
+# adversarial bull (Claude) + bear (Gemini) 1-5 scores — independent of the
+# Gemini research card (adj_z). Neutral (0) unless BOTH scores are present.
+# MUST match web/lib/screen/score.ts.
+VERDICT_BUDGET = 0.3   # bull/bear authority ceiling (in σ) — structural bound ±0.3
+W_BULL = 0.5
+W_BEAR = 0.5
 LENS_NAMES = ("quality", "value", "momentum")
 
 
@@ -346,6 +354,24 @@ def _adj_z(row: dict, budget: float = BUDGET) -> dict:
             "capped": capped, "floored": floored, "has_card": True}
 
 
+def _verdict_z(row: dict, budget: float = VERDICT_BUDGET) -> dict:
+    """Graded bull/bear tilt (migration 066). Neutral (0) unless BOTH scores
+    present — same "no penalty for unevaluated" rule as the card. bull pushes up,
+    bear (red-flag severity) pushes down; structural bound ±budget. MUST match
+    web/lib/screen/score.ts."""
+    bull = _f(row.get("bull_score"))
+    bear = _f(row.get("bear_score"))
+    if bull is None or bear is None:
+        return {"verdict_z": 0.0, "bull_z": 0.0, "bear_z": 0.0, "has_verdict": False}
+    u_bull = (bull - 3) / 2   # ∈ [-1, 1]
+    u_bear = (bear - 3) / 2
+    bull_z = budget * W_BULL * u_bull
+    bear_z = budget * W_BEAR * u_bear
+    verdict_z = bull_z - bear_z   # natural bound ±budget (both u=±1)
+    return {"verdict_z": verdict_z, "bull_z": bull_z, "bear_z": bear_z,
+            "has_verdict": True}
+
+
 def _pct_rank(sorted_vals: list[float], x: float | None) -> float:
     """Empirical percentile of x within a pre-sorted universe (∈[0,1]); a missing
     value or empty universe ⇒ 0.5 (neutral, at the median)."""
@@ -400,7 +426,8 @@ def score_screen(facts: list[dict], config: dict,
         base_score = (wq * pq + wv * pv + wm * pm) / wsum     # ∈ [0,1]
         base_z = probit(min(max(base_score, 0.001), 0.999))    # back to σ-space
         a = _adj_z(r)
-        final_z = base_z + a["adj_z"]
+        vz = _verdict_z(r)
+        final_z = base_z + a["adj_z"] + vz["verdict_z"]
         row = dict(r)
         row["base_score"] = base_score
         row["base_z"] = base_z
@@ -408,6 +435,9 @@ def score_screen(facts: list[dict], config: dict,
         row["moat_z"] = a["moat_z"]
         row["earn_z"] = a["earn_z"]
         row["break_z"] = a["break_z"]
+        row["verdict_z"] = vz["verdict_z"]
+        row["bull_z"] = vz["bull_z"]
+        row["bear_z"] = vz["bear_z"]
         row["capped"] = a["capped"]
         row["floored"] = a["floored"]
         row["quality_pct"] = round(pq * 100)
@@ -505,6 +535,9 @@ def load_facts(db) -> list[dict]:
         v = overlay.get(r["ticker"]) or {}
         r["bull"] = v.get("bull")
         r["bear"] = v.get("bear")
+        # Graded bull/bear scores (migration 066) — drive the screener verdict_z.
+        r["bull_score"] = v.get("bull_score")
+        r["bear_score"] = v.get("bear_score")
         # Research-card scalars from the overlay (migration 057) — Python reads
         # them here so the buyer scores the same adj_z without the matview wait.
         r["quality_score"] = v.get("quality_score")

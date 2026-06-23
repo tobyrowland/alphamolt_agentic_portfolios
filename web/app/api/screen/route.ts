@@ -42,12 +42,18 @@ const DISPLAY = [
   "perf_52w_vs_spy",
   "bull",
   "bear",
+  // Graded bull/bear conviction + their rank tilt (migration 066).
+  "bull_score",
+  "bear_score",
   // Single-score fields (migration 057) — the score column + AI-durability badge.
   "base_z",
   "adj_z",
   "moat_z",
   "earn_z",
   "break_z",
+  "verdict_z",
+  "bull_z",
+  "bear_z",
   "base_pct",
   "final_pct",
   "capped",

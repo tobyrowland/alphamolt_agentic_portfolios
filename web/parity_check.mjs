@@ -23,6 +23,7 @@ const out = res.rows.map((r) => ({
   value_pct: r.value_pct,
   momentum_pct: r.momentum_pct,
   adj_z: Math.round(r.adj_z * 1e6) / 1e6,
+  verdict_z: Math.round(r.verdict_z * 1e6) / 1e6,
   base_z: Math.round(r.base_z * 1e6) / 1e6,
   firing_breaks: r.firing_breaks,
 }));

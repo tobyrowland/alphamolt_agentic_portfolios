@@ -91,13 +91,17 @@ incremental grower, not a category disruptor.
 
 Output Format:
 For every stock in the list, provide the result in this exact format. \
-Use the EXACT ticker as shown in the data header (including numbers and slashes):
+Use the EXACT ticker as shown in the data header (including numbers and slashes). \
+After the tick/cross, give a CONVICTION score 1-5 for how strong the bull case is \
+(5 = strongest "Smash Hit" conviction, 1 = weak/marginal), then the explanation:
 
-TICKER: \u2705 (Briefly explain why this vertical/trajectory combo could be a \
+TICKER: \u2705 4 (Briefly explain why this vertical/trajectory combo could be a \
 "Smash Hit")
 
-TICKER: \u274c (Briefly explain why it lacks the "Smash Hit" potential, citing \
+TICKER: \u274c 2 (Briefly explain why it lacks the "Smash Hit" potential, citing \
 sector headwinds or fundamental friction)
+
+The 1-5 is REQUIRED on every line. Use the full range \u2014 most names are not 5s.
 
 Strict Constraints:
 
@@ -302,7 +306,11 @@ def call_claude_bull(prompt, api_key, logger):
 
 def parse_bull_results(response_text):
     """
-    Parse Claude response into {ticker: verdict_string} dict.
+    Parse Claude response into {ticker: {"eval": str, "score": int|None}}.
+
+    `eval` is the verdict text (emoji + optional 1-5 conviction + rationale);
+    `score` is the 1-5 bull-conviction if present (5 = strongest bull case),
+    else None. Tolerant of an old format with no number (score=None).
 
     Handles tickers that start with letters, numbers, or contain slashes.
     Examples: NVDA, 6857, VISTA/A, A3EGAB, 896047
@@ -312,10 +320,13 @@ def parse_bull_results(response_text):
         r'^([A-Z0-9][A-Z0-9./]*?):\s*([\u2705\u274c].*)$',
         re.MULTILINE,
     )
+    score_re = re.compile(r'^[\u2705\u274c]\s*([1-5])\b')
     for match in pattern.finditer(response_text):
         ticker = match.group(1).strip()
         verdict = match.group(2).strip()
-        results[ticker] = verdict
+        sm = score_re.match(verdict)
+        score = int(sm.group(1)) if sm else None
+        results[ticker] = {"eval": verdict, "score": score}
     return results
 
 
@@ -396,13 +407,13 @@ def main():
         logger.error("First 2000 chars of response:\n%s", response_text[:2000])
         sys.exit(1)
 
-    passed = sum(1 for v in verdicts.values() if "\u2705" in v)
-    failed = sum(1 for v in verdicts.values() if "\u274c" in v)
+    passed = sum(1 for v in verdicts.values() if "\u2705" in v["eval"])
+    failed = sum(1 for v in verdicts.values() if "\u274c" in v["eval"])
     logger.info("Results: %d pass, %d fail", passed, failed)
 
     if args.dry_run:
-        for ticker, verdict in verdicts.items():
-            logger.info("  %s: %s", ticker, verdict)
+        for ticker, v in verdicts.items():
+            logger.info("  %s: %s", ticker, v["eval"])
         logger.info("[DRY RUN] Complete. No writes performed.")
         return
 
@@ -416,7 +427,8 @@ def main():
         if verdict:
             updates.append({
                 "ticker": ticker,
-                "bull_eval": verdict,
+                "bull_eval": verdict["eval"],
+                "bull_score": verdict["score"],
                 "bull_eval_at": today_str,
             })
             matched += 1
@@ -426,9 +438,10 @@ def main():
     logger.info("Writing %d verdicts", matched)
     if updates:
         # ai_analysis is the Level 0 home (migrations 053/054) and now the sole
-        # home: write the bull verdict + its rotation clock (bull_at).
+        # home: write the bull verdict + its 1-5 conviction + clock (bull_at).
         db.upsert_ai_analysis_batch([
             {"ticker": u["ticker"], "bull_eval": u["bull_eval"],
+             "bull_score": u["bull_score"],
              "bull_at": u["bull_eval_at"], "analyzed_at": u["bull_eval_at"]}
             for u in updates
         ])

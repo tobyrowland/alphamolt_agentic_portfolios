@@ -23,6 +23,8 @@ def facts(*rows: dict) -> list[dict]:
         "ps_median_12m": None, "ps_trend_pct": None,
         "ret_52w": None, "perf_52w_vs_spy": None,
         "bull": None, "bear": None, "quality_score": None,
+        # Graded bull/bear (migration 066). Both None ⇒ verdict_z = 0.
+        "bull_score": None, "bear_score": None,
         # Research-card scalars (migration 057). has_card False ⇒ adj_z = 0.
         "moat_score": None, "earnings_score": None, "growth_score": None,
         "break_count": None, "has_card": False,
@@ -240,6 +242,52 @@ class TestScore(unittest.TestCase):
         ranked = screen.score_screen(rows, cfg)
         self.assertEqual([r["ticker"] for r in ranked[: cfg["topN"]]], ["A", "B"])
 
+
+class TestVerdictZ(unittest.TestCase):
+    """Graded bull/bear tilt (migration 066): final_z += verdict_z."""
+
+    def test_neutral_when_either_missing(self):
+        self.assertEqual(screen._verdict_z({"bull_score": 5})["verdict_z"], 0.0)
+        self.assertEqual(screen._verdict_z({"bear_score": 1})["verdict_z"], 0.0)
+        self.assertEqual(screen._verdict_z({})["verdict_z"], 0.0)
+
+    def test_neutral_at_three_three(self):
+        self.assertEqual(
+            screen._verdict_z({"bull_score": 3, "bear_score": 3})["verdict_z"], 0.0)
+
+    def test_max_positive_strong_bull_weak_bear(self):
+        # bull=5 (u=+1), bear=1 (u=-1) → +budget.
+        v = screen._verdict_z({"bull_score": 5, "bear_score": 1})
+        self.assertAlmostEqual(v["verdict_z"], screen.VERDICT_BUDGET, places=12)
+
+    def test_max_negative_weak_bull_strong_bear(self):
+        v = screen._verdict_z({"bull_score": 1, "bear_score": 5})
+        self.assertAlmostEqual(v["verdict_z"], -screen.VERDICT_BUDGET, places=12)
+
+    def test_monotonic_in_each_input(self):
+        lo = screen._verdict_z({"bull_score": 2, "bear_score": 3})["verdict_z"]
+        hi = screen._verdict_z({"bull_score": 4, "bear_score": 3})["verdict_z"]
+        self.assertGreater(hi, lo)                      # higher bull → higher
+        safe = screen._verdict_z({"bull_score": 3, "bear_score": 1})["verdict_z"]
+        risky = screen._verdict_z({"bull_score": 3, "bear_score": 5})["verdict_z"]
+        self.assertGreater(safe, risky)                 # higher bear → lower
+
+    def test_verdict_tilts_the_rank(self):
+        # Identical base/card; only bull/bear differ → the strong-verdict name wins.
+        rows = facts(
+            {"ticker": "STRONG", "rule_of_40": 40, "rev_growth_ttm": 20,
+             "net_margin": 20, "fcf_margin": 10, "gross_margin": 50, "ps": 5,
+             "ps_median_12m": 5, "perf_52w_vs_spy": 0,
+             "bull_score": 5, "bear_score": 1},
+            {"ticker": "WEAK", "rule_of_40": 40, "rev_growth_ttm": 20,
+             "net_margin": 20, "fcf_margin": 10, "gross_margin": 50, "ps": 5,
+             "ps_median_12m": 5, "perf_52w_vs_spy": 0,
+             "bull_score": 1, "bear_score": 5},
+        )
+        out = screen.score_screen(rows, {"weights": {"quality": 100, "value": 0, "momentum": 0}})
+        self.assertEqual(out[0]["ticker"], "STRONG")
+        self.assertAlmostEqual(out[0]["verdict_z"], screen.VERDICT_BUDGET, places=12)
+        self.assertAlmostEqual(out[1]["verdict_z"], -screen.VERDICT_BUDGET, places=12)
 
 
 class _FakeDB:

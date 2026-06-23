@@ -138,11 +138,17 @@ scale). Composite = weighted blend of Quality (0.60·R40 + 0.25·FCF + 0.15·GM)
 Value (inverse P/S, blended 50/50 against the name's own 12-mo median AND its
 peer-group median `peer_ps_median` — migration 058; pure self-relative fallback
 when a name has no peer median) and Momentum (collared 52-week return vs
-SPY — `perf_52w_vs_spy`, derived from `benchmark_prices`),
-×optional AI bull/bear multiplier ×optional research-card quality multiplier
-(migration 056: `quality_score` 1-5 → ×0.8–1.2, gated by the `qualityMultiplier`
-config toggle, **neutral when a name has no card** so the research rollout never
-penalises unresearched names). Implemented once in TS
+SPY — `perf_52w_vs_spy`, derived from `benchmark_prices`). Migration 057 moved
+the screener from a 0–100 composite × hidden multipliers to a single additive
+score in σ-space: **`final_z = base_z + adj_z + verdict_z`**. `base_z` is the
+probit of the weighted Q/V/M percentile blend; `adj_z` is the research-card
+trajectory boost (moat 0.58 + earnings 0.42, ±0.7σ, neutral when no card —
+migrations 056/057); `verdict_z` is a **gentle ±0.3σ tilt from the graded
+bull (Claude) + bear (Gemini) 1-5 scores** (`ai_analysis.bull_score` /
+`bear_score` — bull pushes up, bear's red-flag severity pushes down; neutral
+unless BOTH are present — migration 066). The bull/bear tilt is an independent
+adversarial read vs the (Gemini) card, and bull is the only Claude signal in the
+rank. Implemented once in TS
 (`web/lib/screen/score.ts`) and mirrored in Python (`screen.py`) so the buyer's
 top N is identical to the page's. `quality_score` reaches both scorers from
 `ai_analysis`: Python via `screen_ai_overlay()`, the web via the
@@ -342,8 +348,11 @@ The **consolidated bull + bear pass** (replaces the separate `bull-evaluation`
 + `bear-evaluation` crons). Bull and bear stay on **different models on purpose**
 — bull = Claude (`claude-opus-4-6`), bear = Gemini (`gemini-2.5-flash`): a
 different brain per side gives **uncorrelated** reads, which is exactly what the
-screener's `bull × bear` multiplier needs. The consolidation is that both run
-over **one shared rotation batch** (`level0_eval.tier1_eval_candidates(db,
+screener's `verdict_z` tilt wants (and bull is the only Claude signal in the
+rank). Each side returns a graded **1-5** conviction (`bull_score` = strength of
+the bull case; `bear_score` = red-flag severity) written alongside the verdict
+text — these feed `verdict_z` (migration 066). The consolidation is that both
+run over **one shared rotation batch** (`level0_eval.tier1_eval_candidates(db,
 "verdict", 300)` — the 300 stalest Tier-1 by the OLDER of `bull_at`/`bear_at`)
 and write both verdicts with the **same timestamp**, so `bull_at == bear_at`
 going forward and the screener never blends two vintages. Reuses the bull/bear
@@ -835,9 +844,10 @@ without touching the model diversity:
 - **`verdict_evaluation.py`** runs bull (Claude) + bear (Gemini) over **one
   shared batch** and writes both under one clock — distinct models (the
   adversarial design is the point) but `bull_at == bear_at`, so the screener's
-  `bull × bear` multiplier never blends two vintages. Selection uses the
-  combined `"verdict"` clock = older of `bull_at`/`bear_at`
-  (`level0_eval.tier1_eval_candidates(db, "verdict", N)`).
+  `verdict_z` tilt never blends two vintages. Each side also writes a graded
+  **1-5** score (`bull_score`/`bear_score`) that feeds `verdict_z` (migration
+  066). Selection uses the combined `"verdict"` clock = older of
+  `bull_at`/`bear_at` (`level0_eval.tier1_eval_candidates(db, "verdict", N)`).
 - **`research_evaluation.py`** now writes the page **narrative** (short/full
   outlook + key risks, `narrated_at`) in the same per-ticker call that scores
   the **research card** — the descriptive `update_ai_narratives` pass merged in
@@ -1126,6 +1136,11 @@ benchmark_prices: (ticker, price_date) PK, close
 Passive-index reference portfolios (SPY, URTH) rendered alongside agents on
 the leaderboard with an `[ INDEX ]` chip. Populated by `benchmarks_updater.py`
 and `bootstrap_benchmarks.py`.
+
+> **Legacy — the `score_ai_analysis.py` companies scorer below is RETIRED**
+> (workflow removed with the companies retirement). The live `/screener` uses the
+> single additive score `final_z = base_z + adj_z + verdict_z` (see the
+> Configurable Screener section); the multiplier tables here are historical.
 
 **Status (auto-assigned by score_ai_analysis.py):**
 - *(empty — default)* — in screen, no red flags, no Discount overlay; renders no badge

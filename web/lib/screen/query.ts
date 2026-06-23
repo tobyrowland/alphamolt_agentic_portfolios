@@ -85,6 +85,8 @@ async function fetchFacts(): Promise<ScreenFacts[]> {
           : null,
       bull: (r.bull as boolean | null) ?? null,
       bear: (r.bear as boolean | null) ?? null,
+      bull_score: num(r.bull_score),
+      bear_score: num(r.bear_score),
       quality_score: num(r.quality_score),
       moat_score: num(r.moat_score),
       earnings_score: num(r.earnings_score),
