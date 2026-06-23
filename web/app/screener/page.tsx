@@ -211,6 +211,8 @@ export default async function ScreenerPage({
                 perf_52w_vs_spy: r.perf_52w_vs_spy,
                 bull: r.bull,
                 bear: r.bear,
+                bull_score: r.bull_score,
+                bear_score: r.bear_score,
                 // Single-score + research-card fields (migration 057).
                 base_z: r.base_z,
                 adj_z: r.adj_z,
