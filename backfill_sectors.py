@@ -1,32 +1,31 @@
 #!/usr/bin/env python3
 """
-backfill_sectors.py — populate securities.gics_sector from TradingView.
+backfill_sectors.py — populate securities.gics_sector + gics_industry from TradingView.
 
-universe_sync builds `securities` from EODHD's exchange-symbol-list, which
-carries no sector, so gics_sector starts NULL. The screener reads it (via the
-screen_facts matview) for the Sector column + filter, so most of the Tier 1
-universe — gold miners, banks, ADRs — shows "—".
+universe_sync builds `securities` from EODHD's exchange-symbol-list, which carries
+no classification, so gics_sector / gics_industry start NULL. The screener reads
+them (via the screen_facts matview) for the Sector column + filter and the P/S
+peer grouping.
 
-Source: TradingView (`tv_screen.fetch_sector_data`, the same helper
-nightly_screen uses). Chosen over EODHD because it (a) covers every US-listed
-name, including the miners / financials / ADRs EODHD classifies poorly or not at
-all, and (b) uses the SAME sector taxonomy already shown on the screener
-("Technology Services", "Non-Energy Minerals", "Finance", …), so the Sector
-filter / dropdown stay coherent. EODHD's different taxonomy would fragment them.
+Source: TradingView (`tv_screen.fetch_classification_data`). Chosen over EODHD
+because it (a) covers every US-listed name, including the miners / financials /
+ADRs EODHD classifies poorly, and (b) uses the SAME taxonomy shown on the screener
+("Technology Services", "Non-Energy Minerals", …), so the Sector filter / dropdown
+stay coherent. The fetch matches symbols against TradingView's **america** market
+(an isin(name) filter), which resolves ADRs the default scanner hides (RIO, SMFG)
+and is immune to the foreign same-symbol collisions that corrupted the previous
+per-exchange approach (e.g. ARIS → "Technology Services" from a German "ARIS").
 
-Writes ONLY gics_sector, in a UNIFORM single-column payload. This matters: the
-previous EODHD version mixed sector-only and industry-only rows in one batch, and
-PostgREST's upsert pads the column union with NULLs — which UPDATE-on-conflict
-then wrote back, wiping existing sectors. Every row here carries exactly
-{ticker, gics_sector, updated_at}, so a batch can never null another column.
+Writes BOTH gics_sector AND gics_industry in a UNIFORM payload
+({ticker, gics_sector, gics_industry, updated_at}) — uniform columns so PostgREST's
+upsert can never null-pad a column that another row omitted.
 
-Idempotent and additive: a name TradingView can't resolve keeps whatever sector
-it already had (we never write a blank). Re-running therefore RESTORES sectors a
-bad run cleared, and fills the names that never had one. Refreshes the
-screen_facts matview at the end so the screener shows sectors immediately.
+Idempotent: a name TradingView can't resolve keeps whatever it already had (we
+never write a blank for a field). Refreshes the screen_facts matview at the end so
+the screener picks the changes up immediately.
 
-    python backfill_sectors.py                   # all active Tier 1
-    python backfill_sectors.py --only-missing     # only NULL sectors (cron mode)
+    python backfill_sectors.py                   # all active Tier 1 (overwrite)
+    python backfill_sectors.py --only-missing     # only rows missing sector OR industry
     python backfill_sectors.py --tickers IAG GFI DRD
     python backfill_sectors.py --all-securities   # Tier 0 (every active security)
     python backfill_sectors.py --dry-run --limit 50
@@ -43,7 +42,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from db import SupabaseDB
-from tv_screen import fetch_sector_data
+from tv_screen import fetch_classification_data
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,7 +67,7 @@ def _clean(v: object) -> str | None:
 def select_targets(db: SupabaseDB, args: argparse.Namespace) -> list[dict]:
     """The securities to (re)fetch, honouring the scope flags."""
     rows = db.get_all_securities(
-        columns="ticker,exchange,is_tier1,gics_sector", status="active"
+        columns="ticker,exchange,is_tier1,gics_sector,gics_industry", status="active"
     )
     if args.tickers:
         want = {t.upper() for t in args.tickers}
@@ -76,7 +75,10 @@ def select_targets(db: SupabaseDB, args: argparse.Namespace) -> list[dict]:
     elif not args.all_securities:
         rows = [r for r in rows if r.get("is_tier1")]
     if args.only_missing:
-        rows = [r for r in rows if not _clean(r.get("gics_sector"))]
+        rows = [
+            r for r in rows
+            if not _clean(r.get("gics_sector")) or not _clean(r.get("gics_industry"))
+        ]
     rows.sort(key=lambda r: r.get("ticker") or "")
     if args.limit:
         rows = rows[: args.limit]
@@ -108,44 +110,59 @@ def main() -> int:
         logger.info("Nothing to do.")
         return 0
 
-    # One batched, no-filter TradingView pull. Pass the stored exchange so
-    # NYSE:/NASDAQ: names resolve on the first pass; fetch_sector_data retries the
-    # rest across common exchanges.
+    # One batched, no-filter TradingView pull. Pass the stored exchange so each
+    # name resolves on its OWN exchange first; the fallback retries US exchanges
+    # only (a foreign same-symbol match is always the wrong company).
     pairs = [(r["ticker"], r.get("exchange") or "") for r in targets]
-    sectors = fetch_sector_data(pairs, logger)
-    logger.info("TradingView returned a sector for %d/%d tickers", len(sectors), len(targets))
+    classes = fetch_classification_data(pairs, logger)
+    logger.info("TradingView returned a classification for %d/%d tickers",
+                len(classes), len(targets))
 
     now = datetime.now(timezone.utc).isoformat()
-    pending: list[dict] = []
+    # Two UNIFORM payloads — one per classification column. Each batch carries
+    # exactly one of {gics_sector, gics_industry}, so PostgREST's upsert can never
+    # null-pad (and clobber) the column a row happens to omit. We also never write
+    # a blank, so an unresolved field keeps whatever it already had.
+    sector_rows: list[dict] = []
+    industry_rows: list[dict] = []
     written = updated = missing = 0
 
     def flush() -> None:
         nonlocal written
-        if pending and not args.dry_run:
-            db.upsert_securities_batch(pending)
-            written += len(pending)
-        pending.clear()
+        if not args.dry_run:
+            if sector_rows:
+                db.upsert_securities_batch(sector_rows)
+                written += len(sector_rows)
+            if industry_rows:
+                db.upsert_securities_batch(industry_rows)
+                written += len(industry_rows)
+        sector_rows.clear()
+        industry_rows.clear()
 
     for r in targets:
         ticker = r.get("ticker")
         if not ticker:
             continue
-        sector = _clean(sectors.get(ticker.upper()))
-        if not sector:
+        cls = classes.get(ticker.upper()) or {}
+        sector = _clean(cls.get("sector"))
+        industry = _clean(cls.get("industry"))
+        if not sector and not industry:
             missing += 1
             continue
-        # Uniform single-field payload — never null another column on conflict.
-        pending.append({"ticker": ticker, "gics_sector": sector, "updated_at": now})
+        if sector:
+            sector_rows.append({"ticker": ticker, "gics_sector": sector, "updated_at": now})
+        if industry:
+            industry_rows.append({"ticker": ticker, "gics_industry": industry, "updated_at": now})
         updated += 1
-        if len(pending) >= WRITE_BATCH:
+        if len(sector_rows) >= WRITE_BATCH or len(industry_rows) >= WRITE_BATCH:
             flush()
     flush()
 
-    logger.info("Done. resolved=%d updated=%d written=%d unresolved=%d",
-                len(sectors), updated, written, missing)
+    logger.info("Done. resolved=%d updated=%d rows_written=%d unresolved=%d",
+                len(classes), updated, written, missing)
 
     if not args.dry_run and not args.no_refresh and written:
-        logger.info("Refreshing screen_facts matview so the screener picks up sectors…")
+        logger.info("Refreshing screen_facts matview so the screener picks up classifications…")
         try:
             db.refresh_screen_facts()
         except Exception as e:  # noqa: BLE001 — a refresh hiccup shouldn't fail the run
