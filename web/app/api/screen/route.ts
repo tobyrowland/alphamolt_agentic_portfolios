@@ -13,6 +13,7 @@
 import { errorResponse, jsonResponse } from "@/lib/api-utils";
 import { configFromParams, screenConfigSchema } from "@/lib/screen/config";
 import { runScreen } from "@/lib/screen/query";
+import { bestRationale } from "@/lib/screen/score";
 import { activeRejectionsForViewer } from "@/lib/screen/rejections-query";
 
 export const dynamic = "force-dynamic";
@@ -65,7 +66,6 @@ const DISPLAY = [
   "break_count",
   "firing_breaks",
   "has_card",
-  "research_card",
   // Peer median P/S (display only, brief §5).
   "industry_ps_median",
   "sector_ps_median",
@@ -86,12 +86,18 @@ export async function GET(req: Request) {
 
     // Per-portfolio rejection set (migration 051), so the live re-rank hides
     // the same names the SSR page did. Empty for logged-out callers.
-    const { rejections } = await activeRejectionsForViewer();
+    const { portfolioId, rejections } = await activeRejectionsForViewer();
     const rejectedSet = new Set(rejections.map((r) => r.ticker.toUpperCase()));
     const result = await runScreen(config, rejectedSet);
-    const rows = result.rows.map((r) =>
-      Object.fromEntries(DISPLAY.map((k) => [k, (r as unknown as Record<string, unknown>)[k]])),
-    );
+    const rows = result.rows.map((r) => {
+      const row = Object.fromEntries(
+        DISPLAY.map((k) => [k, (r as unknown as Record<string, unknown>)[k]]),
+      );
+      // Ship only the compiled one-line thesis, not the heavy research_card
+      // text — the full card is lazy-loaded on row-expand (/api/screen/card).
+      row.thesis_line = bestRationale(r.research_card);
+      return row;
+    });
 
     return jsonResponse(
       {
@@ -110,10 +116,15 @@ export async function GET(req: Request) {
       },
       {
         headers: {
-          // Per-viewer (rejections depend on the session) — must not be shared
-          // across users by a CDN. Re-rank is cheap (cached facts + in-memory
-          // scoring) so private/no-store is fine.
-          "Cache-Control": "private, no-store",
+          // When there's no viewer portfolio (logged-out, or signed-in with no
+          // portfolio) the response carries NO per-viewer data — identical for
+          // everyone on a given config, so let the CDN share it. A viewer WITH a
+          // portfolio gets a personalised (rejection-filtered) response that must
+          // never be cached across users.
+          "Cache-Control":
+            portfolioId === null
+              ? "public, s-maxage=300, stale-while-revalidate=600"
+              : "private, no-store",
         },
       },
     );

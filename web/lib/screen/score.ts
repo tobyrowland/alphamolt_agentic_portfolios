@@ -44,6 +44,22 @@ export interface ResearchCard {
   version?: number;
 }
 
+/** The single best stored rationale to surface as a one-line thesis (brief §3:
+ *  compile from stored evidence, never generate). Highest-scored of moat /
+ *  earnings_quality that has a rationale; null when the card has none. Shared by
+ *  the server projection (so the bulk payload ships only this line, not the
+ *  whole card — the full card is lazy-loaded on row-expand) and the client's
+ *  compiled-thesis fallback. */
+export function bestRationale(
+  card: ResearchCard | null | undefined,
+): string | null {
+  if (!card) return null;
+  const best = [card.moat, card.earnings_quality]
+    .filter((d): d is CardDim => !!d && !!d.rationale)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+  return best?.rationale ?? null;
+}
+
 export interface ScreenFacts {
   ticker: string;
   name: string | null;
@@ -79,8 +95,11 @@ export interface ScreenFacts {
   growth_score: number | null; // read-only on the card; never scored
   break_count: number | null;
   has_card: boolean;
-  /** Full card JSON — present (~3%) for compiling thesis/dim copy at render. */
-  research_card: ResearchCard | null;
+  /** Full card JSON. Optional: the server loader populates it (used for the
+   *  firing-break count + the compiled thesis line), but the client ships it
+   *  out of the bulk payload and lazy-loads it on expand, so a client-side
+   *  facts row may omit it. */
+  research_card?: ResearchCard | null;
   // Peer median P/S (migration 057) — display only this task (brief §5).
   industry_ps_median: number | null;
   sector_ps_median: number | null;
@@ -433,7 +452,7 @@ export function scoreScreen(
       momentum_pct: Math.round(pm * 100),
       base_pct: Math.round(base_score * 100),
       final_pct: Math.round(Phi(final_z) * 100),
-      firing_breaks: firingBreakCount(r, r.research_card),
+      firing_breaks: firingBreakCount(r, r.research_card ?? null),
     };
   });
 
