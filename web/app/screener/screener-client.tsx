@@ -748,7 +748,7 @@ export default function ScreenerClient({
           explains that this page defines the universe the trader bots buy from.
           After that it collapses to a small re-openable link. */}
       {showIntro ? (
-        <IntroPopout topN={config.topN} runHref={runHref} onDismiss={dismissIntro} />
+        <IntroPopout runHref={runHref} onDismiss={dismissIntro} />
       ) : (
         <button
           type="button"
@@ -1204,11 +1204,9 @@ export default function ScreenerClient({
  * portfolio's trader bots pick from, with the compact Screen → Portfolio flow.
  */
 function IntroPopout({
-  topN,
   runHref,
   onDismiss,
 }: {
-  topN: number;
   runHref: string;
   onDismiss: () => void;
 }) {
@@ -1228,15 +1226,15 @@ function IntroPopout({
       <p className="text-sm font-bold text-text">This is your trading universe.</p>
       <p className="text-[12.5px] text-text-dim mt-1 leading-relaxed max-w-prose">
         The screener ranks every US-listed stock by the filters and scoring you
-        set. Its top {topN} become the universe your portfolio&apos;s trader bots
-        pick from — so the filters and weights you choose here shape what they
-        can buy.
+        set — and that ranking becomes the universe your portfolio&apos;s trader
+        bots pick from. So the filters and weights you choose here shape what
+        they can buy.
       </p>
       <div className="mt-3 flex items-center gap-2 flex-wrap font-mono text-[11px]">
         <span className="rounded-md border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] px-2.5 py-1 text-[var(--color-cyan)]">
           This screen
         </span>
-        <span className="text-text-muted">→ top {topN} →</span>
+        <span className="text-text-muted">→</span>
         <span className="rounded-md border border-green/45 bg-green/[0.06] px-2.5 py-1 text-green">
           Your portfolio
         </span>
