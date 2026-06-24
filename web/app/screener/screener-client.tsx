@@ -26,7 +26,7 @@ import {
   type FilterOp,
   type ScreenConfig,
 } from "@/lib/screen/config";
-import { BUDGET, signalFires, type ResearchCard } from "@/lib/screen/score";
+import { BUDGET, isFinancialSector, signalFires, type ResearchCard } from "@/lib/screen/score";
 import type { ScreenHolding } from "@/lib/screen/holdings-query";
 import type { PsPoint } from "@/lib/screen/ps-history-query";
 import ScreenSparkline from "@/components/screen-sparkline";
@@ -1469,6 +1469,13 @@ function ScoreLedger({ r }: { r: Row }) {
         How this score is built
       </div>
       <Line label="Base (Quality · Value · Momentum)" v={`${sgn(r.base_z)}σ → ${r.base_pct}th`} />
+      {isFinancialSector(r.sector) && (
+        <Line
+          label="Financials · Quality & Value neutralised"
+          v="momentum-only"
+          tone="text-text-muted"
+        />
+      )}
       {r.has_card && (
         <>
           <Line
@@ -1519,6 +1526,11 @@ function ValueBlock({
       <div className="font-mono uppercase tracking-[0.1em] text-text-muted mb-2 text-[10px]">
         P/S — own history &amp; {r.peer_basis ?? "sector"}
       </div>
+      {isFinancialSector(r.sector) && (
+        <div className="mb-2 font-mono text-[9px] text-text-muted/70">
+          financial sector · P/S not a meaningful multiple here — value scoring neutralised
+        </div>
+      )}
       <ScreenSparkline
         points={Array.isArray(psHistory) ? psHistory : []}
         ownMedian={r.ps_median_12m}

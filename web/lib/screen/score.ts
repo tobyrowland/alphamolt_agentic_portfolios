@@ -121,6 +121,21 @@ const MOM_CAP = 40;
 const VAL_W_SELF = 0.5;
 const VAL_W_PEER = 0.5;
 
+// Financial-sector lens neutralisation. P/S is a category error for banks/
+// insurers/REITs (their "sales" are gross interest/trading/rental flows, so P/S
+// reads near-zero ⇒ a spurious "−99% cheap" Value boost), and R40 is distorted
+// by volatile financial revenue. For these sectors we neutralise BOTH the
+// Quality and Value lenses (→ null ⇒ scored at the median, 0σ), leaving Momentum
+// as the only active lens — so financials stay rankable/buyable but stop
+// manufacturing spurious #1s. The set spans BOTH sector taxonomies present in
+// the data ("Finance" and "Financial Services") plus "Real Estate". MUST match
+// screen.py _FINANCIAL_SECTORS.
+const FINANCIAL_SECTORS = new Set(["finance", "financial services", "real estate"]);
+
+export function isFinancialSector(sector: string | null | undefined): boolean {
+  return FINANCIAL_SECTORS.has((sector ?? "").trim().toLowerCase());
+}
+
 // Single-score constants (migration 057) — MUST match screen.py.
 const W_MOAT = 0.58;
 const W_EARN = 0.42;
@@ -228,6 +243,12 @@ function lensValues(r: ScreenFacts): {
 
   const perf = num(r.perf_52w_vs_spy);
   const xM = perf == null ? null : Math.max(MOM_FLOOR, Math.min(MOM_CAP, perf));
+
+  // Financials: P/S and R40 are category errors — neutralise Quality + Value
+  // (rank on Momentum only). MUST match screen.py.
+  if (isFinancialSector(r.sector)) {
+    return { xQ: null, xV: null, xM };
+  }
   return { xQ, xV, xM };
 }
 
