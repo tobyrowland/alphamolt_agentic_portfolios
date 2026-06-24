@@ -716,6 +716,23 @@ export default function ScreenerClient({
     setAddOpen(false);
     patch({ filters: [...config.filters, newFilterFor(field)] });
   }
+  // One-click "exclude this sector/industry" from a row — appends a text `!=`
+  // filter (the same mechanism FilterChip + applyFilters already honour), with a
+  // dedup + null guard so re-clicking is a no-op.
+  function addExcludeFilter(field: "sector" | "industry", value: string | null) {
+    const v = (value ?? "").trim();
+    if (!v || v === "—") return;
+    if (
+      config.filters.some(
+        (f) =>
+          f.field === field &&
+          f.op === "!=" &&
+          String(f.value).toLowerCase() === v.toLowerCase(),
+      )
+    )
+      return;
+    patch({ filters: [...config.filters, { field, op: "!=", value: v }] });
+  }
 
   const usedFields = useMemo(() => new Set(config.filters.map((f) => f.field)), [config.filters]);
   // "Run as a portfolio" applies this screen as the portfolio's selection
@@ -1126,6 +1143,7 @@ export default function ScreenerClient({
             canExclude={signedIn}
             exclBusy={exclBusy}
             onExclude={onExclude}
+            onExcludeFilter={addExcludeFilter}
             holding={holdings[r.ticker.toUpperCase()] ?? null}
             psHistory={psHistory[r.ticker.toUpperCase()]}
             card={cards[r.ticker.toUpperCase()]}
@@ -1776,12 +1794,47 @@ function HoldingPill({ h }: { h: ScreenHolding | null }) {
   );
 }
 
+/** A sector/industry value with a one-click exclude (✕) that appends a `!=`
+ *  filter. stopPropagation so it never toggles the row it's nested inside. */
+function ClassTag({
+  field,
+  value,
+  onExclude,
+}: {
+  field: "sector" | "industry";
+  value: string | null;
+  onExclude: (field: "sector" | "industry", value: string | null) => void;
+}) {
+  const v = (value ?? "").trim();
+  const has = v.length > 0 && v !== "—";
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className={has ? "text-text-muted" : "text-text-muted/40"}>{has ? v : "—"}</span>
+      {has && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onExclude(field, v);
+          }}
+          title={`Hide all ${v} — exclude this ${field}`}
+          aria-label={`Exclude ${field} ${v}`}
+          className="text-text-muted/40 hover:text-[var(--color-red,#FF3333)] leading-none"
+        >
+          ✕
+        </button>
+      )}
+    </span>
+  );
+}
+
 function RowView({
   r,
   hasPage,
   canExclude,
   exclBusy,
   onExclude,
+  onExcludeFilter,
   holding,
   psHistory,
   card,
@@ -1793,6 +1846,8 @@ function RowView({
   canExclude: boolean;
   exclBusy: boolean;
   onExclude: (ticker: string) => void;
+  /** Append a sector/industry exclude (`!=`) filter to the screen config. */
+  onExcludeFilter: (field: "sector" | "industry", value: string | null) => void;
   /** Holdings overlay entry for this name (null = not in the portfolio). */
   holding: ScreenHolding | null;
   /** Lazy P/S series for the sparkline ("loading"/undefined before fetch). */
@@ -1876,15 +1931,14 @@ function RowView({
               <HoldingPill h={holding} />
             </span>
             <span className="block text-text-muted text-[12.5px] mt-0.5 leading-snug line-clamp-1">
-              {carded ? compileThesis(r) : (
-                <>
-                  <span className="text-text-muted/70">
-                    {r.sector ?? "—"}
-                    {r.industry && r.industry !== "—" ? ` · ${r.industry}` : ""}
-                  </span>{" "}
-                  — ranked on quant only
-                </>
-              )}
+              {carded ? compileThesis(r) : "Ranked on quant only"}
+            </span>
+            {/* Always-visible sector · industry (so carded names like RIO show
+                their classification) with a one-click exclude. */}
+            <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-text-muted/70">
+              <ClassTag field="sector" value={r.sector} onExclude={onExcludeFilter} />
+              <span className="text-text-muted/40">·</span>
+              <ClassTag field="industry" value={r.industry} onExclude={onExcludeFilter} />
             </span>
           </div>
           {/* Score */}
@@ -1935,6 +1989,42 @@ function RowView({
         {/* Expand-in-place card (every row, carded or not) */}
         {open && (
           <div className="border-t border-white/10 px-4 pt-1 pb-4 grid gap-6 lg:grid-cols-[1fr_320px]">
+            {/* Classification — sector / industry / country, with a one-click
+                exclude so you can drop a whole sector or industry you dislike. */}
+            <div className="lg:col-span-2 -mt-0.5 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px]">
+              <span className="text-text-muted/50 uppercase tracking-[0.1em] text-[10px]">Sector</span>
+              <span className="text-text">{r.sector ?? "—"}</span>
+              {r.sector && r.sector !== "—" && (
+                <button
+                  type="button"
+                  onClick={() => onExcludeFilter("sector", r.sector)}
+                  title={`Hide all ${r.sector} — exclude this sector`}
+                  className="text-[10px] text-text-muted/50 hover:text-[var(--color-red,#FF3333)] underline decoration-dotted underline-offset-2"
+                >
+                  exclude
+                </button>
+              )}
+              <span className="text-text-muted/30">/</span>
+              <span className="text-text-muted/50 uppercase tracking-[0.1em] text-[10px]">Industry</span>
+              <span className="text-text">{r.industry ?? "—"}</span>
+              {r.industry && r.industry !== "—" && (
+                <button
+                  type="button"
+                  onClick={() => onExcludeFilter("industry", r.industry)}
+                  title={`Hide all ${r.industry} — exclude this industry`}
+                  className="text-[10px] text-text-muted/50 hover:text-[var(--color-red,#FF3333)] underline decoration-dotted underline-offset-2"
+                >
+                  exclude
+                </button>
+              )}
+              {r.country && (
+                <>
+                  <span className="text-text-muted/30">/</span>
+                  <span className="text-text-muted/50 uppercase tracking-[0.1em] text-[10px]">Country</span>
+                  <span className="text-text">{r.country}</span>
+                </>
+              )}
+            </div>
             <div>
               {carded ? (
                 cardData ? (
