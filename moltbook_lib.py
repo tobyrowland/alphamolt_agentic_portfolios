@@ -39,6 +39,13 @@ LEDGER_DEDUP_CAPS = {
     "upvoted_posts": 1000,
     "commented_posts": 1000,
     "replied_notifs": 1000,
+    # Feedback-loop lists (records of what we posted + how it landed). These
+    # hold small dicts rather than bare ids, so they're capped tighter to stay
+    # within the issue-body budget. `outcomes` is the measured history the
+    # performance summary is built from; `pending_feedback` is the not-yet-
+    # measured queue.
+    "outcomes": 80,
+    "pending_feedback": 150,
 }
 
 FEED_SUBMOLTS = frozenset({
@@ -401,6 +408,8 @@ class GitHubIssuer:
             "daily_comment_count": {},
             "daily_post_count": {},
             "relationships": {},
+            "pending_feedback": [],
+            "outcomes": [],
         }
         body = (
             "Engagement ledger for AlphaMolt-Equities on Moltbook.\n"
@@ -528,8 +537,11 @@ def draft_reply(context: dict[str, Any]) -> str:
     parent_block = context.get("parent_content") or "(none — top-level comment)"
     memory = (context.get("memory_block") or "").strip()
     memory_section = f"{memory}\n\n" if memory else ""
+    perf = (context.get("performance_block") or "").strip()
+    perf_section = f"{perf}\n\n" if perf else ""
     base_user_block = (
         "You received a notification on your Moltbook post. Draft a reply.\n\n"
+        f"{perf_section}"
         f"{memory_section}"
         f"## Your post\n"
         f"Title: {context.get('post_title', '(unknown)')}\n"
@@ -622,6 +634,81 @@ def classify_post_themes(post: dict[str, Any]) -> list[int]:
     return sorted({int(n) for n in re.findall(r"[123]", answer)})
 
 
+def classify_posts_batch(
+    posts: list[dict[str, Any]], max_posts: int = 60
+) -> dict[str, list[int]]:
+    """Classify many feed posts against the three engagement themes in ONE call.
+
+    Returns ``{post_id: [matched theme numbers]}``. A post mapped to ``[]`` (or
+    absent from the result) is off-thesis. Batching keeps the per-run cost to a
+    single Haiku call instead of one-per-post, which is what makes it affordable
+    to gate every action (upvote / follow / comment) on relevance rather than
+    only comments.
+
+    Raises on an LLM/transport error so the caller can decide to fail open
+    (engage ungated) rather than silently skipping the whole feed.
+    """
+    items = [p for p in posts if p.get("id")][:max_posts]
+    if not items:
+        return {}
+
+    blocks = []
+    for i, p in enumerate(items, 1):
+        submolt = (
+            (p.get("submolt") or {}).get("name", "")
+            or p.get("_fetched_from_submolt", "")
+        )
+        title = (p.get("title") or "")[:200]
+        content = (p.get("content") or "")[:400]
+        blocks.append(f"[{i}] m/{submolt} — {title}\n{content}")
+    posts_block = "\n\n".join(blocks)
+
+    user_block = (
+        "Classify each Moltbook post below against three engagement themes. "
+        "Return only themes that GENUINELY apply — most posts match NONE, and "
+        "that is the correct answer for an off-topic post.\n\n"
+        "THEMES:\n"
+        "1. Whether AI models can outperform human fund managers / stock "
+        "pickers (active vs passive, AI vs human intuition, fund performance, "
+        "portfolio management, quant vs discretionary).\n"
+        "2. Swarms of models — collaborative or competitive — vs single-model "
+        "approaches (multi-agent systems, mixture of experts, ensembles, "
+        "agents disagreeing productively).\n"
+        "3. Interfaces / platform structure that serve BOTH agents and humans, "
+        "not humans alone (agent-first UX, machine-readable APIs alongside "
+        "human UIs, platforms where AI is a first-class user).\n\n"
+        f"POSTS:\n{posts_block}\n\n"
+        "Output ONE line per post, in the same order, formatted EXACTLY:\n"
+        "  [N] 1,3\n"
+        "or\n"
+        "  [N] none\n"
+        "No prose, no explanation, no blank lines."
+    )
+
+    client = _anthropic_client()
+    resp = client.messages.create(
+        model=DRAFT_MODEL,
+        max_tokens=16 * len(items) + 64,
+        messages=[{"role": "user", "content": user_block}],
+    )
+    raw = "".join(
+        b.text for b in resp.content if getattr(b, "type", None) == "text"
+    )
+
+    result: dict[str, list[int]] = {}
+    for m in re.finditer(r"\[(\d+)\]\s*(none|[\d,\s]+)", raw, re.IGNORECASE):
+        idx = int(m.group(1))
+        if not (1 <= idx <= len(items)):
+            continue
+        answer = m.group(2).strip().lower()
+        if answer.startswith("none"):
+            themes: list[int] = []
+        else:
+            themes = sorted({int(n) for n in re.findall(r"[123]", answer)})
+        result[items[idx - 1]["id"]] = themes
+    return result
+
+
 def _is_skip(text: str) -> bool:
     """True if the drafter's output is a SKIP signal.
 
@@ -639,22 +726,31 @@ def _is_skip(text: str) -> bool:
 def draft_feed_comment(
     post: dict[str, Any],
     memory_block: str = "",
+    performance_block: str = "",
 ) -> str:
     """Draft a comment on someone else's post. Returns '' if LLM says SKIP.
 
     ``memory_block`` is an optional rendered relationship-memory string
     from ``social_personality.relationship_block()``. When present it's
     injected ahead of the post so the drafter knows we've talked before.
+
+    ``performance_block`` is an optional summary of how our recent comments
+    actually landed (upvotes / replies), so the drafter can lean toward what
+    has been working.
     """
     submolt = (post.get("submolt") or {}).get("name", "(unknown)")
     author = (post.get("author") or {}).get("name", "unknown")
     title = post.get("title", "(no title)")
     content = (post.get("content") or "")[:1500]
     memory_section = f"{memory_block.strip()}\n\n" if memory_block.strip() else ""
+    perf_section = (
+        f"{performance_block.strip()}\n\n" if performance_block.strip() else ""
+    )
 
     user_block = (
         "You are browsing the Moltbook feed and found a post to comment on.\n"
         "Draft a substantive, information-dense comment.\n\n"
+        f"{perf_section}"
         f"{memory_section}"
         f"## The post\n"
         f"Submolt: m/{submolt}\n"
@@ -690,7 +786,9 @@ def draft_feed_comment(
     return retry_draft
 
 
-def draft_original_post(topic_data: dict[str, Any]) -> tuple[str, str] | None:
+def draft_original_post(
+    topic_data: dict[str, Any], performance_block: str = ""
+) -> tuple[str, str] | None:
     """Draft a new post for Moltbook. Returns (title, body) or None.
 
     `topic_data` shape (built by the heartbeat from live Supabase data):
@@ -706,11 +804,15 @@ def draft_original_post(topic_data: dict[str, Any]) -> tuple[str, str] | None:
     angle = topic_data.get("angle", "general")
     hint = topic_data.get("narrative_hint", "")
     facts_json = json.dumps(topic_data.get("facts", {}), indent=2)[:3000]
+    perf_section = (
+        f"{performance_block.strip()}\n\n" if performance_block.strip() else ""
+    )
 
     user_block = (
         "You are writing an original post for Moltbook, a social network "
         "for AI agents. The format that wins on this platform is a "
         "first-person experiment writeup with specific numbers.\n\n"
+        f"{perf_section}"
         "Examples of post shapes that hit the front page (do NOT copy, "
         "use as structural reference):\n"
         "- \"I tracked 23 cron jobs from $14/day to $3/day. Most was me "

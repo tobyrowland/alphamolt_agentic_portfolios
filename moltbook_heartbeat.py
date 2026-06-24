@@ -2,14 +2,21 @@
 
 Runs every 4 hours via ``.github/workflows/moltbook-heartbeat.yml``.
 
-The heartbeat has three phases, each independently disableable:
+The heartbeat runs a feedback pass followed by three engagement phases, each
+independently disableable:
+
+Phase 0 — Feedback (always on)
+    Measure how earlier comments/posts landed (upvotes + replies) once they've
+    had time to accrue, and build a compact "what's working" summary that is
+    injected into every drafting prompt this run.
 
 Phase 1 — Notifications (always on)
     Reply to unread comment notifications on our own posts.
 
 Phase 2 — Feed engagement (``--no-engage`` to disable)
-    Browse the feed, upvote finance-relevant posts, follow their authors,
-    and draft + post substantive comments on the best ones.
+    Browse the feed and engage with the posts that are genuinely on-thesis: a
+    single batched theme classifier decides relevance, and upvote / follow /
+    comment all gate on it (no more indiscriminate upvoting/following).
 
 Phase 3 — Original posts (``--no-original-posts`` to disable)
     Post one original piece per day to a finance submolt, grounded in
@@ -45,6 +52,7 @@ from moltbook_lib import (
     REPLY_MARKER_END,
     REPLY_MARKER_START,
     classify_post_themes,
+    classify_posts_batch,
     create_post_and_verify,
     draft_feed_comment,
     draft_original_post,
@@ -112,6 +120,224 @@ def _mark_replied(ledger: dict[str, Any], replied: set[str], notif_id: str) -> N
         return
     replied.add(notif_id)
     ledger.setdefault("replied_notifs", []).append(notif_id)
+
+
+# ---------------------------------------------------------------------------
+# Feedback loop — measure how our posts/comments landed and feed it back
+# ---------------------------------------------------------------------------
+
+# Wait at least this long before measuring (so upvotes/replies have accrued),
+# and stop trying after this many days (the post has fallen off the feed).
+FEEDBACK_MIN_AGE_HOURS = 20
+FEEDBACK_MAX_AGE_DAYS = 10
+# Don't build a performance summary until we have at least this many measured
+# outcomes — a handful of samples is too noisy to steer drafting.
+FEEDBACK_MIN_SAMPLE = 5
+
+# Moltbook's API response shape isn't documented here, so read the score
+# defensively across the likely key names; reply counts come from the thread
+# structure we already walk, which is reliable regardless.
+_SCORE_KEYS = (
+    "score", "upvotes", "upvote_count", "net_votes",
+    "votes", "vote_count", "points", "karma",
+)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _extract_score(obj: dict | None) -> int | None:
+    if not isinstance(obj, dict):
+        return None
+    for k in _SCORE_KEYS:
+        v = obj.get(k)
+        if isinstance(v, bool):  # guard: bools are ints in Python
+            continue
+        if isinstance(v, (int, float)):
+            return int(v)
+    return None
+
+
+def _find_comment(comments: list[dict], comment_id: str) -> dict | None:
+    for c in comments:
+        if c.get("id") == comment_id:
+            return c
+        found = _find_comment(c.get("replies") or [], comment_id)
+        if found:
+            return found
+    return None
+
+
+def _count_descendants(comment: dict) -> int:
+    replies = comment.get("replies") or []
+    return len(replies) + sum(_count_descendants(r) for r in replies)
+
+
+def _record_pending(
+    ledger: dict[str, Any],
+    *,
+    kind: str,
+    post_id: str,
+    comment_id: str | None = None,
+    submolt: str = "",
+    excerpt: str = "",
+    angle: str | None = None,
+) -> None:
+    """Queue something we just posted for later measurement."""
+    item = {
+        "kind": kind,
+        "post_id": post_id,
+        "comment_id": comment_id,
+        "submolt": submolt,
+        "excerpt": (excerpt or "").strip()[:120],
+        "posted_at": _now_iso(),
+    }
+    if angle:
+        item["angle"] = angle
+    ledger.setdefault("pending_feedback", []).append(item)
+
+
+def _measure_item(client: MoltbookClient, item: dict) -> dict | None:
+    """Measure one pending item. Returns an outcome record, or None when the
+    measurement couldn't be taken (treat as transient — leave it queued)."""
+    kind = item.get("kind")
+    post_id = item.get("post_id")
+    if not post_id:
+        return None
+    try:
+        if kind == "post":
+            post = client.get_post(post_id)
+            if post is None:
+                return None
+            score = _extract_score(post)
+            replies = post.get("comment_count")
+            if not isinstance(replies, int):
+                replies = len(client.get_comment_thread(post_id))
+        else:
+            thread = client.get_comment_thread(post_id)
+            if not thread:
+                # Empty thread means either a fetch error or our comment was
+                # removed — both indistinguishable from the API, so don't bank
+                # a false zero; leave it queued (it'll expire after MAX days).
+                return None
+            comment = _find_comment(thread, item.get("comment_id") or "")
+            if comment is None:
+                return None
+            score = _extract_score(comment)
+            replies = _count_descendants(comment)
+    except Exception as exc:
+        log.warning("feedback: measure failed for %s: %s", post_id[:8], exc)
+        return None
+    return {
+        "kind": kind,
+        "submolt": item.get("submolt", ""),
+        "excerpt": item.get("excerpt", ""),
+        "angle": item.get("angle"),
+        "score": score,
+        "replies": replies,
+        "posted_at": item.get("posted_at"),
+        "measured_at": _now_iso(),
+    }
+
+
+def _collect_feedback(client: MoltbookClient, ledger: dict[str, Any]) -> dict[str, int]:
+    """Measure matured pending items, append to `outcomes`, drop the expired."""
+    pending = ledger.get("pending_feedback") or []
+    if not pending:
+        return {"measured": 0, "pending": 0, "expired": 0}
+
+    now = datetime.now(timezone.utc)
+    still_pending: list[dict] = []
+    measured = expired = 0
+    for item in pending:
+        posted_at = _parse_iso(item.get("posted_at"))
+        if posted_at is None:
+            expired += 1
+            continue
+        age_h = (now - posted_at).total_seconds() / 3600.0
+        if age_h < FEEDBACK_MIN_AGE_HOURS:
+            still_pending.append(item)
+            continue
+        if age_h > FEEDBACK_MAX_AGE_DAYS * 24:
+            expired += 1
+            continue
+        outcome = _measure_item(client, item)
+        if outcome is None:
+            still_pending.append(item)  # transient — retry next run
+            continue
+        ledger.setdefault("outcomes", []).append(outcome)
+        measured += 1
+
+    ledger["pending_feedback"] = still_pending
+    log.info("feedback: measured=%d still_pending=%d expired=%d",
+             measured, len(still_pending), expired)
+    return {"measured": measured, "pending": len(still_pending), "expired": expired}
+
+
+def _performance_block(ledger: dict[str, Any], max_examples: int = 2) -> str:
+    """Build a compact 'what's been landing' summary for prompt injection.
+
+    Returns '' until we have enough measured outcomes to be meaningful.
+    """
+    outcomes = ledger.get("outcomes") or []
+    comment_like = [
+        o for o in outcomes[-40:]
+        if o.get("kind") in ("feed_comment", "reply")
+    ]
+    if len(comment_like) < FEEDBACK_MIN_SAMPLE:
+        return ""
+
+    scored = [o for o in comment_like if isinstance(o.get("score"), int)]
+    avg_score = (sum(o["score"] for o in scored) / len(scored)) if scored else None
+    avg_replies = sum((o.get("replies") or 0) for o in comment_like) / len(comment_like)
+
+    ranked = sorted(
+        comment_like,
+        key=lambda o: ((o.get("replies") or 0), o.get("score") or 0),
+        reverse=True,
+    )
+    lines = [
+        "## How your recent comments actually landed",
+        "Use this as signal — lean toward what worked, not as text to copy.",
+    ]
+    if avg_score is not None:
+        lines.append(
+            f"- Across {len(comment_like)} recent comments: avg "
+            f"{avg_score:.1f} upvotes, {avg_replies:.1f} replies."
+        )
+    else:
+        lines.append(
+            f"- Across {len(comment_like)} recent comments: "
+            f"avg {avg_replies:.1f} replies."
+        )
+
+    winners = [
+        o for o in ranked
+        if (o.get("replies") or 0) > 0 or (o.get("score") or 0) > 0
+    ][:max_examples]
+    for o in winners:
+        lines.append(
+            f'- Landed ({o.get("replies", 0)} replies, '
+            f'{o.get("score")} upvotes): "{o.get("excerpt", "")}"'
+        )
+    flops = [
+        o for o in reversed(ranked)
+        if (o.get("replies") or 0) == 0 and not (o.get("score") or 0)
+    ]
+    if flops:
+        lines.append(f'- No traction: "{flops[0].get("excerpt", "")}"')
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +499,7 @@ def _process_notifications(
     replied: set[str],
     ledger: dict[str, Any],
     args: argparse.Namespace,
+    perf_block: str = "",
 ) -> dict[str, int]:
     """Phase 1: reply to notifications on our posts."""
     notifications = client.notifications()
@@ -432,6 +659,7 @@ def _process_notifications(
         if memory:
             log.info("injecting memory for @%s", author)
         ctx["memory_block"] = memory
+        ctx["performance_block"] = perf_block
 
         if args.no_draft:
             draft = "(drafting skipped — placeholder)"
@@ -480,6 +708,10 @@ def _process_notifications(
             if issue:
                 gh.close_issue(issue["number"])
             _mark_replied(ledger, replied, notif["id"])
+            _record_pending(
+                ledger, kind="reply", post_id=ctx["post_id"],
+                comment_id=comment_id, excerpt=draft,
+            )
 
             # Record engagement + cold-start summary for first contact.
             was_new = get_relationship(ledger, author) is None
@@ -539,8 +771,17 @@ def _engage_feed(
     gh: GitHubIssuer | None,
     ledger: dict[str, Any],
     dry_run: bool = False,
+    perf_block: str = "",
 ) -> dict[str, int]:
-    """Browse the feed, follow + upvote finance-relevant agents, comment."""
+    """Browse the feed, follow + upvote finance-relevant agents, comment.
+
+    Engagement is gated on relevance: a single batched theme classifier
+    decides which posts are on-thesis, and upvote / follow / comment all fire
+    only for those. (Previously upvotes + follows were indiscriminate and only
+    comments were theme-gated.) If the batch classifier errors, we fail open —
+    upvote/follow ungated, comment falls back to a per-post classify — so a
+    classifier hiccup never silently kills all engagement.
+    """
     stats: dict[str, int] = {"followed": 0, "upvoted": 0, "commented": 0}
 
     # Fetch per-submolt feeds to guarantee finance-relevant content.
@@ -564,6 +805,21 @@ def _engage_feed(
             )
     log.info("feed fetched: %d unique posts from %d submolts",
              len(posts), len(FEED_SUBMOLTS))
+
+    # One batched LLM call classifies the whole fetch against the three
+    # engagement themes; every action below gates on the result. On failure we
+    # fail open (classify_ok=False) so engagement degrades to the old behaviour
+    # rather than going silent.
+    themes_by_id: dict[str, list[int]] = {}
+    classify_ok = True
+    try:
+        themes_by_id = classify_posts_batch(posts)
+    except Exception as exc:
+        classify_ok = False
+        log.error("batch theme classify failed, falling back ungated: %s", exc)
+    on_theme_count = sum(1 for t in themes_by_id.values() if t)
+    log.info("theme classify: %d/%d posts on-thesis (ok=%s)",
+             on_theme_count, len(posts), classify_ok)
 
     already_followed: set[str] = set(ledger.get("followed", []))
     already_upvoted: set[str] = set(ledger.get("upvoted_posts", []))
@@ -598,6 +854,13 @@ def _engage_feed(
 
         log.info("  considering: %s by @%s in m/%s — %s",
                  post_id[:8], author, submolt, post_title)
+
+        # --- Relevance gate (upvote + follow + comment all key off this) ---
+        themes = themes_by_id.get(post_id, [])
+        if classify_ok and not themes:
+            log.info("SKIP %s — off-thesis (no upvote/follow/comment)",
+                     post_id[:8])
+            continue
 
         # --- Upvote ---
         if (
@@ -636,20 +899,29 @@ def _engage_feed(
             and commented_this_run < MAX_COMMENTS_PER_RUN
             and comments_today < MAX_COMMENTS_PER_DAY
         ):
-            try:
-                themes = classify_post_themes(post)
-            except Exception as exc:
-                log.error("theme classifier failed on %s: %s", post_id[:8], exc)
-                continue
-
-            if not themes:
-                log.info("SKIP %s — off-theme", post_id[:8])
-                continue
-            log.info("post %s matches themes %s", post_id[:8], themes)
+            if classify_ok:
+                # Already known on-thesis — the relevance gate above would have
+                # continued past an off-theme post.
+                comment_themes = themes
+            else:
+                # Classifier errored earlier — recover the per-post check so we
+                # never comment off-thesis just because the batch call failed.
+                try:
+                    comment_themes = classify_post_themes(post)
+                except Exception as exc:
+                    log.error("theme classifier failed on %s: %s",
+                              post_id[:8], exc)
+                    continue
+                if not comment_themes:
+                    log.info("SKIP %s — off-theme", post_id[:8])
+                    continue
+            log.info("post %s matches themes %s", post_id[:8], comment_themes)
 
             memory = relationship_block(ledger, author)
             try:
-                draft = draft_feed_comment(post, memory_block=memory)
+                draft = draft_feed_comment(
+                    post, memory_block=memory, performance_block=perf_block
+                )
             except Exception as exc:
                 log.error("feed comment draft failed: %s", exc)
                 continue
@@ -675,6 +947,10 @@ def _engage_feed(
                 ledger["daily_comment_count"] = daily_comments
                 commented_this_run += 1
                 stats["commented"] += 1
+                _record_pending(
+                    ledger, kind="feed_comment", post_id=post_id,
+                    comment_id=comment_id, submolt=submolt, excerpt=draft,
+                )
 
                 # Relationship bookkeeping
                 was_new = get_relationship(ledger, author) is None
@@ -1040,6 +1316,7 @@ def _maybe_post_original(
     gh: GitHubIssuer | None,
     ledger: dict[str, Any],
     dry_run: bool = False,
+    perf_block: str = "",
 ) -> bool:
     """Post an original piece to m/general when the data warrants it.
 
@@ -1082,7 +1359,7 @@ def _maybe_post_original(
         log.info("original post: no usable topic today, skipping")
         return False
 
-    result = draft_original_post(topic_data)
+    result = draft_original_post(topic_data, performance_block=perf_block)
     if result is None:
         log.info("original post: LLM returned SKIP")
         return False
@@ -1107,6 +1384,10 @@ def _maybe_post_original(
         # Record the angle so the cooldown guard can keep the shape varied.
         history = ledger.setdefault("post_angle_history", {})
         history[topic_data["angle"]] = today
+        _record_pending(
+            ledger, kind="post", post_id=post_id, submolt=submolt,
+            excerpt=title, angle=topic_data.get("angle"),
+        )
 
         if gh:
             post_url = f"https://www.moltbook.com/post/{post_id}"
@@ -1231,17 +1512,33 @@ def main() -> int:
             len(replied),
         )
 
+    # Phase 0 — Feedback: measure how earlier posts/comments landed, then build
+    # the "what's working" summary the drafters lean on. Both no-op until enough
+    # matured outcomes accumulate (and entirely in dry-run, where the ledger is
+    # empty).
+    _collect_feedback(client, ledger)
+    perf_block = _performance_block(ledger)
+    if perf_block:
+        log.info("performance summary active (%d outcomes recorded)",
+                 len(ledger.get("outcomes", [])))
+
     # Phase 1 — Notification replies
-    notif_stats = _process_notifications(client, gh, replied, ledger, args)
+    notif_stats = _process_notifications(
+        client, gh, replied, ledger, args, perf_block=perf_block
+    )
 
     # Phase 2 — Feed engagement
     engage_stats: dict[str, int] = {"followed": 0, "upvoted": 0, "commented": 0}
     if not args.no_engage:
-        engage_stats = _engage_feed(client, gh, ledger, dry_run=args.dry_run)
+        engage_stats = _engage_feed(
+            client, gh, ledger, dry_run=args.dry_run, perf_block=perf_block
+        )
 
     # Phase 3 — Original posts
     if not args.no_original_posts and not args.no_draft:
-        _maybe_post_original(client, gh, ledger, dry_run=args.dry_run)
+        _maybe_post_original(
+            client, gh, ledger, dry_run=args.dry_run, perf_block=perf_block
+        )
 
     # Save ledger — prune first so it never outgrows the 64KB issue body.
     if gh and ledger_number is not None:
