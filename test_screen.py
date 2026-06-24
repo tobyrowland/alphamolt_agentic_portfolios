@@ -63,6 +63,29 @@ class TestFilters(unittest.TestCase):
         )
         self.assertEqual([r["ticker"] for r in out], ["B"])
 
+    def test_industry_exclude_case_insensitive(self):
+        # Industry is a filterable text field (exclude miners by industry).
+        rows = facts(
+            {"ticker": "MINER", "sector": "Non-Energy Minerals", "industry": "Precious Metals"},
+            {"ticker": "SAAS", "sector": "Technology Services", "industry": "Packaged Software"},
+        )
+        out = screen.apply_filters(
+            rows, [{"field": "industry", "op": "!=", "value": "precious metals"}]
+        )
+        self.assertEqual([r["ticker"] for r in out], ["SAAS"])
+
+    def test_industry_multi_exclude_stacks(self):
+        rows = facts(
+            {"ticker": "GOLD", "industry": "Precious Metals"},
+            {"ticker": "COPPER", "industry": "Other Metals/Minerals"},
+            {"ticker": "SAAS", "industry": "Packaged Software"},
+        )
+        out = screen.apply_filters(rows, [
+            {"field": "industry", "op": "!=", "value": "Precious Metals"},
+            {"field": "industry", "op": "!=", "value": "Other Metals/Minerals"},
+        ])
+        self.assertEqual([r["ticker"] for r in out], ["SAAS"])
+
 
 class TestPercentiles(unittest.TestCase):
     def test_basic(self):
@@ -241,6 +264,54 @@ class TestScore(unittest.TestCase):
         cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "topN": 2}
         ranked = screen.score_screen(rows, cfg)
         self.assertEqual([r["ticker"] for r in ranked[: cfg["topN"]]], ["A", "B"])
+
+
+class TestFinancialNeutralisation(unittest.TestCase):
+    """Financials (Finance / Financial Services / Real Estate): P/S and R40 are
+    category errors, so the Quality + Value lenses are neutralised (→ None) and
+    the name ranks on Momentum only."""
+
+    def test_lens_values_neutralised_for_financial_sectors(self):
+        for sector in ("Finance", "Financial Services", "Real Estate",
+                       "financial services", " FINANCE "):
+            xq, xv, xm = screen._lens_values({
+                "sector": sector, "rule_of_40": 99, "rev_growth_ttm": 80,
+                "net_margin": 16, "fcf_margin": 47, "gross_margin": 50,
+                "ps": 0.03, "ps_median_12m": 0.02, "peer_ps_median": 3.5,
+                "perf_52w_vs_spy": 20,
+            })
+            self.assertIsNone(xq, sector)
+            self.assertIsNone(xv, sector)
+            self.assertEqual(xm, 20, sector)  # momentum survives
+
+    def test_non_financial_sector_unchanged(self):
+        xq, xv, xm = screen._lens_values({
+            "sector": "Technology Services", "rule_of_40": 50,
+            "rev_growth_ttm": 30, "net_margin": 10, "fcf_margin": 20,
+            "gross_margin": 80, "ps": 6, "ps_median_12m": 8,
+            "perf_52w_vs_spy": 12,
+        })
+        self.assertIsNotNone(xq)
+        self.assertIsNotNone(xv)
+        self.assertEqual(xm, 12)
+
+    def test_financial_does_not_win_on_spurious_value_or_quality(self):
+        # The bank has a screaming-cheap P/S vs peers AND a huge R40 — without
+        # neutralisation it would top a value/quality screen. Neutralised, a
+        # genuinely strong non-financial outranks it.
+        rows = facts(
+            {"ticker": "BANK", "sector": "Finance", "rule_of_40": 99,
+             "rev_growth_ttm": 80, "net_margin": 16, "fcf_margin": 47,
+             "ps": 0.03, "ps_median_12m": 0.02, "peer_ps_median": 3.5,
+             "perf_52w_vs_spy": 0},
+            {"ticker": "REAL", "sector": "Technology Services", "rule_of_40": 70,
+             "rev_growth_ttm": 40, "net_margin": 30, "fcf_margin": 30,
+             "gross_margin": 85, "ps": 4, "ps_median_12m": 8, "peer_ps_median": 8,
+             "perf_52w_vs_spy": 0},
+        )
+        out = screen.score_screen(
+            rows, {"weights": {"quality": 60, "value": 40, "momentum": 0}})
+        self.assertEqual(out[0]["ticker"], "REAL")
 
 
 class TestVerdictZ(unittest.TestCase):

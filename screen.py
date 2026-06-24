@@ -32,12 +32,12 @@ from typing import Any
 logger = logging.getLogger("screen")
 
 FILTER_FIELDS = {
-    "sector", "country", "ps", "rev_growth_ttm", "gross_margin", "fcf_margin",
-    "net_margin", "operating_margin", "rule_of_40", "ret_52w",
+    "sector", "industry", "country", "ps", "rev_growth_ttm", "gross_margin",
+    "fcf_margin", "net_margin", "operating_margin", "rule_of_40", "ret_52w",
     "perf_52w_vs_spy",  # derived in load_facts (ret_52w − SPY's 52w return)
     "price",
 }
-TEXT_FIELDS = {"sector", "country"}
+TEXT_FIELDS = {"sector", "industry", "country"}
 
 MOM_FLOOR = -50.0  # falling-knife collar
 MOM_CAP = 40.0     # blow-off-top collar
@@ -48,6 +48,20 @@ MOM_CAP = 40.0     # blow-off-top collar
 # when a name has no peer median. MUST match web/lib/screen/score.ts.
 VAL_W_SELF = 0.5
 VAL_W_PEER = 0.5
+
+# Financial-sector lens neutralisation. P/S is a category error for banks/
+# insurers/REITs (their "sales" are gross interest/trading/rental flows, so P/S
+# reads near-zero ⇒ a spurious "−99% cheap" Value boost), and R40 is distorted by
+# volatile financial revenue. For these sectors we neutralise BOTH the Quality and
+# Value lenses (→ None ⇒ scored at the median, 0σ), leaving Momentum as the only
+# active lens — financials stay rankable/buyable but stop manufacturing spurious
+# #1s. The set spans BOTH sector taxonomies present in the data ("Finance" and
+# "Financial Services") plus "Real Estate". MUST match web/lib/screen/score.ts.
+_FINANCIAL_SECTORS = frozenset({"finance", "financial services", "real estate"})
+
+
+def _is_financial(sector) -> bool:
+    return str(sector or "").strip().lower() in _FINANCIAL_SECTORS
 
 # ---- single-score constants (migration 057 / screener redesign brief §2) ----
 # One ordering score: final_z = base_z + adj_z, displayed as a universe
@@ -227,6 +241,10 @@ def _lens_values(row: dict) -> tuple[float | None, float | None, float | None]:
     # Momentum: collared alpha vs SPY (perf_52w_vs_spy = ret_52w − SPY 52w).
     perf = _f(row.get("perf_52w_vs_spy"))
     xm = None if perf is None else max(MOM_FLOOR, min(MOM_CAP, perf))
+    # Financials: P/S and R40 are category errors — neutralise Quality + Value
+    # (rank on Momentum only). MUST match web/lib/screen/score.ts.
+    if _is_financial(row.get("sector")):
+        return None, None, xm
     return xq, xv, xm
 
 

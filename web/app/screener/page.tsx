@@ -257,6 +257,7 @@ export default async function ScreenerPage({
               data_asof: initial.data_asof,
             }}
             sectors={initial.sectors}
+            industries={initial.industries}
             companyTickers={companyTickers}
             exclusions={exclusions.map((e) => e.ticker)}
             defaultEncoded={encodeConfig(configFromParams({ preset: DEFAULT_PRESET }))}

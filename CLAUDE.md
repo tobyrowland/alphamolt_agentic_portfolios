@@ -306,14 +306,20 @@ backfill. Stores `dollar_volume` + `adj_close`. Flags: `--backfill` (force 2y
 for all Tier 1), `--tickers`, `--years`, `--dry-run`.
 
 ### backfill_sectors.py (Sundays 02:45 UTC — weekly, + one-off full run)
-Populates `securities.gics_sector` / `gics_industry` from EODHD `fundamentals`
-(`General.Sector` / `General.Industry`). `universe_sync.py` builds `securities`
-from the exchange-symbol-list, which carries **no sector**, so sectors start
-NULL (the screener's Sector column/filter was ~71% empty). Run once with
-`--only-missing` OFF to seed the whole Tier 1 column in one consistent EODHD
-taxonomy; the weekly cron runs `--only-missing` to fill names universe_sync has
-since added. Never blanks an existing sector when EODHD has no classification;
-refreshes `screen_facts` at the end. Flags: `--only-missing`, `--all-securities`
+Populates `securities.gics_sector` **and** `gics_industry` from TradingView
+(`tv_screen.fetch_classification_data`). `universe_sync.py` builds `securities`
+from the exchange-symbol-list, which carries **no classification**, so both start
+NULL. TradingView (not EODHD) is the source: it covers every US-listed name incl.
+miners/financials/ADRs and uses the SAME taxonomy the screener's Sector dropdown
+shows. The fetch matches symbols against TradingView's **america** market (an
+`isin(name)` filter), which resolves ADRs the default scanner hides (RIO, SMFG) and
+is immune to the foreign same-symbol collisions that previously corrupted ADR/miner
+sectors (e.g. ARIS → "Technology Services" from a German "ARIS"). Writes sector and
+industry as two **uniform** single-column batches (so PostgREST's upsert can never
+null-pad the other column); never blanks an existing value. `--only-missing` (cron
+mode) targets rows missing sector OR industry; run with it OFF for a one-off
+overwrite (existing sectors were corrupt, not just missing). Refreshes
+`screen_facts` at the end. Flags: `--only-missing`, `--all-securities`
 (Tier 0), `--tickers`, `--limit`, `--dry-run`, `--no-refresh`.
 
 ### nightly_screen.py (03:00 UTC daily)

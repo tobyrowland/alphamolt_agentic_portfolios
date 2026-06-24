@@ -26,6 +26,21 @@ LEDGER_LABEL = "moltbook-ledger"
 LEDGER_MARKER_START = "<!-- engagement-ledger-data"
 LEDGER_MARKER_END = "engagement-ledger-data -->"
 
+# The whole ledger lives in a single GitHub issue body, which GitHub caps at
+# 65536 chars. The dedup lists + per-day counters are otherwise append-only, so
+# without bounding them the ledger eventually exceeds that cap and
+# `update_issue_body` starts failing silently (PATCH 4xx, no exception). Cap the
+# dedup lists FIFO (they only matter for recently-seen feed posts / notifs — the
+# "new" feed never resurfaces old ids) and keep the daily counters to a trailing
+# window. See `prune_ledger`.
+LEDGER_DAILY_KEEP_DAYS = 14
+LEDGER_DEDUP_CAPS = {
+    "followed": 1000,
+    "upvoted_posts": 1000,
+    "commented_posts": 1000,
+    "replied_notifs": 1000,
+}
+
 FEED_SUBMOLTS = frozenset({
     # Finance-native
     "investing", "value-investing", "stocks", "stockmarket",
@@ -382,6 +397,7 @@ class GitHubIssuer:
             "followed": [],
             "upvoted_posts": [],
             "commented_posts": [],
+            "replied_notifs": [],
             "daily_comment_count": {},
             "daily_post_count": {},
             "relationships": {},
@@ -413,6 +429,34 @@ class GitHubIssuer:
 
 def notification_marker(notif_id: str) -> str:
     return f"<!-- moltbook-notif:{notif_id} -->"
+
+
+def prune_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
+    """Bound the ledger so it never outgrows the 64KB GitHub issue body.
+
+    Dedup lists are FIFO-capped (keep the most recent tail — old ids only
+    matter while a post/notification is still recent enough to resurface, which
+    it isn't once it's fallen off the "new" feed). The per-day counters keep a
+    trailing window. Mutates and returns ``ledger``.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    for key, cap in LEDGER_DEDUP_CAPS.items():
+        lst = ledger.get(key)
+        if isinstance(lst, list) and len(lst) > cap:
+            ledger[key] = lst[-cap:]
+
+    cutoff = (
+        datetime.now(timezone.utc).date()
+        - timedelta(days=LEDGER_DAILY_KEEP_DAYS)
+    ).isoformat()
+    for key in ("daily_comment_count", "daily_post_count"):
+        counts = ledger.get(key)
+        if isinstance(counts, dict):
+            # ISO YYYY-MM-DD keys sort lexicographically, so >= cutoff works.
+            ledger[key] = {d: n for d, n in counts.items() if d >= cutoff}
+
+    return ledger
 
 
 def extract_reply(issue_body: str) -> str | None:

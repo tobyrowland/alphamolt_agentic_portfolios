@@ -263,77 +263,80 @@ def fetch_market_data(tickers_with_exchange: list[tuple[str, str]], logger) -> d
     return results
 
 
-def _fetch_sector_batch(tv_ids: list[str], logger) -> dict[str, str]:
-    """Query TradingView for sector given a list of EXCHANGE:TICKER ids."""
-    BATCH_SIZE = 500
-    results = {}
-    for i in range(0, len(tv_ids), BATCH_SIZE):
-        batch = tv_ids[i:i + BATCH_SIZE]
+def _clean_tv_value(v: object) -> str | None:
+    """TradingView cell → clean string or None (drops nan/none/blank)."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s if s and s.lower() not in ("nan", "none", "") else None
+
+
+def _fetch_classification_batch(symbols: list[str], logger) -> dict[str, dict]:
+    """Query TradingView's **america** market for the given bare symbols, matched by
+    name. Returns {SYMBOL: {"sector": str|None, "industry": str|None}}.
+
+    Using an `isin(name)` filter on the america market (rather than per-id
+    `set_tickers`) matters: (a) it confines matches to US listings, so a same-symbol
+    FOREIGN company can never be matched (the old foreign-exchange fallback was what
+    corrupted ADR/miner sectors, e.g. ARIS → "Technology Services"); and (b) it finds
+    ADRs (type 'dr', e.g. RIO / SMFG) that the default scanner — and per-id
+    set_tickers — silently omit.
+    """
+    BATCH_SIZE = 400
+    results: dict[str, dict] = {}
+    for i in range(0, len(symbols), BATCH_SIZE):
+        chunk = symbols[i:i + BATCH_SIZE]
         try:
             _, df = (
                 Query()
-                .set_tickers(*batch)
-                .select("name", "sector")
-                .limit(len(batch))
+                .set_markets("america")
+                .select("name", "sector", "industry")
+                .where(col("name").isin(chunk))
+                .limit(len(chunk) * 2)  # headroom for the rare dual-listed symbol
                 .get_scanner_data()
             )
-            logger.info("TradingView sector batch: got %d/%d",
-                        len(df), len(batch))
+            logger.info("TradingView classification batch: got %d for %d symbols",
+                        len(df), len(chunk))
         except Exception as e:
-            logger.warning("TradingView sector batch failed: %s", e)
+            logger.warning("TradingView classification batch failed: %s", e)
             continue
 
         for _, row in df.iterrows():
-            raw_name = str(row.get("name", ""))
-            ticker = clean_ticker(raw_name)
-            if not ticker:
+            sym = str(row.get("name", "")).strip().upper()
+            if not sym or sym in results:  # first US row wins on the rare collision
                 continue
-            sector = str(row.get("sector", ""))
-            if sector and sector.lower() not in ("nan", "none", ""):
-                results[ticker.upper()] = sector
+            sector = _clean_tv_value(row.get("sector"))
+            industry = _clean_tv_value(row.get("industry"))
+            if sector or industry:
+                results[sym] = {"sector": sector, "industry": industry}
+    return results
+
+
+def fetch_classification_data(
+    tickers_with_exchange: list[tuple[str, str]], logger
+) -> dict[str, dict]:
+    """Fetch {TICKER: {"sector", "industry"}} from TradingView's america market.
+
+    The exchange in each pair is ignored — the america-market name filter resolves
+    every US listing (including ADRs) without per-exchange guessing, and is immune
+    to the foreign same-symbol collisions that corrupted the previous approach.
+    """
+    if not tickers_with_exchange:
+        return {}
+    symbols = sorted({t.upper() for t, _ in tickers_with_exchange if t})
+    logger.info("Fetching classification for %d symbols (america market)...",
+                len(symbols))
+    results = _fetch_classification_batch(symbols, logger)
+    logger.info("Fetched classification for %d/%d symbols", len(results), len(symbols))
     return results
 
 
 def fetch_sector_data(tickers_with_exchange: list[tuple[str, str]], logger) -> dict[str, str]:
-    """
-    Fetch sector for specific tickers from TradingView (no screening filters).
-    Returns {TICKER: sector_string}.
+    """Back-compat shim: {TICKER: sector_string}. Used by nightly_screen.py
+    (sector only). Derives from fetch_classification_data."""
+    return {
+        t: c["sector"]
+        for t, c in fetch_classification_data(tickers_with_exchange, logger).items()
+        if c.get("sector")
+    }
 
-    Tries EXCHANGE:TICKER first, then retries unmatched tickers as just TICKER
-    (lets TradingView resolve the exchange automatically).
-    """
-    if not tickers_with_exchange:
-        return {}
-
-    # First pass: query with exchange prefix
-    tv_ids = []
-    all_tickers = {}  # ticker → exchange
-    for ticker, exchange in tickers_with_exchange:
-        tv_id = f"{exchange}:{ticker}" if exchange else ticker
-        tv_ids.append(tv_id)
-        all_tickers[ticker.upper()] = exchange
-
-    logger.info("Fetching sector for %d tickers (pass 1: with exchange)...",
-                len(tv_ids))
-    results = _fetch_sector_batch(tv_ids, logger)
-
-    # Second pass: retry unmatched tickers on common exchanges
-    missed = [t for t in all_tickers if t not in results]
-    if missed:
-        FALLBACK_EXCHANGES = [
-            "NYSE", "NASDAQ", "XETR", "FWB", "LSE", "TSE", "ASX",
-            "TSX", "NSE", "EPA", "AMS", "SWX", "BIT", "BME", "STO",
-            "KRX", "SGX", "NZX", "JSE",
-        ]
-        retry_ids = []
-        for ticker in missed:
-            for ex in FALLBACK_EXCHANGES:
-                retry_ids.append(f"{ex}:{ticker}")
-        logger.info("Retrying %d unmatched tickers across %d common exchanges...",
-                     len(missed), len(FALLBACK_EXCHANGES))
-        retry_results = _fetch_sector_batch(retry_ids, logger)
-        results.update(retry_results)
-
-    logger.info("Fetched sector for %d/%d tickers",
-                len(results), len(tickers_with_exchange))
-    return results
