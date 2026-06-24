@@ -63,6 +63,29 @@ class TestFilters(unittest.TestCase):
         )
         self.assertEqual([r["ticker"] for r in out], ["B"])
 
+    def test_industry_exclude_case_insensitive(self):
+        # Industry is a filterable text field (exclude miners by industry).
+        rows = facts(
+            {"ticker": "MINER", "sector": "Non-Energy Minerals", "industry": "Precious Metals"},
+            {"ticker": "SAAS", "sector": "Technology Services", "industry": "Packaged Software"},
+        )
+        out = screen.apply_filters(
+            rows, [{"field": "industry", "op": "!=", "value": "precious metals"}]
+        )
+        self.assertEqual([r["ticker"] for r in out], ["SAAS"])
+
+    def test_industry_multi_exclude_stacks(self):
+        rows = facts(
+            {"ticker": "GOLD", "industry": "Precious Metals"},
+            {"ticker": "COPPER", "industry": "Other Metals/Minerals"},
+            {"ticker": "SAAS", "industry": "Packaged Software"},
+        )
+        out = screen.apply_filters(rows, [
+            {"field": "industry", "op": "!=", "value": "Precious Metals"},
+            {"field": "industry", "op": "!=", "value": "Other Metals/Minerals"},
+        ])
+        self.assertEqual([r["ticker"] for r in out], ["SAAS"])
+
 
 class TestPercentiles(unittest.TestCase):
     def test_basic(self):

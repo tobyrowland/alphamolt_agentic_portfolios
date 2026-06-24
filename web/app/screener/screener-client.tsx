@@ -166,6 +166,7 @@ export default function ScreenerClient({
   initialConfig,
   initialData,
   sectors = [],
+  industries = [],
   companyTickers = [],
   exclusions = [],
   rejections = [],
@@ -174,6 +175,8 @@ export default function ScreenerClient({
   initialData: ScreenData;
   /** Distinct sectors for the sector filter dropdown. */
   sectors?: string[];
+  /** Distinct industries for the industry filter dropdown. */
+  industries?: string[];
   /** Tickers that have a /company/<ticker> page (others render unlinked). */
   companyTickers?: string[];
   /** Tickers on the manual 1-year blocklist (owner-managed). */
@@ -671,6 +674,7 @@ export default function ScreenerClient({
             key={`${f.field}-${i}`}
             filter={f}
             sectors={sectors}
+            industries={industries}
             onChange={(p) => setFilter(i, p)}
             onRemove={() => removeFilter(i)}
           />
@@ -686,10 +690,13 @@ export default function ScreenerClient({
             + add filter
           </summary>
           <div className="absolute z-30 mt-1.5 w-52 rounded-xl border border-white/10 bg-[#0b1214] shadow-2xl p-1.5">
-            {/* Numeric metrics dedupe (one P/S filter is enough); Sector stays
-                addable so you can exclude several sectors at once. */}
+            {/* Numeric metrics dedupe (one P/S filter is enough); Sector and
+                Industry stay addable so you can exclude several at once. */}
             {NAMED_FILTERS.filter(
-              (nf) => nf.field === "sector" || !usedFields.has(nf.field),
+              (nf) =>
+                nf.field === "sector" ||
+                nf.field === "industry" ||
+                !usedFields.has(nf.field),
             ).map((nf) => (
               <button
                 key={nf.field}
@@ -1206,16 +1213,23 @@ function PresetCards({
 function FilterChip({
   filter,
   sectors,
+  industries,
   onChange,
   onRemove,
 }: {
   filter: Filter;
   sectors: string[];
+  industries: string[];
   onChange: (p: Partial<Filter>) => void;
   onRemove: () => void;
 }) {
   const isText = TEXT_FIELDS.has(filter.field);
   const isSector = filter.field === "sector";
+  const isIndustry = filter.field === "industry";
+  // Sector + Industry both render the only/exclude toggle + a value dropdown.
+  const listField = isSector || isIndustry;
+  const listValues = isSector ? sectors : industries;
+  const listLabel = isSector ? "Sector" : "Industry";
   const m = METRIC_META[filter.field];
   return (
     <details className="inline-block align-top">
@@ -1244,21 +1258,21 @@ function FilterChip({
       <div className="mt-1.5 w-[180px] rounded-lg border border-white/10 bg-[#0b1214] p-2.5">
         <div className="flex justify-between font-mono text-[10.5px] text-text-muted mb-1.5">
           <span>
-            {isSector
-              ? "Sector"
+            {listField
+              ? listLabel
               : `${m?.label ?? filter.field} ${m?.op === "<=" ? "below" : "above"}`}
           </span>
           <span className="text-[var(--color-cyan)]">
-            {isSector
+            {listField
               ? filter.op === "!="
                 ? "exclude"
                 : "only"
               : `${filter.value}${m?.unit ?? ""}`}
           </span>
         </div>
-        {isSector && sectors.length > 0 ? (
+        {listField && listValues.length > 0 ? (
           <>
-            {/* Include (only) vs exclude (not) this sector. */}
+            {/* Include (only) vs exclude (not) this sector/industry. */}
             <div className="flex gap-1 mb-2 font-mono text-[10px]">
               <button
                 type="button"
@@ -1284,13 +1298,13 @@ function FilterChip({
               </button>
             </div>
             <select
-              aria-label="Sector"
+              aria-label={listLabel}
               value={String(filter.value ?? "")}
               onChange={(e) => onChange({ value: e.target.value })}
               className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-text"
             >
-              <option value="">Any sector…</option>
-              {sectors.map((s) => (
+              <option value="">Any {listLabel.toLowerCase()}…</option>
+              {listValues.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
