@@ -1228,9 +1228,9 @@ function IntroPopout({
       <p className="text-sm font-bold text-text">This is your trading universe.</p>
       <p className="text-[12.5px] text-text-dim mt-1 leading-relaxed max-w-prose">
         The screener ranks every US-listed stock by the filters and scoring you
-        set. The top {topN} become the universe your portfolio&apos;s trader bots
-        pick from — so what you choose here shapes what they&apos;re allowed to
-        buy.
+        set. Its top {topN} become the universe your portfolio&apos;s trader bots
+        pick from — so the filters and weights you choose here shape what they
+        can buy.
       </p>
       <div className="mt-3 flex items-center gap-2 flex-wrap font-mono text-[11px]">
         <span className="rounded-md border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] px-2.5 py-1 text-[var(--color-cyan)]">
