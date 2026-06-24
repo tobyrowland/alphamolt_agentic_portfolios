@@ -161,6 +161,8 @@ export interface ScreenResponse extends ScreenResult {
   data_asof: string | null;
   /** Distinct sectors across the universe — populates the sector dropdown. */
   sectors: string[];
+  /** Distinct industries across the universe — populates the industry dropdown. */
+  industries: string[];
 }
 
 /**
@@ -219,7 +221,10 @@ export async function runScreen(
   const sectors = Array.from(
     new Set(facts.map((f) => f.sector).filter((s): s is string => !!s)),
   ).sort();
-  return { ...result, data_asof, sectors };
+  const industries = Array.from(
+    new Set(facts.map((f) => f.industry).filter((s): s is string => !!s)),
+  ).sort();
+  return { ...result, data_asof, sectors, industries };
 }
 
 function num(v: unknown): number | null {

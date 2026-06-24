@@ -17,6 +17,7 @@ import { z } from "zod";
 // (migration 040). Numeric unless noted.
 export const FILTER_FIELDS = [
   "sector", // text
+  "industry", // text
   "country", // text
   "ps", // P/S
   "rev_growth_ttm",
@@ -34,7 +35,7 @@ export const FILTER_FIELDS = [
 ] as const;
 export type FilterField = (typeof FILTER_FIELDS)[number];
 
-export const TEXT_FIELDS = new Set<FilterField>(["sector", "country"]);
+export const TEXT_FIELDS = new Set<FilterField>(["sector", "industry", "country"]);
 
 export const FILTER_OPS = ["<=", ">=", "<", ">", "==", "!="] as const;
 export type FilterOp = (typeof FILTER_OPS)[number];
@@ -282,7 +283,8 @@ export function impliedOp(field: FilterField): FilterOp {
 /** A readable chip label for a filter, e.g. "P/S ≤ 15" / "Rev growth ≥ 20%". */
 export function filterChipLabel(f: Filter): string {
   if (TEXT_FIELDS.has(f.field)) {
-    if (f.field === "sector" && !String(f.value)) return "any sector";
+    if ((f.field === "sector" || f.field === "industry") && !String(f.value))
+      return `any ${f.field}`;
     const verb = f.op === "!=" ? "exclude" : "only";
     return `${verb} ${f.value}`;
   }
@@ -297,6 +299,7 @@ export function filterChipLabel(f: Filter): string {
 // row). Each seeds a chip with its implied operator + default value.
 export const NAMED_FILTERS: { field: FilterField; label: string }[] = [
   { field: "sector", label: "Sector" },
+  { field: "industry", label: "Industry" },
   { field: "ps", label: "P/S multiple" },
   { field: "rev_growth_ttm", label: "Revenue growth" },
   { field: "gross_margin", label: "Gross margin" },

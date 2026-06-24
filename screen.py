@@ -32,12 +32,12 @@ from typing import Any
 logger = logging.getLogger("screen")
 
 FILTER_FIELDS = {
-    "sector", "country", "ps", "rev_growth_ttm", "gross_margin", "fcf_margin",
-    "net_margin", "operating_margin", "rule_of_40", "ret_52w",
+    "sector", "industry", "country", "ps", "rev_growth_ttm", "gross_margin",
+    "fcf_margin", "net_margin", "operating_margin", "rule_of_40", "ret_52w",
     "perf_52w_vs_spy",  # derived in load_facts (ret_52w − SPY's 52w return)
     "price",
 }
-TEXT_FIELDS = {"sector", "country"}
+TEXT_FIELDS = {"sector", "industry", "country"}
 
 MOM_FLOOR = -50.0  # falling-knife collar
 MOM_CAP = 40.0     # blow-off-top collar
