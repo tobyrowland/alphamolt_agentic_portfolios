@@ -671,6 +671,14 @@ def portfolio_screen_candidate_rows(db, portfolio_id: str | None) -> list[dict]:
     if not cfg:
         return []
     ranked = run_screen(db, cfg)
+    # Only buy names with AI analysis — require a research card (has_card). The
+    # screener still ranks/displays un-carded names (it's a research tool); the
+    # BUYER's candidate pool excludes them so the portfolio never buys an
+    # un-analysed name. Filtered before the topN slice, so the cut is the top N
+    # of *buyable* names. Default on; escapable per-portfolio via
+    # screen_config.requireResearchCard=false.
+    if cfg.get("requireResearchCard", True):
+        ranked = [r for r in ranked if r.get("has_card")]
     # Hide names this portfolio's buyer evaluated and passed on within the last
     # 90 days (migration 051), so the buyer doesn't churn straight back into
     # re-evaluating a name it just rejected. On by default; the owner can flip

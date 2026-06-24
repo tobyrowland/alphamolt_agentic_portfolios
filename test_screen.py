@@ -381,10 +381,12 @@ class TestRejectionFilter(unittest.TestCase):
     rejections when hideRejected is on (default), and keeps them when off."""
 
     def _ranked(self):
+        # Carded so the research-card buy gate (default on) keeps them — this
+        # suite isolates the rejection filter, not the card gate.
         return facts(
-            {"ticker": "A", "rule_of_40": 90, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
-            {"ticker": "B", "rule_of_40": 50, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
-            {"ticker": "C", "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5},
+            {"ticker": "A", "rule_of_40": 90, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "has_card": True},
+            {"ticker": "B", "rule_of_40": 50, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "has_card": True},
+            {"ticker": "C", "rule_of_40": 10, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "has_card": True},
         )
 
     def _run(self, config, rejected):
@@ -433,6 +435,48 @@ class TestRejectionFilter(unittest.TestCase):
         self.assertNotIn("A", tickers)            # rejected, hidden
         self.assertEqual(tickers, {"B", "C"})
         self.assertTrue(all("rule_of_40" in r and "score" in r for r in rows))  # full fact rows
+
+
+class TestResearchCardGate(unittest.TestCase):
+    """The buyer's candidate pool only includes AI-analysed (research-carded)
+    names by default, so the portfolio never buys an un-analysed equity. The
+    screener display is unaffected — this gates the buyer pool only."""
+
+    def _ranked(self):
+        # Mixed: A/C carded (buyable), B/D un-carded (ranked on quant only).
+        return facts(
+            {"ticker": "A", "rule_of_40": 90, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "has_card": True},
+            {"ticker": "B", "rule_of_40": 70, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "has_card": False},
+            {"ticker": "C", "rule_of_40": 50, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "has_card": True},
+            {"ticker": "D", "rule_of_40": 30, "fcf_margin": 1, "gross_margin": 1, "ps": 5, "ps_median_12m": 5, "has_card": False},
+        )
+
+    def _run(self, cfg):
+        orig_cfg, orig_run = screen.portfolio_screen_config, screen.run_screen
+        ranked = self._ranked()
+        screen.portfolio_screen_config = lambda db, pid: cfg
+        screen.run_screen = lambda db, c: screen.score_screen(ranked, c)
+        try:
+            return screen.portfolio_screen_candidates(_FakeDB(cfg, set()), "pid")
+        finally:
+            screen.portfolio_screen_config, screen.run_screen = orig_cfg, orig_run
+
+    def test_default_on_drops_uncarded_names(self):
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "topN": 40}
+        out = self._run(cfg)
+        self.assertEqual(set(out), {"A", "C"})  # B, D (un-carded) dropped
+
+    def test_off_keeps_uncarded_names(self):
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "topN": 40, "requireResearchCard": False}
+        out = self._run(cfg)
+        self.assertEqual(set(out), {"A", "B", "C", "D"})
+
+    def test_gate_applies_before_topn_slice(self):
+        # topN=2 over the gated pool yields the top 2 CARDED names (A, C),
+        # not the top-2-then-filter (which would have dropped to just A).
+        cfg = {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiMultiplier": False, "topN": 2}
+        out = self._run(cfg)
+        self.assertEqual(set(out), {"A", "C"})
 
 
 if __name__ == "__main__":
