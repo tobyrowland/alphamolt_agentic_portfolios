@@ -35,7 +35,7 @@ from datetime import date
 
 from db import SupabaseDB
 from eodhd_updater import fetch_eodhd_data
-from backfill_tier1_fundamentals import FUND_FIELDS
+from backfill_tier1_fundamentals import FUND_FIELDS, FUND_BLOBS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -123,6 +123,11 @@ def main() -> None:
                 v = db.safe_float(data.get(src))
                 if v is not None:
                     row[dst] = v
+                    has_metric = True
+            for blob in FUND_BLOBS:  # text series stored verbatim
+                val = data.get(blob)
+                if val:
+                    row[blob] = val
                     has_metric = True
             if has_metric:
                 batch.append(row)

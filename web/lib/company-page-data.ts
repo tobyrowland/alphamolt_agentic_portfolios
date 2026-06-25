@@ -93,15 +93,17 @@ export const loadCompany = cache(async (ticker: string): Promise<Company | null>
       .select("updated_at")
       .eq("ticker", t)
       .maybeSingle(),
-    // Per-period revenue + net income text blobs — these have no Level 0 source,
-    // so read them from the legacy companies table (still refreshed weekly by
-    // eodhd_updater) to power the income-statement chart.
+    // Per-period revenue + net income text blobs (income chart). Stored on the
+    // Level 0 `fundamentals` table (migration 067); read the latest period_end
+    // row for this ticker.
     supabase
-      .from("companies")
+      .from("fundamentals")
       .select(
         "annual_revenue_5y, quarterly_revenue, annual_net_income_5y, quarterly_net_income",
       )
       .eq("ticker", t)
+      .order("period_end", { ascending: false })
+      .limit(1)
       .maybeSingle(),
   ]);
 
@@ -143,8 +145,8 @@ export const loadCompany = cache(async (ticker: string): Promise<Company | null>
     fundamentals_snapshot: "",
     short_outlook: ai?.short_outlook ?? "",
 
-    // Revenue + net income — per-period text blobs from the legacy companies
-    // table (no Level 0 source yet); power the income-statement chart.
+    // Revenue + net income — per-period text blobs from Level 0 `fundamentals`
+    // (migration 067); power the income-statement chart.
     annual_revenue_5y: fin?.annual_revenue_5y ?? "",
     quarterly_revenue: fin?.quarterly_revenue ?? "",
     annual_net_income_5y: fin?.annual_net_income_5y ?? "",

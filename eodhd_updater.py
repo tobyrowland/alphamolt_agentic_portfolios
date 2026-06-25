@@ -71,7 +71,6 @@ DEFAULT_CRITERIA = [
 # Columns populated by EODHD (keys as returned by fetch_eodhd_data)
 EODHD_COLUMNS = [
     "annual_revenue_5y", "quarterly_revenue",
-    "annual_net_income_5y", "quarterly_net_income",
     "rev_growth_ttm", "rev_growth_qoq", "rev_cagr", "rev_consistency_score",
     "gross_margin", "gm_trend",
     "operating_margin", "net_margin", "net_margin_yoy",

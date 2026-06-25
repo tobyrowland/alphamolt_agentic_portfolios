@@ -69,6 +69,16 @@ FUND_FIELDS = {
     "opex_pct_revenue": "opex_pct_rev",
 }
 
+# Per-period text-blob series (pipe-delimited, newest-first) stored verbatim —
+# NOT floats, so they bypass the safe_float FUND_FIELDS loop. Power the
+# company-page income chart (revenue + net income, annual + quarterly).
+FUND_BLOBS = (
+    "annual_revenue_5y",
+    "quarterly_revenue",
+    "annual_net_income_5y",
+    "quarterly_net_income",
+)
+
 DEFAULT_DELAY = 1.0  # seconds between EODHD calls (rate-limit courtesy)
 BATCH_SIZE = 200     # rows per upsert flush
 
@@ -141,6 +151,11 @@ def main() -> None:
                 v = db.safe_float(data.get(src))
                 if v is not None:
                     row[dst] = v
+                    has_metric = True
+            for blob in FUND_BLOBS:  # text series stored verbatim
+                val = data.get(blob)
+                if val:
+                    row[blob] = val
                     has_metric = True
             if has_metric:
                 batch.append(row)
