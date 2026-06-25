@@ -199,7 +199,13 @@ def gather(db: SupabaseDB) -> list[Row]:
     ))
 
     # 3. Valuation / P-S (valuation) — daily full-universe via price_sales_updater.
+    # Scope to the active Tier-1 universe (like Current price): names that have
+    # left Tier-1 (delisted / dropped below the affordability gate) keep their
+    # last valuation row frozen by design — the updater only refreshes active
+    # Tier-1 — so they must not drag the stalest stamp into a false STALE.
     val = db.get_all_valuation_latest()
+    tier1_tickers = {s["ticker"] for s in tier1}
+    val = {t: v for t, v in val.items() if t in tier1_tickers}
     newest, oldest, r24 = _summarize_map(
         [v.get("fetched_at") for v in val.values()], now)
     rows.append(_row(
