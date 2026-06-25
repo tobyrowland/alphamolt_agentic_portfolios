@@ -78,7 +78,7 @@ export const loadCompany = cache(async (ticker: string): Promise<Company | null>
   const supabase = getSupabase();
   const t = ticker.toUpperCase();
 
-  const [equity, aiRes, secRes] = await Promise.all([
+  const [equity, aiRes, secRes, finRes] = await Promise.all([
     getEquityL0(t),
     supabase
       .from("ai_analysis")
@@ -93,11 +93,27 @@ export const loadCompany = cache(async (ticker: string): Promise<Company | null>
       .select("updated_at")
       .eq("ticker", t)
       .maybeSingle(),
+    // Per-period revenue + net income text blobs — these have no Level 0 source,
+    // so read them from the legacy companies table (still refreshed weekly by
+    // eodhd_updater) to power the income-statement chart.
+    supabase
+      .from("companies")
+      .select(
+        "annual_revenue_5y, quarterly_revenue, annual_net_income_5y, quarterly_net_income",
+      )
+      .eq("ticker", t)
+      .maybeSingle(),
   ]);
 
   if (!equity) return null;
 
   const ai = (aiRes.data as AiAnalysisRow | null) ?? null;
+  const fin = (finRes.data as {
+    annual_revenue_5y: string | null;
+    quarterly_revenue: string | null;
+    annual_net_income_5y: string | null;
+    quarterly_net_income: string | null;
+  } | null) ?? null;
   const securityUpdatedAt =
     (secRes.data as { updated_at: string | null } | null)?.updated_at ?? null;
   const updatedAt = securityUpdatedAt ?? ai?.updated_at ?? equity.price_asof;
@@ -127,9 +143,12 @@ export const loadCompany = cache(async (ticker: string): Promise<Company | null>
     fundamentals_snapshot: "",
     short_outlook: ai?.short_outlook ?? "",
 
-    // Revenue — the text-blob series have no Level 0 source.
-    annual_revenue_5y: "",
-    quarterly_revenue: "",
+    // Revenue + net income — per-period text blobs from the legacy companies
+    // table (no Level 0 source yet); power the income-statement chart.
+    annual_revenue_5y: fin?.annual_revenue_5y ?? "",
+    quarterly_revenue: fin?.quarterly_revenue ?? "",
+    annual_net_income_5y: fin?.annual_net_income_5y ?? "",
+    quarterly_net_income: fin?.quarterly_net_income ?? "",
     rev_growth_ttm_pct: equity.rev_growth_ttm_pct,
     rev_growth_qoq_pct: equity.rev_growth_qoq_pct,
     rev_cagr_pct: equity.rev_cagr_pct,

@@ -7,9 +7,9 @@
  * Both are newest-first. These helpers parse them to oldest-first
  * {label, value, raw} points so a bar chart reads left→right in time order.
  *
- * Net income per period is intentionally absent — the store has only a single
- * current net_margin_pct, so a faithful net-income series can't be derived
- * here (see the income-statement chart). Revenue is the only real series today.
+ * Net income (annual_net_income_5y / quarterly_net_income) is stored in the
+ * same pipe-delimited shape (with "-$X" for loss periods), so these parsers are
+ * generic over both series — the revenue-named exports are kept as aliases.
  */
 
 export interface RevenuePoint {
@@ -24,18 +24,20 @@ export interface RevenuePoint {
 
 const UNIT: Record<string, number> = { K: 1e3, M: 1e6, B: 1e9, T: 1e12 };
 
-/** Parse a single "$1.0B" / "$748M" / "$251M" token to a number. */
+/** Parse a single "$1.0B" / "-$1.2B" / "$748M" token to a number. Net income
+ *  can be a loss, so an optional leading "-" is honoured. */
 function parseAmount(s: string): number | null {
-  const m = s.match(/\$?\s*([\d,.]+)\s*([KMBT])?/i);
+  const m = s.match(/(-?)\s*\$?\s*([\d,.]+)\s*([KMBT])?/i);
   if (!m) return null;
-  const num = parseFloat(m[1].replace(/,/g, ""));
+  const num = parseFloat(m[2].replace(/,/g, ""));
   if (!Number.isFinite(num)) return null;
-  const unit = m[2] ? (UNIT[m[2].toUpperCase()] ?? 1) : 1;
-  return num * unit;
+  const unit = m[3] ? (UNIT[m[3].toUpperCase()] ?? 1) : 1;
+  return (m[1] === "-" ? -num : num) * unit;
 }
 
-/** "2025: $1.0B | 2024: $748M | ..." → [{2021…}, …, {2025…}] (oldest first). */
-export function parseAnnualRevenue(raw: string | null | undefined): RevenuePoint[] {
+/** "2025: $1.0B | 2024: -$0.2B | ..." → [{2021…}, …, {2025…}] (oldest first).
+ *  Generic over revenue / net income (same format). */
+export function parseAnnualSeries(raw: string | null | undefined): RevenuePoint[] {
   if (!raw) return [];
   const out: RevenuePoint[] = [];
   for (const piece of raw.split("|")) {
@@ -48,8 +50,9 @@ export function parseAnnualRevenue(raw: string | null | undefined): RevenuePoint
   return out.reverse();
 }
 
-/** "$292M (2026-03-31) | $283M (2025-12-31) | ..." → oldest-first quarters. */
-export function parseQuarterlyRevenue(raw: string | null | undefined): RevenuePoint[] {
+/** "$292M (2026-03-31) | -$8M (2025-12-31) | ..." → oldest-first quarters.
+ *  Generic over revenue / net income (same format). */
+export function parseQuarterlySeries(raw: string | null | undefined): RevenuePoint[] {
   if (!raw) return [];
   const out: RevenuePoint[] = [];
   for (const piece of raw.split("|")) {
@@ -64,6 +67,10 @@ export function parseQuarterlyRevenue(raw: string | null | undefined): RevenuePo
   }
   return out.reverse();
 }
+
+/** Back-compat aliases (the parsers are generic over revenue / net income). */
+export const parseAnnualRevenue = parseAnnualSeries;
+export const parseQuarterlyRevenue = parseQuarterlySeries;
 
 /** Compact USD for axis ticks / aria, e.g. "$1.2B", "$748M". */
 export function formatCompactUsd(n: number): string {

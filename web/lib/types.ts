@@ -27,9 +27,11 @@ export interface Company {
   fundamentals_snapshot: string;
   short_outlook: string;
 
-  // Revenue
+  // Revenue + net income (per-period text blobs; see company-financials.ts)
   annual_revenue_5y: string;
   quarterly_revenue: string;
+  annual_net_income_5y: string;
+  quarterly_net_income: string;
   rev_growth_ttm_pct: number | null;
   rev_growth_qoq_pct: number | null;
   rev_cagr_pct: number | null;

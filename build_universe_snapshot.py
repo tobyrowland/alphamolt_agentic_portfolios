@@ -214,12 +214,17 @@ def _build_ticker_entry(
         fundamentals = {"current": _pick(company, EXTENDED_FUNDAMENTAL_FIELDS)}
         annual = _parse_history(company.get("annual_revenue_5y"))
         quarterly = _parse_history(company.get("quarterly_revenue"))
+        annual_ni = _parse_history(company.get("annual_net_income_5y"))
+        quarterly_ni = _parse_history(company.get("quarterly_net_income"))
         fundamentals["annual_revenue_5y"] = annual
+        fundamentals["annual_net_income_5y"] = annual_ni
         if detail == "extended":
             # Last 4 quarters covers TTM; older context lives in annual.
             fundamentals["quarterly_revenue"] = quarterly[-4:]
+            fundamentals["quarterly_net_income"] = quarterly_ni[-4:]
         else:
             fundamentals["quarterly_revenue"] = quarterly
+            fundamentals["quarterly_net_income"] = quarterly_ni
     entry["fundamentals"] = fundamentals
 
     # Valuation block — pricing/PS summary fields plus optional P/S history.
