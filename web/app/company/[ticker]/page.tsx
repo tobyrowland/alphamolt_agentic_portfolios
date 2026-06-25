@@ -201,6 +201,8 @@ export default async function CompanyPage({
   });
   const annualRevenue = parseAnnualRevenue(company.annual_revenue_5y);
   const quarterlyRevenue = parseQuarterlyRevenue(company.quarterly_revenue);
+  const annualNetIncome = parseAnnualRevenue(company.annual_net_income_5y);
+  const quarterlyNetIncome = parseQuarterlyRevenue(company.quarterly_net_income);
 
   const breadcrumb = breadcrumbJsonLd(company.ticker, company.company_name, company.sector);
   const dataset = datasetJsonLd({
@@ -304,15 +306,16 @@ export default async function CompanyPage({
               />
             )}
 
-            {/* Income statement — revenue bars (annual / quarterly toggle).
-                Replaces the FAQ section. Net income is omitted until a real
-                per-period series is stored (see RevenueChart). */}
+            {/* Income statement — grouped revenue + net income bars
+                (annual / quarterly toggle). */}
             {(annualRevenue.length > 0 || quarterlyRevenue.length > 0) && (
               <Block heading="Income statement">
                 <RevenueChart
                   ticker={company.ticker}
                   annual={annualRevenue}
                   quarterly={quarterlyRevenue}
+                  annualNet={annualNetIncome}
+                  quarterlyNet={quarterlyNetIncome}
                 />
               </Block>
             )}

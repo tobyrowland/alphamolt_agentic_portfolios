@@ -71,6 +71,7 @@ DEFAULT_CRITERIA = [
 # Columns populated by EODHD (keys as returned by fetch_eodhd_data)
 EODHD_COLUMNS = [
     "annual_revenue_5y", "quarterly_revenue",
+    "annual_net_income_5y", "quarterly_net_income",
     "rev_growth_ttm", "rev_growth_qoq", "rev_cagr", "rev_consistency_score",
     "gross_margin", "gm_trend",
     "operating_margin", "net_margin", "net_margin_yoy",
@@ -437,6 +438,30 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
         result["quarterly_revenue"] = " | ".join(parts) if parts else None
     else:
         result["quarterly_revenue"] = None
+
+    # ── Annual Net Income (5Y) ────────────────────────────────────────
+    # Mirrors annual_revenue_5y from the same yearly income statements (EODHD
+    # already in hand). fmt_revenue renders losses as "-$X" so net income can
+    # go negative. Same string shape, so the web parser is reused.
+    annual_ni = []
+    for date_str, entry in yearly[:5]:
+        ni = safe_float(entry.get("netIncome"))
+        if ni is not None:
+            year = date_str[:4]
+            annual_ni.append(f"{year}: {fmt_revenue(ni)}")
+    result["annual_net_income_5y"] = " | ".join(annual_ni) if annual_ni else None
+
+    # ── Quarterly Net Income (last 5 quarters) ─────────────────────────
+    if quarterly:
+        ni_parts = []
+        for entry in quarterly[:5]:
+            ni = safe_float(entry[1].get("netIncome"))
+            q_date = entry[0]
+            if ni is not None:
+                ni_parts.append(f"{fmt_revenue(ni)} ({q_date})")
+        result["quarterly_net_income"] = " | ".join(ni_parts) if ni_parts else None
+    else:
+        result["quarterly_net_income"] = None
 
     # ── Rev Growth TTM % ──────────────────────────────────────────────
     rev_growth_ttm = None
