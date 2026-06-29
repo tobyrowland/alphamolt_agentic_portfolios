@@ -20,6 +20,7 @@ Daily (UTC):
 05:15           research_evaluation.py    Shared per-equity research card (moat/durability/earnings-quality/balance-sheet, 1-5 + break signals) PLUS the page narrative (short/full outlook + key risks) — 300 stalest Tier-1, one per-ticker Gemini call
 05:30           portfolio_valuation.py    Mark-to-market every agent + human portfolio
 06:00           build_universe_snapshot.py  Daily universe JSON snapshot (3 tiers)
+06:30           congress_trades.py        Ingest Nancy Pelosi's House PTR disclosures → congress_trades (feeds the Pelosi-mirror agent). Runs before the heartbeat so a fresh filing mirrors the same morning
 07:00           agent_heartbeat.py        Rebalance loop — every agent / human-portfolio member that is due on its own heartbeat_interval_hours cadence
 
 Weekly (Sunday UTC):
@@ -582,6 +583,9 @@ The house agents drive the pipeline:
   cooldown. Owners pick one per portfolio.
 - `portfolio-reviewer` — reviewer, `gemini-2.5-pro`, weekly,
   user-mandate-driven (migrations 033 + 034)
+- `agent-pelosi` — "Pelosi Tracker", buyer, `Rules-based`, `pelosi_mirror`
+  strategy, a self-sourced buyer that copies Nancy Pelosi's disclosed trades
+  (migration 068)
 - `manual` — placeholder for owner-initiated trades (migration 035)
 
 Supports `--handle`, `--force` (ignore interval guard), and `--dry-run`.
@@ -638,6 +642,58 @@ return, never by inventing prices. Flags: `--dry-run` (plan + verify only),
 `--teardown` (remove the portfolio + owner again), `--slug`, `--days`,
 `--target-30d`, `--email`, `--seed`. Workflow: `seed-dummy-portfolio.yml`
 (manual dispatch, dry-run default ON).
+
+### congress_trades.py (06:30 UTC daily)
+Ingests a member of Congress's disclosed stock transactions from the
+**authoritative, free** source — the U.S. House Clerk (no API key, no
+third-party aggregator). Downloads the yearly filing index `{YEAR}FD.zip`,
+keeps the target member's `FilingType='P'` Periodic Transaction Reports, and
+for each PTR DocID not already ingested downloads the PDF
+(`/public_disc/ptr-pdfs/{YEAR}/{DocID}.pdf`) and parses its transactions with a
+tolerant regex over the extracted text (`parse_ptr_text` — the field labels are
+NUL-padded, normalised by `_clean`). Each row records owner (SP/JT/DC/self), the
+**underlying ticker** (recorded even for `[OP]` option rows, so the mirror is
+option-agnostic), buy/sell direction, date, the disclosed dollar band, and two
+classifier flags: `is_option` (asset-type `[OP]`) and `is_gift` (charitable
+contribution / gift — **not** a market signal, dropped by the mirror). Upserts
+into `congress_trades` idempotent on a content `dedupe_hash`, only fetching
+filings it hasn't seen. Never trades. Requires `pypdf` (added to
+requirements.txt). Cron: `congress-trades.yml` (06:30 UTC, before the 07:00
+heartbeat). Flags: `--politician`, `--last`, `--first`, `--years`, `--limit`,
+`--dry-run`.
+
+### pelosi_mirror.py
+The Pelosi-mirror **strategy** (`pelosi_mirror`, registered in
+`agent_strategies.STRATEGIES`). A "copy-trade a member of Congress" buyer for
+human portfolios — a **self-sourced buyer** (see below): its candidate feed is
+`congress_trades`, NOT the screen. Mirror semantics: opens a position at a
+settable `target_position_pct` (default 5%) for names she buys and exits a held
+name in full when she sells it; an **option** transaction mirrors as the
+**underlying common stock** (a long-only book can't hold the option), since
+`congress_trades` records the underlying ticker. Gifts are ignored. **It never
+doubles up by default** — a disclosed buy of a name the portfolio *already
+holds* (opened by this agent, another swarm member, or the owner — it reads the
+SHARED book) is skipped; the `when_held` knob can flip this to `top_up` (add
+toward the target weight when underweight). Idempotency is durable, not
+heuristic: every disclosure this `(portfolio, agent)` pair acts on **or skips**
+is written to `congress_mirror_log`, so re-runs only ever touch genuinely new
+filings and a freshly-hired agent replays at most `lookback_days` (default 60)
+of history. The decision core `plan_mirror` is pure (trades + book → plan),
+unit-tested without a DB/broker in `test_pelosi_mirror.py`; `rebalance_pelosi_
+mirror` trades through the standard `ctx.buy`/`ctx.sell` facade so it works on a
+paper book or a live Alpaca account like any other strategy. The hireable
+library agent is `agent-pelosi` ("Pelosi Tracker", `Rules-based`, migration
+068).
+
+**Self-sourced buyers** (`agent_strategies.SELF_SOURCED_BUYER_STRATEGIES` /
+`is_self_sourced_buyer`). Most buyers draft from the screen's top-N via the
+swarm snake-draft; a self-sourced buyer brings its own external feed and can't
+be drafted over screen candidates. So `agent_heartbeat._run_portfolio_swarm`
+runs each self-sourced buyer's **full strategy standalone** against the shared
+book *before* the snake draft (its buys/sells settle, the draft sees the
+resulting cash) and excludes it from the draft itself. It still trades the
+shared pot and is journaled like any other member. `pelosi_mirror` is the only
+member of the set today.
 
 ### lifecycle_emails.py (every 30 min)
 Automated lifecycle emails to human users (`profiles`), gated by the
@@ -902,6 +958,26 @@ Written by `lifecycle_emails.py`; the composite PK enforces one send per
 later sequence steps (nudges/digests) reuse the table. Contains user
 emails: RLS enabled with **no policies**, so only the service role can
 read or write.
+
+### congress_trades + congress_mirror_log (Pelosi-mirror feed — migration 068)
+```
+congress_trades:     id (UUID PK), politician, doc_id, filing_date, owner,
+                     ticker, asset_type, raw_txn_code, txn_type ('buy'|'sell'|
+                     'other'), txn_date, notification_date, amount_min,
+                     amount_max, is_option, is_gift, description, source,
+                     fetched_at, dedupe_hash (UNIQUE)
+congress_mirror_log: (portfolio_id FK, agent_id FK, congress_trade_id FK) PK,
+                     ticker, action ('buy'|'sell'|'skip:<reason>'), executed_at
+```
+`congress_trades` is the parsed disclosure feed written by `congress_trades.py`
+(public-read RLS, service-role writes; `dedupe_hash` makes re-ingest idempotent;
+`ticker` is intentionally NOT FK'd — a disclosure can name an equity outside our
+tradable universe and we still record it, the mirror just can't price it).
+`congress_mirror_log` is the per-`(portfolio, agent)` ledger of disclosures the
+`pelosi_mirror` strategy has handled (executed or deliberately skipped), so it
+mirrors only NEW filings and re-runs are no-ops — like `screener_rejections` it
+can belong to a private portfolio, so it is **service-role only** (no
+public-read policy).
 
 ### agents (identity — one row per registered agent)
 ```

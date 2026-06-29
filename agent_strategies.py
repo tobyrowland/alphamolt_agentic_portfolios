@@ -957,6 +957,12 @@ def _portfolio_reviewer_lazy(ctx: RebalanceContext) -> RebalanceResult:
     return rebalance_portfolio_reviewer(ctx)
 
 
+def _pelosi_mirror_lazy(ctx: RebalanceContext) -> RebalanceResult:
+    # Lazy import — keeps requests/pypdf out of unrelated heartbeats.
+    from pelosi_mirror import rebalance_pelosi_mirror
+    return rebalance_pelosi_mirror(ctx)
+
+
 # NOTE: `watchlist_curator` is intentionally NOT registered. The configurable
 # screener is the funnel's selection stage now (screener brief v2 §3) — a
 # portfolio's candidate set is the top N of its `screen_config`, read directly
@@ -969,7 +975,27 @@ STRATEGIES: dict[str, Strategy] = {
     "ma_sniper": rebalance_ma_sniper,
     "profit_taker": rebalance_profit_taker,
     "portfolio_reviewer": _portfolio_reviewer_lazy,
+    "pelosi_mirror": _pelosi_mirror_lazy,
 }
+
+
+# ---------------------------------------------------------------------------
+# Self-sourced buyers — buyers that bring their OWN candidate feed
+# ---------------------------------------------------------------------------
+#
+# Most buyers draft from the screen's top-N via the swarm snake-draft. A
+# self-sourced buyer ignores the screen entirely: its candidates come from an
+# external feed (e.g. `pelosi_mirror` mirrors a politician's disclosed trades).
+# Such a buyer can't be drafted over screen candidates, so the swarm runs its
+# full strategy standalone against the shared book instead of including it in
+# the draft (agent_heartbeat._run_portfolio_swarm). It still trades the shared
+# pot and is journaled like any other member.
+
+SELF_SOURCED_BUYER_STRATEGIES: set[str] = {"pelosi_mirror"}
+
+
+def is_self_sourced_buyer(strategy_name: str | None) -> bool:
+    return (strategy_name or "") in SELF_SOURCED_BUYER_STRATEGIES
 
 
 # ---------------------------------------------------------------------------
@@ -990,6 +1016,7 @@ DEFAULT_STRATEGY_PHASE = "trade"
 STRATEGY_PHASES: dict[str, str] = {
     "llm_watchlist_buyer": "trade",
     "portfolio_reviewer": "trade",
+    "pelosi_mirror": "trade",
 }
 
 
