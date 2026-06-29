@@ -476,11 +476,64 @@ def _run_portfolio_swarm(
     pid = portfolio["id"]
     slug = portfolio.get("slug") or pid[:8]
     mandate = portfolio.get("description")
+    from agent_strategies import is_self_sourced_buyer
+
     members = [m["agent"] for m in member_rows]
     agent_by_id = {m["agent"]["id"]: m for m in member_rows}
-    buyers_m = [m for m in member_rows if (m.get("role") == "buyer")]
+    all_buyers_m = [m for m in member_rows if (m.get("role") == "buyer")]
     reviewers_m = [m for m in member_rows if (m.get("role") == "reviewer")]
     mode, executor = _resolve_live_executor(portfolio, dry_run=dry_run)
+
+    # Self-sourced buyers (e.g. pelosi_mirror) bring their OWN candidate feed,
+    # not the screen — they can't be snake-drafted over screen candidates. Run
+    # each one's full strategy standalone against the shared book BEFORE the
+    # draft, so its buys/sells settle and the draft sees the resulting cash.
+    # The rest go through the normal draft below.
+    self_sourced_m = [
+        m for m in all_buyers_m
+        if is_self_sourced_buyer(m["agent"].get("strategy"))
+    ]
+    buyers_m = [m for m in all_buyers_m if m not in self_sourced_m]
+    for m in self_sourced_m:
+        agent = m["agent"]
+        strategy_name = agent.get("strategy")
+        strategy = get_strategy(strategy_name) if strategy_name else None
+        started = _now_utc()
+        if strategy is None:
+            counts["skipped"] += 1
+            continue
+        ctx = RebalanceContext(
+            db=db, pm=pm, agent=agent, dry_run=dry_run,
+            params=dict(m.get("config") or {}), portfolio_id=pid,
+            members=members, mandate=_resolve_member_mandate(m, mandate),
+            mode=mode, executor=executor,
+        )
+        try:
+            result = strategy(ctx)
+        except Exception as exc:  # noqa: BLE001 — one feed buyer must not abort the swarm
+            logger.exception("    self-sourced buyer %s crashed", agent.get("handle"))
+            _journal(
+                db, agent_id=agent["id"], strategy=strategy_name or "buyer",
+                started_at=started, status="error",
+                error_message=f"{exc}\n{traceback.format_exc()}",
+                portfolio_id=pid, advance_agent=False, dry_run=dry_run,
+                triggered_by=triggered_by,
+            )
+            counts["error"] += 1
+            continue
+        status = "dry-run" if dry_run else ("ok" if not result.errors else "error")
+        logger.info(
+            "  portfolio %-22s self-sourced %s: buys=%d sells=%d",
+            slug, agent.get("handle"), result.buys, result.sells,
+        )
+        _journal(
+            db, agent_id=agent["id"], strategy=strategy_name or "buyer",
+            started_at=started, status=status, result=result,
+            error_message="; ".join(result.errors) if result.errors else None,
+            portfolio_id=pid, advance_agent=False, dry_run=dry_run,
+            triggered_by=triggered_by,
+        )
+        counts[status] = counts.get(status, 0) + 1
 
     # ---- BUY: snake draft over the screen's top-N candidates ----
     # Thinking buyers (llm_watchlist_buyer) evaluate each candidate with their

@@ -1,0 +1,75 @@
+name: Congress Trades Ingest
+
+# Pulls a member of Congress's disclosed stock transactions (Periodic
+# Transaction Reports) from the U.S. House Clerk and parses them into the
+# `congress_trades` table. The `pelosi_mirror` strategy reads this table at
+# heartbeat time and copies the trades into any portfolio that hired the
+# tracker agent.
+#
+# 06:30 UTC daily — after the Level 0 data block settles and BEFORE the
+# 07:00 agent_heartbeat, so a fresh filing is mirrored the same morning.
+# Disclosures arrive in bursts (a PTR can be filed weeks after the trade), so
+# a daily pull is plenty; the ingester only fetches filings it hasn't seen.
+
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+    inputs:
+      politician:
+        description: "Display name (default: Nancy Pelosi)"
+        required: false
+        type: string
+      years:
+        description: "Space-separated years to ingest (default: current year)"
+        required: false
+        type: string
+      dry_run:
+        description: "Parse + log only — don't write rows"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ingest congressional trades
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.politician }}" ]; then
+            ARGS="$ARGS --politician \"${{ inputs.politician }}\""
+          fi
+          if [ -n "${{ inputs.years }}" ]; then
+            ARGS="$ARGS --years ${{ inputs.years }}"
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          eval "python congress_trades.py $ARGS"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: congress-trades-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30

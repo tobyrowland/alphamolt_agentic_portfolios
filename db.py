@@ -1156,6 +1156,100 @@ class SupabaseDB:
         except Exception:  # noqa: BLE001
             pass
 
+    # ------------------------------------------------------------------
+    # Congressional trades (Pelosi-mirror feed — migration 068)
+    # ------------------------------------------------------------------
+
+    def get_known_congress_doc_ids(self, politician: str) -> set[str]:
+        """DocIDs already ingested for a politician — so the ingester only
+        fetches new filings. Fail-open: a read error returns an empty set."""
+        try:
+            resp = (
+                self.client.table("congress_trades")
+                .select("doc_id")
+                .eq("politician", politician)
+                .execute()
+            )
+        except Exception:  # noqa: BLE001
+            return set()
+        return {str(r["doc_id"]) for r in (resp.data or []) if r.get("doc_id")}
+
+    def upsert_congress_trades(self, rows: list[dict]) -> int:
+        """Upsert parsed disclosures, idempotent on ``dedupe_hash``. Returns the
+        number of rows submitted (a re-ingest of the same filing is a no-op)."""
+        if not rows:
+            return 0
+        for r in rows:
+            self._sanitize(r)
+        self.client.table("congress_trades").upsert(
+            rows, on_conflict="dedupe_hash"
+        ).execute()
+        return len(rows)
+
+    def get_unmirrored_congress_trades(
+        self, portfolio_id: str, agent_id: str, politician: str, *, since: str,
+    ) -> list[dict]:
+        """A politician's disclosures this (portfolio, agent) hasn't acted on.
+
+        Returns rows with ``txn_date >= since``, excluding gifts (not a market
+        signal) and any already in ``congress_mirror_log`` for this pair.
+        Ordered oldest-first so the mirror processes chronologically. Fail-open:
+        a read error returns ``[]`` so the heartbeat never crashes on it.
+        """
+        try:
+            resp = (
+                self.client.table("congress_trades")
+                .select("id, ticker, txn_type, txn_date, is_option, is_gift, "
+                        "amount_min, amount_max, raw_txn_code")
+                .eq("politician", politician)
+                .eq("is_gift", False)
+                .gte("txn_date", since)
+                .order("txn_date", desc=False)
+                .execute()
+            )
+            trades = resp.data or []
+            if not trades:
+                return []
+            done = (
+                self.client.table("congress_mirror_log")
+                .select("congress_trade_id")
+                .eq("portfolio_id", portfolio_id)
+                .eq("agent_id", agent_id)
+                .execute()
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        seen = {str(r["congress_trade_id"]) for r in (done.data or [])}
+        return [t for t in trades if str(t["id"]) not in seen]
+
+    def record_congress_mirror(
+        self, portfolio_id: str, agent_id: str, rows: list[dict],
+    ) -> int:
+        """Log disclosures a mirror agent has handled (executed or skipped) so
+        they are never reconsidered. Each row: ``{congress_trade_id, ticker,
+        action}``. Upsert on the (portfolio, agent, trade) PK. Best-effort."""
+        if not rows:
+            return 0
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        payload = [{
+            "portfolio_id": portfolio_id,
+            "agent_id": agent_id,
+            "congress_trade_id": r["congress_trade_id"],
+            "ticker": (r.get("ticker") or None),
+            "action": (r.get("action") or None),
+            "executed_at": now,
+        } for r in rows if r.get("congress_trade_id")]
+        if not payload:
+            return 0
+        try:
+            self.client.table("congress_mirror_log").upsert(
+                payload, on_conflict="portfolio_id,agent_id,congress_trade_id"
+            ).execute()
+        except Exception:  # noqa: BLE001
+            return 0
+        return len(payload)
+
     def upsert_portfolio_snapshot(self, data: dict) -> None:
         """Insert or update a daily agent_portfolio_history row.
 
