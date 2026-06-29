@@ -55,6 +55,10 @@ PELOSI_MIRROR_DEFAULTS = {
     "min_trade_usd": 500.0,         # ignore sub-noise rebalance deltas
     "cash_reserve_pct": 0.02,       # keep a little cash for rounding / drift
     "max_positions": 30,            # don't open past this many holdings
+    # What to do when she buys a name the portfolio ALREADY holds:
+    #   "skip"   — don't double up; only ever open NEW positions (default).
+    #   "top_up" — add toward `target_position_pct` if currently underweight.
+    "when_held": "skip",
 }
 
 
@@ -113,12 +117,17 @@ def plan_mirror(
     cash_reserve_pct: float,
     min_trade_usd: float,
     max_positions: int,
+    when_held: str = "skip",
 ) -> MirrorPlan:
     """Decide what to trade to mirror a batch of disclosures. Pure.
 
     ``trades`` are the disclosures this (portfolio, agent) has not yet logged.
     ``prices`` maps the *tradable* subset to a price (callers drop unpriced /
     out-of-universe names first). ``book`` is the current portfolio book.
+
+    ``when_held`` controls a disclosed BUY of a name the portfolio already
+    holds: ``"skip"`` (default) never doubles up — it only opens new positions;
+    ``"top_up"`` adds toward ``target_position_pct`` when currently underweight.
 
     Returns a :class:`MirrorPlan`; every input trade id ends up in exactly one
     of buys / sells / skips so the caller can log the whole batch as handled.
@@ -162,14 +171,21 @@ def plan_mirror(
             held_count -= 1
             continue
 
-        # --- buy: top the position up toward the target weight ---
+        # --- buy. `held_qty` reflects the SHARED book (any agent or the owner).
         current_qty = held_qty.get(ticker, 0.0)
-        current_usd = current_qty * price
-        if current_qty <= 0 and held_count >= max_positions:
+        already_held = current_qty > 0
+        if already_held and when_held != "top_up":
+            # Default: don't double up — only ever open NEW positions.
+            plan.skips.append({"ticker": ticker, "trade_ids": trade_ids,
+                               "reason": "already held — not doubling up"})
+            continue
+        if not already_held and held_count >= max_positions:
             plan.skips.append({"ticker": ticker, "trade_ids": trade_ids,
                                "reason": f"at max_positions ({max_positions})"})
             continue
-        gap_usd = target_usd - current_usd
+        # Buy budget = the gap to target weight (a full target for a new name;
+        # only the underweight remainder when topping up an existing holding).
+        gap_usd = target_usd - current_qty * price
         if gap_usd < min_trade_usd:
             plan.skips.append({"ticker": ticker, "trade_ids": trade_ids,
                                "reason": "already at/above target weight"})
@@ -183,7 +199,7 @@ def plan_mirror(
         plan.buys.append({"ticker": ticker, "qty": qty, "trade_ids": trade_ids,
                           "why": "Nancy Pelosi disclosed a purchase"})
         spendable -= qty * price
-        if current_qty <= 0:
+        if not already_held:
             held_count += 1
 
     return plan
@@ -262,6 +278,7 @@ def rebalance_pelosi_mirror(ctx: "RebalanceContext") -> "RebalanceResult":
         cash_reserve_pct=float(params["cash_reserve_pct"]),
         min_trade_usd=float(params["min_trade_usd"]),
         max_positions=int(params["max_positions"]),
+        when_held=str(params["when_held"]),
     )
 
     if ctx.dry_run:

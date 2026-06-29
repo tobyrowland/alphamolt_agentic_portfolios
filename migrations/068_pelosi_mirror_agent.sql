@@ -106,7 +106,8 @@ UPDATE agents SET
     default_mandate    = NULL,
     param_schema       = '[
         {"key":"target_position_pct","label":"Target per position","type":"number","min":1,"max":15,"step":0.5,"unit":"%","default":5},
-        {"key":"lookback_days","label":"Mirror trades disclosed within","type":"number","min":7,"max":365,"step":1,"unit":"days","default":60}
+        {"key":"lookback_days","label":"Mirror trades disclosed within","type":"number","min":7,"max":365,"step":1,"unit":"days","default":60},
+        {"key":"when_held","label":"If she buys a name you already hold","type":"select","default":"skip","options":[{"value":"skip","label":"Skip — don''t double up"},{"value":"top_up","label":"Top up toward target weight"}]}
     ]'::jsonb,
     sentence_template  =
         'Copies Nancy Pelosi''s disclosed trades — buying her purchases up to '

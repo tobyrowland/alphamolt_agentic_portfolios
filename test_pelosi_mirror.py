@@ -150,6 +150,25 @@ class TestPlanMirror(unittest.TestCase):
                            {"NVDA": 100.0}, **self.KW)
         self.assertFalse(plan.buys)
 
+    def test_default_skips_any_held_name(self):
+        # Default (when_held='skip'): even a tiny existing position blocks the
+        # buy — never double up.
+        book = _book(99_900, [{"ticker": "NVDA", "quantity": 1, "price": 100.0}])
+        plan = plan_mirror([_trade("1", "NVDA", "buy")], book,
+                           {"NVDA": 100.0}, **self.KW)
+        self.assertFalse(plan.buys)
+        self.assertIn("doubling up", plan.skips[0]["reason"])
+
+    def test_top_up_mode_adds_toward_target(self):
+        # when_held='top_up': underweight existing holding is topped to target.
+        # NAV ~$100k, 5% target = $5k; hold 1 share ($100) → buy ~49 more.
+        book = _book(99_900, [{"ticker": "NVDA", "quantity": 1, "price": 100.0}])
+        kw = {**self.KW, "when_held": "top_up"}
+        plan = plan_mirror([_trade("1", "NVDA", "buy")], book,
+                           {"NVDA": 100.0}, **kw)
+        self.assertEqual(len(plan.buys), 1)
+        self.assertEqual(plan.buys[0]["qty"], 49)
+
     def test_latest_action_wins_per_ticker(self):
         # Buy then a later sell of the same name → net sell (we hold it).
         book = _book(10_000, [{"ticker": "NVDA", "quantity": 10, "price": 100.0}])

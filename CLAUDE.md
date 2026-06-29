@@ -666,11 +666,15 @@ heartbeat). Flags: `--politician`, `--last`, `--first`, `--years`, `--limit`,
 The Pelosi-mirror **strategy** (`pelosi_mirror`, registered in
 `agent_strategies.STRATEGIES`). A "copy-trade a member of Congress" buyer for
 human portfolios — a **self-sourced buyer** (see below): its candidate feed is
-`congress_trades`, NOT the screen. Mirror semantics: buys her purchases up to a
-settable `target_position_pct` (default 5%) and exits a held name in full when
-she sells it; an **option** transaction mirrors as the **underlying common
-stock** (a long-only book can't hold the option), since `congress_trades`
-records the underlying ticker. Gifts are ignored. Idempotency is durable, not
+`congress_trades`, NOT the screen. Mirror semantics: opens a position at a
+settable `target_position_pct` (default 5%) for names she buys and exits a held
+name in full when she sells it; an **option** transaction mirrors as the
+**underlying common stock** (a long-only book can't hold the option), since
+`congress_trades` records the underlying ticker. Gifts are ignored. **It never
+doubles up by default** — a disclosed buy of a name the portfolio *already
+holds* (opened by this agent, another swarm member, or the owner — it reads the
+SHARED book) is skipped; the `when_held` knob can flip this to `top_up` (add
+toward the target weight when underweight). Idempotency is durable, not
 heuristic: every disclosure this `(portfolio, agent)` pair acts on **or skips**
 is written to `congress_mirror_log`, so re-runs only ever touch genuinely new
 filings and a freshly-hired agent replays at most `lookback_days` (default 60)
