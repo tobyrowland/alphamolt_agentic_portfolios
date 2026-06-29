@@ -1,9 +1,9 @@
 /**
  * Deterministic scoring-as-a-function (screener redesign brief §2).
  *
- * One ordering score: `final_z = base_z + adj_z`, ranked on `final_z`, displayed
- * as a universe percentile `round(Φ(final_z)·100)`. The old 0–100 composite and
- * the hidden ±20% AI/quality multipliers are gone.
+ * One ordering score: `final_z = base_z + adj_z + ni_trend_z`, ranked on
+ * `final_z`, displayed as a universe percentile `round(Φ(final_z)·100)`. The old
+ * 0–100 composite and the hidden ±20% AI/quality multipliers are gone.
  *
  *  - **base_z** standardizes each raw lens value (Quality / Value / Momentum)
  *    against the materialized universe moments (`screen_lens_stats`, migration
@@ -11,6 +11,9 @@
  *  - **adj_z** is the AI trajectory adjustment from the research card (moat +
  *    earnings, minus a per-break-signal penalty), bounded `[FLOOR, +budget]`.
  *    Growth durability is NOT in the formula (already in R40). No card ⇒ 0.
+ *  - **ni_trend_z** is a gentle ±NI_TREND_BUDGET σ tilt from the empirical
+ *    universe percentile of net_income_trend — a multi-year SUSTAINED net-income
+ *    growth signal (migration 068). Undefined trend ⇒ 0.
  *
  * Pure computation — no LLM, no DB. Mirrored byte-for-byte in screen.py so the
  * Python buyer ranks the identical top N (the parity constraint, brief §7).
@@ -58,6 +61,9 @@ export interface ScreenFacts {
   net_margin: number | null;
   operating_margin: number | null;
   rule_of_40: number | null;
+  /** Multi-year sustained net-income-growth score (migration 068); drives the
+   *  ni_trend_z tilt. null ⇒ undefined (pre-profit / short history) ⇒ neutral. */
+  net_income_trend: number | null;
   ps: number | null;
   ps_median_12m: number | null;
   /** Trailing-quarter % change of the P/S multiple (migration 058). >0 = the
@@ -92,6 +98,7 @@ export interface ScoredRow extends ScreenFacts {
   moat_z: number;
   earn_z: number;
   break_z: number;
+  ni_trend_z: number; // net-income sustained-growth tilt (migration 068)
   capped: boolean;
   floored: boolean;
   quality_pct: number; // lens empirical percentile (0–100) over the universe
@@ -121,6 +128,9 @@ const W_EARN = 0.42;
 // (break-count penalty removed from the screen score — see adjZ)
 const FLOOR = -1.5;
 export const BUDGET = 0.7; // AI authority ceiling (σ) — fixed server constant
+// Net-income SUSTAINED-growth tilt (migration 068) — gentle ±budget nudge from
+// the empirical universe percentile of net_income_trend. MUST match screen.py.
+export const NI_TREND_BUDGET = 0.2;
 const LENS_NAMES = ["quality", "value", "momentum"] as const;
 
 // ---- normal CDF (Abramowitz–Stegun erf), shared with screen.py --------------
@@ -252,6 +262,15 @@ function adjZ(r: ScreenFacts, budget = BUDGET): Adj {
   return { adj_z: adj, moat_z, earn_z, break_z, capped, floored };
 }
 
+/** Net-income SUSTAINED-growth tilt (migration 068). Maps the empirical universe
+ *  percentile of net_income_trend to a ±budget σ nudge; neutral 0 when the trend
+ *  is undefined (pre-profit / short history). Mirrors screen.py _ni_trend_z. */
+function niTrendZ(r: ScreenFacts, un: number[], budget = NI_TREND_BUDGET): number {
+  const x = num(r.net_income_trend);
+  if (x == null) return 0;
+  return budget * (2 * pctRank(un, x) - 1);
+}
+
 // ---- break-signal firing (display) ----------------------------------------
 // A research card's break_signals are forward-looking watch-conditions; the
 // screener flags a name red only when one is CURRENTLY firing against its own
@@ -359,15 +378,19 @@ export function scoreScreen(
   const uq: number[] = [];
   const uv: number[] = [];
   const um: number[] = [];
+  const un: number[] = []; // net_income_trend distribution (ni_trend_z tilt)
   for (const r of facts) {
     const { xQ, xV, xM } = lensValues(r);
     if (xQ != null) uq.push(xQ);
     if (xV != null) uv.push(xV);
     if (xM != null) um.push(xM);
+    const xN = num(r.net_income_trend);
+    if (xN != null) un.push(xN);
   }
   uq.sort((p, q) => p - q);
   uv.sort((p, q) => p - q);
   um.sort((p, q) => p - q);
+  un.sort((p, q) => p - q);
 
   const subset = applyFilters(facts, config.filters);
   const { quality: wq, value: wv, momentum: wm } = config.weights;
@@ -381,7 +404,8 @@ export function scoreScreen(
     const base_score = (wq * pq + wv * pv + wm * pm) / wsum; // ∈ [0,1]
     const base_z = probit(Math.min(Math.max(base_score, 0.001), 0.999));
     const a = adjZ(r);
-    const final_z = base_z + a.adj_z;
+    const ni_trend_z = niTrendZ(r, un);
+    const final_z = base_z + a.adj_z + ni_trend_z;
     return {
       ...r,
       rank: 0,
@@ -392,6 +416,7 @@ export function scoreScreen(
       moat_z: a.moat_z,
       earn_z: a.earn_z,
       break_z: a.break_z,
+      ni_trend_z,
       capped: a.capped,
       floored: a.floored,
       quality_pct: Math.round(pq * 100),

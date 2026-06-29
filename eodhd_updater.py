@@ -77,6 +77,7 @@ EODHD_COLUMNS = [
     "fcf_margin",
     "opex_pct_revenue", "sm_rd_pct_revenue",
     "rule_of_40", "qrtrs_to_profitability",
+    "net_income_trend",
     "eps_only", "eps_yoy",
     "one_time_events",
     "r40_score", "fundamentals_snapshot", "data",
@@ -389,6 +390,52 @@ def evaluate_criteria(value: float | None, metric: str,
 
 
 # ---------------------------------------------------------------------------
+# Net-income trend (sustained-growth ranking signal)
+# ---------------------------------------------------------------------------
+
+# Modulator weights for compute_net_income_trend (tunable). They sit in [0.5, 1]
+# so consistency / peak-ratio meaningfully downweight a choppy series without
+# zeroing a real grower's CAGR.
+_NI_CONSISTENCY_W = 0.5
+_NI_PEAK_W = 0.5
+
+
+def compute_net_income_trend(ni_newest_first: list) -> float | None:
+    """A multi-year SUSTAINED net-income-growth score from the annual series.
+
+    Built so a steadily-rising profit stream is rewarded but a collapse-then-
+    rebuild (a deep down-year a few years back, now recovering off a low base)
+    is NOT — even when its recent growth rate is high. The score is
+
+        trend = CAGR · (0.5 + 0.5·consistency) · (0.5 + 0.5·peak_ratio)
+
+    where over the (up to 5y) annual net-income series, newest first:
+      - CAGR        — endpoint-to-endpoint annualised growth (both ends must be
+                      profitable, else the metric is undefined → neutral),
+      - consistency — fraction of YoY steps that rose (a V-shape has a down step),
+      - peak_ratio  — latest / max(series): a sustained climber is at its
+                      multi-year high (→1.0); a rebuilder is still below its
+                      old peak (→ <1.0).
+
+    Returns None (→ neutral 0σ tilt) for pre-profit names, a loss at either
+    endpoint, or fewer than 3 annual points.
+    """
+    ni = [v for v in ni_newest_first if v is not None]
+    if len(ni) < 3 or ni[0] <= 0 or ni[-1] <= 0:
+        return None
+    latest, base = ni[0], ni[-1]
+    yrs = len(ni) - 1
+    cagr = ((latest / base) ** (1 / yrs) - 1) * 100
+    steps = list(zip(ni, ni[1:]))                       # (newer, older) pairs
+    up = sum(1 for newer, older in steps if newer > older)
+    consistency = up / len(steps)
+    peak_ratio = latest / max(ni)
+    trend = cagr * (1 - _NI_CONSISTENCY_W + _NI_CONSISTENCY_W * consistency) \
+        * (1 - _NI_PEAK_W + _NI_PEAK_W * peak_ratio)
+    return round(trend, 2)
+
+
+# ---------------------------------------------------------------------------
 # Core: fetch_eodhd_data — calculates all metrics for one ticker
 # ---------------------------------------------------------------------------
 
@@ -469,6 +516,13 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
             result["rev_cagr"] = None
     else:
         result["rev_cagr"] = None
+
+    # ── Net Income Trend (sustained-growth ranking signal) ─────────────
+    # Multi-year score over the annual net-income series (newest first). Rewards
+    # a steady climb, downweights a collapse-then-rebuild. See
+    # compute_net_income_trend. Feeds the screener's ni_trend_z tilt.
+    ni_series = [safe_float(e[1].get("netIncome")) for e in yearly[:5]]
+    result["net_income_trend"] = compute_net_income_trend(ni_series)
 
     # ── Rev Consistency Score (0–10) ──────────────────────────────────
     # Always scored out of 10 (need 11 quarters). Show as "X/10".

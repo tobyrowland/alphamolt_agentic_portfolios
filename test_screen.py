@@ -20,6 +20,7 @@ def facts(*rows: dict) -> list[dict]:
         "price": 10, "price_asof": "2026-06-03", "rev_growth_ttm": None,
         "gross_margin": None, "fcf_margin": None, "net_margin": None,
         "operating_margin": None, "rule_of_40": None, "ps": None,
+        "net_income_trend": None,
         "ps_median_12m": None, "ps_trend_pct": None,
         "ret_52w": None, "perf_52w_vs_spy": None,
         "bull": None, "bear": None, "quality_score": None,
@@ -314,6 +315,87 @@ class TestRejectionFilter(unittest.TestCase):
         self.assertNotIn("A", tickers)            # rejected, hidden
         self.assertEqual(tickers, {"B", "C"})
         self.assertTrue(all("rule_of_40" in r and "score" in r for r in rows))  # full fact rows
+
+
+class TestNetIncomeTrendDerivation(unittest.TestCase):
+    """compute_net_income_trend — the ingest-time scalar (eodhd_updater).
+    Series are NEWEST-FIRST, matching EODHD's date-descending order."""
+
+    def test_sustained_climber_beats_collapse_then_rebuild(self):
+        from eodhd_updater import compute_net_income_trend as t
+        # Rose every year, latest is the multi-year high.
+        climber = t([100, 85, 72, 60, 50])
+        # Collapsed mid-series (a down step) and still below its old peak — the
+        # exact pattern the owner does NOT want rewarded.
+        rebuild = t([80, 55, 20, 75, 90])
+        self.assertIsNotNone(climber)
+        self.assertIsNotNone(rebuild)
+        self.assertGreater(climber, rebuild)
+
+    def test_steady_decline_is_negative(self):
+        from eodhd_updater import compute_net_income_trend as t
+        self.assertLess(t([50, 70, 85, 95, 100]), 0)  # newest 50 < oldest 100
+
+    def test_undefined_cases_return_none(self):
+        from eodhd_updater import compute_net_income_trend as t
+        self.assertIsNone(t([100, 50, -10]))          # loss at the oldest endpoint
+        self.assertIsNone(t([-5, 10, 20]))            # loss at the newest endpoint
+        self.assertIsNone(t([-5, -10, -20]))          # pre-profit (loss both ends)
+        self.assertIsNone(t([100, 90]))               # < 3 annual points
+
+    def test_drops_none_entries(self):
+        from eodhd_updater import compute_net_income_trend as t
+        # None holes are dropped; [120, 80, 60, 50] is a clean climber.
+        self.assertEqual(t([120, None, 80, 60, 50]), t([120, 80, 60, 50]))
+
+
+class TestNiTrendZ(unittest.TestCase):
+    """The ni_trend_z tilt inside score_screen — a ±NI_TREND_BUDGET nudge from the
+    empirical universe percentile of net_income_trend, neutral when undefined."""
+
+    def _universe(self):
+        # A spread of trend values so percentiles are well-separated, plus the two
+        # named cases and a None (undefined) name. Quant lenses held identical so
+        # ONLY ni_trend_z separates the named rows.
+        spread = [facts({"ticker": f"F{i}", "net_income_trend": float(i),
+                         "rule_of_40": 30, "fcf_margin": 5, "gross_margin": 50,
+                         "ps": 5, "ps_median_12m": 5, "perf_52w_vs_spy": 0})[0]
+                  for i in range(1, 30)]
+        named = facts(
+            {"ticker": "CLIMB", "net_income_trend": 40.0, "rule_of_40": 30,
+             "fcf_margin": 5, "gross_margin": 50, "ps": 5, "ps_median_12m": 5,
+             "perf_52w_vs_spy": 0},
+            {"ticker": "REBLD", "net_income_trend": -5.0, "rule_of_40": 30,
+             "fcf_margin": 5, "gross_margin": 50, "ps": 5, "ps_median_12m": 5,
+             "perf_52w_vs_spy": 0},
+            {"ticker": "NONE", "net_income_trend": None, "rule_of_40": 30,
+             "fcf_margin": 5, "gross_margin": 50, "ps": 5, "ps_median_12m": 5,
+             "perf_52w_vs_spy": 0},
+        )
+        return spread + named
+
+    def test_high_trend_outranks_low_and_undefined(self):
+        cfg = {"weights": {"quality": 45, "value": 25, "momentum": 20}}
+        out = {r["ticker"]: r for r in screen.score_screen(self._universe(), cfg)}
+        self.assertGreater(out["CLIMB"]["ni_trend_z"], out["REBLD"]["ni_trend_z"])
+        self.assertEqual(out["NONE"]["ni_trend_z"], 0.0)
+        # Top-of-distribution gets the +budget end; bottom gets pushed negative.
+        self.assertGreater(out["CLIMB"]["ni_trend_z"], 0)
+        self.assertLess(out["REBLD"]["ni_trend_z"], 0)
+
+    def test_tilt_is_bounded_by_budget(self):
+        cfg = {"weights": {"quality": 45, "value": 25, "momentum": 20}}
+        for r in screen.score_screen(self._universe(), cfg):
+            self.assertLessEqual(abs(r["ni_trend_z"]), screen.NI_TREND_BUDGET + 1e-9)
+
+    def test_undefined_trend_is_neutral_in_final_score(self):
+        # A name with no trend scores exactly base+adj (ni_trend_z contributes 0).
+        rows = facts({"ticker": "X", "net_income_trend": None, "rule_of_40": 30,
+                      "fcf_margin": 5, "gross_margin": 50, "ps": 5,
+                      "ps_median_12m": 5, "perf_52w_vs_spy": 0})
+        out = screen.score_screen(rows, {"weights": {"quality": 45, "value": 25, "momentum": 20}})[0]
+        self.assertEqual(out["ni_trend_z"], 0.0)
+        self.assertAlmostEqual(out["score"], out["base_z"] + out["adj_z"], places=12)
 
 
 if __name__ == "__main__":

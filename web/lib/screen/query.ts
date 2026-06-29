@@ -75,6 +75,7 @@ async function fetchFacts(): Promise<ScreenFacts[]> {
       net_margin: num(r.net_margin),
       operating_margin: num(r.operating_margin),
       rule_of_40: num(r.rule_of_40),
+      net_income_trend: num(r.net_income_trend),
       ps: num(r.ps),
       ps_median_12m: num(r.ps_median_12m),
       ps_trend_pct: num(r.ps_trend_pct),

@@ -60,6 +60,8 @@ interface Row {
   moat_z: number;
   earn_z: number;
   break_z: number;
+  ni_trend_z: number; // net-income sustained-growth tilt (migration 068)
+  net_income_trend: number | null;
   base_pct: number;
   final_pct: number;
   capped: boolean;
@@ -1490,10 +1492,17 @@ function ScoreLedger({ r }: { r: Row }) {
           <Line label={`AI adjustment (budget ${BUDGET}σ)`} v={`${sgn(r.adj_z)}σ`} />
         </>
       )}
+      {r.net_income_trend != null && (
+        <Line
+          label="Net-income trend (sustained growth)"
+          v={`${sgn(r.ni_trend_z)}σ`}
+          tone={r.ni_trend_z >= 0 ? "text-green" : "text-[var(--color-red,#FF3333)]"}
+        />
+      )}
       <div className="flex justify-between font-mono text-[11px] text-text border-t border-white/10 pt-1 mt-1">
         <span>Final</span>
         <span>
-          {sgn(r.base_z + r.adj_z)}σ → {r.final_pct}th percentile
+          {sgn(r.base_z + r.adj_z + r.ni_trend_z)}σ → {r.final_pct}th percentile
         </span>
       </div>
     </div>

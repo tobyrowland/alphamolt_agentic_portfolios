@@ -65,6 +65,7 @@ FUND_FIELDS = {
     "net_margin": "net_margin",
     "fcf_margin": "fcf_margin",
     "rule_of_40": "rule_of_40",
+    "net_income_trend": "net_income_trend",
     "eps_only": "eps",
     "opex_pct_revenue": "opex_pct_rev",
 }

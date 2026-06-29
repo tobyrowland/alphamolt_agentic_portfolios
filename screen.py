@@ -50,13 +50,20 @@ VAL_W_SELF = 0.5
 VAL_W_PEER = 0.5
 
 # ---- single-score constants (migration 057 / screener redesign brief §2) ----
-# One ordering score: final_z = base_z + adj_z, displayed as a universe
-# percentile round(Φ(final_z)·100). These MUST match web/lib/screen/score.ts.
+# One ordering score: final_z = base_z + adj_z + ni_trend_z, displayed as a
+# universe percentile round(Φ(final_z)·100). These MUST match
+# web/lib/screen/score.ts.
 W_MOAT = 0.58       # AI moat weight inside the trajectory adjustment
 W_EARN = 0.42       # AI earnings-quality weight
 # (break-count penalty removed from the screen score — see _adj_z)
 FLOOR = -1.5        # asymmetric floor on adj_z (in σ)
 BUDGET = 0.7        # AI authority ceiling (in σ) — fixed server constant (decision 1)
+# Net-income SUSTAINED-growth tilt (migration 068). A gentle ±budget nudge from
+# the empirical universe percentile of fundamentals.net_income_trend — top of the
+# distribution → +budget, bottom → −budget, neutral 0 when the trend is undefined
+# (pre-profit / short history). Outlier-robust (percentile, not the raw number)
+# and parity-safe. MUST match web/lib/screen/score.ts.
+NI_TREND_BUDGET = 0.2
 LENS_NAMES = ("quality", "value", "momentum")
 
 
@@ -355,14 +362,26 @@ def _pct_rank(sorted_vals: list[float], x: float | None) -> float:
     return bisect.bisect_right(sorted_vals, x) / len(sorted_vals)
 
 
+def _ni_trend_z(row: dict, un: list[float], budget: float = NI_TREND_BUDGET) -> float:
+    """Net-income SUSTAINED-growth tilt (migration 068). Maps the empirical
+    universe percentile of net_income_trend to a ±budget σ nudge; neutral 0 when
+    the trend is undefined (pre-profit / short history). Mirrors score.ts niTrendZ."""
+    x = _f(row.get("net_income_trend"))
+    if x is None:
+        return 0.0
+    return budget * (2 * _pct_rank(un, x) - 1)
+
+
 def score_screen(facts: list[dict], config: dict,
                  stats: dict[str, dict] | None = None) -> list[dict]:
     """Return the ranked rows (each a copy of the fact dict + score fields).
 
-    Single ordering score: final_z = base_z + adj_z, ranked on it, surfaced as a
-    universe percentile. The quant **base** is built from EMPIRICAL PERCENTILES of
-    each lens over the full universe (outlier-robust), blended by the weights, then
-    mapped back to σ via probit so the AI `adj_z` adds consistently. `stats` is
+    Single ordering score: final_z = base_z + adj_z + ni_trend_z, ranked on it,
+    surfaced as a universe percentile. The quant **base** is built from EMPIRICAL
+    PERCENTILES of each lens over the full universe (outlier-robust), blended by the
+    weights, then mapped back to σ via probit so the AI `adj_z` (research-card
+    trajectory) and `ni_trend_z` (net-income sustained-growth) tilts add
+    consistently. `stats` is
     accepted but ignored (the percentile base needs no materialized μ/σ); kept for
     signature back-compat. Mirrors web/lib/screen/score.ts.
     """
@@ -375,6 +394,7 @@ def score_screen(facts: list[dict], config: dict,
     uq: list[float] = []
     uv: list[float] = []
     um: list[float] = []
+    un: list[float] = []   # net_income_trend distribution (ni_trend_z tilt)
     for r in facts:
         xq, xv, xm = _lens_values(r)
         if xq is not None:
@@ -383,7 +403,10 @@ def score_screen(facts: list[dict], config: dict,
             uv.append(xv)
         if xm is not None:
             um.append(xm)
-    uq.sort(); uv.sort(); um.sort()
+        xn = _f(r.get("net_income_trend"))
+        if xn is not None:
+            un.append(xn)
+    uq.sort(); uv.sort(); um.sort(); un.sort()
 
     subset = apply_filters(facts, filters)
     wq = float(weights.get("quality", 0))
@@ -400,7 +423,8 @@ def score_screen(facts: list[dict], config: dict,
         base_score = (wq * pq + wv * pv + wm * pm) / wsum     # ∈ [0,1]
         base_z = probit(min(max(base_score, 0.001), 0.999))    # back to σ-space
         a = _adj_z(r)
-        final_z = base_z + a["adj_z"]
+        ni_trend_z = _ni_trend_z(r, un)
+        final_z = base_z + a["adj_z"] + ni_trend_z
         row = dict(r)
         row["base_score"] = base_score
         row["base_z"] = base_z
@@ -408,6 +432,7 @@ def score_screen(facts: list[dict], config: dict,
         row["moat_z"] = a["moat_z"]
         row["earn_z"] = a["earn_z"]
         row["break_z"] = a["break_z"]
+        row["ni_trend_z"] = ni_trend_z
         row["capped"] = a["capped"]
         row["floored"] = a["floored"]
         row["quality_pct"] = round(pq * 100)

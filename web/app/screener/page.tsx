@@ -217,6 +217,8 @@ export default async function ScreenerPage({
                 moat_z: r.moat_z,
                 earn_z: r.earn_z,
                 break_z: r.break_z,
+                ni_trend_z: r.ni_trend_z,
+                net_income_trend: r.net_income_trend,
                 base_pct: r.base_pct,
                 final_pct: r.final_pct,
                 capped: r.capped,

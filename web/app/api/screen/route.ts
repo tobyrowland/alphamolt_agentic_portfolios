@@ -48,6 +48,9 @@ const DISPLAY = [
   "moat_z",
   "earn_z",
   "break_z",
+  // Net-income sustained-growth tilt (migration 068).
+  "ni_trend_z",
+  "net_income_trend",
   "base_pct",
   "final_pct",
   "capped",
