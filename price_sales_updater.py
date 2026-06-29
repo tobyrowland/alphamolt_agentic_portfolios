@@ -41,6 +41,17 @@ EODHD_API_KEY = os.environ.get("EODHD_API_KEY", "")
 
 DELAY_BETWEEN_CALLS = 0.5  # seconds between EODHD API calls
 
+# When ps_now diverges from the latest stored weekly-history point by more than
+# this fraction, the underlying revenue denominator almost certainly stepped
+# (e.g. a new quarter rolled into TTM at earnings). The append-only history is
+# then anchored to a stale revenue base while ps_now uses the fresh one, which
+# is exactly the "P/S out of sync" symptom: the headline / current marker drops
+# but the chart line, 52w high/low, median and ATH stay on the old base. We
+# rebuild the whole curve from weekly prices anchored to the CURRENT ps_now so
+# every P/S figure shares one denominator again. 15% tolerates normal
+# week-to-week price drift; an earnings revenue step is typically far larger.
+PS_REBASE_THRESHOLD = 0.15
+
 # Price-Sales sheet column order (kept for reference / legacy compatibility)
 PS_COLUMNS = [
     "ticker", "company_name", "ps_now", "52w_high", "52w_low",
@@ -295,6 +306,64 @@ def get_backfill_from() -> date:
 # ---------------------------------------------------------------------------
 
 
+def _parse_history(raw) -> list:
+    """Parse a stored history_json blob into a list of [date, ps] rows."""
+    try:
+        if isinstance(raw, str):
+            parsed = json.loads(raw)
+        elif isinstance(raw, list):
+            parsed = raw
+        else:
+            return []
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _build_weekly_history(
+    ticker: str,
+    exchange: str,
+    ps_current: float,
+    last_friday_str: str,
+    logger,
+) -> list:
+    """Reconstruct ~52 weeks of P/S anchored to the CURRENT ps_current.
+
+    Uses weekly price ratios: ps_week = ps_current * (week_close / latest_close).
+    This is equivalent to (price * shares) / revenue without needing shares, and
+    crucially anchors the whole curve to today's revenue denominator — so a
+    rebuild after an earnings step re-syncs the history with ps_now instead of
+    leaving it stranded on the old denominator.
+    """
+    history: list = []
+    weekly_prices = fetch_weekly_prices(ticker, exchange, logger)
+
+    if weekly_prices and len(weekly_prices) > 1:
+        latest_close = _safe_float(
+            weekly_prices[-1].get("adjusted_close")
+            or weekly_prices[-1].get("close")
+        )
+        if latest_close and latest_close > 0:
+            for day in weekly_prices[-52:]:
+                close = _safe_float(day.get("adjusted_close") or day.get("close"))
+                if not close or close <= 0:
+                    continue
+                ps_val = round(ps_current * (close / latest_close), 2)
+                if ps_val > 0:
+                    history.append([day["date"], ps_val])
+            logger.info("%s: built %d weekly data points", ticker, len(history))
+        else:
+            logger.info("%s: latest close invalid, using current P/S only", ticker)
+    else:
+        logger.info("%s: no weekly prices returned (%s), using current P/S only",
+                    ticker, "None" if weekly_prices is None else f"{len(weekly_prices)} pts")
+
+    # Always ensure the curve ends on today's anchor point.
+    if not history or history[-1][0] != last_friday_str:
+        history.append([last_friday_str, ps_current])
+    return history
+
+
 def compute_ps_for_ticker(
     ticker: str,
     exchange: str,
@@ -341,52 +410,42 @@ def compute_ps_for_ticker(
         return None
 
     # --- Build history ---
-    new_history = []
+    # Decide between an append-only weekly update and a full rebuild of the
+    # curve from prices. Rebuild when there's no prior row (initial backfill)
+    # OR when ps_now has diverged from the stored history beyond the rebase
+    # threshold — i.e. the revenue denominator stepped (earnings) and the
+    # append-only history is now stranded on the old base (see
+    # PS_REBASE_THRESHOLD).
+    existing_history = _parse_history(existing.get("history_json")) if existing else []
 
-    if mode == "backfill":
-        # Fetch weekly prices for backfill via Yahoo Finance
-        weekly_prices = fetch_weekly_prices(ticker, exchange, logger)
+    rebuild = mode == "backfill"
+    rebased = False
+    if mode == "update" and existing_history:
+        last_row = existing_history[-1]
+        last_ps = _safe_float(last_row[1]) if isinstance(last_row, list) and len(last_row) > 1 else None
+        if last_ps and last_ps > 0:
+            divergence = abs(ps_current - last_ps) / last_ps
+            if divergence >= PS_REBASE_THRESHOLD:
+                logger.info(
+                    "%s: ps_now %.2f diverged %.0f%% from last history point %.2f — rebasing history",
+                    ticker, ps_current, divergence * 100, last_ps,
+                )
+                rebuild = True
+                rebased = True
 
-        if weekly_prices and len(weekly_prices) > 1:
-            # Use price-ratio method: ps_week = ps_current * (week_close / latest_close)
-            # This is equivalent to (price * shares) / revenue but doesn't need shares
-            latest_close = _safe_float(
-                weekly_prices[-1].get("adjusted_close")
-                or weekly_prices[-1].get("close")
-            )
-            if latest_close and latest_close > 0:
-                for day in weekly_prices[-52:]:
-                    close = _safe_float(day.get("adjusted_close") or day.get("close"))
-                    if not close or close <= 0:
-                        continue
-                    ps_val = round(ps_current * (close / latest_close), 2)
-                    if ps_val > 0:
-                        new_history.append([day["date"], ps_val])
-                logger.info("%s: backfilled %d weekly data points", ticker, len(new_history))
-            else:
-                logger.info("%s: latest close invalid, using current P/S only", ticker)
+    if rebuild:
+        rebuilt = _build_weekly_history(ticker, exchange, ps_current, last_friday_str, logger)
+        if rebased and len(rebuilt) < 2 and len(existing_history) >= 2:
+            # Rebase wanted but weekly prices were unavailable this run — keep
+            # the existing series rather than collapse the chart to one point.
+            # ps_now still refreshes; the next run with prices will re-anchor.
+            logger.warning("%s: rebase wanted but weekly prices unavailable; keeping existing history", ticker)
+            new_history = existing_history
+            rebased = False
         else:
-            logger.info("%s: no weekly prices returned (%s), using current P/S only",
-                        ticker, "None" if weekly_prices is None else f"{len(weekly_prices)} pts")
-
-        # Always ensure we have at least the current data point
-        if not new_history or new_history[-1][0] != last_friday_str:
-            new_history.append([last_friday_str, ps_current])
-
+            new_history = rebuilt
     else:
-        # Update: parse existing history
-        existing_history_raw = existing.get("history_json")
-        try:
-            if isinstance(existing_history_raw, str):
-                existing_history = json.loads(existing_history_raw)
-            elif isinstance(existing_history_raw, list):
-                existing_history = existing_history_raw
-            else:
-                existing_history = []
-        except (json.JSONDecodeError, TypeError):
-            existing_history = []
-
-        # Only add a new history entry on Fridays (weekly granularity)
+        # Append-only update: a new weekly point lands on Fridays only.
         if is_friday_run:
             existing_history.append([today_str, ps_current])
             # Keep rolling 52-entry window
@@ -404,9 +463,12 @@ def compute_ps_for_ticker(
     ps_52w_low = round(min(values), 2)
     ps_12m_median = round(statistics.median(values), 2)
 
-    # ATH: sticky — never goes down
+    # ATH: sticky within one revenue denominator — never goes down. But a
+    # rebuilt curve (initial backfill OR a post-earnings rebase) is a fresh,
+    # self-consistent snapshot on today's denominator, so the prior ATH (on the
+    # old base) is no longer comparable; anchor ATH to the rebuilt curve.
     prev_ath = 0
-    if existing:
+    if existing and not rebuild:
         prev_ath = _safe_float(existing.get("ath")) or 0
     ps_ath = round(max(prev_ath, ps_current, ps_52w_high), 2)
     pct_of_ath = round(ps_current / ps_ath, 2) if ps_ath > 0 else 0
@@ -419,8 +481,8 @@ def compute_ps_for_ticker(
 
     logger.info(
         "OK %s [%s]: ps=%.2f ath=%.2f 52wH=%.2f 52wL=%.2f med=%.2f (%d pts)",
-        ticker, mode, ps_current, ps_ath, ps_52w_high, ps_52w_low,
-        ps_12m_median, len(new_history),
+        ticker, f"{mode}/rebased" if rebased else mode, ps_current, ps_ath,
+        ps_52w_high, ps_52w_low, ps_12m_median, len(new_history),
     )
 
     return {
