@@ -1,0 +1,52 @@
+name: Backfill Holding Theses
+
+# Operator tool — give a portfolio's CURRENT holdings machine-checkable break
+# signals so the Portfolio Review Agent has something to check against. Repairs
+# snapshot-only theses (adds the research card's base break signals in place) and
+# records a thesis for any holding that has none. Idempotent. Manual trigger
+# only; defaults to a dry run that plans without writing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      portfolio:
+        description: "Portfolio slug (leave blank to run on ALL human portfolios)"
+        required: false
+        type: string
+      dry_run:
+        description: "Plan only — write nothing"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Run backfill
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          pip install -r requirements.txt
+          ARGS=""
+          if [ -n "${{ inputs.portfolio }}" ]; then
+            ARGS="$ARGS --portfolio ${{ inputs.portfolio }}"
+          else
+            ARGS="$ARGS --all"
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python backfill_holding_theses.py $ARGS
