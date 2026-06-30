@@ -1290,6 +1290,30 @@ class SupabaseDB:
                 out[r["ticker"]] = {"name": r.get("name"), "price": r.get("price")}
         return out
 
+    def get_sectors(self, tickers) -> dict[str, str]:
+        """Return {ticker: gics_sector} from Level 0 `securities` for a set of
+        tickers. Names missing from `securities`, or with no classification yet,
+        are simply absent from the map (callers treat that as "unclassified").
+        Used by the sector-rebalancer (cap + trim) to weight holdings by sector.
+        """
+        wanted = sorted({(t or "").upper() for t in tickers if t})
+        if not wanted:
+            return {}
+        out: dict[str, str] = {}
+        for i in range(0, len(wanted), 500):
+            chunk = wanted[i : i + 500]
+            resp = (
+                self.client.table("securities")
+                .select("ticker, gics_sector")
+                .in_("ticker", chunk)
+                .execute()
+            )
+            for r in resp.data or []:
+                sec = r.get("gics_sector")
+                if sec:
+                    out[r["ticker"]] = sec
+        return out
+
     def fetch_holdings_with_agent_company(self) -> list[dict]:
         """Return every agent_holdings row joined to its agent + Level 0 identity.
 

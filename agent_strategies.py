@@ -963,6 +963,12 @@ def _pelosi_mirror_lazy(ctx: RebalanceContext) -> RebalanceResult:
     return rebalance_pelosi_mirror(ctx)
 
 
+def _sector_rebalancer_lazy(ctx: RebalanceContext) -> RebalanceResult:
+    # Lazy import — the trim core pulls in `screen` only when it runs.
+    from sector_rebalancer import rebalance_sector_rebalancer
+    return rebalance_sector_rebalancer(ctx)
+
+
 # NOTE: `watchlist_curator` is intentionally NOT registered. The configurable
 # screener is the funnel's selection stage now (screener brief v2 §3) — a
 # portfolio's candidate set is the top N of its `screen_config`, read directly
@@ -976,6 +982,7 @@ STRATEGIES: dict[str, Strategy] = {
     "profit_taker": rebalance_profit_taker,
     "portfolio_reviewer": _portfolio_reviewer_lazy,
     "pelosi_mirror": _pelosi_mirror_lazy,
+    "sector_rebalancer": _sector_rebalancer_lazy,
 }
 
 
@@ -1017,6 +1024,7 @@ STRATEGY_PHASES: dict[str, str] = {
     "llm_watchlist_buyer": "trade",
     "portfolio_reviewer": "trade",
     "pelosi_mirror": "trade",
+    "sector_rebalancer": "trade",
 }
 
 

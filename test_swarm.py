@@ -131,6 +131,65 @@ class TestSnakeDraft(unittest.TestCase):
         self.assertEqual(res.picks[0].qty, 10)  # $100 / $10
 
 
+class TestSectorCap(unittest.TestCase):
+    def test_cap_blocks_pick_that_would_breach(self):
+        # One buyer that wants both Tech names; a 25% cap ($250) and AAA already
+        # held to $200 of Tech leaves $50 of headroom — only 5 shares fit, and
+        # the second Tech name can't be drafted at all.
+        buyers = [Buyer("A", gate=1, max_per_name=1.0)]
+        conv = {"A": {"BBB": 5, "CCC": 4}}
+        res = snake_draft_plan(
+            buyers, ["BBB", "CCC"], PRICES,
+            total_value=1000, cash=1000, cash_reserve_pct=0.0, convictions=conv,
+            sector_of={"AAA": "Tech", "BBB": "Tech", "CCC": "Tech"},
+            sector_start_value={"Tech": 200.0},
+            max_sector_value=250.0,
+        )
+        # BBB sized down to the $50 headroom (5 shares); CCC blocked (sector full).
+        self.assertEqual([(p.ticker, p.qty) for p in res.picks], [("BBB", 5)])
+
+    def test_cap_lets_other_sectors_through(self):
+        # Tech is capped out, but a Health name has its own headroom, so freed
+        # cash diversifies instead of re-concentrating Tech.
+        buyers = [Buyer("A", gate=1, max_per_name=1.0)]
+        conv = {"A": {"BBB": 5, "DDD": 3}}
+        res = snake_draft_plan(
+            buyers, ["BBB", "DDD"], PRICES,
+            total_value=1000, cash=1000, cash_reserve_pct=0.0, convictions=conv,
+            sector_of={"BBB": "Tech", "DDD": "Health"},
+            sector_start_value={"Tech": 250.0},  # Tech already at the cap
+            max_sector_value=250.0,
+        )
+        # BBB (Tech) fully blocked; DDD (Health) drafts.
+        self.assertEqual([p.ticker for p in res.picks], ["DDD"])
+
+    def test_unclassified_names_are_never_capped(self):
+        # A name with no sector can't breach a sector cap — it always drafts.
+        buyers = [Buyer("A", gate=1, max_per_name=1.0)]
+        conv = {"A": {"BBB": 5}}
+        res = snake_draft_plan(
+            buyers, ["BBB"], PRICES,
+            total_value=1000, cash=1000, cash_reserve_pct=0.0, convictions=conv,
+            sector_of={},  # BBB unclassified
+            sector_start_value={},
+            max_sector_value=250.0,
+        )
+        self.assertEqual([p.ticker for p in res.picks], ["BBB"])
+
+    def test_disabled_when_max_sector_value_zero(self):
+        # max_sector_value=0 (default) → behaves exactly as before, no cap. The
+        # huge sector_start_value would block both names if the cap were on.
+        buyers = [Buyer("A", gate=1, max_per_name=0.25)]
+        conv = {"A": {"BBB": 5, "CCC": 5}}
+        res = snake_draft_plan(
+            buyers, ["BBB", "CCC"], PRICES,
+            total_value=1000, cash=1000, cash_reserve_pct=0.0, convictions=conv,
+            sector_of={"BBB": "Tech", "CCC": "Tech"},
+            sector_start_value={"Tech": 900.0},
+        )
+        self.assertEqual({p.ticker for p in res.picks}, {"BBB", "CCC"})
+
+
 class TestFirstValidSell(unittest.TestCase):
     def test_first_reviewer_in_order_wins(self):
         verdicts = {

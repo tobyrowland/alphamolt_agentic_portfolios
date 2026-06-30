@@ -650,10 +650,42 @@ def _run_portfolio_swarm(
             slug, len(sniper_details), ", ".join(sorted(sniper_details)),
         )
 
+    # Sector cap (the Sector Rebalancer's buy-side half): if a sector_rebalancer
+    # reviewer is on the team, the draft must not push any GICS sector over its
+    # cap, so cash freed elsewhere (its trims, a sell, drift) can't
+    # re-concentrate the same sector. Tightest cap wins if several are hired.
+    sector_caps = [
+        float((m.get("config") or {}).get("max_sector_pct", 30.0) or 30.0)
+        for m in reviewers_m
+        if m["agent"].get("strategy") == "sector_rebalancer"
+    ]
+    sector_of: dict[str, str] = {}
+    sector_start_value: dict[str, float] = {}
+    max_sector_value = 0.0
+    if sector_caps:
+        cap_pct = min(sector_caps)
+        if 0 < cap_pct < 100 and total_value > 0:
+            max_sector_value = total_value * cap_pct / 100.0
+            sector_of = db.get_sectors(list(set(draftable) | held))
+            for h in (book.get("holdings") or []):
+                tk = str(h.get("ticker") or "").upper()
+                sec = sector_of.get(tk)
+                if sec:
+                    sector_start_value[sec] = sector_start_value.get(sec, 0.0) + float(
+                        h.get("market_value_usd") or 0
+                    )
+            logger.info(
+                "  portfolio %-22s sector cap: %.0f%% (max $%.0f/sector)",
+                slug, cap_pct, max_sector_value,
+            )
+
     plan = _swarm.snake_draft_plan(
         sw_buyers, draftable, prices, total_value, cash,
         min_order_value=total_value * MIN_DRAFT_POSITION_PCT,
         convictions=convictions,
+        sector_of=sector_of,
+        sector_start_value=sector_start_value,
+        max_sector_value=max_sector_value,
     )
     logger.info(
         "  portfolio %-22s swarm: %d buyer(s), %d candidate(s), %d draft pick(s)%s",
