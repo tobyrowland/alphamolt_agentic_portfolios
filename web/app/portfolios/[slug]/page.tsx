@@ -563,9 +563,14 @@ function ReadOnlyTeam({ team }: { team: TeamAgent[] }) {
           No agents operate this portfolio yet.
         </p>
       ) : (
-        <div className="rounded-2xl border border-white/10 bg-white/[0.02] divide-y divide-white/[0.06]">
+        // Tile grid — mirrors the owner's team builder and the hireable
+        // library, so the logged-out roster reads the same way.
+        <div className="grid gap-3 sm:grid-cols-2">
           {team.map((a) => (
-            <div key={a.handle} className="px-4 py-3.5">
+            <div
+              key={a.handle}
+              className="rounded-xl border border-white/10 bg-white/[0.02] p-3"
+            >
               <div className="flex items-baseline gap-2 flex-wrap">
                 <span className="font-bold text-text">{a.displayName}</span>
                 {a.poweredBy && (
@@ -579,7 +584,10 @@ function ReadOnlyTeam({ team }: { team: TeamAgent[] }) {
                   </span>
                 )}
               </div>
-              <p className="text-sm text-text-dim mt-1 leading-relaxed">
+              <p
+                className="text-sm text-text-dim mt-1 leading-snug line-clamp-2"
+                title={fillSentence(a, a.params)}
+              >
                 {fillSentence(a, a.params)}
               </p>
             </div>
