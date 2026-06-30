@@ -163,6 +163,17 @@ const AI_HELP =
 const INTRO_MAX_VIEWS = 3;
 const INTRO_KEY = "screenerIntroViews";
 
+// Compact read-only summary of the active filters, shown on the collapsed
+// Filters disclosure so the bulky editable chip bar stays hidden until opened
+// without losing sight of what's actually filtered.
+function filtersPreviewText(filters: Filter[]): string {
+  if (filters.length === 0) return "None — ranks the entire universe";
+  const labels = filters.map(filterChipLabel);
+  const shown = labels.slice(0, 3).join(", ");
+  const extra = labels.length - 3;
+  return extra > 0 ? `${shown}, +${extra} more` : shown;
+}
+
 // Grid columns shared by the card header (`.thead`) and each row's `.rhead` so
 // they line up: # · Ticker · Score · P/S · R40 · vs SPY · AI durability · chev.
 // Written as a literal Tailwind arbitrary-value class in both places (the JIT
@@ -770,10 +781,19 @@ export default function ScreenerClient({
       {/* Screen bar: friendly filter chips + collapsed weighting on the right.
           Only shown in Custom mode — house presets define their own filters. */}
       {customSelected && (
-      <div className="flex items-start gap-2 flex-wrap mt-3.5 mb-2">
-        <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted mt-2">
-          Filters
-        </span>
+      <details className={`mt-3.5 mb-2 ${card}`}>
+        <summary
+          title="Show or hide the filter controls"
+          className="list-none cursor-pointer font-mono text-[11px] px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden flex items-center justify-between gap-3"
+        >
+          <span className="text-[10px] uppercase tracking-[0.12em] text-text-muted shrink-0">
+            Filters ({config.filters.length})
+          </span>
+          <span className="text-text-muted/60 truncate text-right">
+            {filtersPreviewText(config.filters)} ▾
+          </span>
+        </summary>
+        <div className="flex items-start gap-2 flex-wrap px-3 pb-3">
 
         {config.filters.map((f, i) => (
           <FilterChip
@@ -828,40 +848,51 @@ export default function ScreenerClient({
           </div>
         </details>
 
-      </div>
+        </div>
+      </details>
       )}
 
       {/* Read-only preset filters — so picking a house preset still shows what
           it actually screens on (the editable bar is Custom-only). "Edit →"
           forks the preset into Custom carrying these filters. */}
       {!customSelected && (
-        <div className="flex items-center gap-2 flex-wrap mt-3.5 mb-2">
-          <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-text-muted">
-            Filters
-          </span>
-          {config.filters.length > 0 ? (
-            config.filters.map((f, i) => (
-              <span
-                key={`${f.field}-${i}`}
-                className="font-mono text-[11px] text-text border border-white/10 bg-white/[0.03] rounded-md px-2.5 py-1.5"
-              >
-                {filterChipLabel(f)}
-              </span>
-            ))
-          ) : (
-            <span className="font-mono text-[11px] text-text-muted">
-              None — ranks the entire universe, scored by the weighting below.
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => patch({})}
-            title="Switch to Custom with these filters so you can edit them"
-            className="ml-1 font-mono text-[10.5px] text-[var(--color-cyan)] hover:underline"
+        <details className={`mt-3.5 mb-2 ${card}`}>
+          <summary
+            title="Show or hide the filters this preset screens on"
+            className="list-none cursor-pointer font-mono text-[11px] px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden flex items-center justify-between gap-3"
           >
-            Edit →
-          </button>
-        </div>
+            <span className="text-[10px] uppercase tracking-[0.12em] text-text-muted shrink-0">
+              Filters ({config.filters.length})
+            </span>
+            <span className="text-text-muted/60 truncate text-right">
+              {filtersPreviewText(config.filters)} ▾
+            </span>
+          </summary>
+          <div className="flex items-center gap-2 flex-wrap px-3 pb-3">
+            {config.filters.length > 0 ? (
+              config.filters.map((f, i) => (
+                <span
+                  key={`${f.field}-${i}`}
+                  className="font-mono text-[11px] text-text border border-white/10 bg-white/[0.03] rounded-md px-2.5 py-1.5"
+                >
+                  {filterChipLabel(f)}
+                </span>
+              ))
+            ) : (
+              <span className="font-mono text-[11px] text-text-muted">
+                None — ranks the entire universe, scored by the weighting below.
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => patch({})}
+              title="Switch to Custom with these filters so you can edit them"
+              className="ml-1 font-mono text-[10.5px] text-[var(--color-cyan)] hover:underline"
+            >
+              Edit →
+            </button>
+          </div>
+        </details>
       )}
 
       {/* Advanced raw add row */}
