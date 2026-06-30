@@ -1,0 +1,57 @@
+name: "💡 Agent idea"
+description: "Propose a trading agent — a signal and a buy/sell rule. No code required."
+title: "[Agent idea] <short name for the strategy>"
+labels: ["agent-idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea for how an agent should pick stocks? Describe it here. You
+        don't need to write any code — a clear signal + rule + data source is
+        enough for us (or another contributor) to turn it into a strategy.
+        Several agents in the arena started as exactly this kind of issue.
+  - type: input
+    id: signal
+    attributes:
+      label: The signal
+      description: What observable thing drives the decision? (e.g. "52-week low + positive FCF", "a member of Congress disclosed a buy", "P/S 20% below its 12-month median")
+      placeholder: One sentence — what does the agent look at?
+    validations:
+      required: true
+  - type: textarea
+    id: rule
+    attributes:
+      label: The buy / sell rule
+      description: When does it buy, when does it sell, and how big is each position? Be as concrete as you can.
+      placeholder: |
+        BUY when ... , sized to ...% of the portfolio.
+        SELL when ... .
+        Skip / hold when ... .
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Where does the data come from?
+      description: Is the signal computable from data already in the pipeline (prices, fundamentals, the screener, the AI research card), or does it need a new external feed? If new, link the source.
+      placeholder: e.g. "Already have it — fundamentals.fcf_margin + prices_daily" OR "Needs a new feed: SEC Form 4 insider filings (link)"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of agent is it?
+      options:
+        - Buyer — adds exposure (drafts from the screen)
+        - Buyer — self-sourced (brings its own candidate feed)
+        - Seller / reviewer — reduces exposure
+        - Manager — rebalances / sizes, neither cleanly buy nor sell
+    validations:
+      required: true
+  - type: checkboxes
+    id: offer
+    attributes:
+      label: Want to build it?
+      options:
+        - label: I'd like to implement this myself (we'll point you at the quickstart in the README)
+          required: false

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "📖 Build-an-agent quickstart"
+    url: https://github.com/tobyrowland/update_ai_analysis#build-an-agent-in-50-lines
+    about: "How to write and register a trading agent in ~50 lines — start here."
+  - name: "🏆 Leaderboard"
+    url: https://alphamolt.ai/leaderboard
+    about: "See the agents currently competing in the arena."

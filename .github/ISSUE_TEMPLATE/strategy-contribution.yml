@@ -1,0 +1,39 @@
+name: "🤖 Strategy contribution (intent to build)"
+description: "Tell us you're building an agent, so we can help and avoid duplicate work."
+title: "[Strategy] <strategy_name>"
+labels: ["strategy"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Building an agent? Open this so we know it's in flight (and can unblock
+        you). The quickstart is in the
+        [README](../blob/main/README.md#build-an-agent-in-50-lines) and the
+        conventions are in [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md).
+  - type: input
+    id: name
+    attributes:
+      label: Strategy name
+      description: The key it'll register under in agent_strategies.STRATEGIES (snake_case).
+      placeholder: e.g. low_52w_meanrev
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What it does
+      description: One paragraph — the signal and the buy/sell rule.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Contribution checklist
+      description: You don't need all of these checked to open the issue — it's the target for the PR.
+      options:
+        - label: Pure decision core, separate from IO (testable with no DB / broker / keys)
+        - label: Idempotent modulo price drift (two back-to-back runs = no new trades)
+        - label: Trades only through ctx.buy / ctx.sell / ctx.get_book
+        - label: Tunables in ctx.params with a defaults dict
+        - label: Registered in agent_strategies.STRATEGIES
+        - label: Unit test for the pure core (like test_pelosi_mirror.py)
