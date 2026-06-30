@@ -584,18 +584,31 @@ def _run_portfolio_swarm(
         # (every co-briefed buyer reads the same dict; the run cache dedupes across
         # portfolios). Auto-no-ops when SERPAPI_API_KEY is unset. Uses the buyer
         # default knobs since the enrichment is shared, not per-buyer.
+        #
+        # Cash gate: skip the search entirely when the book has nothing to deploy
+        # after the 2% reserve. A saturated portfolio (or one being force-run for
+        # testing) would otherwise burn a SerpAPI query per candidate evaluating
+        # buys it can't make — the search fires before the draft's cash check.
+        _total_v = float(book.get("total_value_usd") or 0)
+        _spendable = float(book.get("cash_usd") or 0) - _total_v * 0.02
+        _can_buy = _spendable >= _total_v * MIN_DRAFT_POSITION_PCT
         _news_defaults = _llm_buyer.LLM_WATCHLIST_BUYER_DEFAULTS
-        if _news_defaults.get("news_search"):
+        if _news_defaults.get("news_search") and _can_buy:
             _key = _llm_buyer.serpapi_key()
             if _key:
                 _llm_buyer.attach_recent_news(
                     by_ticker_data,
                     api_key=_key,
-                    concurrency=int(_news_defaults["concurrency"]),
+                    concurrency=int(_news_defaults.get("news_concurrency", 3)),
                     logger=logger,
                     max_queries=int(_news_defaults.get("news_queries", 1)),
                     max_chars=int(_news_defaults.get("news_max_chars", 1500)),
                 )
+        elif _news_defaults.get("news_search") and not _can_buy:
+            logger.info(
+                "  portfolio %-22s news search skipped — no cash to deploy",
+                slug,
+            )
 
     total_value = float(book.get("total_value_usd") or 0)
     cash = float(book.get("cash_usd") or 0)
