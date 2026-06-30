@@ -148,6 +148,9 @@ LLM_WATCHLIST_BUYER_DEFAULTS: dict[str, Any] = {
     "news_search": True,
     "news_queries": 1,              # SerpAPI queries per candidate (1 = cheapest)
     "news_max_chars": 1500,         # truncation cap for the injected block
+    "news_concurrency": 3,          # parallel SerpAPI fetches — kept below the
+                                    # Phase-1 LLM concurrency so we don't throttle
+                                    # our own SerpAPI account into read timeouts.
 }
 
 
@@ -669,7 +672,7 @@ def attach_recent_news(
     by_ticker_data: dict[str, dict],
     *,
     api_key: str,
-    concurrency: int = 5,
+    concurrency: int = 3,
     logger: logging.Logger = logger,
     cache: dict[str, str] | None = None,
     max_queries: int = 1,
@@ -983,7 +986,7 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
             news_fetched = attach_recent_news(
                 {t: by_ticker_data[t] for t in candidates},
                 api_key=key,
-                concurrency=int(params["concurrency"]),
+                concurrency=int(params.get("news_concurrency", 3)),
                 logger=logger,
                 max_queries=int(params.get("news_queries", 1)),
                 max_chars=int(params.get("news_max_chars", 1500)),

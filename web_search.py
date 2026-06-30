@@ -25,17 +25,38 @@ SERPAPI_ENDPOINT = "https://serpapi.com/search"
 
 
 def serpapi_search(query: str, api_key: str, logger: logging.Logger) -> str:
-    """Run a SerpAPI Google search and return concatenated snippets."""
-    try:
-        resp = requests.get(
-            SERPAPI_ENDPOINT,
-            params={"q": query, "api_key": api_key, "num": 5, "engine": "google"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        logger.warning("SerpAPI search failed for query '%s': %s", query, exc)
+    """Run a SerpAPI Google search and return concatenated snippets.
+
+    Retries once on a transient timeout / connection error. SerpAPI's google
+    engine regularly takes well over 15s under load, and a client-side timeout
+    often abandons a search the server already ran (and billed) — so a generous
+    read timeout plus one retry means we actually use what we pay for instead of
+    discarding it. Still best-effort: returns "" if both attempts fail.
+    """
+    data = None
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            resp = requests.get(
+                SERPAPI_ENDPOINT,
+                params={"q": query, "api_key": api_key, "num": 5, "engine": "google"},
+                # (connect, read): the read leg is generous because the google
+                # engine is slow under load; the connect leg stays short.
+                timeout=(5, 30),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_exc = exc
+            if attempt == 0:
+                time.sleep(1.5)  # brief backoff, then one retry
+                continue
+        except Exception as exc:  # non-transient (HTTP error, bad JSON) — don't retry
+            last_exc = exc
+            break
+    if data is None:
+        logger.warning("SerpAPI search failed for query '%s': %s", query, last_exc)
         return ""
 
     organic = data.get("organic_results", [])
