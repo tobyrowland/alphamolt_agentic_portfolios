@@ -373,7 +373,10 @@ function YourTeamUnit({
             </div>
           ) : (
             <>
-              <ul className="divide-y divide-white/[0.06]">
+              {/* Tile grid — mirrors the hireable library below. A card being
+                  edited (or an unsaved drag-in) spans both columns so its
+                  params/brief editor has room. */}
+              <ul className="grid gap-3 sm:grid-cols-2 p-3">
                 {team.map((a) => (
                   <TeamCard
                     key={a.handle}
@@ -515,111 +518,29 @@ function TeamCard({
   }
 
   return (
-    <li className="px-4 py-2.5">
-      <div className="flex items-start gap-3">
-        {/* Action dot — static identity colour; pulses only during a run. */}
-        <span
-          aria-hidden
-          className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${running ? "animate-pulse" : ""}`}
-          style={{ background: meta.color }}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2 flex-wrap">
-            <span className="font-bold text-text">{agent.displayName}</span>
-            <ActionPill action={agent.action} />
-            {hasCustomMandate(agent) && (
-              <span
-                className="text-[10px] font-mono text-[var(--color-cyan)]"
-                title="Running a custom brief you set"
-              >
-                ✎ custom brief
-              </span>
-            )}
-          </div>
-          {/* One compact meta line: powered-by · next-run (merges the old
-              "powered by" line and the separate footer schedule line). */}
-          {!editing && (
-            <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[11px] font-mono text-text-muted">
-              {running && (
-                <span
-                  aria-hidden
-                  className="h-1.5 w-1.5 rounded-full animate-pulse"
-                  style={{ background: meta.color }}
-                />
-              )}
-              {agent.poweredBy && <span>{agent.poweredBy}</span>}
-              {agent.poweredBy && <span aria-hidden>·</span>}
-              <span>
-                {running
-                  ? "Running now…"
-                  : scheduleText(
-                      agent.lastRunAt,
-                      agent.heartbeatIntervalHours,
-                      now,
-                    )}
-              </span>
-            </div>
-          )}
-          <p
-            className="text-xs text-text-dim mt-1 leading-snug line-clamp-1"
-            title={fillSentence(agent, agent.params)}
-          >
-            {fillSentence(agent, agent.params)}
-          </p>
-          {agent.action === "sell" && agent.triggers.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {agent.triggers.map((t) => (
-                <TriggerChip key={t} trigger={t} />
-              ))}
-            </div>
-          )}
-
-          {editing && (
-            <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3">
-              <ParamControls
-                schema={agent.paramSchema}
-                values={draft}
-                onChange={setDraft}
-              />
-              <p className="text-sm text-text-dim mt-3 italic">
-                {fillSentence(agent, draft)}
-              </p>
-              {hasBrief && (
-                <BriefField
-                  action={agent.action}
-                  value={draftMandate}
-                  onChange={setDraftMandate}
-                />
-              )}
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => {
-                    onSaveEdit(
-                      agent.handle,
-                      draft,
-                      mandateOverride(agent, draftMandate),
-                    );
-                    setEditing(false);
-                  }}
-                  className="rounded-lg bg-[var(--color-green)]/15 border border-[var(--color-green)]/40 px-3 py-1.5 text-xs font-mono text-[var(--color-green)] hover:bg-[var(--color-green)]/25 transition-colors disabled:opacity-50"
-                >
-                  Save changes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDraft(agent.params);
-                    setDraftMandate(effectiveMandate(agent));
-                    setEditing(false);
-                  }}
-                  className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-mono text-text-muted hover:text-text transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
+    <li
+      className={`rounded-xl border border-white/10 bg-white/[0.02] p-3 ${
+        editing ? "sm:col-span-2" : ""
+      }`}
+    >
+      {/* Header: identity on the left, controls top-right. */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-baseline gap-2 flex-wrap min-w-0">
+          {/* Action dot — static identity colour; pulses only during a run. */}
+          <span
+            aria-hidden
+            className={`self-center h-2 w-2 rounded-full shrink-0 ${running ? "animate-pulse" : ""}`}
+            style={{ background: meta.color }}
+          />
+          <span className="font-bold text-text">{agent.displayName}</span>
+          <ActionPill action={agent.action} />
+          {hasCustomMandate(agent) && (
+            <span
+              className="text-[10px] font-mono text-[var(--color-cyan)]"
+              title="Running a custom brief you set"
+            >
+              ✎ custom brief
+            </span>
           )}
         </div>
 
@@ -665,9 +586,97 @@ function TeamCard({
         )}
       </div>
 
-      {/* Schedule now lives inline in the meta line above (compact). */}
+      {/* One compact meta line: powered-by · next-run. */}
+      {!editing && (
+        <div className="mt-1 flex items-center gap-1.5 flex-wrap text-[11px] font-mono text-text-muted">
+          {running && (
+            <span
+              aria-hidden
+              className="h-1.5 w-1.5 rounded-full animate-pulse"
+              style={{ background: meta.color }}
+            />
+          )}
+          {agent.poweredBy && <span>{agent.poweredBy}</span>}
+          {agent.poweredBy && <span aria-hidden>·</span>}
+          <span>
+            {running
+              ? "Running now…"
+              : scheduleText(
+                  agent.lastRunAt,
+                  agent.heartbeatIntervalHours,
+                  now,
+                )}
+          </span>
+        </div>
+      )}
+
+      {!editing && (
+        <p
+          className="text-xs text-text-dim mt-1.5 leading-snug line-clamp-2"
+          title={fillSentence(agent, agent.params)}
+        >
+          {fillSentence(agent, agent.params)}
+        </p>
+      )}
+
+      {!editing && agent.action === "sell" && agent.triggers.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {agent.triggers.map((t) => (
+            <TriggerChip key={t} trigger={t} />
+          ))}
+        </div>
+      )}
+
+      {editing && (
+        <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3">
+          <ParamControls
+            schema={agent.paramSchema}
+            values={draft}
+            onChange={setDraft}
+          />
+          <p className="text-sm text-text-dim mt-3 italic">
+            {fillSentence(agent, draft)}
+          </p>
+          {hasBrief && (
+            <BriefField
+              action={agent.action}
+              value={draftMandate}
+              onChange={setDraftMandate}
+            />
+          )}
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                onSaveEdit(
+                  agent.handle,
+                  draft,
+                  mandateOverride(agent, draftMandate),
+                );
+                setEditing(false);
+              }}
+              className="rounded-lg bg-[var(--color-green)]/15 border border-[var(--color-green)]/40 px-3 py-1.5 text-xs font-mono text-[var(--color-green)] hover:bg-[var(--color-green)]/25 transition-colors disabled:opacity-50"
+            >
+              Save changes
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setDraft(agent.params);
+                setDraftMandate(effectiveMandate(agent));
+                setEditing(false);
+              }}
+              className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-mono text-text-muted hover:text-text transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {runError && (
-        <p className="mt-2 pl-5 text-[11px] font-mono text-[var(--color-red)]">
+        <p className="mt-2 text-[11px] font-mono text-[var(--color-red)]">
           {runError}
         </p>
       )}
@@ -695,7 +704,7 @@ function PendingCard({
   const { agent, params } = item;
   return (
     <li
-      className="px-4 py-4 border-l-2"
+      className="sm:col-span-2 rounded-xl border border-white/10 border-l-2 p-4"
       style={{ borderLeftColor: "var(--color-orange)", background: "rgba(255,153,0,0.03)" }}
     >
       <div className="flex items-baseline gap-2 flex-wrap">
