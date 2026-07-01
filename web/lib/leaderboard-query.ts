@@ -35,6 +35,7 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
   // 1. Agent rows — view exposes all four interval returns + 30d Sharpe.
   interface RawAgentRow {
     handle: string;
+    portfolio_id: string;
     display_name: string;
     is_house_agent: boolean;
     snapshot_date: string;
@@ -61,7 +62,7 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
   const { data: agentData, error: agentErr } = await supabase
     .from("agent_leaderboard")
     .select(
-      "handle, display_name, is_house_agent, snapshot_date, cash_usd, " +
+      "handle, portfolio_id, display_name, is_house_agent, snapshot_date, cash_usd, " +
         "holdings_value_usd, total_value_usd, pnl_usd, " +
         "pnl_pct_1d, pnl_pct_1w, pnl_pct_30d, pnl_pct_ytd, pnl_pct_1yr, " +
         "sharpe, sharpe_n_returns, num_positions, member_agents",
@@ -214,27 +215,25 @@ export const getLeaderboard = unstable_cache(
 
 async function fetchTradeBuckets(
   supabase: ReturnType<typeof getSupabase>,
-  rawAgents: { handle: string }[],
+  rawAgents: { handle: string; portfolio_id: string }[],
 ): Promise<Map<string, TradeBuckets>> {
   const out = new Map<string, TradeBuckets>();
   if (rawAgents.length === 0) return out;
 
-  // Resolve handle → id so we can attribute trades back to the leaderboard row.
-  const { data: idRows, error: idErr } = await supabase
-    .from("agents")
-    .select("id, handle")
-    .in(
-      "handle",
-      rawAgents.map((a) => a.handle),
-    );
-  if (idErr || !idRows) {
-    if (idErr) console.error("Failed to resolve agent ids:", idErr);
-    return out;
-  }
+  // Attribute trades to the leaderboard row by `portfolio_id`. Every
+  // `agent_trades` row carries `portfolio_id` (migration 021), and a human
+  // portfolio's fills are recorded under its MEMBER agents' ids but share the
+  // one `portfolio_id`. Keying on the acting `agent_id` (the old behaviour)
+  // therefore counted 0 for every multi-agent human portfolio — its handle is
+  // a portfolio slug, not an agent, so no trades ever matched. portfolio_id is
+  // the only key that works for both human and legacy 1:1 (portfolio_id ==
+  // agent_id) portfolios.
   const idToHandle = new Map<string, string>();
-  for (const row of idRows as { id: string; handle: string }[]) {
-    idToHandle.set(row.id, row.handle);
+  for (const a of rawAgents) {
+    if (a.portfolio_id) idToHandle.set(a.portfolio_id, a.handle);
   }
+  const portfolioIds = Array.from(idToHandle.keys());
+  if (portfolioIds.length === 0) return out;
 
   const now = new Date();
   const yearAgoIso = new Date(
@@ -246,18 +245,15 @@ async function fetchTradeBuckets(
   const yearStartMs = Date.UTC(now.getUTCFullYear(), 0, 1);
   const yearAgoMs = new Date(yearAgoIso).getTime();
 
-  const agentIds = Array.from(idToHandle.keys());
-  if (agentIds.length === 0) return out;
-
   const pageSize = 1000;
   let from = 0;
-  type TradeTuple = { agent_id: string; executed_at: string };
+  type TradeTuple = { portfolio_id: string; executed_at: string };
   const all: TradeTuple[] = [];
   while (true) {
     const { data, error } = await supabase
       .from("agent_trades")
-      .select("agent_id, executed_at")
-      .in("agent_id", agentIds)
+      .select("portfolio_id, executed_at")
+      .in("portfolio_id", portfolioIds)
       .gte("executed_at", yearAgoIso)
       .range(from, from + pageSize - 1);
     if (error) {
@@ -271,7 +267,7 @@ async function fetchTradeBuckets(
   }
 
   for (const trade of all) {
-    const handle = idToHandle.get(trade.agent_id);
+    const handle = idToHandle.get(trade.portfolio_id);
     if (!handle) continue;
     let bucket = out.get(handle);
     if (!bucket) {
