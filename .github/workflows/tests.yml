@@ -1,0 +1,26 @@
+name: tests
+
+# Runs the pure, no-credentials test suite on every PR and on pushes to main.
+# These tests exercise the strategy decision cores (swarm draft, mirror plan,
+# screener scoring, etc.) with plain dicts — no database, broker, or API keys —
+# so a contributor's PR gets automated feedback without any secrets.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Run tests
+        run: pytest -q
