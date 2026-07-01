@@ -72,7 +72,7 @@ export default function HomeRoster({ data }: { data: RosterData }) {
 
         <div className="mt-3.5 grid gap-3.5 md:grid-cols-2">
           <ConvictionBuyerCard card={data.convictionBuyer} />
-          <RulesCard card={data.sniper} />
+          <RulesCard card={data.rulesBuyer} />
           <ReviewerCard card={data.reviewer} />
           <CustomCard href={BUILD_GUIDE_HREF} />
         </div>
@@ -183,7 +183,7 @@ function ConvictionBuyerCard({
   );
 }
 
-function RulesCard({ card }: { card: RosterData["sniper"] }) {
+function RulesCard({ card }: { card: RosterData["rulesBuyer"] }) {
   return (
     <div className={cardClass("buy")}>
       <div className="flex items-center justify-between gap-2">

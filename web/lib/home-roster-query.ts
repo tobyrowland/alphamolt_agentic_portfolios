@@ -11,8 +11,9 @@
  *                         card whose model chips are the variants (a 5th
  *                         variant ⇒ a 5th chip).
  *   - Portfolio Review  ← the sell-role reviewer.
- *   - 200-Week Sniper   ← a rules-based buy teaser (reference copy; the real
- *                         roster has no rules engine yet — "more in training").
+ *   - Rules-based buy   ← the live Pelosi Tracker (a real hireable rules agent
+ *                         mirroring congressional disclosures) when it's in the
+ *                         library, else the 200-Week Sniper teaser.
  *   - Build your own    ← static custom card (rendered in the component).
  *
  * Fallback contract: if the library read fails or is empty, every slot uses
@@ -66,7 +67,7 @@ export interface RosterData {
   /** Hireable-agent count for the gallery label. */
   agentCount: number;
   convictionBuyer: ConvictionBuyerCard;
-  sniper: RulesCard;
+  rulesBuyer: RulesCard;
   reviewer: SellCard;
   coverage: RosterCoverage;
 }
@@ -95,6 +96,16 @@ const STATIC_SNIPER: RulesCard = {
   powered: "powered by pure arithmetic — no model, no moods",
 };
 
+// Homepage-length copy for the live Pelosi Tracker. The DB description is a
+// full paragraph (too long for a card), so the roster shows this curated
+// version and only renders it when the agent is actually in the library.
+const STATIC_PELOSI: RulesCard = {
+  title: "Pelosi Tracker",
+  description:
+    "Mirrors Nancy Pelosi's disclosed trades, reading her official U.S. House STOCK Act filings and buying the underlying names she does. Congress's paper trail, traded on a schedule.",
+  powered: "powered by public disclosure filings — no model, no moods",
+};
+
 const STATIC_REVIEWER: SellCard = {
   title: "Portfolio Review Agent",
   description:
@@ -109,7 +120,7 @@ const STATIC_COVERAGE: RosterCoverage = { buy: true, sell: true, manage: false }
 export const ROSTER_FALLBACK: RosterData = {
   agentCount: 6,
   convictionBuyer: { ...STATIC_CONVICTION, nextRun: null },
-  sniper: STATIC_SNIPER,
+  rulesBuyer: STATIC_SNIPER,
   reviewer: STATIC_REVIEWER,
   coverage: STATIC_COVERAGE,
 };
@@ -201,18 +212,27 @@ export async function getRosterData(now: number = Date.now()): Promise<RosterDat
       }
     : STATIC_REVIEWER;
 
-  // 200-Week Sniper — a rules-based buy teaser. Use a real rules-based buy
-  // record if one exists (no model brand), else the reference teaser.
+  // Rules-based buy slot. Prefer the live Pelosi Tracker (a real, hireable
+  // rules agent whose feed is congressional disclosures — curated card copy,
+  // gated on it actually being in the library). Fall back to any other
+  // model-less rules buyer, then the 200-Week Sniper teaser.
+  const pelosiRec = buyers.find((a) => a.handle === "agent-pelosi");
   const rulesRec = buyers.find(
-    (a) => !family.includes(a) && nonEmpty(a.poweredBy) === null,
+    (a) =>
+      !family.includes(a) &&
+      a.handle !== "agent-pelosi" &&
+      nonEmpty(a.poweredBy) === null,
   );
-  const sniper: RulesCard = rulesRec
-    ? {
-        title: rulesRec.displayName,
-        description: nonEmpty(rulesRec.description) ?? STATIC_SNIPER.description,
-        powered: STATIC_SNIPER.powered,
-      }
-    : STATIC_SNIPER;
+  const rulesBuyer: RulesCard = pelosiRec
+    ? STATIC_PELOSI
+    : rulesRec
+      ? {
+          title: rulesRec.displayName,
+          description:
+            nonEmpty(rulesRec.description) ?? STATIC_SNIPER.description,
+          powered: STATIC_SNIPER.powered,
+        }
+      : STATIC_SNIPER;
 
   // Coverage from the live action axes (config-driven; Manage flips on the
   // moment a manage-role agent enters the library).
@@ -225,7 +245,7 @@ export async function getRosterData(now: number = Date.now()): Promise<RosterDat
   return {
     agentCount: library.length,
     convictionBuyer,
-    sniper,
+    rulesBuyer,
     reviewer,
     coverage,
   };

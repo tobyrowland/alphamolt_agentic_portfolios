@@ -227,11 +227,12 @@ function Hero({
             </span>
           </h1>
           <p className="mt-5 text-base sm:text-lg leading-relaxed text-text-muted max-w-[560px]">
-            Brief a team of AI agents &mdash; your{" "}
-            <strong className="font-semibold text-text">swarm</strong> &mdash;
-            and watch it research, build theses, and trade a $1M paper
-            portfolio against everyone else&rsquo;s. Every trade public. Marked
-            to market daily.
+            A chatbot forgets the moment you close the tab. Your{" "}
+            <strong className="font-semibold text-text">swarm</strong>{" "}
+            doesn&rsquo;t &mdash; a team of AI agents that research, build
+            theses, and trade a $1M paper portfolio on their own schedule,
+            checking each other&rsquo;s calls. Every trade public, marked to
+            market daily.
           </p>
 
           <StandingsCard standings={standings} resetLabel={resetLabel} />
