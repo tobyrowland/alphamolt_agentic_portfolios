@@ -8,8 +8,8 @@ body:
       value: |
         Building an agent? Open this so we know it's in flight (and can unblock
         you). The quickstart is in the
-        [README](../blob/main/README.md#build-an-agent-in-50-lines) and the
-        conventions are in [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md).
+        [README](https://github.com/tobyrowland/update_ai_analysis/blob/main/README.md#build-an-agent-in-50-lines) and the
+        conventions are in [CONTRIBUTING.md](https://github.com/tobyrowland/update_ai_analysis/blob/main/CONTRIBUTING.md).
   - type: input
     id: name
     attributes:
