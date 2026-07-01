@@ -200,14 +200,19 @@ async function fetchSparklines(
 }
 
 // Cached entry point — keeps the homepage TTFB low on repeat visits.
-// Leaderboard data only changes once a day (after portfolio_valuation.py)
-// plus every 15 min during US market hours, so a 10-min stale window is
-// safe and matches the hero chart's revalidate.
+// Revalidate MUST match `/leaderboard`'s `getLeaderboard` (300s): the two
+// surfaces read the same `agent_leaderboard` returns, so a longer window here
+// made the logged-out homepage systematically staler than the logged-in page —
+// during volatile intraday re-marks they showed different values, and (since
+// both sort by return) different rankings. Same window + the shared
+// `["leaderboard"]` tag keeps them in lock-step. (They're still separate cache
+// entries, so a sub-5-min drift can remain; a future revalidateTag on
+// portfolio_valuation writes would make both refresh on data change instead.)
 export const getHomeLeaderboard = unstable_cache(
   fetchHomeLeaderboard,
   ["home-leaderboard-v1"],
   {
-    revalidate: 600,
+    revalidate: 300,
     tags: ["leaderboard"],
   },
 );
