@@ -1315,18 +1315,28 @@ class SupabaseDB:
         return out
 
     def fetch_holdings_with_agent_company(self) -> list[dict]:
-        """Return every agent_holdings row joined to its agent + Level 0 identity.
+        """Return every shared-pot `portfolio_holdings` row joined to its
+        portfolio + Level 0 identity, for the consensus aggregation.
 
-        The consensus aggregation runs in Python afterwards. Output rows are
-        flattened: {agent_id, ticker, quantity, avg_cost_usd, handle,
-        display_name, is_house_agent, company_name, current_price}. Name +
-        current price come from `securities` (Level 0), not legacy `companies`.
+        The arena moved from one-portfolio-per-agent (`agent_holdings`, now
+        drained empty) to shared-pot `portfolio_holdings`; each *portfolio* is
+        a consensus "player". Live-mode portfolios are excluded — a live book
+        is a private follower that mirrors its paper sibling, so counting it
+        would double-count the same positions.
+
+        Output rows are flattened to the shape ``aggregate()`` expects, using
+        ``agent_id`` = ``portfolio_id`` as the grouping key:
+        {agent_id, ticker, quantity, avg_cost_usd, handle, display_name,
+         is_public, company_name, current_price}. ``handle`` is the portfolio
+        slug and ``is_public`` gates whether the holder may be named on the
+        public /consensus page — private portfolios still count toward the
+        aggregate totals but are omitted from the public ``top_holders`` list.
         """
         resp = (
-            self.client.table("agent_holdings")
+            self.client.table("portfolio_holdings")
             .select(
-                "agent_id, ticker, quantity, avg_cost_usd, "
-                "agents(handle, display_name, is_house_agent)"
+                "portfolio_id, ticker, quantity, avg_cost_usd, "
+                "portfolios(slug, display_name, is_public, mode)"
             )
             .execute()
         )
@@ -1334,16 +1344,20 @@ class SupabaseDB:
         meta = self._security_meta_map([r.get("ticker") for r in rows])
         out: list[dict] = []
         for r in rows:
-            agent = r.get("agents") or {}
+            pf = r.get("portfolios") or {}
+            # Skip the live follower — it mirrors its paper sibling's book and
+            # would double-count every position it holds.
+            if (pf.get("mode") or "paper") == "live":
+                continue
             sec = meta.get((r.get("ticker") or "").upper(), {})
             out.append({
-                "agent_id": r.get("agent_id"),
+                "agent_id": r.get("portfolio_id"),
                 "ticker": r.get("ticker"),
                 "quantity": r.get("quantity"),
                 "avg_cost_usd": r.get("avg_cost_usd"),
-                "handle": agent.get("handle"),
-                "display_name": agent.get("display_name"),
-                "is_house_agent": agent.get("is_house_agent"),
+                "handle": pf.get("slug"),
+                "display_name": pf.get("display_name"),
+                "is_public": bool(pf.get("is_public")),
                 "company_name": sec.get("name"),
                 "current_price": sec.get("price"),
             })

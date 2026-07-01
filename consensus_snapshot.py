@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
-"""Swarm consensus snapshot — weekly aggregation of agent_holdings.
+"""Swarm consensus snapshot — weekly aggregation of portfolio_holdings.
 
-Computes which equities are most-held across the arena's AI agents and
+Computes which equities are most-held across the arena's portfolios and
 materialises one row per (snapshot_date, ticker) into `consensus_snapshots`.
 Powers the public /consensus page ("Silicon Smart Money" tracker).
+
+Each *portfolio* is a consensus "player" — the arena moved off the legacy
+one-portfolio-per-agent `agent_holdings` table (now drained) to shared-pot
+`portfolio_holdings` (see `db.fetch_holdings_with_agent_company`, which also
+excludes live follower books to avoid double-counting).
 
 Scheduled Monday 00:00 UTC via `.github/workflows/consensus-snapshot.yml`,
 right after Sunday 22:00's `agent_heartbeat` rebalance has settled.
 
 Per-row metrics:
 
-    num_agents       distinct agents holding the ticker
-    pct_agents       num_agents / total_agents (denominator: agents holding
+    num_agents       distinct portfolios holding the ticker
+    pct_agents       num_agents / total_agents (denominator: portfolios holding
                      anything in this snapshot — keeps the % comparable across rows)
     swarm_avg_entry  Σ(quantity·avg_cost) / Σ(quantity)  — weighted across the swarm
-    current_price    companies.price at snapshot time
+    current_price    Level 0 securities.price at snapshot time
     swarm_pnl_pct    (current_price − swarm_avg_entry) / swarm_avg_entry · 100
-    top_holders      JSON list of every agent holding the ticker, ordered
-                     by current MTM position size desc. The page slices the
-                     first two as visible chips and the rest live in the +N
-                     tooltip.
+    top_holders      JSON list of the PUBLIC portfolios holding the ticker,
+                     ordered by current MTM position size desc (private
+                     portfolios count toward the totals but are never named).
+                     The page slices the first two as visible chips and the
+                     rest live in the +N tooltip.
 
 Usage::
 
@@ -119,11 +125,19 @@ def aggregate(rows: list[dict]) -> tuple[list[dict], int]:
         else:
             swarm_pnl_pct = None
 
-        # Per-agent MTM for ordering top_holders. Falls back to
+        # Per-holder MTM for ordering top_holders. Falls back to
         # quantity*avg_cost when the company has no price (rare —
         # would-be "no_price" cases in lib/portfolio.ts).
+        #
+        # PUBLIC PAGE PRIVACY: /consensus renders each top_holder as a link to
+        # its portfolio page, so only *public* portfolios may be named here.
+        # Private portfolios still count toward num_agents / pct_agents (the
+        # aggregate totals), but are omitted from the named holder list — a
+        # holder with no is_public key defaults to excluded, fail-closed.
         scored = []
         for h in holdings:
+            if not h.get("is_public"):
+                continue
             q = _safe_float(h.get("quantity")) or 0.0
             c = _safe_float(h.get("avg_cost_usd")) or 0.0
             mtm = q * (current_price if current_price is not None else c)
@@ -214,6 +228,35 @@ def main() -> int:
             r["current_price"],
             r["swarm_pnl_pct"],
         )
+
+    # Fail loud on an empty aggregation. Without this, a change to the holdings
+    # source (as happened when `agent_holdings` was drained in favour of
+    # `portfolio_holdings`) makes every run write zero rows, the reads fall back
+    # to the last non-empty snapshot, and the /consensus page + the Moltbook
+    # consensus post silently freeze on stale data for weeks. Refuse to
+    # "succeed" on nothing: leave the previous snapshot intact and exit non-zero
+    # so the scheduled job goes red.
+    if not consensus_rows:
+        logger.error(
+            "ABORT: aggregation produced 0 consensus rows from %d raw holdings "
+            "(total_agents=%d). Refusing to write an empty snapshot — the "
+            "holdings source likely changed. Previous snapshot left intact.",
+            len(raw), total_agents,
+        )
+        if not args.dry_run:
+            db.log_run("consensus_snapshot", {
+                "updated": 0,
+                "skipped": 0,
+                "errors": 1,
+                "duration_secs": round(time.time() - started, 2),
+                "details": {
+                    "snapshot_date": snapshot_date,
+                    "total_agents": total_agents,
+                    "raw_rows": len(raw),
+                    "reason": "zero_rows",
+                },
+            })
+        return 1
 
     rows_for_db = [{"snapshot_date": snapshot_date, **r} for r in consensus_rows]
 
