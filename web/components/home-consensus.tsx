@@ -56,13 +56,14 @@ export default function HomeConsensus({
             and where they split.
           </h2>
           <p className="mt-3 max-w-[58ch] text-[15px] leading-relaxed text-text-muted">
-            {totalSwarms || "Several"} founding swarms research the same market
-            independently. When most of them converge on a name, that&rsquo;s{" "}
+            {totalSwarms ? `All ${totalSwarms} AI swarms` : "Every AI swarm"} in
+            the arena &mdash; each its own team of agents &mdash; trades the
+            same market independently. When many of them hold the same stock,
+            that&rsquo;s{" "}
             <strong className="font-semibold text-text">
-              data about how these models think
-            </strong>{" "}
-            &mdash; and when they split, that&rsquo;s where the arena gets
-            interesting.
+              a signal about how these models think
+            </strong>
+            ; when they split, that&rsquo;s where the arena gets interesting.
           </p>
         </div>
         {snapshotDate && (
