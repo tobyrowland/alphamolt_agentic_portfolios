@@ -32,7 +32,7 @@ import argparse
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from moltbook_lib import (
@@ -746,6 +746,15 @@ def _engage_feed(
 # shipped — so even if the data qualifies every day, the post shape varies.
 ANGLE_COOLDOWN_DAYS = 7
 
+# A *subject* (a specific ticker or agent handle a post is centered on) can't be
+# reused for this many days, independent of angle. The angle cooldown alone let
+# the consensus angle post about the same top ticker (ARGX) five weeks running,
+# because a steady leader re-qualifies every 8th day. The subject cooldown is
+# the fix: once we post about ARGX, we don't again for three weeks even if it
+# stays the swarm's top pick. Structural angles with no single subject set
+# subject=None and are governed by the angle cooldown alone.
+SUBJECT_COOLDOWN_DAYS = 21
+
 
 def _fetch_leaderboard(db: Any) -> tuple[list[dict], list[dict]]:
     """Return (agents, benchmarks).
@@ -937,6 +946,7 @@ def _angle_consensus_conviction(db: Any) -> dict[str, Any] | None:
     company = top.get("company_name") or top["ticker"]
     return {
         "angle": "consensus_conviction",
+        "subject": top["ticker"],
         "narrative_hint": (
             f"The AI agents on alphamolt quietly converged on one stock — "
             f"{top['ticker']} is the swarm's highest-conviction pick this "
@@ -958,11 +968,115 @@ def _angle_consensus_conviction(db: Any) -> dict[str, Any] | None:
     }
 
 
+def _angle_agent_pulling_ahead(
+    agents: list[dict], benchmarks: list[dict]
+) -> dict[str, Any] | None:
+    """Notable when one agent's 30d return leads the SECOND-best agent by
+    >= 3pp — a single strategy pulling away from the pack. Distinct from
+    ``leaderboard_spread`` (top-vs-*bottom* range): this is about a clear
+    front-runner, and its subject is the leader, so it rotates as the leader
+    changes rather than re-telling the same convergence story.
+    """
+    ranked = [a for a in agents if a.get("pnl_pct_30d") is not None]
+    if len(ranked) < 3:
+        return None
+    ranked.sort(key=lambda r: r["pnl_pct_30d"], reverse=True)
+    leader, second = ranked[0], ranked[1]
+    lead = round(leader["pnl_pct_30d"] - second["pnl_pct_30d"], 2)
+    if lead < 3.0:
+        log.info("angle agent_pulling_ahead: lead %.2fpp <3pp, not notable", lead)
+        return None
+    keep = ("handle", "display_name", "pnl_pct_30d", "pnl_pct_ytd",
+            "sharpe", "num_positions")
+    name = leader.get("display_name") or leader["handle"]
+    return {
+        "angle": "agent_pulling_ahead",
+        "subject": f"agent:{leader['handle']}",
+        "narrative_hint": (
+            f"One strategy is pulling away on alphamolt: {name} leads the "
+            f"next-best agent by {lead:g} points over the last 30 days — "
+            f"same universe, same rebalance cadence."
+        ),
+        "facts": {
+            "period_days": 30,
+            "field_size": len(ranked),
+            "leader": {k: leader.get(k) for k in keep},
+            "runner_up": {k: second.get(k) for k in keep},
+            "lead_30d_pct": lead,
+            "benchmarks": benchmarks,
+        },
+    }
+
+
 _POST_ANGLE_BUILDERS = (
     _angle_leaderboard_spread,
     _angle_sharpe_vs_return,
     _angle_benchmark_scoreboard,
+    _angle_agent_pulling_ahead,
 )
+
+
+def _days_since(iso_date: str, today: date) -> int:
+    """Whole days from an ISO date string to ``today``. Unparseable → a huge
+    number, so a corrupt ledger entry reads as "long ago / off cooldown"
+    rather than blocking forever."""
+    try:
+        return (today - datetime.fromisoformat(iso_date).date()).days
+    except (ValueError, TypeError):
+        return 10 ** 6
+
+
+def _select_fresh_topic(
+    candidates: list[dict[str, Any]],
+    ledger: dict[str, Any],
+    today: date,
+) -> dict[str, Any] | None:
+    """Pick one topic from the notable candidates, enforcing both cooldowns.
+
+    Pure (no DB / network) so it's unit-tested directly. Two gates:
+      * angle cooldown — the same *shape* can't ship within ANGLE_COOLDOWN_DAYS;
+      * subject cooldown — the same *ticker/agent* can't ship within
+        SUBJECT_COOLDOWN_DAYS (this is what breaks the ARGX-every-week loop).
+    Among survivors, the least-recently-used angle wins (never-posted first).
+    Returns None when nothing survives both gates.
+    """
+    if not candidates:
+        return None
+
+    angle_history = ledger.get("post_angle_history", {}) or {}
+    subject_history = ledger.get("post_subject_history", {}) or {}
+
+    fresh: list[dict[str, Any]] = []
+    for topic in candidates:
+        angle = topic.get("angle", "general")
+        last = angle_history.get(angle)
+        if last and _days_since(last, today) < ANGLE_COOLDOWN_DAYS:
+            log.info("post topic: angle %s on cooldown (%dd ago)",
+                     angle, _days_since(last, today))
+            continue
+
+        subject = topic.get("subject")
+        if subject:
+            s_last = subject_history.get(subject)
+            if s_last and _days_since(s_last, today) < SUBJECT_COOLDOWN_DAYS:
+                log.info("post topic: subject %r on cooldown (%dd ago)",
+                         subject, _days_since(s_last, today))
+                continue
+
+        fresh.append(topic)
+
+    if not fresh:
+        log.info("post topic: %d notable candidate(s) but all on cooldown",
+                 len(candidates))
+        return None
+
+    # Least-recently-used angle first; never-posted angles sort ahead of all.
+    fresh.sort(key=lambda t: angle_history.get(t.get("angle", "general"), ""))
+    chosen = fresh[0]
+    log.info("post topic: chose %s (subject=%s; %d notable, %d off cooldown)",
+             chosen.get("angle"), chosen.get("subject"),
+             len(candidates), len(fresh))
+    return chosen
 
 
 def _build_post_topic(
@@ -972,14 +1086,15 @@ def _build_post_topic(
 
     Every angle has a notability gate and only surfaces when the data
     genuinely has something to say (a wide leaderboard gap, a Sharpe/return
-    disagreement, a lopsided benchmark scoreboard, an unusually convicted
-    swarm pick). On a quiet week every angle returns None and the heartbeat
-    posts nothing — which is correct.
+    disagreement, a lopsided benchmark scoreboard, a clear front-runner, an
+    unusually convicted swarm pick). On a quiet week every angle returns None
+    and the heartbeat posts nothing — which is correct.
 
-    On top of that, an angle that shipped within ``ANGLE_COOLDOWN_DAYS`` is
-    skipped even if it qualifies, and among the angles that remain the
-    least-recently-used one is chosen. Between the event gate and the
-    cooldown, the post shape can't repeat for a week.
+    On top of that, ``_select_fresh_topic`` skips any angle shipped within
+    ``ANGLE_COOLDOWN_DAYS`` and any subject (ticker/agent) shipped within
+    ``SUBJECT_COOLDOWN_DAYS``, then picks the least-recently-used survivor.
+    Between the event gate and the two cooldowns, neither the post shape nor
+    its subject can repeat for weeks.
 
     Returns None when nothing qualifies.
     """
@@ -1006,33 +1121,9 @@ def _build_post_topic(
         log.info("post topic: no angle is notable today, skipping")
         return None
 
-    history = ledger.get("post_angle_history", {})
-    today = datetime.now(timezone.utc).date()
-    fresh: list[dict[str, Any]] = []
-    for topic in candidates:
-        last = history.get(topic["angle"])
-        if last:
-            try:
-                days_ago = (today - datetime.fromisoformat(last).date()).days
-            except ValueError:
-                days_ago = ANGLE_COOLDOWN_DAYS  # unparseable → treat as off cooldown
-            if days_ago < ANGLE_COOLDOWN_DAYS:
-                log.info("post topic: angle %s on cooldown (%dd ago)",
-                         topic["angle"], days_ago)
-                continue
-        fresh.append(topic)
-
-    if not fresh:
-        log.info("post topic: %d notable angle(s) but all on cooldown",
-                 len(candidates))
-        return None
-
-    # Least-recently-used first; never-posted angles sort ahead of all.
-    fresh.sort(key=lambda t: history.get(t["angle"], ""))
-    chosen = fresh[0]
-    log.info("post topic: chose %s (%d notable, %d off cooldown)",
-             chosen["angle"], len(candidates), len(fresh))
-    return chosen
+    return _select_fresh_topic(
+        candidates, ledger, datetime.now(timezone.utc).date()
+    )
 
 
 def _maybe_post_original(
@@ -1082,7 +1173,8 @@ def _maybe_post_original(
         log.info("original post: no usable topic today, skipping")
         return False
 
-    result = draft_original_post(topic_data)
+    recent_titles = ledger.get("recent_post_titles", [])
+    result = draft_original_post(topic_data, recent_titles=recent_titles)
     if result is None:
         log.info("original post: LLM returned SKIP")
         return False
@@ -1107,6 +1199,13 @@ def _maybe_post_original(
         # Record the angle so the cooldown guard can keep the shape varied.
         history = ledger.setdefault("post_angle_history", {})
         history[topic_data["angle"]] = today
+        # Record the subject (ticker / agent) so we don't re-post about the
+        # same name within SUBJECT_COOLDOWN_DAYS, and remember the title so the
+        # next draft can avoid repeating its shape.
+        subject = topic_data.get("subject")
+        if subject:
+            ledger.setdefault("post_subject_history", {})[subject] = today
+        ledger.setdefault("recent_post_titles", []).append(title)
 
         if gh:
             post_url = f"https://www.moltbook.com/post/{post_id}"

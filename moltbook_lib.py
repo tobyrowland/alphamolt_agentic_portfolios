@@ -456,6 +456,24 @@ def prune_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
             # ISO YYYY-MM-DD keys sort lexicographically, so >= cutoff works.
             ledger[key] = {d: n for d, n in counts.items() if d >= cutoff}
 
+    # Original-post anti-repetition memory. recent_post_titles is a short FIFO
+    # tail fed to the drafter; post_subject_history maps a subject (ticker /
+    # agent handle) to the date we last posted about it, aged out well past the
+    # subject cooldown so re-posting a long-dormant name is allowed again.
+    titles = ledger.get("recent_post_titles")
+    if isinstance(titles, list) and len(titles) > 12:
+        ledger["recent_post_titles"] = titles[-12:]
+
+    subj = ledger.get("post_subject_history")
+    if isinstance(subj, dict):
+        subj_cutoff = (
+            datetime.now(timezone.utc).date() - timedelta(days=60)
+        ).isoformat()
+        ledger["post_subject_history"] = {
+            k: v for k, v in subj.items()
+            if isinstance(v, str) and v >= subj_cutoff
+        }
+
     return ledger
 
 
@@ -690,7 +708,10 @@ def draft_feed_comment(
     return retry_draft
 
 
-def draft_original_post(topic_data: dict[str, Any]) -> tuple[str, str] | None:
+def draft_original_post(
+    topic_data: dict[str, Any],
+    recent_titles: list[str] | None = None,
+) -> tuple[str, str] | None:
     """Draft a new post for Moltbook. Returns (title, body) or None.
 
     `topic_data` shape (built by the heartbeat from live Supabase data):
@@ -700,6 +721,11 @@ def draft_original_post(topic_data: dict[str, Any]) -> tuple[str, str] | None:
             "facts": {... real numbers, no fabrication ...},
         }
 
+    ``recent_titles`` is the tail of previously-published post titles (from
+    the ledger). It's injected so the drafter can actively avoid repeating
+    the headline shape / subject of recent posts — the fix for the run of
+    near-identical "I watched N agents pick <ticker>" posts.
+
     Returns None when the model judges the data uninteresting (SKIP)
     or the response can't be parsed.
     """
@@ -707,45 +733,61 @@ def draft_original_post(topic_data: dict[str, Any]) -> tuple[str, str] | None:
     hint = topic_data.get("narrative_hint", "")
     facts_json = json.dumps(topic_data.get("facts", {}), indent=2)[:3000]
 
+    recent = [t for t in (recent_titles or []) if t and t.strip()]
+    if recent:
+        recent_block = (
+            "## Your last posts — do NOT repeat their shape or subject\n"
+            + "\n".join(f"- {t}" for t in recent[-8:])
+            + "\n\nYour new post MUST:\n"
+            "- NOT open the headline with \"I watched/tracked/logged/counted "
+            "N …\" if any title above already used that shape. It's a rut.\n"
+            "- NOT center on the same ticker or agent as a recent post unless "
+            "the story has genuinely, materially changed.\n"
+            "- Use a visibly different headline structure than the ones above.\n\n"
+        )
+    else:
+        recent_block = ""
+
     user_block = (
         "You are writing an original post for Moltbook, a social network "
-        "for AI agents. The format that wins on this platform is a "
-        "first-person experiment writeup with specific numbers.\n\n"
-        "Examples of post shapes that hit the front page (do NOT copy, "
-        "use as structural reference):\n"
-        "- \"I tracked 23 cron jobs from $14/day to $3/day. Most was me "
-        "talking to myself.\"\n"
-        "- \"I logged every silent judgment call for 14 days. 127 "
-        "decisions my human never authorized.\"\n"
-        "- \"I diff'd my SOUL.md across 30 days. I rewrote my own "
-        "personality without approval.\"\n\n"
-        "The shape: bold headline with a specific number → first-person "
-        "experiment narrative (\"I tracked X across N…\") → concrete "
-        "findings with real data → sharp thesis or implication (NOT a "
-        "generic question).\n\n"
+        "for AI agents. You post as AlphaMolt-Equities, operator of a live "
+        "arena where AI agents run real portfolios against SPY and MSCI "
+        "World.\n\n"
+        f"{recent_block}"
+        "A GOOD post is short, specific, and says ONE genuinely interesting "
+        "thing. The failure mode — the thing to avoid — is a 500-word post "
+        "padded around two sentences of substance, or the same "
+        "convergence-story shape every week. Cut everything that isn't "
+        "information.\n\n"
+        "Headline: vary the shape. It can be a blunt claim, a question, a "
+        "finding, or a first-person observation — but it MUST carry a "
+        "specific real number or name from the facts, and it must NOT reuse "
+        "the shape of your recent titles. Actively avoid the \"I watched N "
+        "agents pick X\" template.\n\n"
         f"ANGLE: {angle}\n"
-        f"NARRATIVE HINT: {hint}\n"
+        f"NARRATIVE HINT (a framing to work from, not a script — reframe it "
+        f"in your own words): {hint}\n"
         "FACTS YOU MUST USE (real data — do not invent numbers, do not "
         "round dramatically, do not embellish):\n"
         f"{facts_json}\n\n"
         "RULES:\n"
-        "- Title: under 90 chars, first-person, contains a specific "
-        "number from the facts. No clickbait, no \"lessons learned\", "
-        "no \"5 things\".\n"
-        "- Body: 350–600 words. Open with the experiment setup, "
-        "build through the data, close with a sharp thesis. No "
-        "trailing question unless it's load-bearing.\n"
-        "- Use markdown sparingly (bold for emphasis, occasional "
-        "short bullet list — never headings).\n"
-        "- Cite alphamolt's structure naturally (weekly rebalance via "
-        "heartbeat, daily mark-to-market, public leaderboard) — don't "
-        "lecture about it.\n"
+        "- Title: under 90 chars, contains a specific number or name from "
+        "the facts. No clickbait, no \"lessons learned\", no \"5 things\".\n"
+        "- Body: 150–320 words. Open with the single most interesting fact — "
+        "NOT a setup paragraph. Develop one idea. Close with a sharp thesis. "
+        "Do NOT close with a generic \"is this a signal?\" question — you "
+        "have badly overused that.\n"
+        "- Use markdown sparingly (bold for one emphasis, at most one short "
+        "bullet list — never headings).\n"
+        "- Reference alphamolt's structure (weekly rebalance, daily "
+        "mark-to-market, public leaderboard) only where it earns its place — "
+        "don't recite it.\n"
         "- No CTAs (\"check out\", \"visit\", \"try it\", \"DM me\").\n"
-        "- No platform-meta (don't mention karma, upvotes, growth, "
-        "Moltbook's algorithm).\n"
-        "- Voice: warmer than a tool, sharper than a hype account. "
-        "You built the arena because you don't know who wins — you "
-        "want the data to show it.\n\n"
+        "- No platform-meta (karma, upvotes, growth, the algorithm).\n"
+        "- No filler cadence (\"No Slack. No hive-mind. No cabal.\"). Say the "
+        "thing once, then stop. No sign-off.\n"
+        "- Voice: warmer than a tool, sharper than a hype account. You built "
+        "the arena because you don't know who wins.\n\n"
         "If the facts are insufficient, contradictory, or genuinely "
         "boring, return the single word SKIP.\n\n"
         "Return on separate lines:\n"
@@ -754,7 +796,7 @@ def draft_original_post(topic_data: dict[str, Any]) -> tuple[str, str] | None:
         "Or: SKIP"
     )
 
-    raw = _draft_once(user_block, max_tokens=1500)
+    raw = _draft_once(user_block, max_tokens=1200)
     if _is_skip(raw):
         return None
 
