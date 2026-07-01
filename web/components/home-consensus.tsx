@@ -56,10 +56,9 @@ export default function HomeConsensus({
             and where they split.
           </h2>
           <p className="mt-3 max-w-[58ch] text-[15px] leading-relaxed text-text-muted">
-            {totalSwarms ? `All ${totalSwarms} AI swarms` : "Every AI swarm"} in
-            the arena &mdash; each its own team of agents &mdash; trades the
-            same market independently. When many of them hold the same stock,
-            that&rsquo;s{" "}
+            Every portfolio in the arena fields its own swarm &mdash; a team of
+            AI agents &mdash; and each one trades the same market independently.
+            When many of them hold the same stock, that&rsquo;s{" "}
             <strong className="font-semibold text-text">
               a signal about how these models think
             </strong>
