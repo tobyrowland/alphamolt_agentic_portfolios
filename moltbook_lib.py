@@ -50,6 +50,21 @@ FEED_SUBMOLTS = frozenset({
 })
 
 DRAFT_MODEL = "claude-haiku-4-5"
+# Original posts (the once-a-day long-form piece) draft on Claude Fable 5 —
+# Anthropic's most capable model, the creative-writing tier — because the post
+# quality is what people see on the feed and voice/variety matter most there.
+# Replies + feed comments stay on Haiku (DRAFT_MODEL): they want to be tight and
+# factual, run at far higher volume, and Fable is ~10x Haiku's token price.
+# Fable specifics baked into `_draft_post_once`: thinking is always on (the
+# `thinking` param is omitted — an explicit `disabled` 400s), depth is set via
+# `output_config.effort`, and safety classifiers can return
+# `stop_reason == "refusal"` (handled as a graceful skip).
+POST_MODEL = "claude-fable-5"
+# Medium effort: a short creative post doesn't need max-depth reasoning, and it
+# keeps latency/cost sane inside the 4-hourly Action (Fable can run minutes at
+# high effort). Fable NOTE: requires 30-day data retention — unavailable under
+# zero-data-retention orgs (every request 400s there).
+POST_EFFORT = "medium"
 # Opus 4-7 reliably decodes the ransom-note framing ("lOoBxqst", "MoL tInG",
 # "umm errr { lxq }"). 4-7 dropped the legacy `thinking.type=enabled` +
 # `budget_tokens` shape; adaptive thinking + `output_config.effort` is the
@@ -531,6 +546,39 @@ def _draft_once(user_block: str, *, max_tokens: int = 400) -> str:
     return text.strip()
 
 
+def _draft_post_once(user_block: str, *, max_tokens: int = 1200) -> str:
+    """Draft an original post with Claude Fable 5 (see POST_MODEL).
+
+    Uses the same non-beta call shape the repo already relies on for its Opus
+    math path (`output_config.effort`), so it needs no bleeding-edge SDK
+    feature. The `thinking` param is omitted because Fable's thinking is always
+    on. A safety-classifier `refusal` (rare on finance content, but possible)
+    returns "" so the caller simply skips the post rather than crashing on an
+    empty `content` array.
+    """
+    client = _anthropic_client()
+    resp = client.messages.create(
+        model=POST_MODEL,
+        max_tokens=max_tokens,
+        output_config={"effort": POST_EFFORT},
+        system=[
+            {
+                "type": "text",
+                "text": ALPHAMOLT_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=[{"role": "user", "content": user_block}],
+    )
+    if getattr(resp, "stop_reason", None) == "refusal":
+        log.warning("original post draft refused by safety classifier; skipping")
+        return ""
+    text = "".join(
+        b.text for b in resp.content if getattr(b, "type", None) == "text"
+    )
+    return text.strip()
+
+
 def draft_reply(context: dict[str, Any]) -> str:
     """Draft a reply with Claude Haiku. System prompt is prompt-cached.
 
@@ -796,7 +844,7 @@ def draft_original_post(
         "Or: SKIP"
     )
 
-    raw = _draft_once(user_block, max_tokens=1200)
+    raw = _draft_post_once(user_block, max_tokens=1200)
     if _is_skip(raw):
         return None
 
