@@ -778,10 +778,13 @@ def _fetch_leaderboard(db: Any) -> tuple[list[dict], list[dict]]:
         rows = (
             db.client.table("agent_leaderboard")
             .select(
-                "agent_id, handle, display_name, total_value_usd, "
+                "handle, display_name, total_value_usd, "
                 "pnl_pct, pnl_pct_1d, pnl_pct_30d, pnl_pct_ytd, "
                 "sharpe, sharpe_n_returns, num_positions"
             )
+            # Public rows only — the view includes private human portfolios,
+            # and post facts (handle/display_name/returns) go on a public feed.
+            .eq("is_public", True)
             .execute()
             .data
             or []

@@ -390,11 +390,29 @@ class GitHubIssuer:
         """
         r = self.session.get(
             f"{self.base}/issues",
-            params={"labels": label, "state": "open", "per_page": 5},
+            params={"labels": label, "state": "open", "per_page": 10},
             timeout=TIMEOUT,
         )
-        issues = r.json() if r.status_code < 400 else []
-        for issue in issues:
+        if r.status_code >= 400:
+            # NEVER fall through to creation on a failed list call. Creating a
+            # fresh ledger silently discards ALL engagement state — dedup sets,
+            # daily caps, post cooldowns, relationship memory. The July 1 ARGX
+            # repeat post traces to exactly this: a transient lookup failure ->
+            # brand-new empty ledger (#1986) -> angle cooldown gone -> the
+            # consensus angle fired again 3 days into its 7-day cooldown.
+            raise RuntimeError(
+                f"ledger lookup failed (HTTP {r.status_code}): {r.text[:200]}"
+            )
+        issues = r.json()
+        if len(issues) > 1:
+            log.warning(
+                "multiple open ledger issues for label %s: %s — using the "
+                "newest with parseable state; close the stale ones",
+                label, [i.get("number") for i in issues],
+            )
+
+        markerless: list[int] = []
+        for issue in issues:  # newest-first (created desc)
             body = issue.get("body") or ""
             m = re.search(
                 re.escape(LEDGER_MARKER_START) + r"\s*(.*?)\s*"
@@ -406,8 +424,22 @@ class GitHubIssuer:
                 try:
                     return issue["number"], json.loads(m.group(1))
                 except json.JSONDecodeError:
-                    return issue["number"], {}
-            return issue["number"], {}
+                    log.error(
+                        "ledger issue #%s has an unparseable JSON blob",
+                        issue.get("number"),
+                    )
+            markerless.append(issue.get("number"))
+
+        if markerless:
+            # An open ledger issue exists but carries no readable state —
+            # reuse it (the next save rewrites the body) instead of creating
+            # yet another duplicate.
+            log.error(
+                "no parseable ledger state in open issue(s) %s for label %s — "
+                "reusing #%s with EMPTY state (engagement history lost)",
+                markerless, label, markerless[0],
+            )
+            return markerless[0], {}
 
         # No ledger issue exists — create one.
         self.ensure_label(
