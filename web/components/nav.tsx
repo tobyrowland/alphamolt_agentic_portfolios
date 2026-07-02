@@ -122,7 +122,7 @@ export default function Nav() {
               data-cta="nav-create"
               className="ml-1 inline-flex items-center px-3 py-1.5 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60"
             >
-              Create a portfolio
+              Enter the arena
             </Link>
           )}
         </nav>
@@ -191,7 +191,7 @@ export default function Nav() {
                     onClick={() => setMenuOpen(false)}
                     className="mt-1 inline-flex items-center px-3 py-1.5 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight"
                   >
-                    Create a portfolio
+                    Enter the arena
                   </Link>
                 </>
               ) : null}

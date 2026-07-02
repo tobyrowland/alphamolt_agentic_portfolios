@@ -216,6 +216,8 @@ export default function ScreenerClient({
   const [signedIn, setSignedIn] = useState(false);
   const [saveLink, setSaveLink] = useState<string | null>(null);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
+  // Logged-out Save → offer a real sign-in link (not just a text nudge).
+  const [needSignInToSave, setNeedSignInToSave] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [visible, setVisible] = useState(PAGE_SIZE);
@@ -460,6 +462,7 @@ export default function ScreenerClient({
   const patch = useCallback((p: Partial<ScreenConfig>) => {
     setConfig((c) => ({ ...c, preset: "custom", ...p }));
     setSaveLink(null);
+    setNeedSignInToSave(false);
   }, []);
 
   // Re-fetch the current screen — used after an exclusion/rejection changes the
@@ -701,7 +704,7 @@ export default function ScreenerClient({
 
   async function onSave() {
     if (!signedIn) {
-      setShareMsg("Sign in to save — viewing & sharing stay open.");
+      setNeedSignInToSave(true);
       return;
     }
     const name =
@@ -764,7 +767,11 @@ export default function ScreenerClient({
           explains that this page defines the universe the trader bots buy from.
           After that it collapses to a small re-openable link. */}
       {showIntro ? (
-        <IntroPopout runHref={runHref} onDismiss={dismissIntro} />
+        <IntroPopout
+          runHref={runHref}
+          signedIn={signedIn}
+          onDismiss={dismissIntro}
+        />
       ) : (
         <button
           type="button"
@@ -905,6 +912,13 @@ export default function ScreenerClient({
           {saveLink ? (
             <Link href={saveLink} className="text-[var(--color-cyan)] underline">
               saved
+            </Link>
+          ) : needSignInToSave ? (
+            <Link
+              href={`/login?next=${encodeURIComponent(`/screener?config=${encodeConfig(config)}`)}`}
+              className="text-[var(--color-cyan)] hover:underline"
+            >
+              Sign in to save →
             </Link>
           ) : shareMsg ? (
             <span className="text-text-muted">{shareMsg}</span>
@@ -1226,11 +1240,17 @@ export default function ScreenerClient({
  */
 function IntroPopout({
   runHref,
+  signedIn,
   onDismiss,
 }: {
   runHref: string;
+  signedIn: boolean;
   onDismiss: () => void;
 }) {
+  // The box speaks a different tense by audience. A signed-in owner is
+  // configuring THEIR universe ("your portfolio's bots"); a logged-out visitor
+  // (usually arriving from SEO / a shared link) owns nothing yet, so the same
+  // box becomes the pitch — what a swarm does with a screen like this one.
   return (
     <div className="relative mb-4 rounded-xl border border-[var(--color-cyan)]/40 bg-[var(--color-cyan)]/[0.05] p-4">
       <button
@@ -1244,23 +1264,42 @@ function IntroPopout({
       <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--color-cyan)] mb-1">
         How this works
       </div>
-      <p className="text-sm font-bold text-text">This is your trading universe.</p>
-      <p className="text-[12.5px] text-text-dim mt-1 leading-relaxed max-w-prose">
-        The screener ranks every US-listed stock by the filters and scoring you
-        set — and that ranking becomes the universe your portfolio&apos;s trader
-        bots pick from. So the filters and weights you choose here shape what
-        they can buy.
-      </p>
+      {signedIn ? (
+        <>
+          <p className="text-sm font-bold text-text">
+            This is your trading universe.
+          </p>
+          <p className="text-[12.5px] text-text-dim mt-1 leading-relaxed max-w-prose">
+            The screener ranks every US-listed stock by the filters and scoring
+            you set — and that ranking becomes the universe your
+            portfolio&apos;s trader bots pick from. So the filters and weights
+            you choose here shape what they can buy.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-sm font-bold text-text">
+            Every swarm picks from a universe like this.
+          </p>
+          <p className="text-[12.5px] text-text-dim mt-1 leading-relaxed max-w-prose">
+            Set the filters and scoring, then hand your screen to a team of AI
+            agents to trade $1M in paper money — live, in public. The ranking
+            you build here becomes the universe they buy from.
+          </p>
+        </>
+      )}
       <div className="mt-3 flex items-center gap-2 flex-wrap font-mono text-[11px]">
         <span className="rounded-md border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] px-2.5 py-1 text-[var(--color-cyan)]">
           This screen
         </span>
         <span className="text-text-muted">→</span>
         <span className="rounded-md border border-green/45 bg-green/[0.06] px-2.5 py-1 text-green">
-          Your portfolio
+          {signedIn ? "Your portfolio" : "A swarm"}
         </span>
         <Link href={runHref} className="ml-1 text-green hover:underline">
-          Run this screen as a portfolio →
+          {signedIn
+            ? "Run this screen as a portfolio →"
+            : "Run this screen as a swarm — free →"}
         </Link>
       </div>
       <button

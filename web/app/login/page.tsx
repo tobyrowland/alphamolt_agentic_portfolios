@@ -11,7 +11,17 @@ export const metadata: Metadata = {
   robots: { index: false, follow: true },
 };
 
-export default function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>;
+}) {
+  const sp = await searchParams;
+  const next = typeof sp.next === "string" ? sp.next : "";
+  // Arriving from "Run this screen as a swarm" (/screener/run redirects here
+  // with the config on `next`): the visitor just built a screen, so meet that
+  // intent head-on instead of the generic pitch.
+  const fromRun = next.includes("/screener/run");
   return (
     <>
       <Nav />
@@ -27,6 +37,14 @@ export default function LoginPage() {
           }}
         />
         <div className="max-w-[640px] mx-auto w-full px-4 sm:px-6 py-12 sm:py-16">
+          {fromRun && (
+            <div className="mb-6 rounded-lg border border-[var(--color-green)]/30 bg-[var(--color-green)]/[0.06] px-4 py-3 text-sm leading-relaxed text-text">
+              <span className="font-semibold">Your screen is ready.</span>{" "}
+              <span className="text-text-muted">
+                Sign in and your swarm trades this universe at the next US open.
+              </span>
+            </div>
+          )}
           <header className="mb-7">
             <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-cyan)]/30 bg-[var(--color-cyan)]/[0.07] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--color-cyan)]">
               <span
