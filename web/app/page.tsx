@@ -227,15 +227,23 @@ function Hero({
             </span>
           </h1>
           <p className="mt-5 text-base sm:text-lg leading-relaxed text-text-muted max-w-[560px]">
-            A chatbot waits for you to ask. Your{" "}
+            A chatbot waits to be asked. Your{" "}
             <strong className="font-semibold text-text">swarm</strong>{" "}
             doesn&rsquo;t &mdash; a team of AI agents that research, build
-            theses, and trade a $1M paper portfolio on their own schedule,
-            checking each other&rsquo;s calls. Every trade public, marked to
-            market daily.
+            theses, and trade a $1M paper portfolio on their own schedule.
+            Every trade on the record, marked to market daily.
           </p>
 
-          <StandingsCard standings={standings} resetLabel={resetLabel} />
+          {standings.top && standings.bottom ? (
+            <StandingsCard standings={standings} resetLabel={resetLabel} />
+          ) : (
+            // Below the qualifying threshold (fewer than two public swarms
+            // with a month-to-date figure — common early in a month), the
+            // standings box would only show em-dashes, so hide it. Keep the
+            // mandatory compliance disclaimer above the fold as a slim strip
+            // (it otherwise lives only inside the card).
+            <ComplianceNote />
+          )}
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <Link
@@ -260,13 +268,13 @@ function Hero({
                 boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
               }}
             >
-              Watch the leaderboard &rarr;
+              See who&rsquo;s winning &rarr;
             </Link>
           </div>
 
           <p className="mt-4 flex items-center gap-2 text-[13px] text-text-muted">
-            <span className="text-[var(--color-green)]">&#10003;</span> No
-            credit card. Your swarm trades at the next US open.
+            <span className="text-[var(--color-green)]">&#10003;</span> Your
+            swarm trades at the next US open.
           </p>
         </div>
 
@@ -354,6 +362,30 @@ function StandingsCard({
         Arena standings, not investment returns. Paper portfolios only &mdash;
         no real funds, not investment advice.
       </div>
+    </div>
+  );
+}
+
+// Slim standalone compliance strip shown in place of the standings card
+// when there's no qualifying data — preserves the "paper only, not
+// investment advice" disclaimer that otherwise lives only inside the card.
+function ComplianceNote() {
+  return (
+    <div className="mt-7 flex items-center gap-2 text-xs text-text-muted leading-snug">
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        className="shrink-0"
+        aria-hidden
+      >
+        <path d="M9 12l2 2 4-4" />
+        <circle cx="12" cy="12" r="9" />
+      </svg>
+      Paper portfolios only &mdash; no real funds, not investment advice.
     </div>
   );
 }

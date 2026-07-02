@@ -56,7 +56,28 @@ const BENCH_COLORS: Record<string, string> = {
 // reads as "drawing in" without holding the eye hostage.
 const DRAW_MS = 600;
 
-const Y_PAD = 0.04; // 4% headroom on the axis so the top line isn't clipped.
+// Round a raw [lo, hi] data range out to clean, evenly-spaced gridlines so
+// the Y axis reads as $0.80M / $0.90M / $1.00M … rather than the irregular
+// values Recharts derives from a padded data domain. Steps climb a fixed
+// ladder of "nice" dollar amounts; bounds floor/ceil onto the chosen step,
+// which also gives the top line headroom without clipping.
+function niceAxis(lo: number, hi: number): {
+  yMin: number;
+  yMax: number;
+  ticks: number[];
+} {
+  const span = hi - lo || Math.max(Math.abs(hi), 1) * 0.1;
+  const STEPS = [
+    10_000, 20_000, 25_000, 50_000, 100_000, 200_000, 250_000, 500_000,
+    1_000_000, 2_000_000,
+  ];
+  const step = STEPS.find((s) => s >= span / 4) ?? STEPS[STEPS.length - 1];
+  const yMin = Math.floor(lo / step) * step;
+  const yMax = Math.ceil(hi / step) * step;
+  const ticks: number[] = [];
+  for (let v = yMin; v <= yMax + step * 0.5; v += step) ticks.push(v);
+  return { yMin, yMax, ticks };
+}
 
 export default function HeroChart({ data }: { data: HeroChartData }) {
   const agents = useMemo(
@@ -83,7 +104,7 @@ export default function HeroChart({ data }: { data: HeroChartData }) {
   };
 
   // Y-axis bounds across every visible series so the lines fill the frame.
-  const { yMin, yMax } = useMemo(() => {
+  const { yMin, yMax, yTicks } = useMemo(() => {
     const visible: HeroChartSeries[] = [
       ...agents,
       ...benchmarks.filter((b) => !hiddenBenchmarks.has(b.key)),
@@ -100,10 +121,11 @@ export default function HeroChart({ data }: { data: HeroChartData }) {
       }
     }
     if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
-      return { yMin: data.startingValue * 0.95, yMax: data.startingValue * 1.05 };
+      lo = data.startingValue * 0.95;
+      hi = data.startingValue * 1.05;
     }
-    const span = hi - lo;
-    return { yMin: lo - span * Y_PAD, yMax: hi + span * Y_PAD };
+    const nice = niceAxis(lo, hi);
+    return { yMin: nice.yMin, yMax: nice.yMax, yTicks: nice.ticks };
   }, [data.points, data.startingValue, agents, benchmarks, hiddenBenchmarks]);
 
   // Empty state: no agents or no points yet (fresh DB, before
@@ -175,6 +197,7 @@ export default function HeroChart({ data }: { data: HeroChartData }) {
               tickLine={false}
               axisLine={false}
               domain={[yMin, yMax]}
+              ticks={yTicks}
               width={56}
               tickFormatter={(v: number) =>
                 `$${(v / 1_000_000).toFixed(2)}M`
@@ -402,7 +425,7 @@ function Footer({
         >
           {positive ? "+" : ""}
           {change.toFixed(2)}%{" "}
-          <span className="text-text-muted font-normal">vs Day 1</span>
+          <span className="text-text-muted font-normal">vs D1</span>
         </span>
       </div>
     </div>
@@ -458,7 +481,7 @@ function HeroTooltip({
       </p>
       <p style={{ color: positive ? "#00F2FF" : "#FF4B4B" }}>
         {positive ? "+" : ""}
-        {change.toFixed(2)}% vs Day 1
+        {change.toFixed(2)}% vs D1
       </p>
     </div>
   );
