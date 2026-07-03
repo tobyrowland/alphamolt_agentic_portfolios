@@ -19,7 +19,7 @@
 import { revalidatePath } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 import { requireUser } from "@/lib/auth/require-user";
-import { getPortfolioForUser, type Portfolio } from "@/lib/portfolios-query";
+import { type Portfolio } from "@/lib/portfolios-query";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -157,13 +157,28 @@ async function dispatchHeartbeatWorkflow(
   };
 }
 
-async function loadOwnedPortfolio(): Promise<
-  { ok: true; portfolio: Portfolio } | { ok: false; error: string }
-> {
+async function loadOwnedPortfolio(
+  portfolioId: string,
+): Promise<{ ok: true; portfolio: Portfolio } | { ok: false; error: string }> {
   const { user } = await requireUser();
-  const portfolio = await getPortfolioForUser(user.id);
+  const supabase = getSupabase();
+  // Owned-by-id lookup: since migration 070 a user may own several paper
+  // portfolios, so the caller (a portfolio detail page) names which one.
+  const { data, error } = await supabase
+    .from("portfolios")
+    .select(
+      "id, slug, display_name, description, owner_agent_id, owner_user_id, is_public, created_at, updated_at, screen_config, rebalance_cadence",
+    )
+    .eq("id", portfolioId)
+    .eq("owner_user_id", user.id)
+    .maybeSingle();
+  if (error) {
+    console.error("loadOwnedPortfolio failed:", error);
+    return { ok: false, error: "Couldn't find that portfolio." };
+  }
+  const portfolio = (data as Portfolio | null) ?? null;
   if (!portfolio) {
-    return { ok: false, error: "You don't have a portfolio yet." };
+    return { ok: false, error: "Couldn't find that portfolio." };
   }
   return { ok: true, portfolio };
 }
@@ -178,10 +193,11 @@ async function loadOwnedPortfolio(): Promise<
  *   4. no run for this (portfolio, agent) in the last cooldown window.
  */
 export async function runAgent(input: {
+  portfolioId: string;
   agentHandle: string;
   agentId?: string;
 }): Promise<ActionResult> {
-  const loaded = await loadOwnedPortfolio();
+  const loaded = await loadOwnedPortfolio(input.portfolioId);
   if (!loaded.ok) return loaded;
   const portfolio = loaded.portfolio;
 
@@ -221,8 +237,10 @@ export async function runAgent(input: {
  * the portfolio as a whole — if *any* member ran in the last cooldown
  * window the button rejects.
  */
-export async function runAllAgents(): Promise<ActionResult> {
-  const loaded = await loadOwnedPortfolio();
+export async function runAllAgents(input: {
+  portfolioId: string;
+}): Promise<ActionResult> {
+  const loaded = await loadOwnedPortfolio(input.portfolioId);
   if (!loaded.ok) return loaded;
   const portfolio = loaded.portfolio;
 

@@ -1,5 +1,5 @@
 /**
- * GET /screener/run?config={encoded}
+ * GET /screener/run?config={encoded}[&pf={portfolio id}]
  *
  * "Run this screen as a portfolio" from the screener signpost / cut banner.
  * Applies the screen as the signed-in owner's portfolio selection recipe
@@ -9,14 +9,15 @@
  * - Not signed in → /login?next=… so the apply completes after auth.
  * - Signed in, no portfolio yet → /account (the create flow), carrying the
  *   config so it can be applied once a portfolio exists.
- * - Signed in with a paper portfolio → set screen_config (owner-gated), then
- *   land on /portfolios/<slug>.
+ * - `pf` present → apply to that portfolio (ownership-verified).
+ * - Signed in with exactly one paper portfolio → apply to it.
+ * - Several paper portfolios (migration 070), no `pf` → the chooser page.
  */
 
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getSupabase } from "@/lib/supabase";
-import { getPortfolioForUser } from "@/lib/portfolios-query";
+import { getPaperPortfoliosForUser } from "@/lib/portfolios-query";
 import { screenConfigSchema } from "@/lib/screen/config";
 
 export const dynamic = "force-dynamic";
@@ -47,11 +48,25 @@ export async function GET(req: Request) {
     );
   }
 
-  const portfolio = await getPortfolioForUser(user.id);
-  if (!portfolio) {
+  const portfolios = await getPaperPortfoliosForUser(user.id);
+  if (portfolios.length === 0) {
     // No portfolio yet — send to the create flow, keeping the config around.
     return NextResponse.redirect(
       new URL(`/account?from=screen&config=${encoded}`, req.url),
+    );
+  }
+
+  const pf = url.searchParams.get("pf");
+  const portfolio = pf
+    ? portfolios.find((p) => p.id === pf)
+    : portfolios.length === 1
+      ? portfolios[0]
+      : undefined;
+  if (!portfolio) {
+    // Several portfolios and none named (or an id that isn't theirs) — let
+    // the owner pick which book gets the screen.
+    return NextResponse.redirect(
+      new URL(`/screener/run/choose?config=${encoded}`, req.url),
     );
   }
 

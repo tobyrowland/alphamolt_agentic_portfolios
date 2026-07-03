@@ -10,7 +10,9 @@ real account with `alpaca_execution.py --go-live <slug>`, which seeds the
 cash/holdings/baseline from Alpaca.
 
 Idempotent-ish: refuses if the owner already has a live portfolio (the
-(owner_user_id, mode) unique index would reject it anyway).
+idx_portfolios_one_live_per_user unique index would reject it anyway).
+The created row records which paper book it mirrors via
+follows_portfolio_id (migration 070).
 
     python bootstrap_live_portfolio.py --paper-slug my-arena-portfolio
     python bootstrap_live_portfolio.py --paper-slug mine --slug mine-live \
@@ -84,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         "is_public": False,   # CHECK: a live portfolio must be private
         "mode": "live",
         "description": None,  # followers have no mandate
+        "follows_portfolio_id": paper["id"],  # the paper book this mirrors
     }
     db._sanitize(row)
     db.client.table("portfolios").insert(row).execute()

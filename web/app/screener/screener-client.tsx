@@ -97,6 +97,9 @@ interface ScreenData {
   /** Viewer's active per-portfolio rejections (migration 051); only the
    *  /api/screen route populates this (SSR is anonymous). */
   rejected?: RejectedName[];
+  /** Which portfolio the rejection list belongs to — the viewer's primary
+   *  paper book (they may own several since migration 070). */
+  rejected_portfolio?: string | null;
 }
 
 interface RejectedName {
@@ -208,8 +211,10 @@ export default function ScreenerClient({
   const [exclBusy, setExclBusy] = useState(false);
   const [exclMsg, setExclMsg] = useState<string | null>(null);
   // Per-portfolio agent rejections (migration 051) — folded into the Hidden
-  // panel, each tagged with its rejection date.
+  // panel, each tagged with its rejection date. rejectedPortfolio names whose
+  // buyer's list this is (the viewer's primary paper book, migration 070).
   const [rejected, setRejected] = useState<RejectedName[]>(rejections);
+  const [rejectedPortfolio, setRejectedPortfolio] = useState<string | null>(null);
   const [rejBusy, setRejBusy] = useState(false);
   const [rejMsg, setRejMsg] = useState<string | null>(null);
   const [showIntro, setShowIntro] = useState(false);
@@ -443,6 +448,8 @@ export default function ScreenerClient({
             const json = (await res.json()) as ScreenData;
             setData(json);
             if (json.rejected) setRejected(json.rejected);
+            if (json.rejected_portfolio !== undefined)
+              setRejectedPortfolio(json.rejected_portfolio);
           }
         } finally {
           setLoading(false);
@@ -478,6 +485,8 @@ export default function ScreenerClient({
         const json = (await res.json()) as ScreenData;
         setData(json);
         if (json.rejected) setRejected(json.rejected);
+        if (json.rejected_portfolio !== undefined)
+          setRejectedPortfolio(json.rejected_portfolio);
       }
     } finally {
       setLoading(false);
@@ -1004,7 +1013,15 @@ export default function ScreenerClient({
       {signedIn && hiddenEntries.length > 0 && (
         <details className={`mb-2 ${card}`}>
           <summary className="list-none cursor-pointer font-mono text-[11px] text-text-muted px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden flex items-center justify-between">
-            <span>🚫 Hidden ({hiddenEntries.length}) — removed from the screener</span>
+            <span>
+              🚫 Hidden ({hiddenEntries.length}) — removed from the screener
+              {rejectedPortfolio && (
+                <span className="text-text-muted/60">
+                  {" "}
+                  · passed on by {rejectedPortfolio}&apos;s buyer
+                </span>
+              )}
+            </span>
             <span className="text-text-muted/60">manage ▾</span>
           </summary>
           <div className="px-3 pb-3 flex flex-wrap gap-1.5">

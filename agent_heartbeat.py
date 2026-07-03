@@ -53,6 +53,43 @@ def _now_utc() -> datetime:
 _LIVE_EXEC_ENV = "ALPACA_LIVE_EXECUTION_ENABLED"
 
 
+def _pair_live_followers(portfolios: list[dict]) -> dict[str, dict]:
+    """Map paper-portfolio id → the live follower that mirrors it.
+
+    Pairing is by the explicit follows_portfolio_id link (migration 070). An
+    unlinked live row (pre-070 / hand-made) falls back to its owner's paper
+    portfolio only when the owner has exactly ONE — with several paper books
+    the pairing is ambiguous, so the live row stays unpaired (warned, never
+    guessed). Pure so it's unit-testable.
+    """
+    log = logging.getLogger("agent_heartbeat")
+    paper_pfs = [p for p in portfolios if (p.get("mode") or "paper") != "live"]
+    papers_by_owner: dict[str, list[dict]] = {}
+    for p in paper_pfs:
+        owner = p.get("owner_user_id")
+        if owner:
+            papers_by_owner.setdefault(owner, []).append(p)
+
+    pairs: dict[str, dict] = {}
+    for live in portfolios:
+        if (live.get("mode") or "paper") != "live":
+            continue
+        follows = live.get("follows_portfolio_id")
+        if follows:
+            pairs[follows] = live
+            continue
+        owned = papers_by_owner.get(live.get("owner_user_id"), [])
+        if len(owned) == 1:
+            pairs[owned[0]["id"]] = live
+        else:
+            log.warning(
+                "live %s has no follows_portfolio_id and owner has %d paper "
+                "books — not mirroring", live.get("slug") or live.get("id"),
+                len(owned),
+            )
+    return pairs
+
+
 def _mirror_live_sibling(db, pm, *, paper: dict, live: dict, dry_run: bool) -> None:
     """Mirror a paper portfolio's composition onto its live Alpaca follower.
 
@@ -1083,19 +1120,15 @@ def main() -> int:
         portfolios = db.get_human_portfolios()
         # A live portfolio is a private FOLLOWER (migration 037): it has no
         # agents of its own. It doesn't rebalance in the member loop — instead
-        # it mirrors its paper sibling's composition onto Alpaca right after
-        # that sibling rebalances (alpaca_mirror).
-        live_by_owner = {
-            p["owner_user_id"]: p
-            for p in portfolios
-            if (p.get("mode") or "paper") == "live"
-        }
+        # it mirrors the paper book named by its follows_portfolio_id link
+        # (migration 070) right after that book rebalances (alpaca_mirror).
+        live_by_follow = _pair_live_followers(portfolios)
         paper_pfs = [
             p for p in portfolios if (p.get("mode") or "paper") != "live"
         ]
         logger.info(
             "=== human portfolios: %d (paper=%d, live-followers=%d) ===",
-            len(portfolios), len(paper_pfs), len(live_by_owner),
+            len(portfolios), len(paper_pfs), len(live_by_follow),
         )
         for portfolio in paper_pfs:
             pcounts = _run_portfolio(
@@ -1105,8 +1138,8 @@ def main() -> int:
             )
             for key, val in pcounts.items():
                 counts[key] = counts.get(key, 0) + val
-            # Mirror the live follower (if the owner has one) onto Alpaca.
-            live = live_by_owner.get(portfolio.get("owner_user_id"))
+            # Mirror the live follower (if one follows this book) onto Alpaca.
+            live = live_by_follow.get(portfolio["id"])
             if live:
                 _mirror_live_sibling(
                     db, pm, paper=portfolio, live=live, dry_run=args.dry_run,

@@ -43,6 +43,9 @@ export interface DashPortfolio {
    * serialized to the browser.
    */
   isLive: boolean;
+  /** For the live follower only: the display name of the paper book it
+   *  mirrors (follows_portfolio_id, migration 070). Null on paper rows. */
+  followsName: string | null;
 }
 
 export interface DashTrade {
@@ -137,13 +140,21 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
       .limit(20),
     supabase
       .from("portfolios")
-      .select("id")
+      .select("id, follows_portfolio_id")
       .eq("owner_user_id", userId)
       .eq("mode", "live")
       .maybeSingle(),
   ]);
 
-  const liveId = (liveRes.data as { id?: string } | null)?.id ?? null;
+  const liveRow = liveRes.data as
+    | { id?: string; follows_portfolio_id?: string | null }
+    | null;
+  const liveId = liveRow?.id ?? null;
+  // Name of the paper book the live follower mirrors — resolved against the
+  // already-fetched portfolios list (owner-only path, no extra query).
+  const followsName =
+    portfolios.find((p) => p.id === liveRow?.follows_portfolio_id)
+      ?.display_name ?? null;
 
   // History grouped by portfolio.
   const histByP = new Map<string, { date: string; value: number; pnl: number | null; pos: number }[]>();
@@ -202,6 +213,7 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
       hasReviewer: roles.reviewer,
       mandateEmpty: !(p.description && p.description.trim()),
       isLive: p.id === liveId,
+      followsName: p.id === liveId ? followsName : null,
     };
   });
 

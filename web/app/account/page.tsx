@@ -18,6 +18,7 @@ import {
 } from "@/lib/dashboard-query";
 import { getHouseTicker, type HouseTick } from "@/lib/house-activity-query";
 import { PRESETS, DEFAULT_PRESET } from "@/lib/screen/config";
+import { MAX_PAPER_PORTFOLIOS } from "@/lib/portfolios-query";
 
 export const metadata: Metadata = {
   // Private surface — never indexed, never in the sitemap (dashboard brief §6).
@@ -151,6 +152,27 @@ function Dashboard({
           {portfolios.map((p) => (
             <PortfolioCard key={p.id} p={p} />
           ))}
+          {portfolios.length < MAX_PAPER_PORTFOLIOS ? (
+            <Link
+              href="/account/new"
+              className="flex flex-col items-center justify-center rounded-xl border border-dashed border-white/15 bg-white/[0.015] p-4 text-center hover:border-[var(--color-green,#00FF41)]/50 transition-colors min-h-[120px]"
+            >
+              <span className="text-xl text-text-muted" aria-hidden>
+                ＋
+              </span>
+              <span className="mt-1 text-sm font-semibold text-text">
+                New portfolio
+              </span>
+              <span className="mt-0.5 text-[11px] font-mono text-text-muted">
+                {portfolios.length} of {MAX_PAPER_PORTFOLIOS} — try another
+                strategy
+              </span>
+            </Link>
+          ) : (
+            <div className="flex items-center justify-center rounded-xl border border-white/5 p-4 text-[11px] font-mono text-text-muted/70 min-h-[120px]">
+              {MAX_PAPER_PORTFOLIOS} of {MAX_PAPER_PORTFOLIOS} portfolios
+            </div>
+          )}
         </div>
       </section>
 
@@ -297,9 +319,13 @@ function LiveFollowerCard({ p }: { p: DashPortfolio }) {
           </span>
         </div>
         <p className="mt-2 text-xs text-text-muted leading-relaxed max-w-[60ch]">
-          Mirrors your arena book&apos;s positions onto a real Alpaca account,
-          sized to its actual value. Trades automatically with the swarm —
-          nothing to manage here.
+          Mirrors {p.followsName ? (
+            <span className="text-text">{p.followsName}</span>
+          ) : (
+            "your arena book"
+          )}
+          &apos;s positions onto a real Alpaca account, sized to its actual
+          value. Trades automatically with the swarm — nothing to manage here.
         </p>
       </Link>
     </section>

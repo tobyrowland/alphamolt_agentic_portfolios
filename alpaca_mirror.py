@@ -193,13 +193,37 @@ def mirror_paper_to_alpaca(
 
 
 def _sibling_paper_portfolio(db: SupabaseDB, live_pf: dict) -> dict | None:
-    """The paper portfolio the live follower mirrors — same owner, mode='paper'."""
+    """The paper portfolio the live follower mirrors.
+
+    Resolved by the explicit follows_portfolio_id link (migration 070). A live
+    row with no link (pre-070 / hand-made) falls back to the owner's paper
+    portfolio only when there is exactly ONE — with several paper books the
+    pairing is ambiguous and we skip rather than guess.
+    """
+    follows = live_pf.get("follows_portfolio_id")
+    if follows:
+        paper = db.get_portfolio_by_id(follows)
+        if paper and (paper.get("mode") or "paper") != "live":
+            return paper
+        logger.warning(
+            "live %s follows_portfolio_id %s is broken (missing or not paper) — skipping",
+            live_pf.get("slug") or live_pf.get("id"), follows,
+        )
+        return None
+
     owner = live_pf.get("owner_user_id")
     if not owner:
         return None
-    for p in db.get_human_portfolios():
-        if p.get("owner_user_id") == owner and (p.get("mode") or "paper") != "live":
-            return p
+    papers = [
+        p for p in db.get_human_portfolios()
+        if p.get("owner_user_id") == owner and (p.get("mode") or "paper") != "live"
+    ]
+    if len(papers) == 1:
+        return papers[0]
+    logger.warning(
+        "live %s has no follows_portfolio_id and owner has %d paper books — skipping",
+        live_pf.get("slug") or live_pf.get("id"), len(papers),
+    )
     return None
 
 

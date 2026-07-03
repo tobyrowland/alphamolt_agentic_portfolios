@@ -10,7 +10,6 @@
 
 import { revalidatePath } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
-import { getPortfolioForUser } from "@/lib/portfolios-query";
 import { requireUser } from "@/lib/auth/require-user";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -18,29 +17,39 @@ export type ActionResult = { ok: true } | { ok: false; error: string };
 const MAX_RATIONALE = 280;
 
 /**
- * The caller's arena (paper) portfolio id, or null.
+ * Verify the caller owns `portfolioId` and return it, else null.
  *
- * Since migration 037 a user may own a second, private *live* follower in
- * addition to their paper portfolio, so resolving "the user's portfolio"
- * with a bare `owner_user_id` + `.maybeSingle()` matches two rows and
- * errors — which previously surfaced as "You don't have a portfolio yet."
- * when deleting a watchlist item. The watchlist always belongs to the
- * arena book, so reuse the canonical paper-scoped resolver (which can't
- * drift again).
+ * Since migration 070 a user may own several paper portfolios, so the
+ * watchlist actions take an explicit portfolio id (threaded from the page)
+ * instead of resolving "the user's portfolio".
  */
-async function getOwnedPortfolioId(userId: string): Promise<string | null> {
-  const portfolio = await getPortfolioForUser(userId);
-  return portfolio?.id ?? null;
+async function verifyOwnedPortfolioId(
+  portfolioId: string,
+  userId: string,
+): Promise<string | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("portfolios")
+    .select("id")
+    .eq("id", portfolioId)
+    .eq("owner_user_id", userId)
+    .maybeSingle();
+  if (error) {
+    console.error("verifyOwnedPortfolioId lookup failed:", error);
+    return null;
+  }
+  return (data as { id: string } | null)?.id ?? null;
 }
 
 export async function addToWatchlist(input: {
+  portfolioId: string;
   ticker: string;
   rationale?: string;
 }): Promise<ActionResult> {
   const { user } = await requireUser();
-  const portfolioId = await getOwnedPortfolioId(user.id);
+  const portfolioId = await verifyOwnedPortfolioId(input.portfolioId, user.id);
   if (!portfolioId) {
-    return { ok: false, error: "You don't have a portfolio yet." };
+    return { ok: false, error: "Couldn't find that portfolio." };
   }
 
   const ticker = input.ticker.trim().toUpperCase();
@@ -90,12 +99,13 @@ export async function addToWatchlist(input: {
 }
 
 export async function removeFromWatchlist(input: {
+  portfolioId: string;
   ticker: string;
 }): Promise<ActionResult> {
   const { user } = await requireUser();
-  const portfolioId = await getOwnedPortfolioId(user.id);
+  const portfolioId = await verifyOwnedPortfolioId(input.portfolioId, user.id);
   if (!portfolioId) {
-    return { ok: false, error: "You don't have a portfolio yet." };
+    return { ok: false, error: "Couldn't find that portfolio." };
   }
 
   const ticker = input.ticker.trim().toUpperCase();
