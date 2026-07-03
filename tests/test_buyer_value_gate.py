@@ -6,7 +6,7 @@ passes_ps_band(ps, median, mode, pct):
   at_most   -> ps <= median*(1 + pct/100)  (ceiling; pct signed).
   at_least  -> ps >= median*(1 + pct/100)  (floor / premium).
 When engaged, names with no usable ps/median are EXCLUDED. Pure logic, no
-DB/LLM. Run: python test_buyer_value_gate.py
+DB/LLM. Run: pytest tests/test_buyer_value_gate.py
 """
 
 from __future__ import annotations

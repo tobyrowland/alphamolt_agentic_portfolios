@@ -4,7 +4,7 @@
 Pure-logic tests (no DB): filters, empirical-percentile components, the
 value inversion, the momentum collar, the AI multiplier, weighting and
 ranking. Mirrors the cases in web/lib/screen/score.ts so the Python buyer
-and the website agree. Run: python test_screen.py
+and the website agree. Run: pytest tests/test_screen.py
 """
 
 from __future__ import annotations

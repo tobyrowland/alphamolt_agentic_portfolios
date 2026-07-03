@@ -9,7 +9,7 @@ Three layers, all offline (no network, no DB, no broker):
 3. ``pelosi_mirror.rebalance_pelosi_mirror`` end-to-end against fakes,
    including the mirror-log dedup that makes re-runs no-ops.
 
-Run: python test_pelosi_mirror.py
+Run: pytest tests/test_pelosi_mirror.py
 """
 
 from __future__ import annotations

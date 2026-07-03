@@ -61,12 +61,12 @@ implementation is the Pelosi-mirror buyer:
   pure function: feed it disclosures + the current book, get a plan of trades
   out. No DB, no broker. The thin `rebalance_pelosi_mirror(ctx)` wrapper does
   the IO and calls `ctx.buy/ctx.sell`.
-- [`test_pelosi_mirror.py`](test_pelosi_mirror.py) — tests the pure core with
-  plain dicts. **No keys, no network.** Run it right now:
+- [`tests/test_pelosi_mirror.py`](tests/test_pelosi_mirror.py) — tests the pure
+  core with plain dicts. **No keys, no network.** Run it right now:
 
   ```bash
-  pip install -r requirements.txt
-  python test_pelosi_mirror.py        # or: pytest test_pelosi_mirror.py
+  pip install -r requirements.txt pytest
+  pytest tests/test_pelosi_mirror.py
   ```
 
 Other good models to copy: [`swarm.py`](swarm.py) (pure snake-draft / sell
@@ -136,12 +136,11 @@ A deeper map of the whole system lives in [CLAUDE.md](CLAUDE.md).
 ## Running locally
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt pytest
 
 # Pure strategy tests — no credentials needed:
-python test_pelosi_mirror.py
-python test_swarm.py
-python test_screen.py
+pytest                          # whole suite
+pytest tests/test_swarm.py      # just one area
 
 # The full pipeline needs Supabase + data-provider keys (see CLAUDE.md →
 # Environment Variables). You do NOT need these to write and test a strategy.

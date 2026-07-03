@@ -21,7 +21,7 @@ Trim semantics (the design the owner chose — 2a "partial trim to the cap"):
 
 The decision core (`plan_sector_trims`) is pure — holdings + sectors in, a list
 of sells out — so it is unit-tested without a DB or a broker
-(`test_sector_rebalancer.py`). The `rebalance_sector_rebalancer` wrapper does the
+(`tests/test_sector_rebalancer.py`). The `rebalance_sector_rebalancer` wrapper does the
 IO and trades through the standard `ctx.sell` facade, so it works on a paper
 book or a live Alpaca account exactly like every other strategy.
 """

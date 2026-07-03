@@ -3,7 +3,7 @@
 
 Covers the shared `web_search.recent_developments` helper and the buyer's
 `llm_watchlist_buyer.attach_recent_news` enrichment (cache + no-op behaviour).
-SerpAPI is mocked — no network. Run: python test_web_search.py
+SerpAPI is mocked — no network. Run: pytest tests/test_web_search.py
 """
 
 from __future__ import annotations

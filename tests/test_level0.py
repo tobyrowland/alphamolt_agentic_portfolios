@@ -6,7 +6,7 @@ classification, the affordability gate, the price-row mapper — and the
 FactStore distribution contract, all with stubbed dependencies (no live DB,
 no EODHD calls). Run directly:
 
-    python test_level0.py
+    pytest tests/test_level0.py
 """
 
 from __future__ import annotations

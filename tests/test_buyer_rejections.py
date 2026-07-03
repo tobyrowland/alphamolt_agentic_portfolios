@@ -3,7 +3,7 @@
 
 Verifies _pass_rejection_rows only hides true PASSes — a sub-gate BUY (a name
 the agent wants, just not its top pick) and a qualifying BUY are NOT recorded,
-so they stay eligible. Pure logic, no DB/LLM. Run: python test_buyer_rejections.py
+so they stay eligible. Pure logic, no DB/LLM. Run: pytest tests/test_buyer_rejections.py
 """
 
 from __future__ import annotations

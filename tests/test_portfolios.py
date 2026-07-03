@@ -7,7 +7,7 @@ Supabase. No live DB calls.
 
 Run directly:
 
-    python test_portfolios.py
+    pytest tests/test_portfolios.py
 """
 
 from __future__ import annotations

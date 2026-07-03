@@ -4,7 +4,7 @@
 Covers the four public helpers with stubbed Supabase access — no live
 DB calls, no LLM calls. Run directly:
 
-    python test_theses.py
+    pytest tests/test_theses.py
 """
 
 from __future__ import annotations

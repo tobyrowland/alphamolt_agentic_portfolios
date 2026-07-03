@@ -2,7 +2,7 @@
 """Unit tests for level0_eval (Stage A2) — the Tier-1 eval candidate loader.
 
 Pure-logic + a tiny fake PostgREST client for the staleness ordering. No DB,
-no LLM. Run: python test_level0_eval.py
+no LLM. Run: pytest tests/test_level0_eval.py
 """
 
 from __future__ import annotations

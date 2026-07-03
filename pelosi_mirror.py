@@ -26,7 +26,7 @@ logged, so the heartbeat is safe to retry and a freshly-hired agent replays at
 most ``lookback_days`` of history rather than years of it.
 
 The decision core (`plan_mirror`) is pure — trades + book in, a plan out — so
-it is unit-tested without a DB or a broker (`test_pelosi_mirror.py`). The
+it is unit-tested without a DB or a broker (`tests/test_pelosi_mirror.py`). The
 ``rebalance_pelosi_mirror`` wrapper does the IO and trades through the standard
 ``ctx.buy``/``ctx.sell`` facade, so it works on a paper book or (live-flagged)
 a real Alpaca account exactly like every other strategy.

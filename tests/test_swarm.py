@@ -2,7 +2,7 @@
 """Unit tests for the portfolio swarm coordination (swarm.py).
 
 Pure-logic tests of the snake-draft buy cycle and first-valid-sell — the
-decisions (convictions, verdicts) are injected. Run: python test_swarm.py
+decisions (convictions, verdicts) are injected. Run: pytest tests/test_swarm.py
 """
 
 from __future__ import annotations
