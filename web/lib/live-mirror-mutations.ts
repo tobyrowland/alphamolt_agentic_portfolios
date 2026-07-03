@@ -100,6 +100,56 @@ async function dispatchLiveMirror(inputs: {
  * Trigger a real-money mirror of the caller's live portfolio onto Alpaca.
  * Eligibility: signed in → owns a portfolio with this id at mode='live'.
  */
+/**
+ * Re-point the live follower at a different paper book (migration 070's
+ * follows_portfolio_id). Both ends are ownership-verified: the live row must
+ * be the caller's mode='live' follower, the target their own mode='paper'
+ * book. The next mirror run converges the real Alpaca account onto the new
+ * book's composition.
+ */
+export async function setLiveFollowTarget(input: {
+  portfolioId: string;
+  followsPortfolioId: string;
+}): Promise<ActionResult> {
+  const { user } = await requireUser();
+
+  const live = await resolveOwnedLivePortfolio(input.portfolioId, user.id);
+  if (!live) {
+    return { ok: false, error: "That isn't your live portfolio." };
+  }
+
+  const supabase = getSupabase();
+  const { data: target, error: targetErr } = await supabase
+    .from("portfolios")
+    .select("id, display_name")
+    .eq("id", input.followsPortfolioId)
+    .eq("owner_user_id", user.id)
+    .eq("mode", "paper")
+    .maybeSingle();
+  if (targetErr) {
+    console.error("setLiveFollowTarget target lookup failed:", targetErr);
+    return { ok: false, error: "Could not verify that portfolio. Try again." };
+  }
+  if (!target) {
+    return { ok: false, error: "Pick one of your own paper portfolios." };
+  }
+
+  const { error } = await supabase
+    .from("portfolios")
+    .update({ follows_portfolio_id: input.followsPortfolioId })
+    .eq("id", input.portfolioId)
+    .eq("owner_user_id", user.id)
+    .eq("mode", "live");
+  if (error) {
+    console.error("setLiveFollowTarget update failed:", error);
+    return { ok: false, error: "Could not update the link. Try again." };
+  }
+
+  revalidatePath(`/portfolios/${live.slug}`);
+  revalidatePath("/account");
+  return { ok: true };
+}
+
 export async function syncLivePortfolioToAlpaca(input: {
   portfolioId: string;
 }): Promise<ActionResult> {

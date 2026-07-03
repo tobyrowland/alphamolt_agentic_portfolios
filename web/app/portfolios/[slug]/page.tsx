@@ -13,6 +13,7 @@ import BetaDisclaimer from "@/components/beta-disclaimer";
 import ActivityDrawer from "@/components/activity-drawer";
 import SectorChip from "@/components/portfolio/sector-chip";
 import PortfolioTabs from "@/components/portfolio/portfolio-tabs";
+import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
 import {
   getPortfolio,
   getPortfolioByPortfolioId,
@@ -20,6 +21,8 @@ import {
 } from "@/lib/portfolio";
 import {
   getHoldingsCountForPortfolio,
+  getLiveFollowTarget,
+  getPaperPortfoliosForUser,
   getPortfolioBySlug,
   getPortfolioMode,
   getRecentTradesForPortfolio,
@@ -95,6 +98,12 @@ async function getPortfolioPageData(slug: string): Promise<{
   trades: Trade[];
   totalTrades: number;
   holdingsCount: number;
+  /** Owner-only, live followers only: the followed paper book + the owner's
+   *  paper books to re-point at (follows_portfolio_id, migration 070). */
+  liveFollow: {
+    currentId: string | null;
+    options: { id: string; name: string }[];
+  } | null;
 }> {
   const portfolio = await resolveVisiblePortfolio(slug);
   if (!portfolio) {
@@ -109,6 +118,7 @@ async function getPortfolioPageData(slug: string): Promise<{
       trades: [],
       totalTrades: 0,
       holdingsCount: 0,
+      liveFollow: null,
     };
   }
   const isOwner = await isViewerOwner(portfolio);
@@ -128,6 +138,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     library,
     recent,
     holdingsCount,
+    liveFollow,
   ] = await Promise.all([
     ownerAgentId
       ? getPortfolio(ownerAgentId).catch((err) => {
@@ -157,6 +168,22 @@ async function getPortfolioPageData(slug: string): Promise<{
       () => ({ trades: [], totalTrades: 0 }),
     ),
     getHoldingsCountForPortfolio(portfolioId).catch(() => 0),
+    // Which paper book the live follower mirrors + the books it could
+    // re-point at. Owner-only, live followers only.
+    isOwner && mode === "live" && ownerUserId
+      ? Promise.all([
+          getLiveFollowTarget(portfolioId, ownerUserId),
+          getPaperPortfoliosForUser(ownerUserId),
+        ])
+          .then(([currentId, papers]) => ({
+            currentId,
+            options: papers.map((p) => ({ id: p.id, name: p.display_name })),
+          }))
+          .catch((err) => {
+            console.error("live follow lookup failed for", slug, err);
+            return null;
+          })
+      : Promise.resolve(null),
   ]);
   const { trades, totalTrades } = recent;
 
@@ -171,6 +198,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     trades,
     totalTrades,
     holdingsCount,
+    liveFollow,
   };
 }
 
@@ -191,6 +219,7 @@ export default async function PortfolioPage({ params }: PageParams) {
     trades,
     totalTrades,
     holdingsCount,
+    liveFollow,
   } = await getPortfolioPageData(slug);
   if (!portfolio) notFound();
 
@@ -257,7 +286,11 @@ export default async function PortfolioPage({ params }: PageParams) {
           (visitor). A live follower has no team of its own: it mirrors the
           paper portfolio's positions, so it shows an explainer instead. */}
       {mode === "live" ? (
-        <LiveFollowerNote portfolioId={portfolio.id} isOwner={isOwner} />
+        <LiveFollowerNote
+          portfolioId={portfolio.id}
+          isOwner={isOwner}
+          liveFollow={liveFollow}
+        />
       ) : isOwner ? (
         <section id="team" className="mb-12 sm:mb-14 scroll-mt-20">
           <TeamBuilder
@@ -523,10 +556,18 @@ function PaperValueCard({
 function LiveFollowerNote({
   portfolioId,
   isOwner,
+  liveFollow,
 }: {
   portfolioId: string;
   isOwner: boolean;
+  liveFollow: {
+    currentId: string | null;
+    options: { id: string; name: string }[];
+  } | null;
 }) {
+  const followedName =
+    liveFollow?.options.find((o) => o.id === liveFollow.currentId)?.name ??
+    null;
   return (
     <section id="team" className="mb-12 sm:mb-14 scroll-mt-20">
       <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-[var(--color-green)] mb-3">
@@ -534,15 +575,19 @@ function LiveFollowerNote({
       </h2>
       <div className="rounded-2xl border border-[var(--color-green)]/30 bg-[var(--color-green)]/[0.04] px-4 py-4">
         <p className="text-sm text-text-dim leading-relaxed">
-          This account mirrors your{" "}
-          <Link
-            href="/account"
-            className="text-[var(--color-cyan)] hover:brightness-110 transition-[filter]"
-          >
-            paper portfolio
-          </Link>
+          This account mirrors{" "}
+          {followedName ? (
+            <span className="text-text">{followedName}</span>
+          ) : (
+            <Link
+              href="/account"
+              className="text-[var(--color-cyan)] hover:brightness-110 transition-[filter]"
+            >
+              your paper portfolio
+            </Link>
+          )}
           : it holds the same names in the same proportions, sized to its real
-          balance. There&apos;s no separate team to build here — your paper
+          balance. There&apos;s no separate team to build here — the paper
           portfolio&apos;s agents do the deciding, and this account follows
           automatically after each rebalance.
         </p>
@@ -550,6 +595,15 @@ function LiveFollowerNote({
             rather than waiting for the scheduled mirror. Owner-only; the action
             re-verifies ownership + live mode server-side. */}
         {isOwner && <SyncLiveButton portfolioId={portfolioId} />}
+        {/* Which paper book to mirror (migration 070) — with several books
+            the link must be visible and changeable. Owner-only. */}
+        {isOwner && liveFollow && liveFollow.options.length > 0 && (
+          <FollowTargetPicker
+            portfolioId={portfolioId}
+            currentId={liveFollow.currentId}
+            options={liveFollow.options}
+          />
+        )}
       </div>
     </section>
   );

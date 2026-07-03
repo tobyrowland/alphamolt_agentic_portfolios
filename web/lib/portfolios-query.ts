@@ -67,6 +67,33 @@ export async function getPortfolioMode(
     : "paper";
 }
 
+/**
+ * Which paper book a live follower mirrors (follows_portfolio_id, migration
+ * 070), or null when unlinked. Owner-only linkage — like `getPortfolioMode`,
+ * gated on a matching `owner_user_id` and never selected on a path that can
+ * reach a non-owner.
+ */
+export async function getLiveFollowTarget(
+  portfolioId: string,
+  ownerUserId: string,
+): Promise<string | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("portfolios")
+    .select("follows_portfolio_id")
+    .eq("id", portfolioId)
+    .eq("owner_user_id", ownerUserId)
+    .maybeSingle();
+  if (error) {
+    console.error("getLiveFollowTarget failed:", error);
+    return null;
+  }
+  return (
+    (data as { follows_portfolio_id?: string | null } | null)
+      ?.follows_portfolio_id ?? null
+  );
+}
+
 /** Count of distinct equities a portfolio currently holds. Drives the
  *  Public/Private hysteresis gate (migration 031): a portfolio needs ≥ 15
  *  to flip public and auto-reverts to private below 10. */
