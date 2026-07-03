@@ -339,7 +339,7 @@ def render_html(rows: list[Row]) -> str:
 
     body = [
         '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:760px;margin:0 auto;color:#1f2328">',
-        f'<h2 style="margin:0 0 2px;font-size:18px">AlphaMolt — Level&nbsp;0 data freshness</h2>',
+        '<h2 style="margin:0 0 2px;font-size:18px">AlphaMolt — Level&nbsp;0 data freshness</h2>',
         f'<p style="margin:0 0 14px;color:#57606a;font-size:13px">{now:%Y-%m-%d %H:%M UTC}</p>',
         f'<div style="display:inline-block;padding:6px 12px;border-radius:6px;background:{banner_bg};'
         f'color:{banner_fg};font-weight:600;font-size:14px;margin-bottom:16px">{banner}</div>',

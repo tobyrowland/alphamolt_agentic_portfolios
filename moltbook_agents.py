@@ -26,7 +26,7 @@ Adding an agent:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from moltbook_lib import ALPHAMOLT_SYSTEM
 

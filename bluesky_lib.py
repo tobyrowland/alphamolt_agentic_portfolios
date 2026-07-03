@@ -800,7 +800,6 @@ def draft_mention_reply(
 
 def get_or_create_ledger(gh) -> tuple[int, dict]:
     """Return (issue_number, ledger_dict) for the Bluesky engagement ledger."""
-    import requests
 
     r = gh.session.get(
         f"{gh.base}/issues",

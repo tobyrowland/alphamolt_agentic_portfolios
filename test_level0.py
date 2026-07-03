@@ -12,7 +12,6 @@ no EODHD calls). Run directly:
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
 
 import universe_sync as us
 import prices_daily_updater as pdu

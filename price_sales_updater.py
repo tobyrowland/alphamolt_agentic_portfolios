@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 
 from db import SupabaseDB
 from eodhd_updater import fetch_fundamentals_with_fallbacks
-from exchanges import resolve_eodhd_exchange, EXCHANGE_FALLBACKS, YAHOO_SUFFIX
+from exchanges import resolve_eodhd_exchange, YAHOO_SUFFIX
 
 # ---------------------------------------------------------------------------
 # Configuration

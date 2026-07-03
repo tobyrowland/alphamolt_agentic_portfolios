@@ -25,12 +25,8 @@ import argparse
 import logging
 import re
 import sys
-from datetime import datetime, timezone
 
 from moltbook_lib import GitHubIssuer
-from moltbook_lib import LEDGER_LABEL as MOLT_LEDGER_LABEL
-from moltbook_lib import LEDGER_MARKER_END as MOLT_END
-from moltbook_lib import LEDGER_MARKER_START as MOLT_START
 from social_personality import _keyword_hostility, record_hostility
 
 logging.basicConfig(

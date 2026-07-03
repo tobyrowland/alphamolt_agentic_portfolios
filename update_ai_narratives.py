@@ -13,10 +13,9 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date
 from pathlib import Path
 
-from dateutil import parser as dateparser
 from dotenv import load_dotenv
 
 from db import SupabaseDB
@@ -222,7 +221,8 @@ def build_financial_summary(company: dict) -> str:
 
 def _call_gemini_subprocess(prompt: str, api_key: str, model: str, timeout: int = 90) -> str:
     """Call Gemini via curl subprocess with a hard OS timeout."""
-    import subprocess, tempfile
+    import subprocess
+    import tempfile
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     payload = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
