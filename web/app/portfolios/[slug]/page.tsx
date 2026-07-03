@@ -12,6 +12,7 @@ import TeamScheduleNote from "@/components/portfolio/team-schedule-note";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import ActivityDrawer from "@/components/activity-drawer";
 import SectorChip from "@/components/portfolio/sector-chip";
+import PortfolioTabs from "@/components/portfolio/portfolio-tabs";
 import {
   getPortfolio,
   getPortfolioByPortfolioId,
@@ -306,6 +307,137 @@ export default async function PortfolioPage({ params }: PageParams) {
   const equityPct = totalValue > 0 ? (equityValue / totalValue) * 100 : 0;
   const pnlPct = totalValue > 0 ? (unrealized / totalValue) * 100 : 0;
 
+  // The book itself — summary, team, holdings, trades. Rendered directly for
+  // visitors / live followers, or as the default tab when the owner also has
+  // a Universe tab (the embedded screener).
+  const portfolioContent = (
+    <>
+      {/* SUMMARY — paper value, unrealized P&L, holdings, team (brief §5).
+          Honest: no invented alpha. */}
+      {snapshot && (
+        <section className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mb-6 sm:mb-8">
+          <PaperValueCard
+            total={totalValue}
+            equity={equityValue}
+            cash={cashValue}
+            equityPct={equityPct}
+          />
+          <SummaryCard
+            label="Unrealized P&L"
+            value={`${unrealized >= 0 ? "+" : "-"}$${Math.abs(unrealized).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            tone={unrealized > 0 ? "positive" : unrealized < 0 ? "negative" : "neutral"}
+            sub={`${unrealized >= 0 ? "+" : "-"}${Math.abs(pnlPct).toFixed(2)}% on equity`}
+          />
+          <SummaryCard
+            label="Holdings"
+            value={String(bookCount)}
+            sub="open positions"
+          />
+          {/* The Team card is meaningless for a live follower (it runs no
+              agents of its own — the paper sibling's swarm drives it). */}
+          {mode !== "live" && (
+            <SummaryCard
+              label="Team"
+              value={`${team.length} agent${team.length === 1 ? "" : "s"}`}
+              sub={
+                team.length === 0 ? (
+                  "none yet"
+                ) : (
+                  <span className="text-[var(--color-green)]">
+                    <TeamScheduleNote cadence={portfolio.rebalance_cadence} />
+                  </span>
+                )
+              }
+            />
+          )}
+        </section>
+      )}
+
+      {/* TEAM — the build + manage surface (owner) or a read-only roster
+          (visitor). A live follower has no team of its own: it mirrors the
+          paper portfolio's positions, so it shows an explainer instead. */}
+      {mode === "live" ? (
+        <LiveFollowerNote portfolioId={portfolio.id} isOwner={isOwner} />
+      ) : isOwner ? (
+        <section id="team" className="mb-12 sm:mb-14 scroll-mt-20">
+          <TeamBuilder
+            portfolioId={portfolio.id}
+            team={team}
+            library={library}
+          />
+        </section>
+      ) : (
+        <ReadOnlyTeam team={team} />
+      )}
+
+      {/* Holdings */}
+      {snapshot ? (
+        <section id="holdings" className="mb-12 sm:mb-14 scroll-mt-20">
+          <h3 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
+            Holdings ({snapshot.holdings.length})
+          </h3>
+          <HoldingsList
+            portfolioId={portfolio.id}
+            holdings={snapshot.holdings}
+            thesesByTicker={thesesByTicker}
+            canSell={isOwner}
+          />
+          {snapshot.holdings.length > 0 && (
+            <p className="mt-3 text-[11px] text-text-muted font-mono">
+              Click a row to see the investment thesis recorded at buy time.
+            </p>
+          )}
+        </section>
+      ) : (
+        <section className="mb-12 sm:mb-14">
+          <p className="text-sm text-text-muted italic">
+            Your agents are placing their first trades — holdings will appear
+            here once they do.
+          </p>
+        </section>
+      )}
+
+      {/* Recent trades */}
+      <section className="mb-12 sm:mb-14">
+        <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
+          Recent trades
+        </h2>
+        <TradeTape
+          trades={trades}
+          totalTrades={totalTrades}
+          emptyLabel="No trades yet — your agents are warming up."
+        />
+      </section>
+    </>
+  );
+
+  // UNIVERSE — the portfolio's own screener (owner-only, paper books). The
+  // saved recipe (screen_config) is what the buyers trade from; edits re-rank
+  // live, and "Save universe" commits them.
+  const universeContent =
+    isOwner && mode !== "live" && screener ? (
+      <section id="universe" className="mb-12 sm:mb-14 scroll-mt-20">
+        <p className="mb-3 font-mono text-[10.5px] text-text-muted">
+          Your buyers draft from the ranked top of this screen on each
+          heartbeat.
+        </p>
+        <ScreenerClient
+          embedded
+          portfolioId={portfolio.id}
+          portfolioSlug={portfolio.slug}
+          initialConfig={screener.config}
+          initialData={screener.initialData}
+          sectors={screener.sectors}
+          industries={screener.industries}
+          companyTickers={screener.companyTickers}
+          exclusions={screener.exclusions}
+          rejections={screener.rejections}
+          savedEncoded={screener.savedEncoded}
+          rejectedPortfolioName={portfolio.display_name}
+        />
+      </section>
+    ) : null;
+
   return (
     <>
       <Nav />
@@ -376,133 +508,17 @@ export default async function PortfolioPage({ params }: PageParams) {
             </div>
           </header>
 
-          {/* SUMMARY — paper value, unrealized P&L, holdings, team (brief §5).
-              Honest: no invented alpha. */}
-          {snapshot && (
-            <section className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mb-6 sm:mb-8">
-              <PaperValueCard
-                total={totalValue}
-                equity={equityValue}
-                cash={cashValue}
-                equityPct={equityPct}
-              />
-              <SummaryCard
-                label="Unrealized P&L"
-                value={`${unrealized >= 0 ? "+" : "-"}$${Math.abs(unrealized).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-                tone={unrealized > 0 ? "positive" : unrealized < 0 ? "negative" : "neutral"}
-                sub={`${unrealized >= 0 ? "+" : "-"}${Math.abs(pnlPct).toFixed(2)}% on equity`}
-              />
-              <SummaryCard
-                label="Holdings"
-                value={String(bookCount)}
-                sub="open positions"
-              />
-              {/* The Team card is meaningless for a live follower (it runs no
-                  agents of its own — the paper sibling's swarm drives it). */}
-              {mode !== "live" && (
-                <SummaryCard
-                  label="Team"
-                  value={`${team.length} agent${team.length === 1 ? "" : "s"}`}
-                  sub={
-                    team.length === 0 ? (
-                      "none yet"
-                    ) : (
-                      <span className="text-[var(--color-green)]">
-                        <TeamScheduleNote cadence={portfolio.rebalance_cadence} />
-                      </span>
-                    )
-                  }
-                />
-              )}
-            </section>
-          )}
-
-          {/* TEAM — the build + manage surface (owner) or a read-only roster
-              (visitor). A live follower has no team of its own: it mirrors the
-              paper portfolio's positions, so it shows an explainer instead. */}
-          {mode === "live" ? (
-            <LiveFollowerNote portfolioId={portfolio.id} isOwner={isOwner} />
-          ) : isOwner ? (
-            <section id="team" className="mb-12 sm:mb-14 scroll-mt-20">
-              <TeamBuilder
-                portfolioId={portfolio.id}
-                team={team}
-                library={library}
-              />
-            </section>
-          ) : (
-            <ReadOnlyTeam team={team} />
-          )}
-
-          {/* UNIVERSE — the portfolio's own screener (owner-only, paper books).
-              The saved recipe (screen_config) is what the buyers trade from;
-              edits here re-rank live, and "Save universe" commits them. */}
-          {isOwner && mode !== "live" && screener && (
-            <section id="universe" className="mb-12 sm:mb-14 scroll-mt-20">
-              <div className="mb-3 flex items-baseline justify-between gap-3 flex-wrap">
-                <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim">
-                  Universe — screener
-                </h2>
-                <p className="font-mono text-[10.5px] text-text-muted">
-                  Your buyers draft from the ranked top of this screen on each
-                  heartbeat.
-                </p>
-              </div>
-              <ScreenerClient
-                embedded
-                portfolioId={portfolio.id}
-                portfolioSlug={portfolio.slug}
-                initialConfig={screener.config}
-                initialData={screener.initialData}
-                sectors={screener.sectors}
-                industries={screener.industries}
-                companyTickers={screener.companyTickers}
-                exclusions={screener.exclusions}
-                rejections={screener.rejections}
-                savedEncoded={screener.savedEncoded}
-                rejectedPortfolioName={portfolio.display_name}
-              />
-            </section>
-          )}
-
-          {/* Holdings */}
-          {snapshot ? (
-            <section id="holdings" className="mb-12 sm:mb-14 scroll-mt-20">
-              <h3 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
-                Holdings ({snapshot.holdings.length})
-              </h3>
-              <HoldingsList
-                portfolioId={portfolio.id}
-                holdings={snapshot.holdings}
-                thesesByTicker={thesesByTicker}
-                canSell={isOwner}
-              />
-              {snapshot.holdings.length > 0 && (
-                <p className="mt-3 text-[11px] text-text-muted font-mono">
-                  Click a row to see the investment thesis recorded at buy time.
-                </p>
-              )}
-            </section>
-          ) : (
-            <section className="mb-12 sm:mb-14">
-              <p className="text-sm text-text-muted italic">
-                Your agents are placing their first trades — holdings will appear
-                here once they do.
-              </p>
-            </section>
-          )}
-
-          {/* Recent trades */}
-          <section className="mb-12 sm:mb-14">
-            <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
-              Recent trades
-            </h2>
-            <TradeTape
-              trades={trades}
-              totalTrades={totalTrades}
-              emptyLabel="No trades yet — your agents are warming up."
+          {/* Owner of a paper book gets a two-tab layout: the book (default)
+              and its Universe (the embedded screener). Everyone else gets the
+              plain single-column portfolio view. */}
+          {universeContent ? (
+            <PortfolioTabs
+              portfolio={portfolioContent}
+              universe={universeContent}
             />
-          </section>
+          ) : (
+            portfolioContent
+          )}
 
           {/* Footer */}
           <section className="pt-6 border-t border-white/10">
