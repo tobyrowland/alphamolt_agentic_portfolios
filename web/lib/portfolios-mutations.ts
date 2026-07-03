@@ -149,6 +149,62 @@ export async function createPortfolio(input: {
   return { ok: true };
 }
 
+/**
+ * One-click portfolio creation from the dashboard's "＋ New portfolio" card —
+ * no form. Creates the book with a default name ("Portfolio N"), the house
+ * default universe preset and an empty mandate, and returns the slug so the
+ * client can land straight on the normal portfolio page (rename/brief there).
+ * Same cap + RPC path as createPortfolio.
+ */
+export async function createPortfolioQuick(): Promise<
+  { ok: true; slug: string } | { ok: false; error: string }
+> {
+  const { user } = await requireUser();
+
+  const count = await countOwnedPaperPortfolios(user.id);
+  if (count >= MAX_PAPER_PORTFOLIOS) {
+    return {
+      ok: false,
+      error: `You've hit the limit of ${MAX_PAPER_PORTFOLIOS} paper portfolios.`,
+    };
+  }
+
+  const displayName = `Portfolio ${count + 1}`;
+  const supabase = getSupabase();
+  const slug = await uniquePortfolioSlug(displayName);
+
+  const { data: created, error } = await supabase.rpc("create_portfolio_funded", {
+    p_owner_user_id: user.id,
+    p_slug: slug,
+    p_display_name: displayName,
+    p_description: null,
+  });
+
+  if (error) {
+    if (error.code === "23514" || /portfolio limit/i.test(error.message ?? "")) {
+      return {
+        ok: false,
+        error: `You've hit the limit of ${MAX_PAPER_PORTFOLIOS} paper portfolios.`,
+      };
+    }
+    console.error("createPortfolioQuick failed:", error);
+    return { ok: false, error: "Could not create the portfolio. Try again." };
+  }
+
+  // Seed the default universe preset — best-effort, same as createPortfolio.
+  const createdId = (created as { id?: string } | null)?.id;
+  if (createdId) {
+    const { error: cfgErr } = await supabase
+      .from("portfolios")
+      .update({ screen_config: presetConfig(DEFAULT_PRESET) })
+      .eq("id", createdId);
+    if (cfgErr) console.error("createPortfolioQuick: set universe failed:", cfgErr);
+  }
+
+  revalidate(slug);
+  return { ok: true, slug };
+}
+
 export async function updatePortfolioDetails(input: {
   portfolioId: string;
   name: string;
