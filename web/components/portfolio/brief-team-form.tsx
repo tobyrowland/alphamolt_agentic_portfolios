@@ -43,14 +43,10 @@ export default function BriefTeamForm({
   presets,
   defaultPreset,
   defaultName,
-  redirectTo,
 }: {
   presets: PresetOption[];
   defaultPreset: string;
   defaultName: string;
-  /** Where to land after a successful create (e.g. "/account" from the
-   *  standalone /account/new page). Default: refresh in place. */
-  redirectTo?: string;
 }) {
   const router = useRouter();
   const [name, setName] = useState(defaultName);
@@ -82,12 +78,7 @@ export default function BriefTeamForm({
         setError(result.error);
         return;
       }
-      if (redirectTo) {
-        router.push(redirectTo);
-        router.refresh();
-      } else {
-        router.refresh();
-      }
+      router.refresh();
     });
   }
 

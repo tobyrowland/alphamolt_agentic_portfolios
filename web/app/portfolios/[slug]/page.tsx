@@ -14,6 +14,7 @@ import ActivityDrawer from "@/components/activity-drawer";
 import SectorChip from "@/components/portfolio/sector-chip";
 import PortfolioTabs from "@/components/portfolio/portfolio-tabs";
 import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
+import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
 import {
   getPortfolio,
   getPortfolioByPortfolioId,
@@ -241,6 +242,24 @@ export default async function PortfolioPage({ params }: PageParams) {
   // /portfolios/<slug>/universe (the screener page for this book).
   const portfolioContent = (
     <>
+      {/* Name & mandate — the owner's edit surface (collapsed; the header
+          shows the current name). Reuses the standing details editor. */}
+      {isOwner && mode !== "live" && (
+        <details className="mb-6 rounded-xl border border-white/10 bg-white/[0.02]">
+          <summary className="list-none cursor-pointer font-mono text-[11px] text-[var(--color-cyan)] px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden flex items-center justify-between">
+            <span>⚙ Name &amp; mandate</span>
+            <span className="text-text-muted/60">edit ▾</span>
+          </summary>
+          <div className="px-3 pb-4 pt-1">
+            <PortfolioDetailsEditor
+              portfolioId={portfolio.id}
+              initialName={portfolio.display_name}
+              initialMandate={portfolio.description ?? ""}
+            />
+          </div>
+        </details>
+      )}
+
       {/* SUMMARY — paper value, unrealized P&L, holdings, team (brief §5).
           Honest: no invented alpha. */}
       {snapshot && (

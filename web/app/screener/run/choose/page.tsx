@@ -78,10 +78,10 @@ export default async function ChoosePortfolioPage({
           <p className="mt-8 text-sm text-text-muted">
             Or{" "}
             <Link
-              href="/account/new"
+              href="/account"
               className="text-[var(--color-cyan)] hover:brightness-110 transition-[filter]"
             >
-              brief a new team
+              create a new portfolio
             </Link>{" "}
             and set this screen there.
           </p>
