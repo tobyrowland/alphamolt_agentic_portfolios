@@ -1,55 +1,39 @@
-"use client";
-
-import { useState, type ReactNode } from "react";
+import Link from "next/link";
 
 /**
- * Two-tab shell for the owner's portfolio page: Portfolio (the book — summary,
- * team, holdings, trades) and Universe (the embedded screener). Both panels
- * stay mounted (hidden via CSS) so unsaved screener edits survive switching
- * tabs; only the owner of a paper book sees tabs at all — the page renders
- * the plain single-column view for everyone else.
+ * Link-tabs joining the owner's two portfolio pages: Portfolio
+ * (/portfolios/<slug> — the book) and Universe (/portfolios/<slug>/universe —
+ * the screener page loaded with this book's saved screen). Plain navigation
+ * between two ordinary pages; no client state. Rendered only for the owner
+ * of a paper book — everyone else sees the plain portfolio page with no tabs.
  */
 export default function PortfolioTabs({
-  portfolio,
-  universe,
+  slug,
+  active,
 }: {
-  portfolio: ReactNode;
-  universe: ReactNode;
+  slug: string;
+  active: "portfolio" | "universe";
 }) {
-  const [active, setActive] = useState<"portfolio" | "universe">("portfolio");
-
-  const tab = (key: "portfolio" | "universe", label: string) => (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active === key}
-      onClick={() => setActive(key)}
-      className={`px-3.5 py-2 font-mono text-[11px] font-bold uppercase tracking-[0.14em] border-b-2 -mb-px transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-text/40 ${
-        active === key
-          ? "border-[var(--color-green)] text-text"
-          : "border-transparent text-text-muted hover:text-text"
-      }`}
-    >
-      {label}
-    </button>
-  );
-
+  const tabs = [
+    { key: "portfolio" as const, label: "Portfolio", href: `/portfolios/${slug}` },
+    { key: "universe" as const, label: "Universe", href: `/portfolios/${slug}/universe` },
+  ];
   return (
-    <div>
-      <div
-        role="tablist"
-        aria-label="Portfolio sections"
-        className="flex items-center gap-1 border-b border-white/10 mb-8"
-      >
-        {tab("portfolio", "Portfolio")}
-        {tab("universe", "Universe")}
-      </div>
-      <div role="tabpanel" hidden={active !== "portfolio"}>
-        {portfolio}
-      </div>
-      <div role="tabpanel" hidden={active !== "universe"}>
-        {universe}
-      </div>
+    <div className="flex items-center gap-1 border-b border-white/10 mb-8">
+      {tabs.map((t) => (
+        <Link
+          key={t.key}
+          href={t.href}
+          aria-current={active === t.key ? "page" : undefined}
+          className={`px-3.5 py-2 font-mono text-[11px] font-bold uppercase tracking-[0.14em] border-b-2 -mb-px transition-colors ${
+            active === t.key
+              ? "border-[var(--color-green)] text-text"
+              : "border-transparent text-text-muted hover:text-text"
+          }`}
+        >
+          {t.label}
+        </Link>
+      ))}
     </div>
   );
 }
