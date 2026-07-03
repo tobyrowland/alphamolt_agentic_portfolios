@@ -9,7 +9,6 @@ import {
   unexcludeFromScreener,
 } from "@/lib/screen/exclusions-mutations";
 import { restoreRejection, restoreAllRejections } from "@/lib/screen/rejections-mutations";
-import { savePortfolioScreenConfig } from "@/lib/portfolios-mutations";
 import {
   FILTER_FIELDS,
   FILTER_OPS,
@@ -178,11 +177,7 @@ export default function ScreenerClient({
   companyTickers = [],
   exclusions = [],
   rejections = [],
-  embedded = false,
-  portfolioId,
-  portfolioSlug: portfolioSlugProp,
-  savedEncoded,
-  rejectedPortfolioName = null,
+  portfolioContext,
 }: {
   initialConfig: ScreenConfig;
   initialData: ScreenData;
@@ -198,23 +193,17 @@ export default function ScreenerClient({
   rejections?: RejectedName[];
   defaultEncoded?: string;
   /**
-   * Embedded per-portfolio mode (portfolio detail page, owner-only): config
-   * comes solely from props (no URL/localStorage), edits re-rank live but
-   * persist only via the explicit "Save universe" button, and all fetches are
-   * scoped to `portfolioId` (&pf=). Default off — the public /screener page
-   * is byte-identical to before these props existed.
+   * Set on a portfolio's Universe tab (/portfolios/<slug>/universe): the
+   * screener renders VERBATIM, but its plumbing is scoped to this book —
+   * config comes solely from props (no URL rewriting, no shared localStorage
+   * bleed), /api/screen fetches and rejection restores carry the portfolio id,
+   * the holdings overlay pins to this book, and "Run this screen as a
+   * portfolio" targets it directly. Absent on the public /screener page,
+   * which behaves exactly as it always has.
    */
-  embedded?: boolean;
-  /** Required with `embedded`: save target + rejection scope. */
-  portfolioId?: string;
-  /** Forces the holdings overlay to THIS book (instead of auto-resolving the
-   *  viewer's own primary portfolio). */
-  portfolioSlug?: string;
-  /** encodeConfig(saved screen_config) — the dirty-state baseline. */
-  savedEncoded?: string;
-  /** Hidden-panel caption without a fetch (embedded SSR knows the name). */
-  rejectedPortfolioName?: string | null;
+  portfolioContext?: { id: string; slug: string; name: string };
 }) {
+  const pfCtx = portfolioContext ?? null;
   const linkable = useMemo(
     () => new Set(companyTickers.map((t) => t.toUpperCase())),
     [companyTickers],
@@ -238,13 +227,8 @@ export default function ScreenerClient({
   // buyer's list this is (the viewer's primary paper book, migration 070).
   const [rejected, setRejected] = useState<RejectedName[]>(rejections);
   const [rejectedPortfolio, setRejectedPortfolio] = useState<string | null>(
-    rejectedPortfolioName,
+    pfCtx?.name ?? null,
   );
-  // Embedded save state: the last-persisted recipe (dirty baseline) + save
-  // feedback. `savedEnc` only means something in embedded mode.
-  const [savedEnc, setSavedEnc] = useState(savedEncoded ?? "");
-  const [saving, setSaving] = useState(false);
-  const [saveErr, setSaveErr] = useState<string | null>(null);
   const [rejBusy, setRejBusy] = useState(false);
   const [rejMsg, setRejMsg] = useState<string | null>(null);
   const [showIntro, setShowIntro] = useState(false);
@@ -265,7 +249,7 @@ export default function ScreenerClient({
   // overlay — it's resolved to the viewer's OWN portfolio client-side once
   // we know they're signed in (never a hardcoded house portfolio). Resolved
   // after paint so the cached page is identical for everyone.
-  const [portfolioSlug, setPortfolioSlug] = useState(portfolioSlugProp ?? "");
+  const [portfolioSlug, setPortfolioSlug] = useState(pfCtx?.slug ?? "");
   const [holdings, setHoldings] = useState<Record<string, ScreenHolding>>({});
   // Lazy P/S sparkline series, per ticker, fetched on first row-expand (the
   // series isn't in the matview — brief §5). "loading" while in flight.
@@ -336,10 +320,10 @@ export default function ScreenerClient({
   // localStorage — otherwise navigating back silently resets to the default
   // preset and the filters appear "dropped". Hydrate after mount, then mirror.
   useEffect(() => {
-    // Embedded mode: the portfolio's saved screen_config IS the source of
+    // Portfolio context: the book's saved screen_config IS the source of
     // truth — never hydrate from (or leak into) the public screener's
     // localStorage.
-    if (embedded) {
+    if (pfCtx) {
       configHydrated.current = true;
       return;
     }
@@ -363,21 +347,22 @@ export default function ScreenerClient({
   }, []);
 
   useEffect(() => {
-    if (embedded) return; // per-portfolio recipes never touch shared storage
+    if (pfCtx) return; // per-portfolio recipes never touch shared storage
     if (!configHydrated.current) return; // don't save the default over a restored screen
     try {
       localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
     } catch {
       /* storage unavailable — non-fatal */
     }
-  }, [config, embedded]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config]);
 
   // The Custom recipe is remembered separately so it survives switching to a
   // house preset and back (and a refresh). Hydrate after mount, then mirror.
-  // Embedded mode keeps the in-memory Custom behavior (the pill still works
-  // within the session) but never reads/writes the shared storage key.
+  // With a portfolio context the in-memory Custom behavior stays (the pill
+  // still works within the session) but the shared storage key is untouched.
   useEffect(() => {
-    if (embedded) {
+    if (pfCtx) {
       customHydrated.current = true;
       return;
     }
@@ -401,13 +386,14 @@ export default function ScreenerClient({
     if (!customHydrated.current) return;
     if (!isCustomConfig(config)) return;
     setCustomConfig(config);
-    if (embedded) return;
+    if (pfCtx) return;
     try {
       localStorage.setItem(CUSTOM_STORAGE_KEY, JSON.stringify(config));
     } catch {
       /* storage unavailable — non-fatal */
     }
-  }, [config, embedded]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config]);
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
@@ -419,7 +405,7 @@ export default function ScreenerClient({
       // an owner read their own row). Prefer the paper/arena portfolio — the
       // one the screener actually feeds — over a live follower. Never a
       // hardcoded house portfolio, so a logged-out visitor never sees one.
-      if (embedded) return; // overlay is pinned to the page's portfolio
+      if (pfCtx) return; // overlay is pinned to the page's portfolio
       const { data: rows } = await supabase
         .from("portfolios")
         .select("slug, mode")
@@ -434,9 +420,7 @@ export default function ScreenerClient({
 
   // Show the "how this works" intro the first few visits, then leave it hidden
   // (re-openable via the small link). Tracked client-side in localStorage.
-  // Skipped when embedded — the portfolio page has its own framing.
   useEffect(() => {
-    if (embedded) return;
     try {
       const n = Number(localStorage.getItem(INTRO_KEY) ?? "0");
       if (n < INTRO_MAX_VIEWS) {
@@ -507,9 +491,9 @@ export default function ScreenerClient({
         }
       }
 
-      // URL sync is a standalone-/screener behavior — embedded must never
-      // rewrite the portfolio page's URL.
-      if (!embedded) {
+      // URL sync is a standalone-/screener behavior — with a portfolio
+      // context the page URL is /portfolios/<slug>/universe and stays put.
+      if (!pfCtx) {
         const isClean = encoded === encodeConfig(presetConfig(config.preset ?? ""));
         const url =
           isClean && config.preset && config.preset !== "custom"
@@ -528,14 +512,12 @@ export default function ScreenerClient({
     setNeedSignInToSave(false);
   }, []);
 
-  // /api/screen URL for a given encoded config — embedded mode scopes the
-  // rejection list to THIS portfolio via &pf= (ownership-verified server-side).
+  // /api/screen URL for a given encoded config — a portfolio context scopes
+  // the rejection list to THIS book via &pf= (ownership-verified server-side).
   const apiScreenUrl = useCallback(
     (encoded: string) =>
-      `/api/screen?config=${encoded}${
-        embedded && portfolioId ? `&pf=${portfolioId}` : ""
-      }`,
-    [embedded, portfolioId],
+      `/api/screen?config=${encoded}${pfCtx ? `&pf=${pfCtx.id}` : ""}`,
+    [pfCtx],
   );
 
   // Re-fetch the current screen — used after an exclusion/rejection changes the
@@ -561,10 +543,10 @@ export default function ScreenerClient({
 
   // Once we learn the viewer is signed in, refetch so rejections (migration
   // 051) are applied + loaded. SSR is anonymous, so this is the logged-in
-  // owner's first filtered view. Fires once. Embedded SSR is already
-  // owner-personalized (this book's rejections came in via props), so the
-  // refetch is redundant there — start the ref tripped.
-  const signinRefetched = useRef(embedded);
+  // owner's first filtered view. Fires once. The Universe tab's SSR is
+  // already owner-personalized (this book's rejections came in via props),
+  // so the refetch is redundant there — start the ref tripped.
+  const signinRefetched = useRef(!!pfCtx);
   useEffect(() => {
     if (signedIn && !signinRefetched.current) {
       signinRefetched.current = true;
@@ -726,7 +708,7 @@ export default function ScreenerClient({
           : [...prev, prior ?? { ticker: t, rejected_at: new Date().toISOString() }],
       );
     try {
-      const res = await restoreRejection(t, embedded ? portfolioId : undefined);
+      const res = await restoreRejection(t, pfCtx?.id);
       if (res.ok) {
         await refetch();
       } else {
@@ -749,7 +731,7 @@ export default function ScreenerClient({
     setRejected([]);
     setRejBusy(true);
     try {
-      const res = await restoreAllRejections(embedded ? portfolioId : undefined);
+      const res = await restoreAllRejections(pfCtx?.id);
       if (res.ok) {
         await refetch();
       } else {
@@ -802,26 +784,6 @@ export default function ScreenerClient({
     }
   }
 
-  // Embedded save: persist the current recipe as THIS portfolio's
-  // screen_config — the explicit commit that changes what the buyers trade
-  // on the next heartbeat (edits above only re-rank the view).
-  const currentEnc = encodeConfig(config);
-  const dirty = embedded && currentEnc !== savedEnc;
-  async function onSaveUniverse() {
-    if (!portfolioId) return;
-    setSaveErr(null);
-    setSaving(true);
-    try {
-      const res = await savePortfolioScreenConfig({ portfolioId, config });
-      if (res.ok) setSavedEnc(currentEnc);
-      else setSaveErr(res.error);
-    } catch {
-      setSaveErr("Could not save the universe. Try again.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
   function setFilter(i: number, p: Partial<Filter>) {
     patch({ filters: config.filters.map((f, idx) => (idx === i ? { ...f, ...p } : f)) as Filter[] });
   }
@@ -853,8 +815,11 @@ export default function ScreenerClient({
   const usedFields = useMemo(() => new Set(config.filters.map((f) => f.field)), [config.filters]);
   // "Run as a portfolio" applies this screen as the portfolio's selection
   // recipe (screen_config) and lands on the portfolio page — see
-  // app/screener/run/route.ts.
-  const runHref = `/screener/run?config=${encodeConfig(config)}`;
+  // app/screener/run/route.ts. On a Universe tab the target book is known,
+  // so the run applies to it directly (no chooser).
+  const runHref = `/screener/run?config=${encodeConfig(config)}${
+    pfCtx ? `&pf=${pfCtx.id}` : ""
+  }`;
 
   const card = "rounded-xl border border-white/10 bg-white/[0.02]";
 
@@ -862,24 +827,22 @@ export default function ScreenerClient({
     <div>
       {/* How this works — a dismissible intro shown the first few visits; it
           explains that this page defines the universe the trader bots buy from.
-          After that it collapses to a small re-openable link. Embedded mode
-          skips it entirely (the portfolio page provides the framing). */}
-      {!embedded &&
-        (showIntro ? (
-          <IntroPopout
-            runHref={runHref}
-            signedIn={signedIn}
-            onDismiss={dismissIntro}
-          />
-        ) : (
-          <button
-            type="button"
-            onClick={() => setShowIntro(true)}
-            className="mb-4 inline-flex items-center gap-1.5 font-mono text-[10.5px] text-text-muted hover:text-text"
-          >
-            <span aria-hidden>ⓘ</span> How this works
-          </button>
-        ))}
+          After that it collapses to a small re-openable link. */}
+      {showIntro ? (
+        <IntroPopout
+          runHref={runHref}
+          signedIn={signedIn}
+          onDismiss={dismissIntro}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setShowIntro(true)}
+          className="mb-4 inline-flex items-center gap-1.5 font-mono text-[10.5px] text-text-muted hover:text-text"
+        >
+          <span aria-hidden>ⓘ</span> How this works
+        </button>
+      )}
 
       {/* Presets — the prominent way in. Custom is one of the cards. */}
       <PresetCards
@@ -1001,56 +964,30 @@ export default function ScreenerClient({
         <span>
           {data.match_count} of {data.total_universe} · re-ranks live{loading ? " · …" : ""}
         </span>
-        {embedded ? (
-          /* Embedded: no Share/Save-recipe — the one action is committing the
-             recipe to THIS portfolio. Edits re-rank the view; only Save
-             changes what the buyers trade next heartbeat. */
-          <span className="flex gap-3 items-center" aria-live="polite">
-            {saveErr ? (
-              <span className="text-[var(--color-red,#FF3333)]">{saveErr}</span>
-            ) : dirty ? (
-              <span className="text-[var(--color-amber,#FFB020)]">
-                unsaved changes
-              </span>
-            ) : (
-              <span className="text-text-muted">universe saved</span>
-            )}
-            <button
-              type="button"
-              onClick={onSaveUniverse}
-              disabled={!dirty || saving}
-              title="Commit this screen as the portfolio's universe — its buyers trade the ranked top N from the next heartbeat."
-              className="text-[var(--color-cyan)] hover:underline disabled:opacity-40 disabled:no-underline"
+        <span className="flex gap-3 items-center" aria-live="polite">
+          <button type="button" onClick={onShare} className="text-[var(--color-cyan)] hover:underline">
+            Share ↗
+          </button>
+          <button type="button" onClick={onSave} className="text-text-muted hover:text-text">
+            Save
+          </button>
+          {saveLink ? (
+            <Link href={saveLink} className="text-[var(--color-cyan)] underline">
+              saved
+            </Link>
+          ) : needSignInToSave ? (
+            <Link
+              href={`/login?next=${encodeURIComponent(`/screener?config=${encodeConfig(config)}`)}`}
+              className="text-[var(--color-cyan)] hover:underline"
             >
-              {saving ? "Saving…" : "Save universe"}
-            </button>
-          </span>
-        ) : (
-          <span className="flex gap-3 items-center" aria-live="polite">
-            <button type="button" onClick={onShare} className="text-[var(--color-cyan)] hover:underline">
-              Share ↗
-            </button>
-            <button type="button" onClick={onSave} className="text-text-muted hover:text-text">
-              Save
-            </button>
-            {saveLink ? (
-              <Link href={saveLink} className="text-[var(--color-cyan)] underline">
-                saved
-              </Link>
-            ) : needSignInToSave ? (
-              <Link
-                href={`/login?next=${encodeURIComponent(`/screener?config=${encodeConfig(config)}`)}`}
-                className="text-[var(--color-cyan)] hover:underline"
-              >
-                Sign in to save →
-              </Link>
-            ) : shareMsg ? (
-              <span className="text-text-muted">{shareMsg}</span>
-            ) : (
-              <span className="text-[var(--color-cyan)]">in this URL</span>
-            )}
-          </span>
-        )}
+              Sign in to save →
+            </Link>
+          ) : shareMsg ? (
+            <span className="text-text-muted">{shareMsg}</span>
+          ) : (
+            <span className="text-[var(--color-cyan)]">in this URL</span>
+          )}
+        </span>
       </div>
 
       {/* Configure scoring — sits right above the table it drives */}
@@ -1262,19 +1199,15 @@ export default function ScreenerClient({
             (who have no portfolio, so no held/sold badges to overlay). */}
         {signedIn && (
           <span className="ml-auto flex items-center gap-2">
-            {/* Embedded mode pins the overlay to the page's portfolio — no
-                manual slug input to point elsewhere. */}
-            {!embedded && (
-              <label className="text-text-muted">
-                Holdings:{" "}
-                <input
-                  value={portfolioSlug}
-                  onChange={(e) => setPortfolioSlug(e.target.value.trim())}
-                  aria-label="Portfolio slug for the holdings overlay"
-                  className="w-[150px] bg-black/30 border border-white/10 rounded px-1.5 py-0.5 text-text"
-                />
-              </label>
-            )}
+            <label className="text-text-muted">
+              Holdings:{" "}
+              <input
+                value={portfolioSlug}
+                onChange={(e) => setPortfolioSlug(e.target.value.trim())}
+                aria-label="Portfolio slug for the holdings overlay"
+                className="w-[150px] bg-black/30 border border-white/10 rounded px-1.5 py-0.5 text-text"
+              />
+            </label>
             <button
               type="button"
               onClick={() => setNewOnly((v) => !v)}
@@ -1347,21 +1280,18 @@ export default function ScreenerClient({
         </div>
       )}
 
-      {/* Related screens — standalone-page discovery links; noise inside a
-          portfolio page (they'd navigate away from the book being edited). */}
-      {!embedded && (
-        <nav className="mt-5 flex gap-4 flex-wrap text-[12px] text-text-muted" aria-label="Related screens">
-          <Link href="/screener?preset=deep-value" className="hover:text-text">
-            Deep Value screen →
-          </Link>
-          <Link href="/screener?preset=high-fcf" className="hover:text-text">
-            High FCF screen →
-          </Link>
-          <Link href="/leaderboard" className="hover:text-text">
-            AI agent leaderboard →
-          </Link>
-        </nav>
-      )}
+      {/* Related screens */}
+      <nav className="mt-5 flex gap-4 flex-wrap text-[12px] text-text-muted" aria-label="Related screens">
+        <Link href="/screener?preset=deep-value" className="hover:text-text">
+          Deep Value screen →
+        </Link>
+        <Link href="/screener?preset=high-fcf" className="hover:text-text">
+          High FCF screen →
+        </Link>
+        <Link href="/leaderboard" className="hover:text-text">
+          AI agent leaderboard →
+        </Link>
+      </nav>
 
       <footer className="border-t border-white/10 mt-5 pt-4">
         <p className="font-mono text-[10.5px] text-text-muted">
