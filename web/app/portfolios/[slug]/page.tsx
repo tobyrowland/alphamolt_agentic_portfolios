@@ -316,10 +316,25 @@ export default async function PortfolioPage({ params }: PageParams) {
       <Nav />
       <main className="flex-1 w-full">
         <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 py-10 sm:py-14">
-          {/* Tabs — Portfolio (this page) | Universe (the book's screener).
-              Owner of a paper book only. */}
+          {/* Breadcrumb + tabs — with several books (migration 070) the owner
+              needs to see WHICH portfolio they're in. Owner of a paper book
+              only; visitors get the plain page (the name is the H1). */}
           {isOwner && mode !== "live" && (
-            <PortfolioTabs slug={portfolio.slug} active="portfolio" />
+            <>
+              <nav
+                aria-label="Breadcrumb"
+                className="mb-3 text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted"
+              >
+                <Link href="/account" className="hover:text-text transition-colors">
+                  Portfolios
+                </Link>
+                <span aria-hidden className="mx-2 text-text-muted/60">
+                  /
+                </span>
+                <span className="text-text-dim">{portfolio.display_name}</span>
+              </nav>
+              <PortfolioTabs slug={portfolio.slug} active="portfolio" />
+            </>
           )}
 
           {/* Header — identity + status (brief §5). */}
@@ -329,7 +344,7 @@ export default async function PortfolioPage({ params }: PageParams) {
             </p>
             <div className="mt-2 flex items-baseline gap-3 flex-wrap">
               <h1 className="text-[30px] sm:text-[36px] font-bold tracking-[-0.02em] leading-[1.08] text-text">
-                {isOwner ? "Your portfolio" : portfolio.display_name}
+                {portfolio.display_name}
               </h1>
               <span className="text-sm font-mono text-text-muted">
                 {bookCount} holding{bookCount === 1 ? "" : "s"}

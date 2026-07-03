@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import Nav from "@/components/nav";
 import ActivityDrawer from "@/components/activity-drawer";
@@ -92,6 +93,29 @@ export default async function PortfolioUniversePage({ params }: PageParams) {
       <Nav />
       <main className="flex-1 w-full">
         <div className="max-w-[1040px] mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
+          {/* Breadcrumb — which book this universe belongs to (an owner can
+              run several since migration 070). */}
+          <nav
+            aria-label="Breadcrumb"
+            className="mb-3 text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted"
+          >
+            <Link href="/account" className="hover:text-text transition-colors">
+              Portfolios
+            </Link>
+            <span aria-hidden className="mx-2 text-text-muted/60">
+              /
+            </span>
+            <Link
+              href={`/portfolios/${portfolio.slug}`}
+              className="hover:text-text transition-colors"
+            >
+              {portfolio.display_name}
+            </Link>
+            <span aria-hidden className="mx-2 text-text-muted/60">
+              /
+            </span>
+            <span className="text-text-dim">Universe</span>
+          </nav>
           <PortfolioTabs slug={portfolio.slug} active="universe" />
 
           {/* Header — same as the public screener page. */}
