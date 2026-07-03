@@ -212,6 +212,7 @@ export default function TeamBuilder({
       {/* YOUR TEAM — one unit: coverage in the header, agents in the body, the
           gap verdict in the footer. Also the single drop target. */}
       <YourTeamUnit
+        portfolioId={portfolioId}
         team={team}
         pending={pending}
         isEmpty={isEmpty}
@@ -283,6 +284,7 @@ export default function TeamBuilder({
 // ----- The "Your Team" unit (coverage header + body + verdict footer) ------
 
 function YourTeamUnit({
+  portfolioId,
   team,
   pending,
   isEmpty,
@@ -297,6 +299,7 @@ function YourTeamUnit({
   onRemove,
   onSaveEdit,
 }: {
+  portfolioId: string;
   team: TeamAgent[];
   pending: PendingItem[];
   isEmpty: boolean;
@@ -380,6 +383,7 @@ function YourTeamUnit({
                 {team.map((a) => (
                   <TeamCard
                     key={a.handle}
+                    portfolioId={portfolioId}
                     agent={a}
                     busy={busy}
                     onRemove={onRemove}
@@ -469,11 +473,13 @@ function CoverageChip({
 // ----- Saved (live) team card ----------------------------------------------
 
 function TeamCard({
+  portfolioId,
   agent,
   busy,
   onRemove,
   onSaveEdit,
 }: {
+  portfolioId: string;
   agent: TeamAgent;
   busy: boolean;
   onRemove: (handle: string) => void;
@@ -508,7 +514,7 @@ function TeamCard({
   function runNow() {
     setRunError(null);
     startRun(async () => {
-      const res = await runAgent({ agentHandle: agent.handle });
+      const res = await runAgent({ portfolioId, agentHandle: agent.handle });
       if (!res.ok) {
         setRunError(res.error ?? "Couldn't start the run.");
         return;

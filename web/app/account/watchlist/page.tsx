@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import Nav from "@/components/nav";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { getPortfolioForUser } from "@/lib/portfolios-query";
+import { getPaperPortfoliosForUser } from "@/lib/portfolios-query";
 import { getWatchlistForPortfolio } from "@/lib/watchlist-query";
 import WatchlistManager from "@/components/portfolio/watchlist-manager";
 
@@ -14,7 +14,11 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-export default async function WatchlistPage() {
+export default async function WatchlistPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ pf?: string }>;
+}) {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
@@ -24,7 +28,11 @@ export default async function WatchlistPage() {
     redirect("/login?next=/account/watchlist");
   }
 
-  const portfolio = await getPortfolioForUser(user.id);
+  // A user may own several paper portfolios (migration 070): `?pf=<id>`
+  // picks one, defaulting to the primary (oldest).
+  const { pf } = await searchParams;
+  const portfolios = await getPaperPortfoliosForUser(user.id);
+  const portfolio = portfolios.find((p) => p.id === pf) ?? portfolios[0] ?? null;
   const items = portfolio ? await getWatchlistForPortfolio(portfolio.id) : [];
 
   return (
@@ -63,9 +71,28 @@ export default async function WatchlistPage() {
             </p>
           </header>
 
+          {portfolio && portfolios.length > 1 && (
+            <div className="mb-6 flex flex-wrap items-center gap-2">
+              {portfolios.map((p) => (
+                <Link
+                  key={p.id}
+                  href={`/account/watchlist?pf=${p.id}`}
+                  aria-current={p.id === portfolio.id ? "page" : undefined}
+                  className={`px-2.5 py-1 rounded font-mono text-[11px] uppercase tracking-widest border transition-colors ${
+                    p.id === portfolio.id
+                      ? "border-[var(--color-cyan)]/60 text-[var(--color-cyan)]"
+                      : "border-white/10 text-text-muted hover:text-text"
+                  }`}
+                >
+                  {p.display_name}
+                </Link>
+              ))}
+            </div>
+          )}
+
           {portfolio ? (
             <div className="max-w-[840px]">
-              <WatchlistManager items={items} />
+              <WatchlistManager portfolioId={portfolio.id} items={items} />
             </div>
           ) : (
             <div className="max-w-[720px] rounded-2xl border border-white/10 bg-white/[0.02] p-6 sm:p-8">

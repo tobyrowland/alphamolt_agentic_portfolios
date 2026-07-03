@@ -125,28 +125,46 @@ export async function getPortfolioBySlug(slug: string): Promise<Portfolio | null
 }
 
 /**
- * The user's **arena (paper)** portfolio (migration 024), or null. Since
- * migration 037 a user may also hold a separate private *live* follower, so
- * this is explicitly scoped to `mode='paper'` — every caller (mandate, agents,
- * watchlist, run-agent) means the arena portfolio, and the live follower must
- * never satisfy this single-row read. Filtering by `mode` doesn't select it,
- * so the owner-only column never leaks.
+ * How many paper (arena) portfolios one user may own (migration 070). Raise
+ * together with `c_max_paper` in the `create_portfolio_funded` RPC.
  */
-export async function getPortfolioForUser(
+export const MAX_PAPER_PORTFOLIOS = 5;
+
+/**
+ * All the user's **arena (paper)** portfolios (migration 070 allows up to
+ * MAX_PAPER_PORTFOLIOS), oldest first. Scoped to `mode='paper'` so the
+ * private live follower never appears; filtering by `mode` doesn't select
+ * it, so the owner-only column never leaks.
+ */
+export async function getPaperPortfoliosForUser(
   userId: string,
-): Promise<Portfolio | null> {
+): Promise<Portfolio[]> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("portfolios")
     .select(PORTFOLIO_COLUMNS)
     .eq("owner_user_id", userId)
     .eq("mode", "paper")
-    .maybeSingle();
+    .order("created_at", { ascending: true });
   if (error) {
-    console.error("getPortfolioForUser failed:", error);
-    return null;
+    console.error("getPaperPortfoliosForUser failed:", error);
+    return [];
   }
-  return (data as Portfolio | null) ?? null;
+  return (data as Portfolio[] | null) ?? [];
+}
+
+/**
+ * The user's **primary** arena (paper) portfolio — the oldest, since
+ * migration 070 allows several — or null. Callers that can know which
+ * portfolio they mean (a detail page, a `?pf=` param) should resolve it
+ * explicitly instead; this is the default for surfaces with no portfolio
+ * context (the screener's rejection view, the nav redirect).
+ */
+export async function getPortfolioForUser(
+  userId: string,
+): Promise<Portfolio | null> {
+  const portfolios = await getPaperPortfoliosForUser(userId);
+  return portfolios[0] ?? null;
 }
 
 /**

@@ -85,8 +85,11 @@ export async function GET(req: Request) {
     screenConfigSchema.parse(config);
 
     // Per-portfolio rejection set (migration 051), so the live re-rank hides
-    // the same names the SSR page did. Empty for logged-out callers.
-    const { portfolioId, rejections } = await activeRejectionsForViewer();
+    // the same names the SSR page did. Empty for logged-out callers. With
+    // several paper portfolios (migration 070) this is the PRIMARY one's list;
+    // portfolioName lets the client caption whose buyer passed.
+    const { portfolioId, portfolioName, rejections } =
+      await activeRejectionsForViewer();
     const rejectedSet = new Set(rejections.map((r) => r.ticker.toUpperCase()));
     const result = await runScreen(config, rejectedSet);
     const rows = result.rows.map((r) => {
@@ -113,6 +116,9 @@ export async function GET(req: Request) {
           ticker: r.ticker,
           rejected_at: r.rejected_at,
         })),
+        // Which portfolio the rejection list belongs to (the viewer's primary
+        // paper book) — lets the hidden panel caption whose buyer passed.
+        rejected_portfolio: portfolioName,
       },
       {
         headers: {

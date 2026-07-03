@@ -1,7 +1,8 @@
 "use server";
 
 /**
- * Server Actions for a signed-in human managing their one portfolio.
+ * Server Actions for a signed-in human managing their portfolios (up to
+ * MAX_PAPER_PORTFOLIOS paper books since migration 070).
  *
  * Auth model: the SSR cookie session (a `profiles` user), NOT an agent API
  * key — distinct from the `/api/v1/...` routes. Each action verifies the
@@ -14,39 +15,28 @@ import { getSupabase } from "@/lib/supabase";
 import { requireUser } from "@/lib/auth/require-user";
 import { uniquePortfolioSlug } from "@/lib/slug";
 import { PRESETS, DEFAULT_PRESET, presetConfig } from "@/lib/screen/config";
+import { MAX_PAPER_PORTFOLIOS } from "@/lib/portfolios-query";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
 const MAX_NAME = 80;
 const MAX_MANDATE = 2000;
 
-interface OwnedPortfolio {
-  id: string;
-  slug: string;
-}
-
-/** The caller's arena (paper) portfolio, or null. Service-role read.
- *
- * Scoped to `mode='paper'` because since migration 037 a user may also own
- * a private live follower; a bare `owner_user_id` lookup would match two
- * rows and make `.maybeSingle()` error. Used as the "you already have a
- * portfolio" guard in createPortfolio, which creates the paper book. */
-async function getOwnedPortfolio(userId: string): Promise<OwnedPortfolio | null> {
+/** How many paper (arena) portfolios the caller already owns. Service-role
+ *  read, scoped to `mode='paper'` so the private live follower doesn't
+ *  count. The friendly half of the cap — the RPC enforces it for real. */
+async function countOwnedPaperPortfolios(userId: string): Promise<number> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
+  const { count, error } = await supabase
     .from("portfolios")
-    .select("id, slug")
+    .select("id", { count: "exact", head: true })
     .eq("owner_user_id", userId)
-    .eq("mode", "paper")
-    .maybeSingle();
+    .eq("mode", "paper");
   if (error) {
-    // Don't swallow — a transient DB error here previously surfaced as
-    // "You don't have a portfolio yet" in the UI, which is wrong and
-    // confusing. Bubble it up via logs so we can tell the two apart.
-    console.error("getOwnedPortfolio lookup failed:", error);
-    return null;
+    console.error("countOwnedPaperPortfolios lookup failed:", error);
+    return 0;
   }
-  return (data as OwnedPortfolio | null) ?? null;
+  return count ?? 0;
 }
 
 /**
@@ -109,8 +99,9 @@ export async function createPortfolio(input: {
       error: `Mandate must be ${MAX_MANDATE} characters or fewer.`,
     };
 
-  if (await getOwnedPortfolio(user.id)) {
-    return { ok: false, error: "You already have a portfolio." };
+  const capError = `You've hit the limit of ${MAX_PAPER_PORTFOLIOS} paper portfolios.`;
+  if ((await countOwnedPaperPortfolios(user.id)) >= MAX_PAPER_PORTFOLIOS) {
+    return { ok: false, error: capError };
   }
 
   const supabase = getSupabase();
@@ -118,8 +109,8 @@ export async function createPortfolio(input: {
 
   // Atomic creation: inserts the portfolios row + seeds the $1M
   // portfolio_accounts row in one transaction. The RPC sets is_public=false
-  // (migration 031 default). Replaces the old two-step insert + launch flow.
-  const { error } = await supabase.rpc("create_portfolio_funded", {
+  // (migration 031 default) and enforces the paper cap (migration 070).
+  const { data: created, error } = await supabase.rpc("create_portfolio_funded", {
     p_owner_user_id: user.id,
     p_slug: slug,
     p_display_name: displayName,
@@ -127,24 +118,27 @@ export async function createPortfolio(input: {
   });
 
   if (error) {
-    if (error.code === "23505") {
-      return { ok: false, error: "You already have a portfolio." };
+    if (
+      error.code === "23514" ||
+      /portfolio limit/i.test(error.message ?? "")
+    ) {
+      return { ok: false, error: capError };
     }
     console.error("createPortfolio failed:", error);
     return { ok: false, error: "Could not create the portfolio. Try again." };
   }
 
-  // Attach the universe + pre-roster the team (brief §3). Both are
-  // best-effort follow-ups: the portfolio (and its $1M book) already exists,
-  // so a hiccup here leaves an editable default, never a failed creation.
-  const created = await getOwnedPortfolio(user.id);
-  if (created) {
+  // Attach the universe (brief §3) — a best-effort follow-up: the portfolio
+  // (and its $1M book) already exists, so a hiccup here leaves an editable
+  // default, never a failed creation. The RPC returns the new row's id.
+  const createdId = (created as { id?: string } | null)?.id;
+  if (createdId) {
     const presetId =
       input.presetId && PRESETS[input.presetId] ? input.presetId : DEFAULT_PRESET;
     const { error: cfgErr } = await supabase
       .from("portfolios")
       .update({ screen_config: presetConfig(presetId) })
-      .eq("id", created.id);
+      .eq("id", createdId);
     if (cfgErr) console.error("createPortfolio: set universe failed:", cfgErr);
 
     // No default roster: the team builder (brief v2) starts empty so the owner

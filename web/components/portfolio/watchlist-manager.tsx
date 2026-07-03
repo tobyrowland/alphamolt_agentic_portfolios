@@ -10,8 +10,10 @@ import {
 import type { WatchlistItem } from "@/lib/watchlist-query";
 
 export default function WatchlistManager({
+  portfolioId,
   items,
 }: {
+  portfolioId: string;
   items: WatchlistItem[];
 }) {
   const router = useRouter();
@@ -110,7 +112,7 @@ export default function WatchlistManager({
                   type="button"
                   onClick={() =>
                     runAction(it.ticker, () =>
-                      removeFromWatchlist({ ticker: it.ticker }),
+                      removeFromWatchlist({ portfolioId, ticker: it.ticker }),
                     )
                   }
                   disabled={pending === it.ticker}

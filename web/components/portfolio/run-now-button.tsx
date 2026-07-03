@@ -30,6 +30,7 @@ interface RunNowProps {
 export default function RunNowButton({
   agentHandle,
   agentId,
+  portfolioId,
 }: RunNowProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -65,7 +66,7 @@ export default function RunNowButton({
   function handleClick() {
     setError(null);
     startTransition(async () => {
-      const result = await runAgent({ agentHandle, agentId });
+      const result = await runAgent({ portfolioId, agentHandle, agentId });
       if (!result.ok) {
         setError(result.error);
         return;
@@ -111,7 +112,7 @@ interface RunAllProps {
  * "Run all agents" — same shape as `RunNowButton` but dispatches without
  * a `handle` filter so every member rebalances in joined_at order.
  */
-export function RunAllAgentsButton({}: RunAllProps) {
+export function RunAllAgentsButton({ portfolioId }: RunAllProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -146,7 +147,7 @@ export function RunAllAgentsButton({}: RunAllProps) {
   function handleClick() {
     setError(null);
     startTransition(async () => {
-      const result = await runAllAgents();
+      const result = await runAllAgents({ portfolioId });
       if (!result.ok) {
         setError(result.error);
         return;
