@@ -3,7 +3,7 @@
 
 Pure-logic tests of weekly resampling, the 200-week MA, and the price→
 conviction mapping — plus the sniper_convictions wrapper against a tiny fake
-db. No real DB, no LLM. Run: python test_ma_sniper.py
+db. No real DB, no LLM. Run: pytest tests/test_ma_sniper.py
 """
 
 from __future__ import annotations

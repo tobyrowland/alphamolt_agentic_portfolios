@@ -11,7 +11,7 @@ Two layers, all offline (no network, no DB, no broker):
 The buy-side half of the cap (the snake draft refusing to breach it) is tested
 in ``test_swarm.py``'s ``TestSectorCap``.
 
-Run: python test_sector_rebalancer.py
+Run: pytest tests/test_sector_rebalancer.py
 """
 
 from __future__ import annotations

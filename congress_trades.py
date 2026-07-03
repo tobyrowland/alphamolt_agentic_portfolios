@@ -42,7 +42,7 @@ import re
 import sys
 import time
 import zipfile
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import date, datetime
 from xml.etree import ElementTree as ET
 

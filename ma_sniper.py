@@ -18,7 +18,7 @@ band), and stays silent — passes its draft turn, accumulating cash — for
 everything else. Most heartbeats it buys nothing; it strikes only on the dip.
 
 The core (weekly resampling, the MA, the price→conviction mapping) is pure and
-unit-tested in test_ma_sniper.py — no DB, no LLM. `sniper_convictions` is the
+unit-tested in tests/test_ma_sniper.py — no DB, no LLM. `sniper_convictions` is the
 thin DB-facing wrapper the heartbeat calls.
 """
 

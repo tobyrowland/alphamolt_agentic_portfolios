@@ -9,7 +9,7 @@ Three layers, all offline (no network, no DB, no broker):
 3. ``pelosi_mirror.rebalance_pelosi_mirror`` end-to-end against fakes,
    including the mirror-log dedup that makes re-runs no-ops.
 
-Run: python test_pelosi_mirror.py
+Run: pytest tests/test_pelosi_mirror.py
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from __future__ import annotations
 import unittest
 
 from agent_strategies import RebalanceContext
-from congress_trades import parse_ptr_text, _dedupe_hash, ParsedTxn
+from congress_trades import parse_ptr_text, _dedupe_hash
 from pelosi_mirror import plan_mirror, rebalance_pelosi_mirror
 
 
@@ -71,7 +71,7 @@ class TestParser(unittest.TestCase):
         self.assertEqual(t.txn_date, "2024-12-20")
 
     def test_partial_sale_is_sell(self):
-        t = self.by_key[("AAPL", "S (partial)")]
+        self.assertIn(("AAPL", "S (partial)"), self.by_key)
         # two AAPL rows share the code; ensure at least one is a non-gift sell
         sells = [x for x in self.txns if x.ticker == "AAPL"]
         self.assertTrue(all(x.txn_type == "sell" for x in sells))
@@ -260,7 +260,8 @@ class TestRebalance(unittest.TestCase):
                     [{"ticker": "AAPL", "quantity": 20}], cash=100_000)
         db = FakeDB(self._trades())
         rebalance_pelosi_mirror(_ctx(pm, db))
-        pm.buys.clear(); pm.sells.clear()
+        pm.buys.clear()
+        pm.sells.clear()
         res2 = rebalance_pelosi_mirror(_ctx(pm, db))
         self.assertEqual(res2.buys, 0)
         self.assertEqual(res2.sells, 0)

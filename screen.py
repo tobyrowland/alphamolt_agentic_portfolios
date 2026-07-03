@@ -427,7 +427,9 @@ def score_screen(facts: list[dict], config: dict,
             uv.append(xv)
         if xm is not None:
             um.append(xm)
-    uq.sort(); uv.sort(); um.sort()
+    uq.sort()
+    uv.sort()
+    um.sort()
 
     subset = apply_filters(facts, filters)
     wq = float(weights.get("quality", 0))

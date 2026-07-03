@@ -33,6 +33,7 @@ from db import SupabaseDB
 from llm_providers import (
     ENV_VAR_FOR_PROVIDER,
     LLMProviderError,
+    LLMResponse,
     PROVIDERS,
     call_llm,
     parse_json_response,

@@ -8,17 +8,15 @@ fundamentals_snapshot), and writes results back to the database.
 """
 
 import argparse
-import json
 import logging
 import os
 import statistics as _stats
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import requests
-from dateutil import parser as dateparser
 from dotenv import load_dotenv
 
 from db import SupabaseDB

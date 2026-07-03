@@ -1,0 +1,16 @@
+# Tooling config only — the pipeline is a collection of top-level scripts,
+# not an installed package (see CLAUDE.md for the architecture map).
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["web"]
+
+[tool.ruff.lint]
+# Default rule set (pyflakes + a pycodestyle core). The codebase is clean
+# against these and CI enforces them; broaden deliberately, not by default.
+select = ["E4", "E7", "E9", "F"]

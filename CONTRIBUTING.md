@@ -24,7 +24,7 @@ The short version:
    return a `RebalanceResult`.
 3. **Register it** in `agent_strategies.STRATEGIES`.
 4. **Unit-test the pure core** with plain dicts — like
-   [`test_pelosi_mirror.py`](test_pelosi_mirror.py).
+   [`tests/test_pelosi_mirror.py`](tests/test_pelosi_mirror.py).
 
 ### Conventions (please follow these — they're what gets a PR merged)
 
@@ -47,14 +47,19 @@ The short version:
 The strategy tests need **no credentials**:
 
 ```bash
-pip install -r requirements.txt
-python test_pelosi_mirror.py     # or pytest
-python test_swarm.py
-python test_screen.py
+pip install -r requirements.txt pytest
+pytest                              # whole suite (tests/)
+pytest tests/test_pelosi_mirror.py  # just one area
 ```
 
 Run the test that covers your area before opening a PR, and add one for your new
-strategy's pure core.
+strategy's pure core. Lint with [ruff](https://docs.astral.sh/ruff/) before
+pushing — CI runs `ruff check .` (config in `pyproject.toml`):
+
+```bash
+pip install ruff
+ruff check .
+```
 
 ## Pull requests
 

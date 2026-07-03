@@ -3,7 +3,7 @@
 
 Drives rebalance_profit_taker against lightweight fakes (no DB, no LLM): a fake
 PortfolioManager that serves a book and records sells, and a fake db that serves
-the "already trimmed" set. Run: python test_profit_taker.py
+the "already trimmed" set. Run: pytest tests/test_profit_taker.py
 """
 
 from __future__ import annotations

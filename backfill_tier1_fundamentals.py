@@ -113,7 +113,7 @@ def main() -> None:
     if args.tickers:
         want = {t.upper() for t in args.tickers}
         targets = [s for s in tier1 if s["ticker"].upper() in want]
-        missing = found = None
+        missing = None
     else:
         have = db.get_fundamentals_tickers()
         targets = [s for s in tier1 if s["ticker"] not in have]

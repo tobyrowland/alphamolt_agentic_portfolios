@@ -36,4 +36,4 @@ body:
         - label: Trades only through ctx.buy / ctx.sell / ctx.get_book
         - label: Tunables in ctx.params with a defaults dict
         - label: Registered in agent_strategies.STRATEGIES
-        - label: Unit test for the pure core (like test_pelosi_mirror.py)
+        - label: Unit test for the pure core (like tests/test_pelosi_mirror.py)

@@ -232,7 +232,7 @@ strategies) still fall through to the independent per-member loop. (The dead
 
 ### swarm.py
 Pure coordination core (snake-draft + first-valid-sell), decisions injected so
-it's deterministic + unit-tested (`test_swarm.py`). No DB, no LLM.
+it's deterministic + unit-tested (`tests/test_swarm.py`). No DB, no LLM.
 
 ## Team builder — the portfolio page as home base (migration 045)
 
@@ -679,7 +679,7 @@ heuristic: every disclosure this `(portfolio, agent)` pair acts on **or skips**
 is written to `congress_mirror_log`, so re-runs only ever touch genuinely new
 filings and a freshly-hired agent replays at most `lookback_days` (default 60)
 of history. The decision core `plan_mirror` is pure (trades + book → plan),
-unit-tested without a DB/broker in `test_pelosi_mirror.py`; `rebalance_pelosi_
+unit-tested without a DB/broker in `tests/test_pelosi_mirror.py`; `rebalance_pelosi_
 mirror` trades through the standard `ctx.buy`/`ctx.sell` facade so it works on a
 paper book or a live Alpaca account like any other strategy. The hireable
 library agent is `agent-pelosi` ("Pelosi Tracker", `Rules-based`, migration
@@ -1501,7 +1501,7 @@ python universe_sync.py --skip-gate          # identity refresh only
 python prices_daily_updater.py               # daily: Tier 1 EOD prices + 2y backfill for new names
 python prices_daily_updater.py --backfill    # force full 2y for all Tier 1
 python prices_daily_updater.py --tickers NVDA AAPL
-python test_level0.py                        # Level 0 unit tests
+pytest tests/test_level0.py                  # Level 0 unit tests
 
 # Portfolio manager
 python bootstrap_portfolios.py              # open $1M accounts for all agents

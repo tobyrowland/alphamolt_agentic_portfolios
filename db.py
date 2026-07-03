@@ -9,7 +9,6 @@ Environment variables:
     SUPABASE_SERVICE_KEY — Service-role key (bypasses RLS)
 """
 
-import json
 import math
 import os
 import re
