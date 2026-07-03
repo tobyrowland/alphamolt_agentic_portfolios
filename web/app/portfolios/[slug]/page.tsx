@@ -15,6 +15,7 @@ import SectorChip from "@/components/portfolio/sector-chip";
 import PortfolioTabs from "@/components/portfolio/portfolio-tabs";
 import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
+import EditablePortfolioName from "@/components/portfolio/editable-portfolio-name";
 import {
   getPortfolio,
   getPortfolioByPortfolioId,
@@ -395,9 +396,18 @@ export default async function PortfolioPage({ params }: PageParams) {
               Portfolio
             </p>
             <div className="mt-2 flex items-baseline gap-3 flex-wrap">
-              <h1 className="text-[30px] sm:text-[36px] font-bold tracking-[-0.02em] leading-[1.08] text-text">
-                {portfolio.display_name}
-              </h1>
+              {/* Owner of a paper book renames in place — click the title. */}
+              {isOwner && mode !== "live" ? (
+                <EditablePortfolioName
+                  portfolioId={portfolio.id}
+                  name={portfolio.display_name}
+                  mandate={portfolio.description ?? ""}
+                />
+              ) : (
+                <h1 className="text-[30px] sm:text-[36px] font-bold tracking-[-0.02em] leading-[1.08] text-text">
+                  {portfolio.display_name}
+                </h1>
+              )}
               <span className="text-sm font-mono text-text-muted">
                 {bookCount} holding{bookCount === 1 ? "" : "s"}
                 {isOwner && mode === "paper" ? " · paper" : ""}
