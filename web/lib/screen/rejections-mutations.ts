@@ -5,12 +5,17 @@
  * 051): manually restore a name the owner's buyer passed on, so it shows on
  * the screener again and the buyer reconsiders it on its next run.
  *
- * Auth-gated (signed-in owner), resolve their arena (paper) portfolio, then
+ * Auth-gated (signed-in owner), resolve the target portfolio, then
  * service-role write — same verify-then-service-role pattern as the manual
  * exclusions. We set `restored_at` rather than delete, so the audit trail of
  * what was passed on (and re-shown) survives. NOTE: if the buyer re-evaluates
  * the name later and still passes, it will be re-hidden — a restore means
  * "look again now", not a permanent pin.
+ *
+ * Target resolution (migration 070 — a user may own several paper books):
+ * an explicit `portfolioId` (the embedded per-portfolio screener) is
+ * ownership-verified; without one, the primary (oldest) paper portfolio is
+ * used — matching what the public /screener page shows.
  */
 
 import { revalidatePath } from "next/cache";
@@ -20,14 +25,43 @@ import { getPortfolioForUser } from "@/lib/portfolios-query";
 
 export type RejectionResult = { ok: true } | { ok: false; error: string };
 
+/** The target portfolio's `{id, slug}` — explicit (ownership-verified) or the
+ *  caller's primary paper book. Null when neither resolves. */
+async function resolveTargetPortfolio(
+  userId: string,
+  portfolioId?: string,
+): Promise<{ id: string; slug: string } | null> {
+  if (portfolioId) {
+    const { data, error } = await getSupabase()
+      .from("portfolios")
+      .select("id, slug")
+      .eq("id", portfolioId)
+      .eq("owner_user_id", userId)
+      .maybeSingle();
+    if (error) {
+      console.error("resolveTargetPortfolio lookup failed:", error);
+      return null;
+    }
+    return (data as { id: string; slug: string } | null) ?? null;
+  }
+  const portfolio = await getPortfolioForUser(userId);
+  return portfolio ? { id: portfolio.id, slug: portfolio.slug } : null;
+}
+
+function revalidateScreens(slug: string): void {
+  revalidatePath("/screener");
+  revalidatePath(`/portfolios/${slug}`);
+}
+
 export async function restoreRejection(
   ticker: string,
+  portfolioId?: string,
 ): Promise<RejectionResult> {
   const { user } = await requireUser();
   const t = ticker.trim().toUpperCase();
   if (!t) return { ok: false, error: "Ticker required." };
 
-  const portfolio = await getPortfolioForUser(user.id);
+  const portfolio = await resolveTargetPortfolio(user.id, portfolioId);
   if (!portfolio) {
     return { ok: false, error: "No portfolio to restore into." };
   }
@@ -41,7 +75,7 @@ export async function restoreRejection(
     console.error("restoreRejection failed:", error);
     return { ok: false, error: "Could not restore it. Try again." };
   }
-  revalidatePath("/screener");
+  revalidateScreens(portfolio.slug);
   return { ok: true };
 }
 
@@ -52,10 +86,12 @@ export async function restoreRejection(
  * pattern as `restoreRejection`; sets `restored_at` (soft restore, audit trail
  * preserved) on the portfolio's open, unexpired rows.
  */
-export async function restoreAllRejections(): Promise<RejectionResult> {
+export async function restoreAllRejections(
+  portfolioId?: string,
+): Promise<RejectionResult> {
   const { user } = await requireUser();
 
-  const portfolio = await getPortfolioForUser(user.id);
+  const portfolio = await resolveTargetPortfolio(user.id, portfolioId);
   if (!portfolio) {
     return { ok: false, error: "No portfolio to restore into." };
   }
@@ -70,6 +106,6 @@ export async function restoreAllRejections(): Promise<RejectionResult> {
     console.error("restoreAllRejections failed:", error);
     return { ok: false, error: "Could not restore them. Try again." };
   }
-  revalidatePath("/screener");
+  revalidateScreens(portfolio.slug);
   return { ok: true };
 }

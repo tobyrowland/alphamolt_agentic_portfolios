@@ -8,8 +8,9 @@ import {
   isHousePreset,
 } from "@/lib/screen/config";
 import { runScreen } from "@/lib/screen/query";
-import { bestRationale } from "@/lib/screen/score";
 import { listActiveExclusions } from "@/lib/screen/exclusions-query";
+import { getCompanyTickers } from "@/lib/screen/company-tickers";
+import { projectDisplayRows } from "@/lib/screen/display-rows";
 import { getSupabase } from "@/lib/supabase";
 import { screenConfigSchema, type ScreenConfig } from "@/lib/screen/config";
 import ScreenerClient from "@/app/screener/screener-client";
@@ -106,47 +107,6 @@ function formatAsOf(s: string): string {
   });
 }
 
-/**
- * Tickers that have a /company/<ticker> page. The page now renders any active
- * Tier 1 security straight from the Level 0 fact store, so EVERY name the
- * screener ranks is linkable — gate on `securities.is_tier1` (active), which
- * is the same universe the screen ranks over.
- *
- * In-process cached (1 h) — Tier 1 membership only changes on the weekly
- * universe sync, so re-fetching ~3.1k rows on every render is wasted TTFB.
- * Mirrors the `loadFacts` fact cache in lib/screen/query.ts.
- */
-let tickerCache: { at: number; data: string[] } | null = null;
-const TICKER_TTL_MS = 60 * 60 * 1000;
-
-async function getCompanyTickers(): Promise<string[]> {
-  if (tickerCache && Date.now() - tickerCache.at < TICKER_TTL_MS) {
-    return tickerCache.data;
-  }
-  const tickers: string[] = [];
-  const supabase = getSupabase();
-  const PAGE = 1000;
-  for (let page = 0; ; page++) {
-    const { data, error } = await supabase
-      .from("securities")
-      .select("ticker")
-      .eq("is_tier1", true)
-      .eq("status", "active")
-      .range(page * PAGE, (page + 1) * PAGE - 1);
-    if (error) {
-      console.error("getCompanyTickers failed:", error);
-      // Serve a stale cache on a transient error rather than dropping all links.
-      if (tickerCache) return tickerCache.data;
-      break;
-    }
-    const batch = (data ?? []) as { ticker: string }[];
-    tickers.push(...batch.map((r) => r.ticker));
-    if (batch.length < PAGE) break;
-  }
-  tickerCache = { at: Date.now(), data: tickers };
-  return tickers;
-}
-
 export default async function ScreenerPage({
   searchParams,
 }: {
@@ -201,61 +161,7 @@ export default async function ScreenerPage({
 
           <ScreenerClient
             initialConfig={config}
-            initialData={{
-              rows: initial.rows.map((r) => ({
-                rank: r.rank,
-                ticker: r.ticker,
-                name: r.name,
-                sector: r.sector,
-                industry: r.industry,
-                country: r.country,
-                price: r.price,
-                price_asof: r.price_asof,
-                score: r.score,
-                ps: r.ps,
-                ps_median_12m: r.ps_median_12m,
-                ps_trend_pct: r.ps_trend_pct,
-                rev_growth_ttm: r.rev_growth_ttm,
-                gross_margin: r.gross_margin,
-                fcf_margin: r.fcf_margin,
-                net_margin: r.net_margin,
-                operating_margin: r.operating_margin,
-                rule_of_40: r.rule_of_40,
-                ret_52w: r.ret_52w,
-                perf_52w_vs_spy: r.perf_52w_vs_spy,
-                bull: r.bull,
-                bear: r.bear,
-                bull_score: r.bull_score,
-                bear_score: r.bear_score,
-                // Single-score + research-card fields (migration 057).
-                base_z: r.base_z,
-                adj_z: r.adj_z,
-                moat_z: r.moat_z,
-                earn_z: r.earn_z,
-                break_z: r.break_z,
-                base_pct: r.base_pct,
-                final_pct: r.final_pct,
-                capped: r.capped,
-                floored: r.floored,
-                quality_score: r.quality_score,
-                moat_score: r.moat_score,
-                earnings_score: r.earnings_score,
-                growth_score: r.growth_score,
-                break_count: r.break_count,
-                firing_breaks: r.firing_breaks,
-                has_card: r.has_card,
-                // Ship only the compiled one-line thesis; the heavy
-                // research_card text is lazy-loaded on row-expand.
-                thesis_line: bestRationale(r.research_card),
-                industry_ps_median: r.industry_ps_median,
-                sector_ps_median: r.sector_ps_median,
-                peer_ps_median: r.peer_ps_median,
-                peer_basis: r.peer_basis,
-              })),
-              match_count: initial.match_count,
-              total_universe: initial.total_universe,
-              data_asof: initial.data_asof,
-            }}
+            initialData={projectDisplayRows(initial)}
             sectors={initial.sectors}
             industries={initial.industries}
             companyTickers={companyTickers}

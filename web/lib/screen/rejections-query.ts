@@ -23,8 +23,15 @@ export interface ScreenerRejection {
  * (a rejection list can belong to a private portfolio, so it isn't world-
  * readable). Auth is resolved via the cookie-scoped SSR client first, then the
  * portfolio + rejections are read with the service key. Fail-open on error.
+ *
+ * `explicitPortfolioId` (the embedded per-portfolio screener) scopes the list
+ * to that book instead — ownership-verified against the session user; an
+ * unowned/unknown id falls back to the primary-book path, so another user's
+ * list can never leak.
  */
-export async function activeRejectionsForViewer(): Promise<{
+export async function activeRejectionsForViewer(
+  explicitPortfolioId?: string,
+): Promise<{
   portfolioId: string | null;
   portfolioName: string | null;
   rejections: ScreenerRejection[];
@@ -41,7 +48,22 @@ export async function activeRejectionsForViewer(): Promise<{
   }
   if (!userId) return { portfolioId: null, portfolioName: null, rejections: [] };
 
-  const portfolio = await getPortfolioForUser(userId);
+  let portfolio: { id: string; display_name: string } | null = null;
+  if (explicitPortfolioId) {
+    const { data, error } = await getSupabase()
+      .from("portfolios")
+      .select("id, display_name")
+      .eq("id", explicitPortfolioId)
+      .eq("owner_user_id", userId)
+      .maybeSingle();
+    if (error) {
+      console.error("activeRejectionsForViewer pf lookup failed:", error.message);
+    }
+    portfolio = (data as { id: string; display_name: string } | null) ?? null;
+  }
+  if (!portfolio) {
+    portfolio = await getPortfolioForUser(userId);
+  }
   if (!portfolio) {
     return { portfolioId: null, portfolioName: null, rejections: [] };
   }
