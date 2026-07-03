@@ -37,6 +37,19 @@ import {
   type InvestmentThesis,
 } from "@/lib/theses-query";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import ScreenerClient from "@/app/screener/screener-client";
+import { runScreen } from "@/lib/screen/query";
+import { listActiveExclusions } from "@/lib/screen/exclusions-query";
+import { getCompanyTickers } from "@/lib/screen/company-tickers";
+import { projectDisplayRows } from "@/lib/screen/display-rows";
+import { activeRejectionsForViewer } from "@/lib/screen/rejections-query";
+import {
+  DEFAULT_PRESET,
+  encodeConfig,
+  presetConfig,
+  screenConfigSchema,
+  type ScreenConfig,
+} from "@/lib/screen/config";
 
 export const revalidate = 300;
 
@@ -107,6 +120,57 @@ export async function generateMetadata({
 
 // ----- Data ---------------------------------------------------------------
 
+/** The embedded per-portfolio screener's SSR payload (owner-only). */
+interface EmbeddedScreener {
+  config: ScreenConfig;
+  initialData: ReturnType<typeof projectDisplayRows>;
+  sectors: string[];
+  industries: string[];
+  companyTickers: string[];
+  exclusions: string[];
+  rejections: { ticker: string; rejected_at: string }[];
+  savedEncoded: string;
+}
+
+/**
+ * Build the embedded screener's initial paint from the portfolio's saved
+ * screen_config (fallback: the house default preset) — the same anonymous-
+ * safe data path the public /screener SSR uses, plus THIS book's rejection
+ * list (the page is owner-gated request-dynamic, so per-user data is safe).
+ */
+async function buildEmbeddedScreener(
+  portfolio: Portfolio,
+): Promise<EmbeddedScreener | null> {
+  try {
+    const parsed = screenConfigSchema.safeParse(portfolio.screen_config);
+    const config = parsed.success ? parsed.data : presetConfig(DEFAULT_PRESET);
+    const { rejections } = await activeRejectionsForViewer(portfolio.id);
+    const rejectedSet = new Set(rejections.map((r) => r.ticker.toUpperCase()));
+    const [initial, companyTickers, exclusions] = await Promise.all([
+      runScreen(config, rejectedSet),
+      getCompanyTickers(),
+      listActiveExclusions(),
+    ]);
+    return {
+      config,
+      initialData: projectDisplayRows(initial),
+      sectors: initial.sectors,
+      industries: initial.industries,
+      companyTickers,
+      exclusions: exclusions.map((e) => e.ticker),
+      rejections: rejections.map((r) => ({
+        ticker: r.ticker,
+        rejected_at: r.rejected_at,
+      })),
+      savedEncoded: encodeConfig(config),
+    };
+  } catch (err) {
+    // The universe section is an enhancement — never let it take the page down.
+    console.error("buildEmbeddedScreener failed:", err);
+    return null;
+  }
+}
+
 async function getPortfolioPageData(slug: string): Promise<{
   portfolio: Portfolio | null;
   isOwner: boolean;
@@ -120,6 +184,8 @@ async function getPortfolioPageData(slug: string): Promise<{
   trades: Trade[];
   totalTrades: number;
   holdingsCount: number;
+  /** Embedded per-portfolio screener payload — owner-only, paper books only. */
+  screener: EmbeddedScreener | null;
 }> {
   const portfolio = await resolveVisiblePortfolio(slug);
   if (!portfolio) {
@@ -134,6 +200,7 @@ async function getPortfolioPageData(slug: string): Promise<{
       trades: [],
       totalTrades: 0,
       holdingsCount: 0,
+      screener: null,
     };
   }
   const isOwner = await isViewerOwner(portfolio);
@@ -153,6 +220,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     library,
     recent,
     holdingsCount,
+    screener,
   ] = await Promise.all([
     ownerAgentId
       ? getPortfolio(ownerAgentId).catch((err) => {
@@ -182,6 +250,10 @@ async function getPortfolioPageData(slug: string): Promise<{
       () => ({ trades: [], totalTrades: 0 }),
     ),
     getHoldingsCountForPortfolio(portfolioId).catch(() => 0),
+    // The universe section — only the owner of a paper book sees/edits it.
+    isOwner && mode !== "live"
+      ? buildEmbeddedScreener(portfolio)
+      : Promise.resolve(null as EmbeddedScreener | null),
   ]);
   const { trades, totalTrades } = recent;
 
@@ -196,6 +268,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     trades,
     totalTrades,
     holdingsCount,
+    screener,
   };
 }
 
@@ -216,6 +289,7 @@ export default async function PortfolioPage({ params }: PageParams) {
     trades,
     totalTrades,
     holdingsCount,
+    screener,
   } = await getPortfolioPageData(slug);
   if (!portfolio) notFound();
 
@@ -358,6 +432,37 @@ export default async function PortfolioPage({ params }: PageParams) {
             </section>
           ) : (
             <ReadOnlyTeam team={team} />
+          )}
+
+          {/* UNIVERSE — the portfolio's own screener (owner-only, paper books).
+              The saved recipe (screen_config) is what the buyers trade from;
+              edits here re-rank live, and "Save universe" commits them. */}
+          {isOwner && mode !== "live" && screener && (
+            <section id="universe" className="mb-12 sm:mb-14 scroll-mt-20">
+              <div className="mb-3 flex items-baseline justify-between gap-3 flex-wrap">
+                <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim">
+                  Universe — screener
+                </h2>
+                <p className="font-mono text-[10.5px] text-text-muted">
+                  Your buyers draft from the ranked top of this screen on each
+                  heartbeat.
+                </p>
+              </div>
+              <ScreenerClient
+                embedded
+                portfolioId={portfolio.id}
+                portfolioSlug={portfolio.slug}
+                initialConfig={screener.config}
+                initialData={screener.initialData}
+                sectors={screener.sectors}
+                industries={screener.industries}
+                companyTickers={screener.companyTickers}
+                exclusions={screener.exclusions}
+                rejections={screener.rejections}
+                savedEncoded={screener.savedEncoded}
+                rejectedPortfolioName={portfolio.display_name}
+              />
+            </section>
           )}
 
           {/* Holdings */}
