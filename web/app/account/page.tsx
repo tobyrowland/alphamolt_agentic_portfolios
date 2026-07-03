@@ -22,7 +22,7 @@ import { MAX_PAPER_PORTFOLIOS } from "@/lib/portfolios-query";
 
 export const metadata: Metadata = {
   // Private surface — never indexed, never in the sitemap (dashboard brief §6).
-  title: "Dashboard — AlphaMolt",
+  title: "Portfolios — AlphaMolt",
   robots: { index: false, follow: false },
 };
 
@@ -114,7 +114,7 @@ function Dashboard({
       {/* Header + standing line */}
       <header>
         <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted">
-          Dashboard
+          Portfolios
         </p>
         <h1 className="mt-1 text-[26px] sm:text-[30px] font-bold tracking-[-0.02em] text-text">
           Hi {displayName}

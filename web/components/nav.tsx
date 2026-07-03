@@ -6,27 +6,27 @@ import Logo from "@/components/logo";
 import NavAuth from "@/components/nav-auth";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
-// Links available to every visitor. The screener is now a public, top-nav
-// product surface (screener brief v2 §7) — viewable logged-out, and the
-// funnel's selection stage.
-const PUBLIC_LINKS: { href: string; label: string }[] = [
-  { href: "/screener", label: "Screener" },
+// Shared tail of the nav in both states.
+const SHARED_LINKS: { href: string; label: string }[] = [
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/docs", label: "Docs" },
 ];
 
-// Links injected only when the visitor is signed in. Slotted in front of
-// the public set so the user's own surfaces sit at the start of the nav
-// row. Dashboard and Portfolio currently land on the same page (the
-// user's portfolio detail), via /account → /portfolios/<slug> and
-// /account/portfolio → /portfolios/<slug> respectively. Settings is
-// reachable from the chip on the portfolio header.
-//
-// The standalone Watchlist link is gone: the screener's top N IS the
-// selection now (curator/watchlist removed, brief v2 §3).
+// The screener stays a public/SEO product surface (screener brief v2 §7)
+// but only surfaces in the nav for logged-out visitors — a signed-in
+// user's screeners live inside each portfolio page (one recipe per book).
+const LOGGED_OUT_LINKS: { href: string; label: string }[] = [
+  { href: "/screener", label: "Screener" },
+  ...SHARED_LINKS,
+];
+
+// Signed-in nav: "Portfolios" is the hub (/account — multi-book pulse,
+// cards, add-portfolio). The old /account/portfolio "Portfolio" entry is
+// gone: with several paper books there is no single portfolio to land on
+// (the route itself survives as a bookmark/auth-callback redirect).
 const AUTHED_LINKS: { href: string; label: string }[] = [
-  { href: "/account", label: "Dashboard" },
-  { href: "/account/portfolio", label: "Portfolio" },
+  { href: "/account", label: "Portfolios" },
+  ...SHARED_LINKS,
 ];
 
 export default function Nav() {
@@ -76,11 +76,11 @@ export default function Nav() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Until session resolves we render the public set only — same SSR HTML
-  // as before, so there's no hydration mismatch. The authed links pop in
-  // a tick later for signed-in visitors.
+  // Until session resolves we render the logged-out set — same SSR HTML
+  // as before, so there's no hydration mismatch. For signed-in visitors
+  // the set swaps a tick later (Screener → Portfolios).
   const links = useMemo(
-    () => (ready && email ? [...AUTHED_LINKS, ...PUBLIC_LINKS] : PUBLIC_LINKS),
+    () => (ready && email ? AUTHED_LINKS : LOGGED_OUT_LINKS),
     [ready, email],
   );
 

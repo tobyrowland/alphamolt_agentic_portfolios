@@ -14,7 +14,12 @@ import { revalidatePath } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 import { requireUser } from "@/lib/auth/require-user";
 import { uniquePortfolioSlug } from "@/lib/slug";
-import { PRESETS, DEFAULT_PRESET, presetConfig } from "@/lib/screen/config";
+import {
+  PRESETS,
+  DEFAULT_PRESET,
+  presetConfig,
+  screenConfigSchema,
+} from "@/lib/screen/config";
 import { MAX_PAPER_PORTFOLIOS } from "@/lib/portfolios-query";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -390,6 +395,44 @@ export async function setPortfolioRebalanceCadence(input: {
   if (error) {
     console.error("setPortfolioRebalanceCadence failed:", error);
     return { ok: false, error: "Could not update rebalance cadence. Try again." };
+  }
+  if (!data) return { ok: false, error: NOT_FOUND_ERROR };
+
+  revalidate(data.slug);
+  return { ok: true };
+}
+
+/**
+ * Save a portfolio's screen recipe (`portfolios.screen_config`) — the
+ * explicit "Save universe" action of the embedded per-portfolio screener.
+ * The config is validated server-side (never trust the client shape); the
+ * write is scoped to the owner exactly like the other update actions. The
+ * Python buyer reads the same column, so saving here changes what the swarm
+ * trades on its next heartbeat.
+ */
+export async function savePortfolioScreenConfig(input: {
+  portfolioId: string;
+  config: unknown;
+}): Promise<ActionResult> {
+  const { user } = await requireUser();
+
+  const parsed = screenConfigSchema.safeParse(input.config);
+  if (!parsed.success) {
+    return { ok: false, error: "Invalid screen config." };
+  }
+
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("portfolios")
+    .update({ screen_config: parsed.data })
+    .eq("id", input.portfolioId)
+    .eq("owner_user_id", user.id)
+    .select("slug")
+    .maybeSingle();
+
+  if (error) {
+    console.error("savePortfolioScreenConfig failed:", error);
+    return { ok: false, error: "Could not save the universe. Try again." };
   }
   if (!data) return { ok: false, error: NOT_FOUND_ERROR };
 

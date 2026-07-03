@@ -49,7 +49,7 @@ export default async function WatchlistPage({
                 href="/account"
                 className="hover:text-text transition-colors"
               >
-                Dashboard
+                Portfolios
               </Link>
               <span aria-hidden className="mx-2 text-text-muted/60">
                 /

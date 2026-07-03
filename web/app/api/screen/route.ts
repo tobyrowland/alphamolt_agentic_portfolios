@@ -86,10 +86,12 @@ export async function GET(req: Request) {
 
     // Per-portfolio rejection set (migration 051), so the live re-rank hides
     // the same names the SSR page did. Empty for logged-out callers. With
-    // several paper portfolios (migration 070) this is the PRIMARY one's list;
-    // portfolioName lets the client caption whose buyer passed.
+    // several paper portfolios (migration 070) this is the PRIMARY one's list
+    // unless `pf` names a specific owned book (the embedded per-portfolio
+    // screener); portfolioName lets the client caption whose buyer passed.
+    const pf = url.searchParams.get("pf");
     const { portfolioId, portfolioName, rejections } =
-      await activeRejectionsForViewer();
+      await activeRejectionsForViewer(pf ?? undefined);
     const rejectedSet = new Set(rejections.map((r) => r.ticker.toUpperCase()));
     const result = await runScreen(config, rejectedSet);
     const rows = result.rows.map((r) => {
@@ -126,9 +128,10 @@ export async function GET(req: Request) {
           // portfolio) the response carries NO per-viewer data — identical for
           // everyone on a given config, so let the CDN share it. A viewer WITH a
           // portfolio gets a personalised (rejection-filtered) response that must
-          // never be cached across users.
+          // never be cached across users; likewise ANY pf-scoped request
+          // (defense in depth — a per-portfolio URL has no CDN-sharing value).
           "Cache-Control":
-            portfolioId === null
+            pf === null && portfolioId === null
               ? "public, s-maxage=300, stale-while-revalidate=600"
               : "private, no-store",
         },

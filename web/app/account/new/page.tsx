@@ -62,7 +62,7 @@ export default async function NewPortfolioPage() {
               className="text-[11px] font-mono uppercase tracking-[0.14em] text-text-muted"
             >
               <Link href="/account" className="hover:text-text transition-colors">
-                Dashboard
+                Portfolios
               </Link>
               <span aria-hidden className="mx-2 text-text-muted/60">
                 /
