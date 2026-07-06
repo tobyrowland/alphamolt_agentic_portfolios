@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import PulseChart from "@/components/dashboard/pulse-chart";
+import PulseChart, { type PulseLine } from "@/components/dashboard/pulse-chart";
 import type {
   DashPortfolio,
   DashSeriesPoint,
@@ -27,17 +27,21 @@ const PERIODS = [
 ] as const;
 type PeriodKey = (typeof PERIODS)[number]["key"];
 
-/** Sum each date's raw value across portfolios (the "All" total-value series). */
-function aggregateValues(portfolios: DashPortfolio[]): DashValuePoint[] {
-  const byDate = new Map<string, number>();
-  for (const p of portfolios) {
-    for (const pt of p.valueSeries) {
-      byDate.set(pt.date, (byDate.get(pt.date) ?? 0) + pt.value);
-    }
-  }
-  return [...byDate.entries()]
-    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-    .map(([date, value]) => ({ date, value }));
+// One color per portfolio, assigned in stable created_at order so a line never
+// changes hue when the selection or period changes. Slot 1 is the brand green
+// (deliberately outside the usual even-lightness band); the rest were validated
+// together for CVD separation and 3:1 contrast on the dark surface. Chips carry
+// a matching dot, so identity is never color-alone.
+const PORTFOLIO_COLORS = [
+  "#00FF41",
+  "#5aa9ff",
+  "#ffb020",
+  "#ff7ab0",
+  "#b7a8ff",
+  "#ff8a4a",
+];
+function colorFor(i: number): string {
+  return PORTFOLIO_COLORS[Math.min(i, PORTFOLIO_COLORS.length - 1)];
 }
 
 /** Slice a raw value series to the period and re-normalise to its first point,
@@ -51,6 +55,18 @@ function periodSeries(
   const base = win[0].value;
   if (!base) return win.map((r) => ({ date: r.date, pct: 0 }));
   return win.map((r) => ({ date: r.date, pct: (r.value / base - 1) * 100 }));
+}
+
+/** First/last raw value inside the window — feeds the funding-adjusted "All"
+ *  P/L: each book's gain is measured from its own window start, so a portfolio
+ *  funded mid-window contributes its return, not its seed cash. */
+function periodEndpoints(
+  raw: DashValuePoint[],
+  cutoff: string | null,
+): { start: number; end: number } | null {
+  const win = cutoff ? raw.filter((r) => r.date >= cutoff) : raw;
+  if (win.length === 0) return null;
+  return { start: win[0].value, end: win[win.length - 1].value };
 }
 
 export default function PulseSection({
@@ -71,24 +87,44 @@ export default function PulseSection({
       : new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   }, [period]);
 
+  // One line per portfolio (the "All" view); a single selection just narrows
+  // to that portfolio's line, keeping its assigned color.
+  const lines = useMemo<PulseLine[]>(() => {
+    const all = portfolios.map((p, i) => ({
+      key: p.id,
+      name: p.name,
+      color: colorFor(i),
+      points: periodSeries(p.valueSeries, cutoff),
+    }));
+    if (sel === "all") return all;
+    const one = all.find((l) => l.key === sel) ?? all[0];
+    return one ? [one] : [];
+  }, [sel, portfolios, cutoff]);
+
   const current = useMemo(() => {
-    const rawValues =
-      sel === "all"
-        ? aggregateValues(portfolios)
-        : (portfolios.find((x) => x.id === sel) ?? portfolios[0])?.valueSeries ??
-          [];
-    const name =
-      sel === "all"
-        ? "All portfolios"
-        : (portfolios.find((x) => x.id === sel) ?? portfolios[0])?.name ??
-          "Portfolio";
-    const value =
-      sel === "all"
-        ? portfolios.reduce((s, p) => s + (p.value ?? 0), 0)
-        : (portfolios.find((x) => x.id === sel) ?? portfolios[0])?.value ?? null;
-    const series = periodSeries(rawValues, cutoff);
-    const periodPct = series.length ? series[series.length - 1].pct : null;
-    return { name, value, periodPct, series };
+    if (sel === "all") {
+      let start = 0;
+      let end = 0;
+      for (const p of portfolios) {
+        const ep = periodEndpoints(p.valueSeries, cutoff);
+        if (ep) {
+          start += ep.start;
+          end += ep.end;
+        }
+      }
+      return {
+        name: "All portfolios",
+        value: portfolios.reduce((s, p) => s + (p.value ?? 0), 0),
+        periodPct: start > 0 ? (end / start - 1) * 100 : null,
+      };
+    }
+    const p = portfolios.find((x) => x.id === sel) ?? portfolios[0];
+    const series = periodSeries(p?.valueSeries ?? [], cutoff);
+    return {
+      name: p?.name ?? "Portfolio",
+      value: p?.value ?? null,
+      periodPct: series.length ? series[series.length - 1].pct : null,
+    };
   }, [sel, portfolios, cutoff]);
 
   const spySeries = useMemo(
@@ -98,10 +134,7 @@ export default function PulseSection({
 
   const periodLabel = PERIODS.find((p) => p.key === period)?.label ?? "";
   const spyFinal = spySeries.length ? spySeries[spySeries.length - 1].pct : 0;
-  const youFinal = current.series.length
-    ? current.series[current.series.length - 1].pct
-    : 0;
-  const vsSpy = youFinal - spyFinal;
+  const vsSpy = current.periodPct == null ? null : current.periodPct - spyFinal;
 
   return (
     <section
@@ -126,25 +159,34 @@ export default function PulseSection({
           ))}
         </div>
       </div>
-      {/* Per-portfolio selector (when the user runs more than one book). */}
+      {/* Per-portfolio selector (when the user runs more than one book). The
+          chips double as the chart legend — each carries its line's color. */}
       {multi && (
         <div className="flex items-center gap-1 flex-wrap mb-3">
           <SwitchChip active={sel === "all"} onClick={() => setSel("all")} label="All" />
-          {portfolios.map((p) => (
+          {portfolios.map((p, i) => (
             <SwitchChip
               key={p.id}
               active={sel === p.id}
               onClick={() => setSel(p.id)}
               label={p.name}
+              dotColor={colorFor(i)}
             />
           ))}
         </div>
       )}
-      <PulseChart portfolio={current.series} spy={spySeries} />
+      <PulseChart lines={lines} spy={spySeries} />
       <p className="sr-only">
-        {current.name} is {fmtPct(current.periodPct)} over the selected period
-        ({periodLabel}), {vsSpy >= 0 ? "ahead of" : "behind"} the S&amp;P 500 by{" "}
-        {Math.abs(vsSpy).toFixed(2)} percentage points.
+        {sel === "all" && multi
+          ? `Over the selected period (${periodLabel}): ${portfolios
+              .map((p) => {
+                const s = periodSeries(p.valueSeries, cutoff);
+                return `${p.name} ${fmtPct(s.length ? s[s.length - 1].pct : null)}`;
+              })
+              .join(", ")}. The S&P 500 returned ${fmtPct(spyFinal)}.`
+          : `${current.name} is ${fmtPct(current.periodPct)} over the selected period (${periodLabel}), ${
+              (vsSpy ?? 0) >= 0 ? "ahead of" : "behind"
+            } the S&P 500 by ${Math.abs(vsSpy ?? 0).toFixed(2)} percentage points.`}
       </p>
     </section>
   );
@@ -179,22 +221,31 @@ function SwitchChip({
   active,
   onClick,
   label,
+  dotColor,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
+  dotColor?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`font-mono text-[11px] rounded-md px-2.5 py-1 border transition-colors ${
+      className={`font-mono text-[11px] rounded-md px-2.5 py-1 border transition-colors inline-flex items-center gap-1.5 ${
         active
           ? "text-[var(--color-green,#00FF41)] border-[var(--color-green,#00FF41)]/50 bg-[var(--color-green,#00FF41)]/10"
           : "text-text-muted border-white/10 hover:text-text"
       }`}
     >
+      {dotColor && (
+        <span
+          aria-hidden
+          className="inline-block h-2 w-2 rounded-full"
+          style={{ background: dotColor }}
+        />
+      )}
       {label}
     </button>
   );
