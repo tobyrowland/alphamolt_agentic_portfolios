@@ -13,65 +13,11 @@
 import { errorResponse, jsonResponse } from "@/lib/api-utils";
 import { configFromParams, screenConfigSchema } from "@/lib/screen/config";
 import { runScreen } from "@/lib/screen/query";
-import { bestRationale } from "@/lib/screen/score";
+import { projectDisplayRows } from "@/lib/screen/display-rows";
 import { activeRejectionsForViewer } from "@/lib/screen/rejections-query";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-// Display projection — the client never needs the full fact row.
-const DISPLAY = [
-  "rank",
-  "ticker",
-  "name",
-  "sector",
-  "industry",
-  "country",
-  "price",
-  "price_asof",
-  "score",
-  "ps",
-  "ps_median_12m",
-  "ps_trend_pct",
-  "rev_growth_ttm",
-  "gross_margin",
-  "fcf_margin",
-  "net_margin",
-  "operating_margin",
-  "rule_of_40",
-  "ret_52w",
-  "perf_52w_vs_spy",
-  "bull",
-  "bear",
-  // Graded bull/bear conviction + their rank tilt (migration 066).
-  "bull_score",
-  "bear_score",
-  // Single-score fields (migration 057) — the score column + AI-durability badge.
-  "base_z",
-  "adj_z",
-  "moat_z",
-  "earn_z",
-  "break_z",
-  "verdict_z",
-  "bull_z",
-  "bear_z",
-  "base_pct",
-  "final_pct",
-  "capped",
-  "floored",
-  "quality_score",
-  "moat_score",
-  "earnings_score",
-  "growth_score",
-  "break_count",
-  "firing_breaks",
-  "has_card",
-  // Peer median P/S (display only, brief §5).
-  "industry_ps_median",
-  "sector_ps_median",
-  "peer_ps_median",
-  "peer_basis",
-] as const;
 
 export async function GET(req: Request) {
   try {
@@ -94,22 +40,14 @@ export async function GET(req: Request) {
       await activeRejectionsForViewer(pf ?? undefined);
     const rejectedSet = new Set(rejections.map((r) => r.ticker.toUpperCase()));
     const result = await runScreen(config, rejectedSet);
-    const rows = result.rows.map((r) => {
-      const row = Object.fromEntries(
-        DISPLAY.map((k) => [k, (r as unknown as Record<string, unknown>)[k]]),
-      );
-      // Ship only the compiled one-line thesis, not the heavy research_card
-      // text — the full card is lazy-loaded on row-expand (/api/screen/card).
-      row.thesis_line = bestRationale(r.research_card);
-      return row;
-    });
+    // Same display projection the SSR paints ship (rounded floats, compiled
+    // one-line thesis instead of the heavy research_card text — the full card
+    // is lazy-loaded on row-expand via /api/screen/card).
+    const projected = projectDisplayRows(result);
 
     return jsonResponse(
       {
-        rows,
-        match_count: result.match_count,
-        total_universe: result.total_universe,
-        data_asof: result.data_asof,
+        ...projected,
         config,
         // The viewer's active per-portfolio rejections (migration 051) — the
         // client folds these into the "Hidden" panel, tagged with the rejection

@@ -7,13 +7,10 @@ import PortfolioTabs from "@/components/portfolio/portfolio-tabs";
 import ScreenerClient from "@/app/screener/screener-client";
 import { runScreen } from "@/lib/screen/query";
 import { listActiveExclusions } from "@/lib/screen/exclusions-query";
-import { getCompanyTickers } from "@/lib/screen/company-tickers";
 import { projectDisplayRows } from "@/lib/screen/display-rows";
 import { activeRejectionsForViewer } from "@/lib/screen/rejections-query";
 import {
   DEFAULT_PRESET,
-  configFromParams,
-  encodeConfig,
   presetConfig,
   screenConfigSchema,
 } from "@/lib/screen/config";
@@ -82,9 +79,8 @@ export default async function PortfolioUniversePage({ params }: PageParams) {
   // (the page is owner-gated, so per-user data is safe to render).
   const { rejections } = await activeRejectionsForViewer(portfolio.id);
   const rejectedSet = new Set(rejections.map((r) => r.ticker.toUpperCase()));
-  const [initial, companyTickers, exclusions] = await Promise.all([
+  const [initial, exclusions] = await Promise.all([
     runScreen(config, rejectedSet),
-    getCompanyTickers(),
     listActiveExclusions(),
   ]);
 
@@ -151,13 +147,11 @@ export default async function PortfolioUniversePage({ params }: PageParams) {
             initialData={projectDisplayRows(initial)}
             sectors={initial.sectors}
             industries={initial.industries}
-            companyTickers={companyTickers}
             exclusions={exclusions.map((e) => e.ticker)}
             rejections={rejections.map((r) => ({
               ticker: r.ticker,
               rejected_at: r.rejected_at,
             }))}
-            defaultEncoded={encodeConfig(configFromParams({ preset: DEFAULT_PRESET }))}
             portfolioContext={{
               id: portfolio.id,
               slug: portfolio.slug,
