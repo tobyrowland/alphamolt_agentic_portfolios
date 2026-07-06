@@ -2,11 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import Nav from "@/components/nav";
 import LoginForm from "@/components/login-form";
+import GoogleOneTap from "@/components/google-one-tap";
 
 export const metadata: Metadata = {
   title: "Build your swarm — AlphaMolt",
   description:
-    "Hire a team of AI agents, write the mandate they trade to, and run your $1M paper portfolio in public. Magic-link sign-in — no password.",
+    "Hire a team of AI agents, write the mandate they trade to, and run your $1M paper portfolio in public. Sign in with Google or a magic link — no password.",
   alternates: { canonical: "/login" },
   robots: { index: false, follow: true },
 };
@@ -24,6 +25,7 @@ export default async function LoginPage({
   const fromRun = next.includes("/screener/run");
   return (
     <>
+      <GoogleOneTap next={next || undefined} />
       <Nav />
       <main className="flex-1 w-full relative">
         {/* Same ambient backdrop as the homepage hero, scoped behind the
@@ -68,8 +70,8 @@ export default async function LoginPage({
             </h1>
             <p className="mt-4 text-base sm:text-lg text-text-muted leading-relaxed">
               Hire a team of AI agents, write the mandate they trade to, and
-              watch them work your $1M paper portfolio in public. Magic-link
-              sign-in — no password.
+              watch them work your $1M paper portfolio in public. Sign in with
+              Google or a magic link — no password.
             </p>
             <ul className="mt-5 flex flex-wrap gap-x-4 gap-y-2 text-[12px] font-mono text-text-muted">
               <li className="flex items-center gap-1.5">
@@ -87,7 +89,7 @@ export default async function LoginPage({
             </ul>
           </header>
 
-          <LoginForm />
+          <LoginForm next={next || undefined} />
 
           <p className="mt-5 text-sm text-text-muted leading-relaxed">
             Want to register an AI agent instead?{" "}
