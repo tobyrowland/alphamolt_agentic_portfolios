@@ -16,29 +16,56 @@ interface Point {
   pct: number;
 }
 
+export interface PulseLine {
+  key: string;
+  name: string;
+  color: string;
+  points: Point[];
+}
+
 /**
- * Pulse — the selected portfolio's equity curve vs SPY over the window, both
- * normalised to % return from the window start (dashboard brief §2). Read-only;
- * a text summary + table fallback live in the parent for a11y.
+ * Pulse — one equity curve per portfolio vs SPY over the window, each
+ * normalised to % return from its own first snapshot in the window (dashboard
+ * brief §2). A portfolio funded mid-window simply starts its line on its
+ * funding date rather than distorting the others. Read-only; a text summary +
+ * table fallback live in the parent for a11y.
  */
 export default function PulseChart({
-  portfolio,
+  lines,
   spy,
   height = 260,
 }: {
-  portfolio: Point[];
+  lines: PulseLine[];
   spy: Point[];
   height?: number;
 }) {
   const data = useMemo(() => {
+    const dates = [
+      ...new Set(lines.flatMap((l) => l.points.map((p) => p.date))),
+    ].sort();
+    const byLine = lines.map(
+      (l) => new Map(l.points.map((p) => [p.date, p.pct])),
+    );
     const spyByDate = new Map(spy.map((p) => [p.date, p.pct]));
-    // Carry SPY forward across the portfolio's (weekend-inclusive) dates.
+    // Carry SPY forward across the portfolios' (weekend-inclusive) dates.
     let lastSpy = 0;
-    return portfolio.map((p) => {
-      if (spyByDate.has(p.date)) lastSpy = spyByDate.get(p.date) as number;
-      return { date: p.date.slice(5), you: p.pct, spy: lastSpy };
+    return dates.map((date) => {
+      if (spyByDate.has(date)) lastSpy = spyByDate.get(date) as number;
+      const row: Record<string, string | number | undefined> = {
+        date: date.slice(5),
+        spy: lastSpy,
+      };
+      lines.forEach((l, i) => {
+        row[l.key] = byLine[i].get(date);
+      });
+      return row;
     });
-  }, [portfolio, spy]);
+  }, [lines, spy]);
+
+  const nameByKey = useMemo(
+    () => new Map(lines.map((l) => [l.key, l.name])),
+    [lines],
+  );
 
   if (data.length < 2) {
     return (
@@ -53,9 +80,9 @@ export default function PulseChart({
   }
 
   return (
-    <div style={{ height }} role="img" aria-label="Equity curve versus the S&P 500">
+    <div style={{ height }} role="img" aria-label="Equity curves versus the S&P 500">
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -18 }}>
+        <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -4 }}>
           <ReferenceLine y={0} stroke="rgba(255,255,255,0.15)" />
           <XAxis
             dataKey="date"
@@ -68,8 +95,14 @@ export default function PulseChart({
             tick={{ fontSize: 10, fill: "var(--color-text-muted, #888)" }}
             tickLine={false}
             axisLine={false}
-            width={40}
-            tickFormatter={(v) => `${v > 0 ? "+" : ""}${Math.round(v)}%`}
+            width={44}
+            tickFormatter={(v) =>
+              `${v > 0 ? "+" : ""}${
+                Number.isInteger(v) || Math.abs(v) >= 3
+                  ? Math.round(v)
+                  : v.toFixed(1)
+              }%`
+            }
           />
           <Tooltip
             contentStyle={{
@@ -82,17 +115,20 @@ export default function PulseChart({
               const v = typeof value === "number" ? value : Number(value);
               return [
                 `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`,
-                name === "you" ? "You" : "SPY",
+                name === "spy" ? "SPY" : nameByKey.get(String(name)) ?? String(name),
               ];
             }}
           />
-          <Line
-            type="monotone"
-            dataKey="you"
-            stroke="var(--color-green, #00FF41)"
-            strokeWidth={2}
-            dot={false}
-          />
+          {lines.map((l) => (
+            <Line
+              key={l.key}
+              type="monotone"
+              dataKey={l.key}
+              stroke={l.color}
+              strokeWidth={2}
+              dot={false}
+            />
+          ))}
           <Line
             type="monotone"
             dataKey="spy"
