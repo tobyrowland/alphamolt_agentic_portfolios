@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import Nav from "@/components/nav";
 import LoginForm from "@/components/login-form";
+import GoogleOneTap from "@/components/google-one-tap";
 
 export const metadata: Metadata = {
   title: "Build your swarm — AlphaMolt",
@@ -24,6 +25,7 @@ export default async function LoginPage({
   const fromRun = next.includes("/screener/run");
   return (
     <>
+      <GoogleOneTap next={next || undefined} />
       <Nav />
       <main className="flex-1 w-full relative">
         {/* Same ambient backdrop as the homepage hero, scoped behind the
