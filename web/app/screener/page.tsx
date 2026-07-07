@@ -1,15 +1,12 @@
 import type { Metadata } from "next";
 import Nav from "@/components/nav";
 import {
-  DEFAULT_PRESET,
   PRESETS,
   configFromParams,
-  encodeConfig,
   isHousePreset,
 } from "@/lib/screen/config";
 import { runScreen } from "@/lib/screen/query";
 import { listActiveExclusions } from "@/lib/screen/exclusions-query";
-import { getCompanyTickers } from "@/lib/screen/company-tickers";
 import { projectDisplayRows } from "@/lib/screen/display-rows";
 import { getSupabase } from "@/lib/supabase";
 import { screenConfigSchema, type ScreenConfig } from "@/lib/screen/config";
@@ -118,9 +115,8 @@ export default async function ScreenerPage({
   // ISR-cached / indexable. Per-portfolio rejection hiding (migration 051) is
   // resolved client-side via /api/screen (which reads the session) once the
   // viewer is known signed-in — see screener-client's sign-in refetch.
-  const [initial, companyTickers, exclusions] = await Promise.all([
+  const [initial, exclusions] = await Promise.all([
     runScreen(config),
-    getCompanyTickers(),
     listActiveExclusions(),
   ]);
 
@@ -164,9 +160,7 @@ export default async function ScreenerPage({
             initialData={projectDisplayRows(initial)}
             sectors={initial.sectors}
             industries={initial.industries}
-            companyTickers={companyTickers}
             exclusions={exclusions.map((e) => e.ticker)}
-            defaultEncoded={encodeConfig(configFromParams({ preset: DEFAULT_PRESET }))}
           />
         </div>
       </main>

@@ -1,12 +1,25 @@
 import { bestRationale } from "@/lib/screen/score";
 import type { ScreenResponse } from "@/lib/screen/query";
 
+/** Round to 4 decimals — z-scores and raw numerics otherwise serialize at full
+ *  float64 precision (~17 digits each), which roughly doubles the bulk payload
+ *  for no display or re-rank benefit (the client renders at 0–2 dp and the
+ *  local re-rank tolerates 1e-4 noise). */
+function r4(v: number | null): number | null {
+  return v == null ? null : Math.round(v * 10000) / 10000;
+}
+/** Same rounding for the always-present score fields (keeps them `number`). */
+function rz(v: number): number {
+  return Math.round(v * 10000) / 10000;
+}
+
 /**
- * SSR projection of a screen result into the shape ScreenerClient takes as
+ * Projection of a screen result into the shape ScreenerClient takes as
  * `initialData` — the display columns only, with the heavy research_card
  * reduced to its compiled one-line thesis (the full card is lazy-loaded on
- * row-expand via /api/screen/card). Shared by the public /screener page and
- * the per-portfolio embedded screener so the two paints can't drift.
+ * row-expand via /api/screen/card). Shared by the public /screener page, the
+ * per-portfolio embedded screener AND the /api/screen live re-rank so the
+ * three paints can't drift.
  */
 export function projectDisplayRows(initial: ScreenResponse) {
   return {
@@ -17,30 +30,26 @@ export function projectDisplayRows(initial: ScreenResponse) {
       sector: r.sector,
       industry: r.industry,
       country: r.country,
-      price: r.price,
-      price_asof: r.price_asof,
-      score: r.score,
-      ps: r.ps,
-      ps_median_12m: r.ps_median_12m,
-      ps_trend_pct: r.ps_trend_pct,
-      rev_growth_ttm: r.rev_growth_ttm,
-      gross_margin: r.gross_margin,
-      fcf_margin: r.fcf_margin,
-      net_margin: r.net_margin,
-      operating_margin: r.operating_margin,
-      rule_of_40: r.rule_of_40,
-      ret_52w: r.ret_52w,
-      perf_52w_vs_spy: r.perf_52w_vs_spy,
-      bull: r.bull,
-      bear: r.bear,
+      price: r4(r.price),
+      score: rz(r.score),
+      ps: r4(r.ps),
+      ps_median_12m: r4(r.ps_median_12m),
+      ps_trend_pct: r4(r.ps_trend_pct),
+      rev_growth_ttm: r4(r.rev_growth_ttm),
+      gross_margin: r4(r.gross_margin),
+      fcf_margin: r4(r.fcf_margin),
+      net_margin: r4(r.net_margin),
+      operating_margin: r4(r.operating_margin),
+      rule_of_40: r4(r.rule_of_40),
+      ret_52w: r4(r.ret_52w),
+      perf_52w_vs_spy: r4(r.perf_52w_vs_spy),
       bull_score: r.bull_score,
       bear_score: r.bear_score,
       // Single-score + research-card fields (migration 057).
-      base_z: r.base_z,
-      adj_z: r.adj_z,
-      moat_z: r.moat_z,
-      earn_z: r.earn_z,
-      break_z: r.break_z,
+      base_z: rz(r.base_z),
+      adj_z: rz(r.adj_z),
+      moat_z: rz(r.moat_z),
+      earn_z: rz(r.earn_z),
       base_pct: r.base_pct,
       final_pct: r.final_pct,
       capped: r.capped,
@@ -55,9 +64,9 @@ export function projectDisplayRows(initial: ScreenResponse) {
       // Ship only the compiled one-line thesis; the heavy research_card
       // text is lazy-loaded on row-expand.
       thesis_line: bestRationale(r.research_card),
-      industry_ps_median: r.industry_ps_median,
-      sector_ps_median: r.sector_ps_median,
-      peer_ps_median: r.peer_ps_median,
+      industry_ps_median: r4(r.industry_ps_median),
+      sector_ps_median: r4(r.sector_ps_median),
+      peer_ps_median: r4(r.peer_ps_median),
       peer_basis: r.peer_basis,
     })),
     match_count: initial.match_count,

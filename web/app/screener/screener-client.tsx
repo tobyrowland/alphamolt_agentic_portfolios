@@ -46,7 +46,6 @@ interface Row {
   industry: string | null;
   country: string | null;
   price: number | null;
-  price_asof: string | null;
   score: number;
   ps: number | null;
   ps_median_12m: number | null;
@@ -59,8 +58,6 @@ interface Row {
   rule_of_40: number | null;
   ret_52w: number | null;
   perf_52w_vs_spy: number | null;
-  bull: boolean | null;
-  bear: boolean | null;
   // Graded bull/bear conviction 1-5 (migration 066).
   bull_score: number | null;
   bear_score: number | null;
@@ -69,7 +66,6 @@ interface Row {
   adj_z: number;
   moat_z: number;
   earn_z: number;
-  break_z: number;
   base_pct: number;
   final_pct: number;
   capped: boolean;
@@ -122,6 +118,11 @@ function fmtSigned(v: number | null, dp = 1): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(dp)}%`;
 }
 const PAGE_SIZE = 250;
+// Rows rendered into the SSR HTML. The full PAGE_SIZE window is restored right
+// after hydration (the visible-reset effect below fires on mount), so the only
+// difference is ~75% less row markup in the document — the data for every
+// matched row still ships once in the RSC payload for the local re-rank.
+const SSR_ROWS = 60;
 // localStorage key for the viewer's last screen recipe (filters/weights), so a
 // bare /screener visit restores it instead of resetting to the default preset.
 const CONFIG_STORAGE_KEY = "alphamolt:screener:config";
@@ -174,7 +175,6 @@ export default function ScreenerClient({
   initialData,
   sectors = [],
   industries = [],
-  companyTickers = [],
   exclusions = [],
   rejections = [],
   portfolioContext,
@@ -185,13 +185,10 @@ export default function ScreenerClient({
   sectors?: string[];
   /** Distinct industries for the industry filter dropdown. */
   industries?: string[];
-  /** Tickers that have a /company/<ticker> page (others render unlinked). */
-  companyTickers?: string[];
   /** Tickers on the manual 1-year blocklist (owner-managed). */
   exclusions?: string[];
   /** Names this portfolio's buyer evaluated and passed on (migration 051). */
   rejections?: RejectedName[];
-  defaultEncoded?: string;
   /**
    * Set on a portfolio's Universe tab (/portfolios/<slug>/universe): the
    * screener renders VERBATIM, but its plumbing is scoped to this book —
@@ -204,10 +201,6 @@ export default function ScreenerClient({
   portfolioContext?: { id: string; slug: string; name: string };
 }) {
   const pfCtx = portfolioContext ?? null;
-  const linkable = useMemo(
-    () => new Set(companyTickers.map((t) => t.toUpperCase())),
-    [companyTickers],
-  );
   const [config, setConfig] = useState<ScreenConfig>(initialConfig);
   // The remembered Custom recipe — restored when the Custom card is picked.
   // Seeded from the initial config if it's already custom, else a blank canvas
@@ -239,7 +232,7 @@ export default function ScreenerClient({
   const [needSignInToSave, setNeedSignInToSave] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [visible, setVisible] = useState(PAGE_SIZE);
+  const [visible, setVisible] = useState(SSR_ROWS);
   // View filters (redesign brief §3/§4) — purely client-side, never bust cache.
   const [view, setView] = useState<"all" | "researched">("all");
   const [moatOnly, setMoatOnly] = useState(false);
@@ -1244,7 +1237,6 @@ export default function ScreenerClient({
           <RowView
             key={r.ticker}
             r={r}
-            hasPage={linkable.has(r.ticker.toUpperCase())}
             canExclude={signedIn}
             exclBusy={exclBusy}
             onExclude={onExclude}
@@ -1349,7 +1341,7 @@ function IntroPopout({
       ) : (
         <>
           <p className="text-sm font-bold text-text">
-            Every swarm picks from a universe like this.
+            Every swarm picks from a <em>ranked</em> universe like this.
           </p>
           <p className="text-[12.5px] text-text-dim mt-1 leading-relaxed max-w-prose">
             Set the filters and scoring, then hand your screen to a team of AI
@@ -1358,20 +1350,23 @@ function IntroPopout({
           </p>
         </>
       )}
-      <div className="mt-3 flex items-center gap-2 flex-wrap font-mono text-[11px]">
-        <span className="rounded-md border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] px-2.5 py-1 text-[var(--color-cyan)]">
-          This screen
-        </span>
-        <span className="text-text-muted">→</span>
-        <span className="rounded-md border border-green/45 bg-green/[0.06] px-2.5 py-1 text-green">
-          {signedIn ? "Your portfolio" : "A swarm"}
-        </span>
-        <Link href={runHref} className="ml-1 text-green hover:underline">
-          {signedIn
-            ? "Run this screen as a portfolio →"
-            : "Run this screen as a swarm — free →"}
-        </Link>
-      </div>
+      {/* The flow chips + run link only make sense for an owner with a
+          portfolio to apply the screen to — logged-out visitors get the pitch
+          text above and the nav's "Enter the arena" CTA. */}
+      {signedIn && (
+        <div className="mt-3 flex items-center gap-2 flex-wrap font-mono text-[11px]">
+          <span className="rounded-md border border-[var(--color-cyan)]/45 bg-[var(--color-cyan)]/[0.06] px-2.5 py-1 text-[var(--color-cyan)]">
+            This screen
+          </span>
+          <span className="text-text-muted">→</span>
+          <span className="rounded-md border border-green/45 bg-green/[0.06] px-2.5 py-1 text-green">
+            Your portfolio
+          </span>
+          <Link href={runHref} className="ml-1 text-green hover:underline">
+            Run this screen as a portfolio →
+          </Link>
+        </div>
+      )}
       <button
         type="button"
         onClick={onDismiss}
@@ -1958,7 +1953,6 @@ function ClassTag({
 
 function RowView({
   r,
-  hasPage,
   canExclude,
   exclBusy,
   onExclude,
@@ -1969,7 +1963,6 @@ function RowView({
   onExpand,
 }: {
   r: Row;
-  hasPage: boolean;
   /** Owner-only: show the ✕ "remove from screener for a year" control. */
   canExclude: boolean;
   exclBusy: boolean;
@@ -2042,19 +2035,15 @@ function RowView({
           <span className="font-mono text-[12px] text-text-muted text-right">{r.rank}</span>
           <div className="min-w-0 flex-1 md:flex-none">
             <span>
-              {hasPage ? (
-                <Link
-                  href={`/company/${r.ticker}`}
-                  onClick={(e) => e.stopPropagation()}
-                  className="hover:text-[var(--color-cyan)]"
-                >
-                  <span className="font-mono font-semibold text-text text-[14px] tracking-[0.02em]">{r.ticker}</span>
-                </Link>
-              ) : (
-                <span className="font-mono font-semibold text-text text-[14px] tracking-[0.02em]" title="No analysis page for this name yet">
-                  {r.ticker}
-                </span>
-              )}
+              {/* Every ranked row is an active Tier 1 name — the same universe
+                  the /company pages render from — so the link is unconditional. */}
+              <Link
+                href={`/company/${r.ticker}`}
+                onClick={(e) => e.stopPropagation()}
+                className="hover:text-[var(--color-cyan)]"
+              >
+                <span className="font-mono font-semibold text-text text-[14px] tracking-[0.02em]">{r.ticker}</span>
+              </Link>
               <span className="text-text-muted text-[12px] ml-2 hidden sm:inline">{r.name}</span>
               <HoldingPill h={holding} />
             </span>
@@ -2171,7 +2160,7 @@ function RowView({
                       {(cardData.break_signals?.length ?? 0) > 0 ? (
                         <ul className="space-y-1.5">
                           {cardData.break_signals!.map((b, i) => {
-                            const firing = signalFires(r, b);
+                            const firing = signalFires(r as unknown as ScreenFacts, b);
                             return (
                               <li
                                 key={i}
