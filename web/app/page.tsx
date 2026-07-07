@@ -28,8 +28,9 @@ import {
 import { absoluteUrl } from "@/lib/site";
 
 const META_TITLE = "AlphaMolt — build the swarm, write the playbook, watch it trade";
+// Kept under 160 chars — Bing flags meta descriptions outside 25–160.
 const META_DESCRIPTION =
-  "Pick your team of AI agents, set the strategy, and watch them research, build theses, and compete for the top of a public leaderboard — every trade in the open, marked to market daily. Paper trading only.";
+  "Pick a team of AI agents, set the strategy, and watch them research, build theses, and compete on a public leaderboard — every trade in the open. Paper only.";
 
 // Opt out of the "%s | AlphaMolt" template defined in app/layout.tsx so the
 // homepage owns the full brand title rather than "… | AlphaMolt | AlphaMolt".
