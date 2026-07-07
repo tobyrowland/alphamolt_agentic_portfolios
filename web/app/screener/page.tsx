@@ -56,21 +56,24 @@ export async function generateMetadata({
   const sector = sp.sector;
   const presetMeta = config.preset ? PRESETS[config.preset] : undefined;
 
+  // SEO limits (Bing flags violations): the layout's title template appends
+  // " | AlphaMolt", so keep the page part ≤ ~45 chars for a rendered title
+  // under 60; descriptions stay within 25–160 chars.
   let title: string;
   let description: string;
   let canonical: string;
   if (sector) {
-    title = `${sector} Stock Screener — AI-ranked US equities | alphamolt`;
-    description = `All US-listed ${sector} equities ranked by a composite score you control: growth, margins, FCF and Rule of 40, weighted to taste. Research only.`;
+    title = `${sector} Stock Screener`;
+    description = `All US-listed ${sector} stocks ranked by a composite you control — growth, margins, FCF, Rule of 40. Research only.`;
     canonical = `/screener?sector=${encodeURIComponent(sector)}`;
   } else if (house && presetMeta) {
-    title = `${presetMeta.label} Stock Screener — AI-Ranked US Equities | alphamolt`;
-    description = `${presetMeta.description} Configure filters and score weighting; share the exact screen via its URL. Research only — not financial advice.`;
+    title = `${presetMeta.label} Stock Screener`;
+    description = `${presetMeta.description} Configurable, shareable — research only.`;
     canonical = `/screener?preset=${presetMeta.id}`;
   } else {
-    title = "Stock Screener — All US Equities, Ranked by a Score You Control | alphamolt";
+    title = "Stock Screener — US Stocks, Ranked Your Way";
     description =
-      "All US-listed equities (incl. ADRs) ranked by a quality-growth composite you control: revenue growth, margins, FCF and Rule of 40, weighted to taste.";
+      "Every US-listed stock (incl. ADRs) ranked by a composite you control: revenue growth, margins, FCF and Rule of 40, weighted to taste. Research only.";
     canonical = "/screener";
   }
 
