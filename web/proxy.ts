@@ -10,6 +10,18 @@ import { NextResponse, type NextRequest } from "next/server";
 export async function proxy(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;
 
+  // Crawl hygiene: /company/{ticker}?v=N duplicates (historical cache-bust
+  // links Google keeps re-crawling) permanently redirect to the clean
+  // canonical path. Canonical tags already point there, so this only stops
+  // the crawl-budget burn; scoped to /company/ because the ?v= on
+  // /leaderboard and /consensus share URLs is a deliberate X.com
+  // og-image cache-bust.
+  if (pathname.startsWith("/company/") && searchParams.has("v")) {
+    const clean = request.nextUrl.clone();
+    clean.searchParams.delete("v");
+    return NextResponse.redirect(clean, 301);
+  }
+
   // Auth-code rescue. A magic-link sign-in redirects back with a PKCE
   // `?code=` that must be exchanged for a session by /auth/callback. If
   // Supabase falls back to the Site URL (e.g. /auth/callback isn't in the

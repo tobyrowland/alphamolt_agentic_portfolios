@@ -19,6 +19,7 @@ import type {
 } from "@/lib/company-report-query";
 import { buildStripModels, type StripModel } from "@/lib/metric-stats-query";
 import {
+  isValidTicker,
   loadCompany,
   loadPriceSales,
   loadMetricStats,
@@ -59,21 +60,27 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { ticker: rawTicker } = await params;
   const ticker = decodeURIComponent(rawTicker);
+  // The layout gate (layout.tsx) is what actually sets the HTTP 404 — it
+  // resolves before the loading.tsx shell flushes. The checks here and in the
+  // page body are defense in depth (and stop "not found" metadata rendering).
+  if (!isValidTicker(ticker)) notFound();
 
+  let company, priceSales, activity;
   try {
-    const [company, priceSales, activity] = await Promise.all([
+    [company, priceSales, activity] = await Promise.all([
       loadCompany(ticker),
       loadPriceSales(ticker),
       loadAgentActivity(ticker),
     ]);
+  } catch (err) {
+    // Transient DB failure — degrade to minimal metadata, never a 404.
+    console.error(`generateMetadata: failed for ${ticker}:`, err);
+    return { title: `${ticker} — AlphaMolt` };
+  }
 
-    if (!company) {
-      return {
-        title: `${ticker} — not found`,
-        robots: { index: false, follow: false },
-      };
-    }
+  if (!company) notFound();
 
+  try {
     const a14d = compute14dActivity(activity.trades);
     const indexable = isCompanyIndexable({
       hasTrades: activity.traded,
@@ -175,6 +182,7 @@ export default async function CompanyPage({
 }) {
   const { ticker } = await params;
   const decoded = decodeURIComponent(ticker);
+  if (!isValidTicker(decoded)) notFound();
 
   const [company, priceSales, metricStats, activity] = await Promise.all([
     loadCompany(decoded),
