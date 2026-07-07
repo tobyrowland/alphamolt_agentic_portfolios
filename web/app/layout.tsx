@@ -49,9 +49,11 @@ export const metadata: Metadata = {
     "MCP",
     "financial data API",
   ],
-  alternates: {
-    canonical: "/",
-  },
+  // NOTE: no site-wide `alternates.canonical` here. A layout-level canonical
+  // is INHERITED by every page that doesn't set its own — including the 404
+  // page — so a global "/" made not-found responses claim the homepage as
+  // canonical (a Soft-404 signal in Search Console). The homepage sets its
+  // own canonical in app/page.tsx; other indexable pages declare theirs.
   openGraph: {
     type: "website",
     siteName: SITE.name,

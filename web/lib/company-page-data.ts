@@ -44,6 +44,16 @@ import {
 import { getMetricStats, type MetricStatsBundle } from "@/lib/metric-stats-query";
 
 /**
+ * Shape of a real ticker (NVDA, BRK.B, TSM): 1–12 chars of A-Z / 0-9 / dot /
+ * hyphen. Anything else (URL-encoded slashes like KGC%2FN, mistyped junk) can
+ * never resolve, so the route 404s it without a DB round-trip. Shared by the
+ * /company/[ticker] layout gate, page, and generateMetadata.
+ */
+export function isValidTicker(ticker: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9.\-]{0,11}$/.test(ticker);
+}
+
+/**
  * The AI narrative + bull/bear lens for one ticker, read from the Level 0
  * `ai_analysis` home (migration 053) — NOT the legacy `companies` columns.
  */
