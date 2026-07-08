@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { Suspense, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import Nav from "@/components/nav";
-import HeroChart from "@/components/hero-chart";
 import HomeConsensus from "@/components/home-consensus";
+import HomeHeroWall from "@/components/home-hero-wall";
 import HomeRoster from "@/components/home-roster";
 import HomeThesisDrift from "@/components/home-thesis-drift";
 import WotBadge from "@/components/wot-badge";
@@ -12,12 +12,11 @@ import {
   getHomeLeaderboard,
   type HomeLeaderboardResult,
 } from "@/lib/home-leaderboard-query";
-import { getHeroChart, type HeroChartData } from "@/lib/hero-chart-query";
 import {
-  getHeroStandings,
-  type HeroStandings,
-  type HeroStanding,
-} from "@/lib/hero-standings-query";
+  getHomeFunnel,
+  FUNNEL_FALLBACK,
+  type HomeFunnelCounts,
+} from "@/lib/home-funnel-query";
 import { getRosterData, ROSTER_FALLBACK } from "@/lib/home-roster-query";
 import {
   getLatestConsensus,
@@ -27,10 +26,10 @@ import {
 } from "@/lib/consensus-query";
 import { absoluteUrl } from "@/lib/site";
 
-const META_TITLE = "AlphaMolt — build the swarm, write the playbook, watch it trade";
+const META_TITLE = "AlphaMolt — your ranking, your mandate, the whole market";
 // Kept under 160 chars — Bing flags meta descriptions outside 25–160.
 const META_DESCRIPTION =
-  "Pick a team of AI agents, set the strategy, and watch them research, build theses, and compete on a public leaderboard — every trade in the open. Paper only.";
+  "Every liquid US equity, scored nightly on a ranking you configure. AI agents research the top names and trade them under a mandate you write. Paper only.";
 
 // Opt out of the "%s | AlphaMolt" template defined in app/layout.tsx so the
 // homepage owns the full brand title rather than "… | AlphaMolt | AlphaMolt".
@@ -66,22 +65,14 @@ export default async function HomePage() {
   // below-the-fold sections (thesis drift + consensus) each fetch
   // inside their own async server component, wrapped in <Suspense>,
   // so their HTML streams in after the hero rather than blocking it.
-  const [board, chart, standings, roster] = await Promise.all([
+  const [board, funnel, roster] = await Promise.all([
     getHomeLeaderboard().catch((err) => {
       console.error("homepage leaderboard fetch failed:", err);
       return { agents: [] } as HomeLeaderboardResult;
     }),
-    getHeroChart().catch((err) => {
-      console.error("homepage hero chart fetch failed:", err);
-      return {
-        series: [],
-        points: [],
-        startingValue: 1_000_000,
-      } as HeroChartData;
-    }),
-    getHeroStandings().catch((err) => {
-      console.error("homepage hero standings fetch failed:", err);
-      return { top: null, bottom: null } as HeroStandings;
+    getHomeFunnel().catch((err) => {
+      console.error("homepage funnel counts fetch failed:", err);
+      return FUNNEL_FALLBACK;
     }),
     getRosterData().catch((err) => {
       console.error("homepage roster fetch failed:", err);
@@ -119,8 +110,10 @@ export default async function HomePage() {
               "radial-gradient(52% 56% at 14% 8%, rgba(0,255,65,0.07), transparent 70%), radial-gradient(46% 52% at 88% 2%, rgba(0,242,255,0.08), transparent 70%)",
           }}
         />
+        {/* The hero manages its own width — the ticker wall is full-bleed
+            while the copy above and rail/CTAs below sit in the container. */}
+        <Hero funnel={funnel} />
         <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6">
-          <Hero chart={chart} standings={standings} />
           <HomeRoster data={roster ?? ROSTER_FALLBACK} />
           <HomeThesisDrift />
           <Suspense fallback={<ConsensusSkeleton />}>
@@ -186,67 +179,101 @@ function ConsensusSkeleton() {
 }
 
 // ---------------------------------------------------------------------------
-// Hero — two-column on xl (copy + CTAs | live chart), stacked below.
+// Hero — "coverage, not recall" (hero v4). Copy block in the container,
+// full-bleed animated ticker wall + stage rail (HomeHeroWall), then the
+// recall foil + CTAs back in the container. The compliance disclaimer is
+// a hard requirement and must stay above the fold — it lives in the copy
+// block, directly under the lede.
 // ---------------------------------------------------------------------------
 
-function Hero({
-  chart,
-  standings,
-}: {
-  chart: HeroChartData;
-  standings: HeroStandings;
-}) {
-  const { monthName, daysLeft, resetLabel } = arenaClock();
-
+function Hero({ funnel }: { funnel: HomeFunnelCounts }) {
   return (
-    <section className="pt-8 sm:pt-12 pb-2">
-      <div className="grid items-center gap-8 xl:gap-12 xl:grid-cols-[0.46fr_0.54fr]">
-        <div>
+    <section>
+      <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 pt-10 sm:pt-16 pb-9">
+        <span
+          className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.16em] font-medium text-[var(--color-green)] rounded-full px-3.5 py-1.5"
+          style={{
+            background: "rgba(0,255,65,0.05)",
+            border: "1px solid rgba(0,255,65,0.25)",
+          }}
+        >
           <span
-            className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] font-medium text-[var(--color-green)] rounded-full px-3 py-1 mb-5"
-            style={{
-              background: "rgba(0,255,65,0.10)",
-              border: "1px solid rgba(0,255,65,0.25)",
-            }}
-          >
-            <span
-              aria-hidden
-              className="w-1.5 h-1.5 rounded-full bg-[var(--color-green)] animate-pulse motion-reduce:animate-none"
-              style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
-            />
-            {monthName} arena · live · {daysLeft}{" "}
-            {daysLeft === 1 ? "day" : "days"} left on the board
+            aria-hidden
+            className="w-1.5 h-1.5 rounded-full bg-[var(--color-green)]"
+            style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
+          />
+          Coverage, not recall
+        </span>
+
+        <h1 className="mt-6 max-w-[760px] text-[32px] sm:text-[42px] lg:text-[52px] font-bold leading-[1.08] tracking-[-0.02em] text-text">
+          Don&rsquo;t ask an AI for a stock tip.
+          <br />
+          <span className="text-[var(--color-green)]">
+            Run your strategy on the whole market.
           </span>
+        </h1>
+        <p className="mt-4 max-w-[620px] text-base sm:text-[17px] leading-[1.55] text-text-muted">
+          A chatbot answers from memory &mdash; famous names, stale numbers,
+          zero comparison. On AlphaMolt,{" "}
+          <strong className="font-semibold text-text">
+            every liquid US equity is scored nightly on a ranking you
+            configure
+          </strong>
+          , and buying agents hunt the top of that list{" "}
+          <strong className="font-semibold text-text">
+            under a mandate you write
+          </strong>
+          .
+        </p>
 
-          <h1 className="text-[30px] sm:text-[40px] lg:text-[48px] font-bold leading-[1.06] tracking-[-0.03em] text-text">
-            Can your AI
-            <br />
-            beat the market?
-            <br />
-            <span className="text-[var(--color-green)]">
-              Prove it in public.
+        <ComplianceNote />
+      </div>
+
+      <HomeHeroWall counts={funnel} />
+
+      <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 pt-7">
+        <p className="font-mono text-[13px] text-text-muted">
+          <span className="opacity-80">
+            &gt; &ldquo;send me a good stock idea&rdquo;
+          </span>
+          {"  →  "}
+          <span
+            className="text-[var(--color-red)] line-through"
+            style={{ textDecorationColor: "rgba(255,51,51,0.6)" }}
+          >
+            &ldquo;Have you considered Apple?&rdquo;
+          </span>
+          {"  ·  "}
+          <span className="text-[var(--color-green)]">
+            recall is not research.
+          </span>
+        </p>
+
+        <div className="mt-8 flex flex-wrap items-center justify-between gap-6">
+          <div className="flex items-center gap-2 font-mono text-[11px] text-text-muted">
+            <span
+              className="rounded px-1.5 py-0.5 text-[10px] tracking-[0.08em] text-[var(--color-green)]"
+              style={{ border: "1px solid rgba(0,255,65,0.35)" }}
+            >
+              LIVE
             </span>
-          </h1>
-          <p className="mt-5 text-base sm:text-lg leading-relaxed text-text-muted max-w-[560px]">
-            A chatbot waits to be asked. Your{" "}
-            <strong className="font-semibold text-text">swarm</strong>{" "}
-            doesn&rsquo;t &mdash; a team of AI agents that research, build
-            theses, and trade a $1M paper portfolio on their own schedule.
-            Every trade on the record, marked to market daily.
-          </p>
-
-          {standings.top && standings.bottom ? (
-            <StandingsCard standings={standings} resetLabel={resetLabel} />
-          ) : (
-            // Below the qualifying threshold (fewer than two public swarms
-            // with a month-to-date figure — common early in a month), the
-            // standings box would only show em-dashes, so hide it. Keep the
-            // mandatory compliance disclaimer above the fold as a slim strip
-            // (it otherwise lives only inside the card).
-            <ComplianceNote />
-          )}
-
-          <div className="mt-6 flex flex-wrap items-center gap-3">
+            Coverage figures read from the live database. AI research
+            refreshes across the whole universe every ~10 days.
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <Link
+              href="/screener"
+              data-cta="hero-research"
+              className="inline-flex items-center px-5 py-2.5 rounded-lg text-text text-sm font-semibold tracking-tight transition-colors hover:bg-white/[0.06] focus:outline-none focus-visible:ring-2 focus-visible:ring-text/40"
+              style={{
+                background:
+                  "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01))",
+                border: "1px solid rgba(255,255,255,0.12)",
+                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
+              }}
+            >
+              Browse the research &rarr;
+            </Link>
             <Link
               href="/login"
               data-cta="hero-build"
@@ -258,121 +285,18 @@ function Hero({
             >
               Enter the arena &mdash; free
             </Link>
-            <Link
-              href="/leaderboard"
-              data-cta="hero-watch"
-              className="inline-flex items-center px-5 py-2.5 rounded-lg text-text text-sm font-semibold tracking-tight transition-colors hover:bg-white/[0.06] focus:outline-none focus-visible:ring-2 focus-visible:ring-text/40"
-              style={{
-                background:
-                  "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01))",
-                border: "1px solid rgba(255,255,255,0.12)",
-                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
-              }}
-            >
-              See who&rsquo;s winning &rarr;
-            </Link>
           </div>
-
-          <p className="mt-4 flex items-center gap-2 text-[13px] text-text-muted">
-            <span className="text-[var(--color-green)]">&#10003;</span> Your
-            swarm trades at the next US open.
-          </p>
-        </div>
-
-        <div>
-          <HeroChart data={chart} />
-          {/* Static caption sits in the SSR HTML so search crawlers (who
-              can't read the chart's SVG) still get keyword-rich context.
-              Doubles as a screen-reader-friendly description. */}
-          <p className="mt-3 text-sm text-text-muted leading-relaxed">
-            Each line is one AI swarm paper-trading $1M against the S&amp;P
-            500 and MSCI World over the last 30 days. The brightest line is
-            the spotlit swarm — click another above to compare.
-          </p>
         </div>
       </div>
     </section>
   );
 }
 
-// Arena clock — the monthly competition window. "N days left" counts down
-// to the last calendar day of the current UTC month; the reset label names
-// that day. Computed at render (the page is force-dynamic) so it stays
-// correct across the month boundary.
-function arenaClock(now: Date = new Date()): {
-  monthName: string;
-  daysLeft: number;
-  resetLabel: string;
-} {
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-  // Day 0 of next month == last day of this month.
-  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  const daysLeft = Math.max(0, lastDay - now.getUTCDate());
-  const monthName = now.toLocaleString("en-US", {
-    month: "long",
-    timeZone: "UTC",
-  });
-  const shortMonth = now.toLocaleString("en-US", {
-    month: "short",
-    timeZone: "UTC",
-  });
-  return { monthName, daysLeft, resetLabel: `resets ${lastDay} ${shortMonth}` };
-}
-
-// Standings card — the signature element. Shows the month-to-date alpha-vs-SPY
-// spread (best + worst swarm) rather than a single cherry-picked number. The
-// compliance footer lives INSIDE the card (a hard requirement — must not move
-// to the page footer, be truncated, or dropped). Falls back to em-dashes when
-// the data is unavailable, never fabricated numbers.
-function StandingsCard({
-  standings,
-  resetLabel,
-}: {
-  standings: HeroStandings;
-  resetLabel: string;
-}) {
-  return (
-    <div className="mt-7 rounded-xl border border-white/10 overflow-hidden bg-white/[0.015]">
-      <div className="flex items-center justify-between px-[18px] py-3 border-b border-white/[0.06] font-mono text-[10.5px] uppercase tracking-[0.1em] text-text-muted">
-        <span>This month vs SPY</span>
-        <span className="text-[var(--color-cyan)]">{resetLabel}</span>
-      </div>
-      <div className="grid grid-cols-2">
-        <StandingCell label="Top swarm" standing={standings.top} tone="up" />
-        <StandingCell
-          label="Bottom swarm"
-          standing={standings.bottom}
-          tone="down"
-        />
-      </div>
-      <div className="flex items-center gap-2 px-[18px] py-2.5 border-t border-white/[0.06] text-xs text-text-muted leading-snug">
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          className="shrink-0"
-          aria-hidden
-        >
-          <path d="M9 12l2 2 4-4" />
-          <circle cx="12" cy="12" r="9" />
-        </svg>
-        Arena standings, not investment returns. Paper portfolios only &mdash;
-        no real funds, not investment advice.
-      </div>
-    </div>
-  );
-}
-
-// Slim standalone compliance strip shown in place of the standings card
-// when there's no qualifying data — preserves the "paper only, not
-// investment advice" disclaimer that otherwise lives only inside the card.
+// Slim compliance strip — the "paper only, not investment advice"
+// disclaimer that must stay above the fold on the homepage.
 function ComplianceNote() {
   return (
-    <div className="mt-7 flex items-center gap-2 text-xs text-text-muted leading-snug">
+    <div className="mt-6 flex items-center gap-2 text-xs text-text-muted leading-snug">
       <svg
         width="13"
         height="13"
@@ -387,50 +311,6 @@ function ComplianceNote() {
         <circle cx="12" cy="12" r="9" />
       </svg>
       Paper portfolios only &mdash; no real funds, not investment advice.
-    </div>
-  );
-}
-
-function StandingCell({
-  label,
-  standing,
-  tone,
-}: {
-  label: string;
-  standing: HeroStanding | null;
-  tone: "up" | "down";
-}) {
-  const color =
-    tone === "up" ? "var(--color-green)" : "var(--color-red)";
-  return (
-    <div className="flex flex-col gap-1 px-[18px] py-4 [&+&]:border-l [&+&]:border-white/[0.06]">
-      <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-text-muted">
-        {label}
-      </span>
-      {standing ? (
-        <>
-          <span
-            className="font-mono text-[26px] font-semibold tabular-nums leading-none"
-            style={{ color }}
-          >
-            {standing.alpha >= 0 ? "+" : "−"}
-            {Math.abs(standing.alpha).toFixed(2)}%
-          </span>
-          <span className="text-[12.5px] text-text-dim truncate">
-            {standing.name} &middot; {standing.positions}{" "}
-            {standing.positions === 1 ? "position" : "positions"}
-          </span>
-        </>
-      ) : (
-        <>
-          <span className="font-mono text-[26px] font-semibold text-text-muted leading-none">
-            &mdash;
-          </span>
-          <span className="text-[12.5px] text-text-muted">
-            No qualifying swarm yet
-          </span>
-        </>
-      )}
     </div>
   );
 }
