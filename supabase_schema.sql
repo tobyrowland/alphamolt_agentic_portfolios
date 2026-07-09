@@ -775,6 +775,7 @@ CREATE TABLE IF NOT EXISTS valuation (
     ps_high_52w     NUMERIC,
     ps_low_52w      NUMERIC,
     ps_median_12m   NUMERIC,
+    ps_trend_pct    NUMERIC,  -- trailing-quarter % change of the P/S multiple (migration 058)
     ps_ath          NUMERIC,
     ps_pct_of_ath   NUMERIC,
     history_json    JSONB,

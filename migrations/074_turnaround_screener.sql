@@ -20,7 +20,10 @@
 --
 -- Also fixes a mig-066 regression: 066 rebuilt the matview from 057's body,
 -- silently dropping `ps_trend_pct` (added by 058) — the web loader has been
--- reading it as NULL since. Restored below.
+-- reading it as NULL since. Restored below. The `valuation.ps_trend_pct`
+-- column itself is created defensively here too: migration 058's ALTER was
+-- never applied to the live database (which is why 066's drop went unnoticed),
+-- so the first run of this migration failed on the missing column.
 --
 -- Coverage note: the inflection/survivability columns populate on the daily
 -- fundamentals rotation (fundamentals_updater.py, 150 stalest/run) — run
@@ -45,6 +48,11 @@ ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS ebitda_ttm           NUMERIC;
 ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS interest_expense_ttm NUMERIC;
 ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS net_debt_ebitda      NUMERIC; -- (debt − cash) / TTM EBITDA; NULL when EBITDA ≤ 0
 ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS interest_coverage    NUMERIC; -- TTM EBIT / TTM interest; 999 = profitable + no interest
+
+-- valuation.ps_trend_pct — defined by migration 058 but never applied to the
+-- live DB; the matview below reads it, so create it if it's still missing.
+-- Stays NULL until backfill_tier1_valuation.py repopulates (display-only).
+ALTER TABLE valuation ADD COLUMN IF NOT EXISTS ps_trend_pct NUMERIC;
 
 -- ---- 2. screen_facts_mv: washout facts + surface the new columns -----------
 -- Same body as migration 066, plus: ps_trend_pct restored (058 regression),
