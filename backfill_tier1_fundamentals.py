@@ -67,6 +67,23 @@ FUND_FIELDS = {
     "rule_of_40": "rule_of_40",
     "eps_only": "eps",
     "opex_pct_revenue": "opex_pct_rev",
+    # Turnaround facts (migration 074) — quarterly inflection + balance-sheet
+    # survivability, computed by eodhd_updater.compute_inflection /
+    # compute_survivability from the same EODHD statements.
+    "gm_delta_qoq": "gm_delta_qoq",
+    "gm_expansion_qtrs": "gm_expansion_qtrs",
+    "rev_qoq_accel": "rev_qoq_accel",
+    "rev_accel_qtrs": "rev_accel_qtrs",
+    "fcf_delta_qoq": "fcf_delta_qoq",
+    "fcf_improving_qtrs": "fcf_improving_qtrs",
+    "inflection_signals": "inflection_signals",
+    "cash": "cash",
+    "debt": "debt",
+    "shares_out": "shares_out",
+    "ebitda_ttm": "ebitda_ttm",
+    "interest_expense_ttm": "interest_expense_ttm",
+    "net_debt_ebitda": "net_debt_ebitda",
+    "interest_coverage": "interest_coverage",
 }
 
 # Per-period text-blob series (pipe-delimited, newest-first) stored verbatim —

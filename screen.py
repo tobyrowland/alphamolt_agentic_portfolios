@@ -16,8 +16,9 @@ candidate set) — NO LLM in the ranking loop. See migration 040.
 The config is a plain dict (a portfolio's `screen_config`):
     {
       "filters": [{"field": "ps", "op": "<=", "value": 15}, ...],
-      "weights": {"quality": 60, "value": 25, "momentum": 15},
+      "weights": {"quality": 60, "value": 25, "momentum": 15, "inflection": 0},
       "aiMultiplier": true,
+      "aiBudget": 0.7,
       "topN": 40,
       "sort": {"column": "score", "dir": "desc"},
     }
@@ -36,6 +37,16 @@ FILTER_FIELDS = {
     "fcf_margin", "net_margin", "operating_margin", "rule_of_40", "ret_52w",
     "perf_52w_vs_spy",  # derived in load_facts (ret_52w − SPY's 52w return)
     "price",
+    # Turnaround facts (migration 074). Washout structure:
+    "drawdown_52w",       # % below the 52-week closing high (positive)
+    "above_low_26w",      # % above the 26-week closing low
+    "ps_vs_median",       # signed % premium to the name's own 12-mo median P/S
+    # Inflection gate: how many of the three QoQ streaks (GM expanding, QoQ
+    # revenue growth improving, FCF margin improving) are ≥ 2 quarters (0–3).
+    "inflection_signals",
+    # Survivability gate (hard filters, never scored):
+    "net_debt_ebitda",
+    "interest_coverage",
 }
 TEXT_FIELDS = {"sector", "industry", "country"}
 
@@ -48,6 +59,19 @@ MOM_CAP = 40.0     # blow-off-top collar
 # when a name has no peer median. MUST match web/lib/screen/score.ts.
 VAL_W_SELF = 0.5
 VAL_W_PEER = 0.5
+
+# Inflection lens (migration 074) — the turnaround screen's cross-sectional
+# signal: a blend of the latest quarter-over-quarter deltas (QoQ revenue-growth
+# acceleration, gross-margin change, FCF-margin change, all in pp), each
+# collared so a micro-denominator quarter can't own the lens. Null when all
+# three inputs are missing (⇒ neutral 0.5 percentile), so names whose
+# fundamentals rotation hasn't computed the facts yet rank unaffected.
+# MUST match web/lib/screen/score.ts.
+INF_W_REV = 0.45
+INF_W_GM = 0.35
+INF_W_FCF = 0.20
+INF_REV_COLLAR = 30.0   # pp collar on QoQ revenue-growth acceleration
+INF_MARGIN_COLLAR = 20.0  # pp collar on the two margin deltas
 
 # Financial-sector lens neutralisation. P/S is a category error for banks/
 # insurers/REITs (their "sales" are gross interest/trading/rental flows, so P/S
@@ -70,7 +94,12 @@ W_MOAT = 0.58       # AI moat weight inside the trajectory adjustment
 W_EARN = 0.42       # AI earnings-quality weight
 # (break-count penalty removed from the screen score — see _adj_z)
 FLOOR = -1.5        # asymmetric floor on adj_z (in σ)
-BUDGET = 0.7        # AI authority ceiling (in σ) — fixed server constant (decision 1)
+BUDGET = 0.7        # AI authority ceiling (in σ) — the DEFAULT
+# The AI budget is per-screen configurable since migration 074 (the turnaround
+# screen leans harder on the research card — "is something actually changing
+# here" is exactly the card's trajectory read). config["aiBudget"] ∈ [0, 1.5],
+# default BUDGET. MUST match web/lib/screen/config.ts AI_BUDGET_*.
+AI_BUDGET_MAX = 1.5
 # ---- verdict tilt (migration 066): graded bull/bear feed the rank ----------
 # final_z = base_z + adj_z + verdict_z. A GENTLE additive tilt from the
 # adversarial bull (Claude) + bear (Gemini) 1-5 scores — independent of the
@@ -79,7 +108,7 @@ BUDGET = 0.7        # AI authority ceiling (in σ) — fixed server constant (de
 VERDICT_BUDGET = 0.3   # bull/bear authority ceiling (in σ) — structural bound ±0.3
 W_BULL = 0.5
 W_BEAR = 0.5
-LENS_NAMES = ("quality", "value", "momentum")
+LENS_NAMES = ("quality", "value", "momentum", "inflection")
 
 
 # ---- normal CDF (Abramowitz–Stegun erf), ported from the v8 mockup ----------
@@ -199,9 +228,9 @@ def _f(v: Any) -> float | None:
 # Each lens is a single raw scalar, standardized against materialized universe
 # moments (compute_lens_stats). The derivations here MUST match score.ts.
 
-def _lens_values(row: dict) -> tuple[float | None, float | None, float | None]:
-    """(xQuality, xValue, xMomentum) raw lens values for a fact row, or None
-    per lens when its inputs are absent."""
+def _lens_values(row: dict) -> tuple[float | None, float | None, float | None, float | None]:
+    """(xQuality, xValue, xMomentum, xInflection) raw lens values for a fact
+    row, or None per lens when its inputs are absent."""
     r40 = _f(row.get("rule_of_40"))
     fcf = _f(row.get("fcf_margin"))
     gm = _f(row.get("gross_margin"))
@@ -241,11 +270,27 @@ def _lens_values(row: dict) -> tuple[float | None, float | None, float | None]:
     # Momentum: collared alpha vs SPY (perf_52w_vs_spy = ret_52w − SPY 52w).
     perf = _f(row.get("perf_52w_vs_spy"))
     xm = None if perf is None else max(MOM_FLOOR, min(MOM_CAP, perf))
-    # Financials: P/S and R40 are category errors — neutralise Quality + Value
-    # (rank on Momentum only). MUST match web/lib/screen/score.ts.
+    # Inflection (migration 074): collared blend of the latest QoQ deltas —
+    # revenue-growth acceleration, gross-margin change, FCF-margin change.
+    # Null only when ALL three are missing (a missing component contributes 0),
+    # so uncovered names sit at the neutral median instead of sinking.
+    rqa = _f(row.get("rev_qoq_accel"))
+    gmd = _f(row.get("gm_delta_qoq"))
+    fcd = _f(row.get("fcf_delta_qoq"))
+    if rqa is None and gmd is None and fcd is None:
+        xi: float | None = None
+    else:
+        def _collar(v: float | None, c: float) -> float:
+            return 0.0 if v is None else max(-c, min(c, v))
+        xi = (INF_W_REV * _collar(rqa, INF_REV_COLLAR)
+              + INF_W_GM * _collar(gmd, INF_MARGIN_COLLAR)
+              + INF_W_FCF * _collar(fcd, INF_MARGIN_COLLAR))
+    # Financials: P/S and R40 are category errors — and so are GM/FCF deltas —
+    # neutralise Quality + Value + Inflection (rank on Momentum only).
+    # MUST match web/lib/screen/score.ts.
     if _is_financial(row.get("sector")):
-        return None, None, xm
-    return xq, xv, xm
+        return None, None, xm, None
+    return xq, xv, xm, xi
 
 
 def _stats_from_values(vals: list[float]) -> dict:
@@ -267,13 +312,15 @@ def lens_stats_from_facts(facts: list[dict]) -> dict[str, dict]:
     same derivation both scorers apply, so parity holds."""
     cols: dict[str, list[float]] = {k: [] for k in LENS_NAMES}
     for r in facts:
-        xq, xv, xm = _lens_values(r)
+        xq, xv, xm, xi = _lens_values(r)
         if xq is not None:
             cols["quality"].append(xq)
         if xv is not None:
             cols["value"].append(xv)
         if xm is not None:
             cols["momentum"].append(xm)
+        if xi is not None:
+            cols["inflection"].append(xi)
     return {k: _stats_from_values(cols[k]) for k in LENS_NAMES}
 
 
@@ -411,7 +458,12 @@ def score_screen(facts: list[dict], config: dict,
     signature back-compat. Mirrors web/lib/screen/score.ts.
     """
     filters = config.get("filters") or []
-    weights = config.get("weights") or {"quality": 45, "value": 25, "momentum": 20}
+    weights = config.get("weights") or {"quality": 45, "value": 25,
+                                        "momentum": 20, "inflection": 0}
+    # Per-screen AI authority (migration 074): how far the research card can
+    # move a name, in σ. Defaults to the classic BUDGET; clamped to [0, MAX].
+    raw_budget = _f(config.get("aiBudget"))
+    ai_budget = BUDGET if raw_budget is None else max(0.0, min(AI_BUDGET_MAX, raw_budget))
 
     # Lens distributions over the FULL universe (pre-filter) — so a name's
     # percentile is its standing in the whole Tier-1 set, not the filtered subset,
@@ -419,33 +471,39 @@ def score_screen(facts: list[dict], config: dict,
     uq: list[float] = []
     uv: list[float] = []
     um: list[float] = []
+    ui: list[float] = []
     for r in facts:
-        xq, xv, xm = _lens_values(r)
+        xq, xv, xm, xi = _lens_values(r)
         if xq is not None:
             uq.append(xq)
         if xv is not None:
             uv.append(xv)
         if xm is not None:
             um.append(xm)
+        if xi is not None:
+            ui.append(xi)
     uq.sort()
     uv.sort()
     um.sort()
+    ui.sort()
 
     subset = apply_filters(facts, filters)
     wq = float(weights.get("quality", 0))
     wv = float(weights.get("value", 0))
     wm = float(weights.get("momentum", 0))
-    wsum = wq + wv + wm or 1.0
+    wi = float(weights.get("inflection", 0) or 0)
+    wsum = wq + wv + wm + wi or 1.0
 
     scored: list[dict] = []
     for r in subset:
-        xq, xv, xm = _lens_values(r)
+        xq, xv, xm, xi = _lens_values(r)
         pq = _pct_rank(uq, xq)
         pv = _pct_rank(uv, xv)
         pm = _pct_rank(um, xm)
-        base_score = (wq * pq + wv * pv + wm * pm) / wsum     # ∈ [0,1]
+        pi = _pct_rank(ui, xi)
+        base_score = (wq * pq + wv * pv + wm * pm + wi * pi) / wsum  # ∈ [0,1]
         base_z = probit(min(max(base_score, 0.001), 0.999))    # back to σ-space
-        a = _adj_z(r)
+        a = _adj_z(r, budget=ai_budget)
         vz = _verdict_z(r)
         final_z = base_z + a["adj_z"] + vz["verdict_z"]
         row = dict(r)
@@ -463,6 +521,7 @@ def score_screen(facts: list[dict], config: dict,
         row["quality_pct"] = round(pq * 100)
         row["value_pct"] = round(pv * 100)
         row["momentum_pct"] = round(pm * 100)
+        row["inflection_pct"] = round(pi * 100)
         row["base_pct"] = round(base_score * 100)
         row["final_pct"] = round(phi(final_z) * 100)
         # Count of break signals currently firing (display: the red "AI flags"

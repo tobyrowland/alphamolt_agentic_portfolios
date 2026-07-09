@@ -340,6 +340,190 @@ def _sorted_entries(section: dict) -> list[tuple[str, dict]]:
 
 
 # ---------------------------------------------------------------------------
+# Turnaround facts — quarterly inflection + balance-sheet survivability
+# (migration 074). Pure derivations of the statements already fetched, written
+# to the Level 0 `fundamentals` row via FUND_FIELDS. The turnaround screener
+# filters/weights on these; they carry no strategy themselves.
+# ---------------------------------------------------------------------------
+
+# "Two consecutive quarters of improvement" — the inflection gate's bar.
+INFLECTION_STREAK_QTRS = 2
+# Quarters of history the streaks look back over.
+_INFLECTION_LOOKBACK = 8
+# Interest coverage ceiling — a profitable business with zero interest expense
+# has infinite coverage; stored as this sentinel so a ≥-filter still passes it.
+INTEREST_COVERAGE_CAP = 999.0
+
+
+def _q_gross_margin(entry: dict) -> float | None:
+    """One quarter's gross margin %, with the same costOfRevenue fallback and
+    ±100% plausibility guard the TTM computation uses."""
+    gp = safe_float(entry.get("grossProfit"))
+    rev = safe_float(entry.get("totalRevenue"))
+    if gp is None and rev is not None:
+        cor = safe_float(entry.get("costOfRevenue"))
+        if cor is not None:
+            gp = rev - cor
+    if gp is None or not rev or rev <= 0:
+        return None
+    m = (gp / rev) * 100
+    return m if -100 <= m <= 100 else None
+
+
+def _improvement_streak(series: list[float | None]) -> int | None:
+    """Consecutive improving steps from the newest value backwards.
+
+    `series` is newest-first; a step counts when value[i] > value[i+1]. Returns
+    None when the latest step can't even be assessed (fewer than 2 leading
+    values) — distinguishing "no data" from a genuine 0 (not improving).
+    """
+    if len(series) < 2 or series[0] is None or series[1] is None:
+        return None
+    n = 0
+    for cur, prev in zip(series, series[1:]):
+        if cur is None or prev is None or cur <= prev:
+            break
+        n += 1
+    return n
+
+
+def compute_inflection(quarterly: list[tuple[str, dict]],
+                       cf_quarterly: list[tuple[str, dict]]) -> dict:
+    """Quarter-over-quarter inflection facts from the income + cash-flow series
+    (newest-first, as produced by _sorted_entries).
+
+    Three signals, each a latest-step delta (pp) plus a consecutive-improvement
+    streak: gross margin expanding, QoQ revenue growth improving (works while
+    still negative YoY), FCF margin trending toward breakeven.
+    `inflection_signals` counts how many streaks clear INFLECTION_STREAK_QTRS.
+    """
+    # Gross margin per quarter.
+    gm_series = [_q_gross_margin(e) for _, e in quarterly[:_INFLECTION_LOOKBACK]]
+
+    # QoQ revenue growth per quarter: g[i] = rev[i] vs rev[i+1].
+    revs = [safe_float(e.get("totalRevenue"))
+            for _, e in quarterly[:_INFLECTION_LOOKBACK + 1]]
+    qoq_series: list[float | None] = []
+    for cur, prev in zip(revs, revs[1:]):
+        if cur is None or not prev or prev <= 0:
+            qoq_series.append(None)
+        else:
+            qoq_series.append((cur - prev) / prev * 100)
+
+    # FCF margin per quarter — cash-flow quarters matched to income-statement
+    # revenue by period date (the two statements can drift a period apart).
+    rev_by_date = {d: safe_float(e.get("totalRevenue")) for d, e in quarterly}
+    fcf_series: list[float | None] = []
+    for d, e in cf_quarterly[:_INFLECTION_LOOKBACK]:
+        fcf = safe_float(e.get("freeCashFlow"))
+        rev = rev_by_date.get(d)
+        if fcf is None or not rev or rev <= 0:
+            fcf_series.append(None)
+        else:
+            fcf_series.append(fcf / rev * 100)
+
+    def _delta(series: list[float | None]) -> float | None:
+        if len(series) < 2 or series[0] is None or series[1] is None:
+            return None
+        return round(series[0] - series[1], 1)
+
+    gm_streak = _improvement_streak(gm_series)
+    rev_streak = _improvement_streak(qoq_series)
+    fcf_streak = _improvement_streak(fcf_series)
+
+    streaks = [gm_streak, rev_streak, fcf_streak]
+    if all(s is None for s in streaks):
+        signals = None
+    else:
+        signals = sum(1 for s in streaks
+                      if s is not None and s >= INFLECTION_STREAK_QTRS)
+
+    return {
+        "gm_delta_qoq": _delta(gm_series),
+        "gm_expansion_qtrs": gm_streak,
+        "rev_qoq_accel": _delta(qoq_series),
+        "rev_accel_qtrs": rev_streak,
+        "fcf_delta_qoq": _delta(fcf_series),
+        "fcf_improving_qtrs": fcf_streak,
+        "inflection_signals": signals,
+    }
+
+
+def compute_survivability(raw: dict, quarterly: list[tuple[str, dict]]) -> dict:
+    """Balance-sheet survivability facts: cash / debt / shares outstanding from
+    the latest quarterly balance sheet, TTM EBITDA / EBIT / interest expense
+    from the income statements, and the two hard-gate ratios."""
+    financials = raw.get("Financials") or {}
+    bs_q = _sorted_entries((financials.get("Balance_Sheet") or {}).get("quarterly") or {})
+    latest_bs = bs_q[0][1] if bs_q else {}
+
+    cash = safe_float(latest_bs.get("cashAndShortTermInvestments"))
+    if cash is None:
+        c = safe_float(latest_bs.get("cash"))
+        sti = safe_float(latest_bs.get("shortTermInvestments"))
+        if c is not None:
+            cash = c + (sti or 0)
+
+    debt = safe_float(latest_bs.get("shortLongTermDebtTotal"))
+    if debt is None:
+        st = safe_float(latest_bs.get("shortTermDebt"))
+        lt = safe_float(latest_bs.get("longTermDebtTotal"))
+        if lt is None:
+            lt = safe_float(latest_bs.get("longTermDebt"))
+        if st is not None or lt is not None:
+            debt = (st or 0) + (lt or 0)
+
+    net_debt = safe_float(latest_bs.get("netDebt"))
+    if net_debt is None and debt is not None and cash is not None:
+        net_debt = debt - cash
+
+    shares_out = safe_float(latest_bs.get("commonStockSharesOutstanding"))
+    if shares_out is None:
+        shares_out = safe_float((raw.get("SharesStats") or {}).get("SharesOutstanding"))
+
+    def _ttm(key: str) -> float | None:
+        vals = [safe_float(e.get(key)) for _, e in quarterly[:4]]
+        present = [v for v in vals if v is not None]
+        # Require a full 4 quarters — a partial sum understates TTM and would
+        # make the survivability ratios look artificially safe/unsafe.
+        if len(quarterly) < 4 or len(present) < 4:
+            return None
+        return sum(present)
+
+    ebitda_ttm = _ttm("ebitda")
+    ebit_ttm = _ttm("operatingIncome")
+    interest_vals = [safe_float(e.get("interestExpense")) for _, e in quarterly[:4]]
+    interest_present = [abs(v) for v in interest_vals if v is not None]
+    # Interest lines are frequently null for debt-free names; treat "4 quarters
+    # of statements, no interest line" as zero interest rather than unknown.
+    interest_ttm = sum(interest_present) if len(quarterly) >= 4 else None
+
+    net_debt_ebitda = None
+    if net_debt is not None and ebitda_ttm is not None and ebitda_ttm > 0:
+        net_debt_ebitda = round(net_debt / ebitda_ttm, 2)
+
+    interest_coverage = None
+    if ebit_ttm is not None and interest_ttm is not None:
+        if interest_ttm > 0:
+            interest_coverage = round(
+                min(ebit_ttm / interest_ttm, INTEREST_COVERAGE_CAP), 1)
+        elif ebit_ttm > 0:
+            # No interest expense and profitable — coverage is effectively
+            # infinite; store the cap so a ≥-filter keeps these names.
+            interest_coverage = INTEREST_COVERAGE_CAP
+
+    return {
+        "cash": cash,
+        "debt": debt,
+        "shares_out": shares_out,
+        "ebitda_ttm": ebitda_ttm,
+        "interest_expense_ttm": interest_ttm,
+        "net_debt_ebitda": net_debt_ebitda,
+        "interest_coverage": interest_coverage,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Screening criteria — read from "Criteria" sheet
 # ---------------------------------------------------------------------------
 
@@ -981,6 +1165,14 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
 
     if snapshot_parts:
         result["fundamentals_snapshot"] = " | ".join(snapshot_parts)
+
+    # ── Turnaround facts (migration 074) ──────────────────────────────
+    # Quarterly inflection + balance-sheet survivability, from the same
+    # statements already in hand. These keys are NOT in EODHD_COLUMNS (the
+    # legacy companies table has no such columns) — only the Level 0
+    # fundamentals writers pick them up via FUND_FIELDS.
+    result.update(compute_inflection(quarterly, cf_quarterly))
+    result.update(compute_survivability(raw, quarterly))
 
     result["data"] = datetime.now().strftime("%Y-%m-%d")
 

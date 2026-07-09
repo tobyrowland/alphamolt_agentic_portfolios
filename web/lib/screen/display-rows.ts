@@ -43,6 +43,21 @@ export function projectDisplayRows(initial: ScreenResponse) {
       rule_of_40: r4(r.rule_of_40),
       ret_52w: r4(r.ret_52w),
       perf_52w_vs_spy: r4(r.perf_52w_vs_spy),
+      // Turnaround facts (migration 074) — filterable, and the QoQ deltas are
+      // the Inflection lens inputs (the client re-ranks locally on a weight
+      // change, so the lens must be computable from these rows).
+      drawdown_52w: r4(r.drawdown_52w),
+      above_low_26w: r4(r.above_low_26w),
+      ps_vs_median: r4(r.ps_vs_median),
+      gm_delta_qoq: r4(r.gm_delta_qoq),
+      gm_expansion_qtrs: r.gm_expansion_qtrs,
+      rev_qoq_accel: r4(r.rev_qoq_accel),
+      rev_accel_qtrs: r.rev_accel_qtrs,
+      fcf_delta_qoq: r4(r.fcf_delta_qoq),
+      fcf_improving_qtrs: r.fcf_improving_qtrs,
+      inflection_signals: r.inflection_signals,
+      net_debt_ebitda: r4(r.net_debt_ebitda),
+      interest_coverage: r4(r.interest_coverage),
       bull_score: r.bull_score,
       bear_score: r.bear_score,
       // Single-score + research-card fields (migration 057).

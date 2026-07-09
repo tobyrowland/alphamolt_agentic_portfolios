@@ -22,6 +22,7 @@ const out = res.rows.map((r) => ({
   quality_pct: r.quality_pct,
   value_pct: r.value_pct,
   momentum_pct: r.momentum_pct,
+  inflection_pct: r.inflection_pct,
   adj_z: Math.round(r.adj_z * 1e6) / 1e6,
   verdict_z: Math.round(r.verdict_z * 1e6) / 1e6,
   base_z: Math.round(r.base_z * 1e6) / 1e6,
