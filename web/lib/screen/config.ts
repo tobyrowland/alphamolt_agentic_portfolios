@@ -32,6 +32,16 @@ export const FILTER_FIELDS = [
   // ret_52w and the SPY benchmark.
   "perf_52w_vs_spy",
   "price",
+  // Turnaround facts (migration 074). Washout structure:
+  "drawdown_52w", // % below the 52-week closing high (positive = drawn down)
+  "above_low_26w", // % above the 26-week closing low (base forming)
+  "ps_vs_median", // signed % premium to the name's own 12-mo median P/S
+  // Inflection gate: how many of the three QoQ streaks (GM expanding, QoQ
+  // revenue growth improving, FCF margin improving) are ≥ 2 quarters (0–3).
+  "inflection_signals",
+  // Survivability gate (hard filters, never scored):
+  "net_debt_ebitda",
+  "interest_coverage",
 ] as const;
 export type FilterField = (typeof FILTER_FIELDS)[number];
 
@@ -51,15 +61,29 @@ export const weightsSchema = z.object({
   quality: z.number().min(0).max(100),
   value: z.number().min(0).max(100),
   momentum: z.number().min(0).max(100),
+  // Fourth lens (migration 074): quarter-over-quarter inflection — is
+  // something actually changing at the company. Defaults 0 so every stored /
+  // shared config predating it re-ranks identically.
+  inflection: z.number().min(0).max(100).default(0),
 });
 export type Weights = z.infer<typeof weightsSchema>;
+
+// AI trajectory-adjustment authority (σ). The default matches the classic
+// fixed constant; a screen can raise it (the turnaround preset does — the
+// research card is exactly the "is something changing here" read) up to MAX.
+// score.ts re-exports BUDGET/AI_BUDGET_MAX from these. MUST match screen.py.
+export const AI_BUDGET_DEFAULT = 0.7;
+export const AI_BUDGET_MAX_VALUE = 1.5;
 
 export const screenConfigSchema = z.object({
   brief: z.string().max(2000).optional(),
   preset: z.string().optional(),
   filters: z.array(filterSchema).max(20).default([]),
-  weights: weightsSchema.default({ quality: 45, value: 25, momentum: 20 }),
+  weights: weightsSchema.default({ quality: 45, value: 25, momentum: 20, inflection: 0 }),
   aiMultiplier: z.boolean().default(true),
+  // How far the AI research-card adjustment can move a name, in σ (migration
+  // 074). Default = the classic fixed constant, so old configs are unchanged.
+  aiBudget: z.number().min(0).max(AI_BUDGET_MAX_VALUE).default(AI_BUDGET_DEFAULT),
   // Research-card business-quality tilt (migration 056): ±20% by quality_score,
   // neutral when a name has no card. On by default.
   qualityMultiplier: z.boolean().default(true),
@@ -96,6 +120,7 @@ const base = {
   hideRejected: true,
   aiMultiplier: true,
   qualityMultiplier: true,
+  aiBudget: AI_BUDGET_DEFAULT,
 };
 
 export const PRESETS: Record<string, Preset> = {
@@ -114,7 +139,7 @@ export const PRESETS: Record<string, Preset> = {
         { field: "gross_margin", op: ">=", value: 40 },
         { field: "ps", op: "<=", value: 15 },
       ],
-      weights: { quality: 60, value: 25, momentum: 15 },
+      weights: { quality: 60, value: 25, momentum: 15, inflection: 0 },
     },
   },
   "deep-value": {
@@ -131,7 +156,7 @@ export const PRESETS: Record<string, Preset> = {
         { field: "operating_margin", op: ">=", value: 0 },
         { field: "rev_growth_ttm", op: ">=", value: 0 },
       ],
-      weights: { quality: 20, value: 60, momentum: 20 },
+      weights: { quality: 20, value: 60, momentum: 20, inflection: 0 },
     },
   },
   momentum: {
@@ -148,7 +173,7 @@ export const PRESETS: Record<string, Preset> = {
         { field: "rev_growth_ttm", op: ">=", value: 10 },
         { field: "gross_margin", op: ">=", value: 25 },
       ],
-      weights: { quality: 25, value: 15, momentum: 60 },
+      weights: { quality: 25, value: 15, momentum: 60, inflection: 0 },
     },
   },
   "high-fcf": {
@@ -165,7 +190,30 @@ export const PRESETS: Record<string, Preset> = {
         { field: "rule_of_40", op: ">=", value: 40 },
         { field: "operating_margin", op: ">=", value: 10 },
       ],
-      weights: { quality: 65, value: 20, momentum: 15 },
+      weights: { quality: 65, value: 20, momentum: 15, inflection: 0 },
+    },
+  },
+  turnaround: {
+    id: "turnaround",
+    label: "Turnaround",
+    description:
+      "Washed-out names showing a real operating inflection — 40–70% off the high, off the low, cheap vs their own history, ranked by what's actually changing.",
+    config: {
+      ...base,
+      brief:
+        "Turnarounds, not value traps. Washout gate: price 40–70% off the 52-week high but at least 10% above the 6-month low (a base forming, not still falling), and P/S below the stock's own 12-month median. Then rank almost entirely on operating inflection — gross margin expanding, QoQ revenue growth improving, FCF trending toward breakeven — and lean harder than usual on the AI research card's trajectory read.",
+      filters: [
+        { field: "drawdown_52w", op: ">=", value: 40 },
+        { field: "drawdown_52w", op: "<=", value: 70 },
+        { field: "above_low_26w", op: ">=", value: 10 },
+        { field: "ps_vs_median", op: "<=", value: 0 },
+      ],
+      // The washout metrics are FILTERS; the cross-sectional weight sits on
+      // the inflection lens (spec: cheapness alone just finds value traps).
+      weights: { quality: 15, value: 20, momentum: 5, inflection: 60 },
+      // Heavier AI authority: the research card is doing exactly the "is
+      // something actually changing at this company" work here.
+      aiBudget: 1.2,
     },
   },
 };
@@ -277,6 +325,13 @@ export const METRIC_META: Record<string, MetricMeta> = {
   ret_52w: { field: "ret_52w", label: "52-week return", unit: "%", op: ">=", min: -50, max: 150, step: 10, default: 0 },
   perf_52w_vs_spy: { field: "perf_52w_vs_spy", label: "vs SPY (52w)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0 },
   price: { field: "price", label: "Price", unit: "$", op: ">=", min: 0, max: 500, step: 5, default: 5 },
+  // Turnaround facts (migration 074).
+  drawdown_52w: { field: "drawdown_52w", label: "% off 52-week high", unit: "%", op: ">=", min: 0, max: 90, step: 5, default: 40 },
+  above_low_26w: { field: "above_low_26w", label: "% above 6-month low", unit: "%", op: ">=", min: 0, max: 100, step: 5, default: 10 },
+  ps_vs_median: { field: "ps_vs_median", label: "P/S vs own median", unit: "%", op: "<=", min: -80, max: 100, step: 5, default: 0 },
+  inflection_signals: { field: "inflection_signals", label: "Inflection signals", unit: "", op: ">=", min: 0, max: 3, step: 1, default: 1 },
+  net_debt_ebitda: { field: "net_debt_ebitda", label: "Net debt / EBITDA", unit: "×", op: "<=", min: -2, max: 10, step: 0.5, default: 3 },
+  interest_coverage: { field: "interest_coverage", label: "Interest coverage", unit: "×", op: ">=", min: 0, max: 20, step: 1, default: 2 },
 };
 
 /** The natural operator for a metric (implied — no operator dropdown). */
@@ -314,6 +369,13 @@ export const NAMED_FILTERS: { field: FilterField; label: string }[] = [
   { field: "net_margin", label: "Net margin" },
   { field: "operating_margin", label: "Operating margin" },
   { field: "price", label: "Share price" },
+  // Turnaround facts (migration 074).
+  { field: "drawdown_52w", label: "% off 52-week high" },
+  { field: "above_low_26w", label: "% above 6-month low" },
+  { field: "ps_vs_median", label: "P/S vs own median" },
+  { field: "inflection_signals", label: "Inflection signals" },
+  { field: "net_debt_ebitda", label: "Net debt / EBITDA" },
+  { field: "interest_coverage", label: "Interest coverage" },
 ];
 
 /** Build a default filter for a metric, ready to drop into the bar as a chip. */

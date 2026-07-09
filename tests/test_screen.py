@@ -22,6 +22,13 @@ def facts(*rows: dict) -> list[dict]:
         "operating_margin": None, "rule_of_40": None, "ps": None,
         "ps_median_12m": None, "ps_trend_pct": None,
         "ret_52w": None, "perf_52w_vs_spy": None,
+        # Turnaround facts (migration 074).
+        "drawdown_52w": None, "above_low_26w": None, "ps_vs_median": None,
+        "gm_delta_qoq": None, "gm_expansion_qtrs": None,
+        "rev_qoq_accel": None, "rev_accel_qtrs": None,
+        "fcf_delta_qoq": None, "fcf_improving_qtrs": None,
+        "inflection_signals": None, "net_debt_ebitda": None,
+        "interest_coverage": None,
         "bull": None, "bear": None, "quality_score": None,
         # Graded bull/bear (migration 066). Both None ⇒ verdict_z = 0.
         "bull_score": None, "bear_score": None,
@@ -274,25 +281,27 @@ class TestFinancialNeutralisation(unittest.TestCase):
     def test_lens_values_neutralised_for_financial_sectors(self):
         for sector in ("Finance", "Financial Services", "Real Estate",
                        "financial services", " FINANCE "):
-            xq, xv, xm = screen._lens_values({
+            xq, xv, xm, xi = screen._lens_values({
                 "sector": sector, "rule_of_40": 99, "rev_growth_ttm": 80,
                 "net_margin": 16, "fcf_margin": 47, "gross_margin": 50,
                 "ps": 0.03, "ps_median_12m": 0.02, "peer_ps_median": 3.5,
-                "perf_52w_vs_spy": 20,
+                "perf_52w_vs_spy": 20, "gm_delta_qoq": 5, "rev_qoq_accel": 10,
             })
             self.assertIsNone(xq, sector)
             self.assertIsNone(xv, sector)
+            self.assertIsNone(xi, sector)  # GM/FCF deltas: category error too
             self.assertEqual(xm, 20, sector)  # momentum survives
 
     def test_non_financial_sector_unchanged(self):
-        xq, xv, xm = screen._lens_values({
+        xq, xv, xm, xi = screen._lens_values({
             "sector": "Technology Services", "rule_of_40": 50,
             "rev_growth_ttm": 30, "net_margin": 10, "fcf_margin": 20,
             "gross_margin": 80, "ps": 6, "ps_median_12m": 8,
-            "perf_52w_vs_spy": 12,
+            "perf_52w_vs_spy": 12, "gm_delta_qoq": 2,
         })
         self.assertIsNotNone(xq)
         self.assertIsNotNone(xv)
+        self.assertIsNotNone(xi)
         self.assertEqual(xm, 12)
 
     def test_financial_does_not_win_on_spurious_value_or_quality(self):
@@ -312,6 +321,146 @@ class TestFinancialNeutralisation(unittest.TestCase):
         out = screen.score_screen(
             rows, {"weights": {"quality": 60, "value": 40, "momentum": 0}})
         self.assertEqual(out[0]["ticker"], "REAL")
+
+
+class TestInflectionLens(unittest.TestCase):
+    """Migration 074: the fourth lens — collared blend of the latest QoQ
+    deltas (revenue-growth acceleration, GM change, FCF-margin change)."""
+
+    def test_accelerating_name_wins_on_inflection_weight(self):
+        rows = facts(
+            {"ticker": "TURN", "rev_qoq_accel": 8, "gm_delta_qoq": 3, "fcf_delta_qoq": 2},
+            {"ticker": "FADE", "rev_qoq_accel": -6, "gm_delta_qoq": -2, "fcf_delta_qoq": -1},
+        )
+        out = screen.score_screen(
+            rows, {"weights": {"quality": 0, "value": 0, "momentum": 0, "inflection": 100}})
+        self.assertEqual(out[0]["ticker"], "TURN")
+        self.assertGreater(out[0]["inflection_pct"], out[1]["inflection_pct"])
+
+    def test_missing_inflection_facts_rank_neutral(self):
+        # A name with no QoQ facts yet (fundamentals rotation pending) sits at
+        # the neutral 0.5 percentile — between improvers and a clear decliner.
+        rows = facts(
+            {"ticker": "TURN", "rev_qoq_accel": 8, "gm_delta_qoq": 3},
+            {"ticker": "MILD", "rev_qoq_accel": 1},
+            {"ticker": "NODATA"},
+            {"ticker": "FADE", "rev_qoq_accel": -6, "gm_delta_qoq": -2},
+        )
+        out = screen.score_screen(
+            rows, {"weights": {"quality": 0, "value": 0, "momentum": 0, "inflection": 100}})
+        self.assertEqual([r["ticker"] for r in out], ["TURN", "MILD", "NODATA", "FADE"])
+        self.assertEqual(next(r for r in out if r["ticker"] == "NODATA")["inflection_pct"], 50)
+
+    def test_collar_tames_micro_denominator_acceleration(self):
+        # A tiny-revenue name posting +500pp QoQ acceleration must not dwarf a
+        # genuine broad-based improver: the rev component collars at ±30pp.
+        rows = facts(
+            {"ticker": "JUNK", "rev_qoq_accel": 500, "gm_delta_qoq": -15, "fcf_delta_qoq": -10},
+            {"ticker": "REAL", "rev_qoq_accel": 25, "gm_delta_qoq": 4, "fcf_delta_qoq": 3},
+        )
+        out = screen.score_screen(
+            rows, {"weights": {"quality": 0, "value": 0, "momentum": 0, "inflection": 100}})
+        self.assertEqual(out[0]["ticker"], "REAL")
+
+    def test_zero_inflection_weight_is_backwards_compatible(self):
+        # A config predating the lens (no inflection key) must rank identically
+        # even when the facts now carry inflection data.
+        rows = facts(
+            {"ticker": "A", "rule_of_40": 90, "rev_growth_ttm": 20, "net_margin": 10,
+             "fcf_margin": 10, "gross_margin": 60, "ps": 5, "ps_median_12m": 5,
+             "rev_qoq_accel": -30, "gm_delta_qoq": -10},
+            {"ticker": "B", "rule_of_40": 30, "rev_growth_ttm": 5, "net_margin": 0,
+             "fcf_margin": 2, "gross_margin": 30, "ps": 5, "ps_median_12m": 5,
+             "rev_qoq_accel": 30, "gm_delta_qoq": 10},
+        )
+        legacy = screen.score_screen(rows, {"weights": {"quality": 100, "value": 0, "momentum": 0}})
+        explicit = screen.score_screen(
+            rows, {"weights": {"quality": 100, "value": 0, "momentum": 0, "inflection": 0}})
+        self.assertEqual([r["ticker"] for r in legacy], [r["ticker"] for r in explicit])
+        for lr, er in zip(legacy, explicit):
+            self.assertAlmostEqual(lr["score"], er["score"], places=12)
+
+
+class TestTurnaroundFilters(unittest.TestCase):
+    """Migration 074: washout + survivability fields are plain filters."""
+
+    def test_drawdown_band(self):
+        rows = facts(
+            {"ticker": "SHALLOW", "drawdown_52w": 20},
+            {"ticker": "WASHOUT", "drawdown_52w": 55},
+            {"ticker": "KNIFED", "drawdown_52w": 85},
+        )
+        out = screen.apply_filters(rows, [
+            {"field": "drawdown_52w", "op": ">=", "value": 40},
+            {"field": "drawdown_52w", "op": "<=", "value": 70},
+        ])
+        self.assertEqual([r["ticker"] for r in out], ["WASHOUT"])
+
+    def test_above_low_and_ps_vs_median(self):
+        rows = facts(
+            {"ticker": "BASING", "above_low_26w": 15, "ps_vs_median": -30},
+            {"ticker": "ATLOW", "above_low_26w": 2, "ps_vs_median": -30},
+            {"ticker": "RICH", "above_low_26w": 15, "ps_vs_median": 20},
+        )
+        out = screen.apply_filters(rows, [
+            {"field": "above_low_26w", "op": ">=", "value": 10},
+            {"field": "ps_vs_median", "op": "<=", "value": 0},
+        ])
+        self.assertEqual([r["ticker"] for r in out], ["BASING"])
+
+    def test_survivability_filters_exclude_missing(self):
+        # Hard-gate semantics: a numeric filter excludes names missing the
+        # datum (same rule as every other numeric filter).
+        rows = facts(
+            {"ticker": "SAFE", "net_debt_ebitda": 1.2, "interest_coverage": 8},
+            {"ticker": "LEVERED", "net_debt_ebitda": 5.5, "interest_coverage": 1.1},
+            {"ticker": "UNKNOWN"},
+        )
+        out = screen.apply_filters(rows, [
+            {"field": "net_debt_ebitda", "op": "<=", "value": 3},
+            {"field": "interest_coverage", "op": ">=", "value": 2},
+        ])
+        self.assertEqual([r["ticker"] for r in out], ["SAFE"])
+
+    def test_inflection_signals_filter(self):
+        rows = facts(
+            {"ticker": "INFLECTING", "inflection_signals": 2},
+            {"ticker": "FLAT", "inflection_signals": 0},
+        )
+        out = screen.apply_filters(
+            rows, [{"field": "inflection_signals", "op": ">=", "value": 1}])
+        self.assertEqual([r["ticker"] for r in out], ["INFLECTING"])
+
+
+class TestAiBudget(unittest.TestCase):
+    """Migration 074: per-screen AI authority — config['aiBudget'] scales the
+    research-card adjustment; default stays the classic BUDGET."""
+
+    def _rows(self):
+        return facts({"ticker": "STRONG", **carded(moat_score=5, earnings_score=5)})
+
+    def test_default_budget_unchanged(self):
+        out = screen.score_screen(self._rows(), {"weights": {"quality": 100, "value": 0, "momentum": 0}})
+        self.assertAlmostEqual(out[0]["adj_z"], screen.BUDGET, places=9)
+
+    def test_heavier_budget_scales_adj(self):
+        out = screen.score_screen(
+            self._rows(),
+            {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiBudget": 1.2})
+        self.assertAlmostEqual(out[0]["adj_z"], 1.2, places=9)
+        self.assertTrue(out[0]["capped"])
+
+    def test_budget_clamped_to_max(self):
+        out = screen.score_screen(
+            self._rows(),
+            {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiBudget": 9})
+        self.assertAlmostEqual(out[0]["adj_z"], screen.AI_BUDGET_MAX, places=9)
+
+    def test_zero_budget_silences_the_card(self):
+        out = screen.score_screen(
+            self._rows(),
+            {"weights": {"quality": 100, "value": 0, "momentum": 0}, "aiBudget": 0})
+        self.assertEqual(out[0]["adj_z"], 0.0)
 
 
 class TestVerdictZ(unittest.TestCase):

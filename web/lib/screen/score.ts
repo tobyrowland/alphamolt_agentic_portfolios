@@ -17,7 +17,11 @@
  */
 
 import type { Filter, ScreenConfig } from "@/lib/screen/config";
-import { TEXT_FIELDS } from "@/lib/screen/config";
+import {
+  AI_BUDGET_DEFAULT,
+  AI_BUDGET_MAX_VALUE,
+  TEXT_FIELDS,
+} from "@/lib/screen/config";
 
 /** One scored dimension of the research card (moat / earnings / growth). */
 export interface CardDim {
@@ -82,6 +86,25 @@ export interface ScreenFacts {
   ret_52w: number | null;
   /** 52-week return minus SPY's; derived in the loader, not a raw fact column. */
   perf_52w_vs_spy: number | null;
+  // Turnaround facts (migration 074). Washout structure:
+  /** % below the 52-week closing high (positive = drawn down). */
+  drawdown_52w: number | null;
+  /** % above the 26-week closing low (base forming, not still knife-ing). */
+  above_low_26w: number | null;
+  /** Signed % premium to the name's own 12-mo median P/S (negative = below). */
+  ps_vs_median: number | null;
+  // Quarterly inflection (computed at write time by eodhd_updater):
+  gm_delta_qoq: number | null; // latest quarterly gross margin minus prior, pp
+  gm_expansion_qtrs: number | null;
+  rev_qoq_accel: number | null; // latest QoQ rev growth minus prior QoQ growth, pp
+  rev_accel_qtrs: number | null;
+  fcf_delta_qoq: number | null; // latest quarterly FCF margin minus prior, pp
+  fcf_improving_qtrs: number | null;
+  /** How many of the three streaks are ≥ 2 quarters (0–3). */
+  inflection_signals: number | null;
+  // Survivability (hard-filter material, never scored):
+  net_debt_ebitda: number | null;
+  interest_coverage: number | null;
   // AI verdict overlay (lens; Level 0 itself is strategy-neutral)
   bull: boolean | null;
   bear: boolean | null;
@@ -122,6 +145,7 @@ export interface ScoredRow extends ScreenFacts {
   quality_pct: number; // lens empirical percentile (0–100) over the universe
   value_pct: number;
   momentum_pct: number;
+  inflection_pct: number; // fourth lens (migration 074)
   base_score: number; // weighted blend of lens percentiles, ∈ [0,1]
   base_z: number; // probit(base_score)
   base_pct: number; // round(base_score·100) — the quant percentile
@@ -139,6 +163,17 @@ const MOM_CAP = 40;
 // when no peer median. MUST match screen.py.
 const VAL_W_SELF = 0.5;
 const VAL_W_PEER = 0.5;
+
+// Inflection lens (migration 074) — the turnaround screen's cross-sectional
+// signal: a collared blend of the latest quarter-over-quarter deltas (QoQ
+// revenue-growth acceleration, gross-margin change, FCF-margin change, pp).
+// Null when all three inputs are missing ⇒ neutral 0.5 percentile. MUST match
+// screen.py.
+const INF_W_REV = 0.45;
+const INF_W_GM = 0.35;
+const INF_W_FCF = 0.2;
+const INF_REV_COLLAR = 30;
+const INF_MARGIN_COLLAR = 20;
 
 // Financial-sector lens neutralisation. P/S is a category error for banks/
 // insurers/REITs (their "sales" are gross interest/trading/rental flows, so P/S
@@ -160,13 +195,17 @@ const W_MOAT = 0.58;
 const W_EARN = 0.42;
 // (break-count penalty removed from the screen score — see adjZ)
 const FLOOR = -1.5;
-export const BUDGET = 0.7; // AI authority ceiling (σ) — fixed server constant
+// AI authority ceiling (σ) — the DEFAULT. Per-screen configurable since
+// migration 074 via config.aiBudget ∈ [0, AI_BUDGET_MAX] (the turnaround
+// preset leans harder on the research card). MUST match screen.py.
+export const BUDGET = AI_BUDGET_DEFAULT;
+export const AI_BUDGET_MAX = AI_BUDGET_MAX_VALUE;
 // Verdict tilt (migration 066): graded bull/bear feed the rank as a GENTLE
 // additive term. MUST match screen.py.
 export const VERDICT_BUDGET = 0.3; // bull/bear authority ceiling (σ) — ±0.3 bound
 const W_BULL = 0.5;
 const W_BEAR = 0.5;
-const LENS_NAMES = ["quality", "value", "momentum"] as const;
+const LENS_NAMES = ["quality", "value", "momentum", "inflection"] as const;
 
 // ---- normal CDF (Abramowitz–Stegun erf), shared with screen.py --------------
 function erf(x: number): number {
@@ -231,6 +270,7 @@ function lensValues(r: ScreenFacts): {
   xQ: number | null;
   xV: number | null;
   xM: number | null;
+  xI: number | null;
 } {
   const fcf = num(r.fcf_margin);
   const gm = num(r.gross_margin);
@@ -263,12 +303,32 @@ function lensValues(r: ScreenFacts): {
   const perf = num(r.perf_52w_vs_spy);
   const xM = perf == null ? null : Math.max(MOM_FLOOR, Math.min(MOM_CAP, perf));
 
-  // Financials: P/S and R40 are category errors — neutralise Quality + Value
-  // (rank on Momentum only). MUST match screen.py.
-  if (isFinancialSector(r.sector)) {
-    return { xQ: null, xV: null, xM };
+  // Inflection (migration 074): collared blend of the latest QoQ deltas —
+  // revenue-growth acceleration, gross-margin change, FCF-margin change. Null
+  // only when ALL three are missing (a missing component contributes 0), so
+  // uncovered names sit at the neutral median instead of sinking.
+  const rqa = num(r.rev_qoq_accel);
+  const gmd = num(r.gm_delta_qoq);
+  const fcd = num(r.fcf_delta_qoq);
+  let xI: number | null;
+  if (rqa == null && gmd == null && fcd == null) {
+    xI = null;
+  } else {
+    const collar = (v: number | null, c: number) =>
+      v == null ? 0 : Math.max(-c, Math.min(c, v));
+    xI =
+      INF_W_REV * collar(rqa, INF_REV_COLLAR) +
+      INF_W_GM * collar(gmd, INF_MARGIN_COLLAR) +
+      INF_W_FCF * collar(fcd, INF_MARGIN_COLLAR);
   }
-  return { xQ, xV, xM };
+
+  // Financials: P/S and R40 are category errors — and so are GM/FCF deltas —
+  // neutralise Quality + Value + Inflection (rank on Momentum only).
+  // MUST match screen.py.
+  if (isFinancialSector(r.sector)) {
+    return { xQ: null, xV: null, xM, xI: null };
+  }
+  return { xQ, xV, xM, xI };
 }
 
 interface Adj {
@@ -429,28 +489,38 @@ export function scoreScreen(
   const uq: number[] = [];
   const uv: number[] = [];
   const um: number[] = [];
+  const ui: number[] = [];
   for (const r of facts) {
-    const { xQ, xV, xM } = lensValues(r);
+    const { xQ, xV, xM, xI } = lensValues(r);
     if (xQ != null) uq.push(xQ);
     if (xV != null) uv.push(xV);
     if (xM != null) um.push(xM);
+    if (xI != null) ui.push(xI);
   }
   uq.sort((p, q) => p - q);
   uv.sort((p, q) => p - q);
   um.sort((p, q) => p - q);
+  ui.sort((p, q) => p - q);
 
   const subset = applyFilters(facts, config.filters);
   const { quality: wq, value: wv, momentum: wm } = config.weights;
-  const wsum = wq + wv + wm || 1;
+  const wi = config.weights.inflection ?? 0;
+  const wsum = wq + wv + wm + wi || 1;
+  // Per-screen AI authority (migration 074), clamped; default = BUDGET.
+  const aiBudget =
+    config.aiBudget == null
+      ? BUDGET
+      : Math.max(0, Math.min(AI_BUDGET_MAX, config.aiBudget));
 
   const scored: ScoredRow[] = subset.map((r) => {
-    const { xQ, xV, xM } = lensValues(r);
+    const { xQ, xV, xM, xI } = lensValues(r);
     const pq = pctRank(uq, xQ);
     const pv = pctRank(uv, xV);
     const pm = pctRank(um, xM);
-    const base_score = (wq * pq + wv * pv + wm * pm) / wsum; // ∈ [0,1]
+    const pi = pctRank(ui, xI);
+    const base_score = (wq * pq + wv * pv + wm * pm + wi * pi) / wsum; // ∈ [0,1]
     const base_z = probit(Math.min(Math.max(base_score, 0.001), 0.999));
-    const a = adjZ(r);
+    const a = adjZ(r, aiBudget);
     const vz = verdictZ(r);
     const final_z = base_z + a.adj_z + vz.verdict_z;
     return {
@@ -471,6 +541,7 @@ export function scoreScreen(
       quality_pct: Math.round(pq * 100),
       value_pct: Math.round(pv * 100),
       momentum_pct: Math.round(pm * 100),
+      inflection_pct: Math.round(pi * 100),
       base_pct: Math.round(base_score * 100),
       final_pct: Math.round(Phi(final_z) * 100),
       firing_breaks: firingBreakCount(r, r.research_card ?? null),

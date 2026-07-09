@@ -32,6 +32,7 @@ const compiledSchema = z.object({
   filters: z.array(filterSchema).max(20).default([]),
   weights: weightsSchema,
   aiMultiplier: z.boolean().default(true),
+  aiBudget: z.number().min(0).max(1.5).default(0.7),
 });
 
 const SYSTEM = `You translate a plain-English stock-screen brief into a strict JSON screen config. You are a DESIGN-TIME translator only — never a stock picker.
@@ -44,15 +45,22 @@ Allowed filter fields (numbers are percentages or multiples as noted):
 - rule_of_40             (number)
 - ret_52w                (trailing 52-week price return %)
 - price                  ($)
+- drawdown_52w           (% below the 52-week high; 55 = 55% off the high)
+- above_low_26w          (% above the 26-week / 6-month low)
+- ps_vs_median           (signed % premium to the stock's OWN 12-month median P/S; negative = below its usual multiple)
+- inflection_signals     (0-3: how many of gross-margin expansion, QoQ revenue-growth improvement, FCF-margin improvement have run 2+ consecutive quarters)
+- net_debt_ebitda        (net debt ÷ trailing EBITDA, ×; lower/negative = safer)
+- interest_coverage      (trailing EBIT ÷ interest expense, ×; higher = safer)
 Allowed ops: ${FILTER_OPS.join(", ")}.
 
 Common US GICS-ish sectors you may reference for sector filters: "Health Technology", "Technology Services", "Electronic Technology", "Finance", "Retail Trade", "Consumer Services", "Producer Manufacturing", "Energy Minerals", "Commercial Services".
 
-weights: integers for "quality", "value", "momentum" that sum to ~100. Quality = margins/Rule-of-40 strength; value = cheapness on P/S; momentum = 52-week price strength. Tilt them to match the brief's emphasis.
+weights: integers for "quality", "value", "momentum", "inflection" that sum to ~100. Quality = margins/Rule-of-40 strength; value = cheapness on P/S; momentum = 52-week price strength; inflection = quarter-over-quarter operating improvement (margins expanding, growth re-accelerating — the turnaround signal). Tilt them to match the brief's emphasis; inflection stays 0 unless the brief cares about trend change / turnarounds.
 
 aiMultiplier: true unless the brief says to ignore AI bull/bear signals.
+aiBudget: how far the AI research card can move a name, in sigma (0 to 1.5, default 0.7). Raise toward 1.2 only when the brief leans on AI judgment / "what's changing at the company"; lower toward 0 when the brief wants pure quant.
 
-Return ONLY strict JSON of shape {"filters":[{"field","op","value"}],"weights":{"quality","value","momentum"},"aiMultiplier"}. No prose, no markdown.`;
+Return ONLY strict JSON of shape {"filters":[{"field","op","value"}],"weights":{"quality","value","momentum","inflection"},"aiMultiplier","aiBudget"}. No prose, no markdown.`;
 
 const bodySchema = z.object({ brief: z.string().min(1).max(2000) });
 
@@ -93,7 +101,12 @@ export async function POST(req: Request) {
 
     // Validate + clamp. Drop any filter that doesn't pass the schema rather
     // than failing the whole compile.
-    const raw = parsed as { filters?: unknown[]; weights?: unknown; aiMultiplier?: unknown };
+    const raw = parsed as {
+      filters?: unknown[];
+      weights?: unknown;
+      aiMultiplier?: unknown;
+      aiBudget?: unknown;
+    };
     const filters: Filter[] = [];
     for (const f of raw.filters ?? []) {
       const r = filterSchema.safeParse(f);
@@ -103,6 +116,7 @@ export async function POST(req: Request) {
       filters,
       weights: raw.weights,
       aiMultiplier: raw.aiMultiplier ?? true,
+      aiBudget: typeof raw.aiBudget === "number" ? raw.aiBudget : 0.7,
     });
 
     return jsonResponse({ compiled, brief });

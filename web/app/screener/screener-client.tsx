@@ -58,6 +58,20 @@ interface Row {
   rule_of_40: number | null;
   ret_52w: number | null;
   perf_52w_vs_spy: number | null;
+  // Turnaround facts (migration 074) — filterable; the QoQ deltas feed the
+  // Inflection lens on the local re-rank.
+  drawdown_52w: number | null;
+  above_low_26w: number | null;
+  ps_vs_median: number | null;
+  gm_delta_qoq: number | null;
+  gm_expansion_qtrs: number | null;
+  rev_qoq_accel: number | null;
+  rev_accel_qtrs: number | null;
+  fcf_delta_qoq: number | null;
+  fcf_improving_qtrs: number | null;
+  inflection_signals: number | null;
+  net_debt_ebitda: number | null;
+  interest_coverage: number | null;
   // Graded bull/bear conviction 1-5 (migration 066).
   bull_score: number | null;
   bear_score: number | null;
@@ -148,18 +162,20 @@ const COL_HELP = {
 };
 
 // Hover explanations for the (jargon-y) ranking controls.
-const WEIGHT_HELP: Record<"quality" | "value" | "momentum", string> = {
+const WEIGHT_HELP: Record<"quality" | "value" | "momentum" | "inflection", string> = {
   quality:
     "Quality — how strong the business is: 0.60×Rule of 40 + 0.25×free-cash-flow margin + 0.15×gross margin, scored as percentiles within the filtered set. Raise it to favour profitable, efficient compounders.",
   value:
     "Value — how cheap it is on sales versus the stock's own 12-month median P/S (not an absolute P/S). Raise it to favour names trading below their usual valuation.",
   momentum:
     "Momentum — trailing 52-week return vs SPY (alpha), collared so falling knives and blow-off tops don't dominate. Raise it to favour names beating the market.",
+  inflection:
+    "Inflection — what changed last quarter: QoQ revenue-growth acceleration, gross-margin change and FCF-margin change, blended. Raise it to favour businesses whose operating trend is turning (the turnaround signal); names without quarterly data yet rank neutral.",
 };
 const RANKING_HELP =
-  "Each name's Score is a single number: a cross-sectional z-score blend of Quality, Value and Momentum (the 'base'), adjusted by the AI's read of durability, shown as a universe percentile. A research tool, not a recommendation.";
+  "Each name's Score is a single number: a cross-sectional z-score blend of Quality, Value, Momentum and Inflection (the 'base'), adjusted by the AI's read of durability, shown as a universe percentile. A research tool, not a recommendation.";
 const AI_HELP =
-  "AI authority is the maximum the research card can move a name, in standard deviations: a strong, unbroken card lifts up to +0.7σ; a weak moat or break signals cut it (floored at −1.5σ). Fixed server-side so the ranking stays canonical — growth durability is never scored (already in R40).";
+  "AI authority is the maximum the research card can move a name, in standard deviations: a strong, unbroken card lifts up to +budget σ; a weak moat cuts it (floored at −1.5σ). Default ±0.7σ; raise it for screens where the card's trajectory read IS the signal (e.g. turnarounds). Growth durability is never scored (already in R40).";
 
 // How many visits the "how this works" intro auto-shows before it stays hidden.
 const INTRO_MAX_VIEWS = 3;
@@ -992,7 +1008,8 @@ export default function ScreenerClient({
           <span>⚙ Configure scoring</span>
           <span className="text-text-muted/60">
             Q {config.weights.quality} · V {config.weights.value} · M {config.weights.momentum}
-            {" · "}AI ±{BUDGET}σ ▾
+            {" · "}I {config.weights.inflection ?? 0}
+            {" · "}AI ±{config.aiBudget ?? BUDGET}σ ▾
           </span>
         </summary>
         <div className="px-3 pb-3 sm:max-w-[520px]">
@@ -1008,8 +1025,32 @@ export default function ScreenerClient({
               title={AI_HELP}
               className="font-mono text-[10px] text-text-muted/70 cursor-help shrink-0"
             >
-              AI authority ±{BUDGET}σ (fixed)
+              AI authority ±{config.aiBudget ?? BUDGET}σ
             </span>
+          </div>
+          {/* AI authority (migration 074) — how far the research card can move
+              a name. Slider over [0, 1.5]σ; the classic fixed 0.7 is the default. */}
+          <div className="mt-2.5">
+            <div className="flex justify-between font-mono text-[11px] text-text-muted">
+              <span
+                title={AI_HELP}
+                className="cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
+              >
+                AI authority <span aria-hidden className="text-text-muted/50 no-underline">ⓘ</span>
+              </span>
+              <span className="text-text">±{(config.aiBudget ?? BUDGET).toFixed(2)}σ</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={1.5}
+              step={0.05}
+              value={config.aiBudget ?? BUDGET}
+              onChange={(e) => patch({ aiBudget: Number(e.target.value) })}
+              className="w-full accent-[var(--color-cyan)]"
+              aria-label={`AI authority, ±${config.aiBudget ?? BUDGET} sigma`}
+              title={AI_HELP}
+            />
           </div>
           <div className="flex items-center justify-end mt-2">
             <label
@@ -1025,7 +1066,7 @@ export default function ScreenerClient({
               Hide agent-rejected (90d)
             </label>
           </div>
-          {(["quality", "value", "momentum"] as const).map((k) => (
+          {(["quality", "value", "momentum", "inflection"] as const).map((k) => (
             <div key={k} className="mt-2.5">
               <div className="flex justify-between font-mono text-[11px] text-text-muted capitalize">
                 <span
@@ -1034,16 +1075,16 @@ export default function ScreenerClient({
                 >
                   {k} <span aria-hidden className="text-text-muted/50 no-underline">ⓘ</span>
                 </span>
-                <span className="text-text">{config.weights[k]}</span>
+                <span className="text-text">{config.weights[k] ?? 0}</span>
               </div>
               <input
                 type="range"
                 min={0}
                 max={100}
-                value={config.weights[k]}
+                value={config.weights[k] ?? 0}
                 onChange={(e) => patch({ weights: { ...config.weights, [k]: Number(e.target.value) } })}
                 className="w-full accent-[var(--color-cyan)]"
-                aria-label={`${k} weight, ${config.weights[k]} of 100`}
+                aria-label={`${k} weight, ${config.weights[k] ?? 0} of 100`}
                 title={WEIGHT_HELP[k]}
               />
             </div>

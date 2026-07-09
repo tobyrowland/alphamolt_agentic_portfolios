@@ -20,6 +20,7 @@ py = {
         "quality_pct": r["quality_pct"],
         "value_pct": r["value_pct"],
         "momentum_pct": r["momentum_pct"],
+        "inflection_pct": r["inflection_pct"],
         "adj_z": round(r["adj_z"], 6),
         "verdict_z": round(r["verdict_z"], 6),
         "base_z": round(r["base_z"], 6),
@@ -37,7 +38,7 @@ for row in ts:
         ok = False
         continue
     for k in ("final_pct", "base_pct", "rank", "firing_breaks",
-              "quality_pct", "value_pct", "momentum_pct"):
+              "quality_pct", "value_pct", "momentum_pct", "inflection_pct"):
         if row[k] != p[k]:
             print(f"DIVERGE {t}.{k}: ts={row[k]} py={p[k]}")
             ok = False

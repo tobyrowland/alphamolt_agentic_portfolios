@@ -747,6 +747,19 @@ CREATE TABLE IF NOT EXISTS fundamentals (
     shares_out          NUMERIC,
     eps                 NUMERIC,
     opex_pct_rev        NUMERIC,
+    -- Turnaround facts (migration 074): quarter-over-quarter inflection +
+    -- balance-sheet survivability, computed at write time by eodhd_updater.
+    gm_delta_qoq        NUMERIC,  -- latest quarterly gross margin minus prior, pp
+    gm_expansion_qtrs   NUMERIC,  -- consecutive quarters of GM expansion
+    rev_qoq_accel       NUMERIC,  -- latest QoQ revenue growth minus prior QoQ growth, pp
+    rev_accel_qtrs      NUMERIC,  -- consecutive quarters of improving QoQ revenue growth
+    fcf_delta_qoq       NUMERIC,  -- latest quarterly FCF margin minus prior, pp
+    fcf_improving_qtrs  NUMERIC,  -- consecutive quarters of improving FCF margin
+    inflection_signals  NUMERIC,  -- how many of the three streaks are ≥ 2 quarters (0–3)
+    ebitda_ttm          NUMERIC,
+    interest_expense_ttm NUMERIC,
+    net_debt_ebitda     NUMERIC,  -- (debt − cash) / TTM EBITDA; NULL when EBITDA ≤ 0
+    interest_coverage   NUMERIC,  -- TTM EBIT / TTM interest; 999 = profitable + no interest
     PRIMARY KEY (ticker, period_end)
 );
 CREATE INDEX IF NOT EXISTS idx_fundamentals_period ON fundamentals (period_end);

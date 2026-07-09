@@ -127,7 +127,9 @@ and the screener brief v2.
 **Two config layers.** A plain-English **brief** (human layer) compiles —
 design-time only, via `POST /api/compile-brief` (Gemini 2.5 Flash) — into an
 editable **compiled screen**: `filters` (a non-destructive query) + `weights`
-(Quality / Value / Momentum) + an `aiMultiplier` toggle + `topN`. Agents read
+(Quality / Value / Momentum / Inflection) + an `aiMultiplier` toggle + a
+per-screen `aiBudget` (how far the research card can move a name, σ —
+migration 074) + `topN`. Agents read
 the compiled config, **never** the prose. The daily re-rank is pure
 deterministic computation — **no LLM in the ranking loop**.
 
@@ -138,12 +140,17 @@ filtered candidate set* (so outliers pin to p100 instead of blowing up the
 scale). Composite = weighted blend of Quality (0.60·R40 + 0.25·FCF + 0.15·GM),
 Value (inverse P/S, blended 50/50 against the name's own 12-mo median AND its
 peer-group median `peer_ps_median` — migration 058; pure self-relative fallback
-when a name has no peer median) and Momentum (collared 52-week return vs
-SPY — `perf_52w_vs_spy`, derived from `benchmark_prices`). Migration 057 moved
+when a name has no peer median), Momentum (collared 52-week return vs
+SPY — `perf_52w_vs_spy`, derived from `benchmark_prices`) and **Inflection**
+(migration 074 — collared blend of the latest QoQ deltas: 0.45·revenue-growth
+acceleration + 0.35·gross-margin change + 0.20·FCF-margin change; default
+weight 0 so pre-074 configs re-rank identically; null facts ⇒ neutral median).
+Migration 057 moved
 the screener from a 0–100 composite × hidden multipliers to a single additive
 score in σ-space: **`final_z = base_z + adj_z + verdict_z`**. `base_z` is the
-probit of the weighted Q/V/M percentile blend; `adj_z` is the research-card
-trajectory boost (moat 0.58 + earnings 0.42, ±0.7σ, neutral when no card —
+probit of the weighted Q/V/M/I percentile blend; `adj_z` is the research-card
+trajectory boost (moat 0.58 + earnings 0.42, ±`aiBudget`σ — default 0.7,
+per-screen up to 1.5 since migration 074, neutral when no card —
 migrations 056/057); `verdict_z` is a **gentle ±0.3σ tilt from the graded
 bull (Claude) + bear (Gemini) 1-5 scores** (`ai_analysis.bull_score` /
 `bear_score` — bull pushes up, bear's red-flag severity pushes down; neutral
@@ -160,6 +167,30 @@ Config lives in the **URL** (shareable/indexable); house presets + sector
 screens are indexed, arbitrary custom permutations `noindex`. **Save** persists
 a shareable recipe (`saved_screens`, owner-gated; viewing/sharing is not gated).
 A portfolio's selection recipe lives in `portfolios.screen_config`.
+
+**Turnaround support (migration 074).** The screener carries the turnaround
+strategy's three gates as facts + config, no new pipeline: *washout* —
+`drawdown_52w` (% off 52-week closing high), `above_low_26w` (% above the
+26-week low) and `ps_vs_median` (signed % premium to the name's own 12-mo
+median P/S), all computed inside `screen_facts_mv` from `prices_daily` /
+`valuation` (full coverage from the first refresh); *inflection* — QoQ streak
+facts (`gm_expansion_qtrs`, `rev_accel_qtrs`, `fcf_improving_qtrs`, their
+latest-step deltas, and `inflection_signals` = how many streaks ≥ 2 quarters)
+computed at WRITE time by `eodhd_updater.compute_inflection` (the
+`fundamentals` table has no per-quarter history) and stored on the latest
+fundamentals row; *survivability* — `net_debt_ebitda` + `interest_coverage`
+(999 = profitable, no interest) from `compute_survivability`, which also
+finally populates `fundamentals.cash/debt/shares_out` (un-gating the research
+card's balance_sheet_risk dimension as the rotation passes). Inflection +
+survivability coverage builds on the daily `fundamentals_updater` rotation
+(150/day) — run `python fundamentals_updater.py --batch 4000` once to backfill
+in a day. The **`turnaround` house preset** wires it together: washout filters,
+inflection-heavy weights (Q15/V20/M5/I60) and `aiBudget: 1.2` (the card is the
+"is something actually changing here" read). The survivability filters are
+named filters the owner adds once coverage exists — a numeric filter excludes
+names missing the datum, so baking them into the preset day-1 would empty it.
+Migration 074 also restores `ps_trend_pct` to the matview (dropped by 066's
+rebuild from 057's body).
 
 ### screen.py
 Deterministic scoring-as-a-function (Python mirror of
