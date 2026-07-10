@@ -192,6 +192,36 @@ names missing the datum, so baking them into the preset day-1 would empty it.
 Migration 074 also restores `ps_trend_pct` to the matview (dropped by 066's
 rebuild from 057's body).
 
+**Filter transforms (migration 075).** Filters can now do time-series math
+without a bespoke column per idea. The quarterly history the EODHD fetch used
+to discard is stored on the latest fundamentals row
+(`fundamentals.quarterly_metrics` JSONB — object-of-arrays, newest-first, up
+to 12 quarters: `period_ends`, `revenue`, `rev_growth_qoq`, `gross_margin`,
+`operating_margin`, `net_margin`, `fcf_margin`; built by
+`eodhd_updater.compute_quarterly_series`, written via `FUND_BLOBS` on the
+daily `fundamentals_updater` rotation — one `--batch 4000` run backfills) and
+surfaced to both scorers as `screen_facts().quarters`. A filter may then carry
+a **`transform`** — `delta_qoq`, `yoy`, `streak_qtrs`, `slope_4q`, `mean_4q`,
+`min_4q`, `max_4q`, `range_4q`, `pctile_own` — evaluated over the metric's
+series at read time, so "two consecutive quarters of improving QoQ revenue
+growth" is just `{field: rev_growth_qoq, transform: streak_qtrs, op: >=,
+value: 2}`: any series metric × any transform × any threshold, no migration.
+`rev_growth_qoq` and `revenue` are **series-only** fields (no scalar matview
+column — schema-enforced to always carry a transform; transform-less they are
+a no-constraint on both scorers). Implemented once per language in
+`web/lib/screen/transforms.ts` and `screen.py` (`_TRANSFORMS`), held identical
+by a shared fixture (`tests/fixtures/transform_parity.json`) that
+`tests/test_transforms.py` evaluates through BOTH implementations (the TS side
+runs under `node --experimental-strip-types`). A name missing its series is
+excluded by a transform filter (the standard missing-datum rule); the 074
+write-time inflection columns stay — the Inflection *lens* still scores on
+them, transforms are the *filter* layer. UI: curated entries in the
+"+ add filter" menu (rev growth improving / GM expanding / FCF trend / revenue
+up in a row) plus a transform dropdown in the Advanced row; chips + sliders
+are transform-aware (`metaForFilter`). `/api/compile-brief` knows the
+vocabulary, so trend/streak/stability language in a brief compiles to
+transform filters.
+
 ### screen.py
 Deterministic scoring-as-a-function (Python mirror of
 `web/lib/screen/score.ts`). Reads Level 0 via the `screen_facts()` RPC +

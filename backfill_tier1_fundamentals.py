@@ -86,14 +86,18 @@ FUND_FIELDS = {
     "interest_coverage": "interest_coverage",
 }
 
-# Per-period text-blob series (pipe-delimited, newest-first) stored verbatim —
-# NOT floats, so they bypass the safe_float FUND_FIELDS loop. Power the
-# company-page income chart (revenue + net income, annual + quarterly).
+# Per-period series stored verbatim — NOT floats, so they bypass the
+# safe_float FUND_FIELDS loop. The four text blobs (pipe-delimited,
+# newest-first) power the company-page income chart; `quarterly_metrics`
+# (migration 075) is the JSONB object-of-arrays quarterly series the
+# screener's filter transforms compute over (eodhd_updater.
+# compute_quarterly_series).
 FUND_BLOBS = (
     "annual_revenue_5y",
     "quarterly_revenue",
     "annual_net_income_5y",
     "quarterly_net_income",
+    "quarterly_metrics",
 )
 
 DEFAULT_DELAY = 1.0  # seconds between EODHD calls (rate-limit courtesy)

@@ -12,6 +12,12 @@
  */
 
 import { z } from "zod";
+import {
+  SERIES_FIELDS,
+  SERIES_ONLY_FIELDS,
+  TRANSFORMS,
+  type Transform,
+} from "@/lib/screen/transforms";
 
 // Fields a filter can target — these map 1:1 onto screen_facts() columns
 // (migration 040). Numeric unless noted.
@@ -42,6 +48,10 @@ export const FILTER_FIELDS = [
   // Survivability gate (hard filters, never scored):
   "net_debt_ebitda",
   "interest_coverage",
+  // Series-only fields (migration 075): live in the `quarters` series, not as
+  // scalar columns — usable only WITH a transform (schema-enforced below).
+  "rev_growth_qoq",
+  "revenue",
 ] as const;
 export type FilterField = (typeof FILTER_FIELDS)[number];
 
@@ -50,12 +60,33 @@ export const TEXT_FIELDS = new Set<FilterField>(["sector", "industry", "country"
 export const FILTER_OPS = ["<=", ">=", "<", ">", "==", "!="] as const;
 export type FilterOp = (typeof FILTER_OPS)[number];
 
-export const filterSchema = z.object({
-  field: z.enum(FILTER_FIELDS),
-  op: z.enum(FILTER_OPS),
-  value: z.union([z.number(), z.string()]),
-});
+export const filterSchema = z
+  .object({
+    field: z.enum(FILTER_FIELDS),
+    op: z.enum(FILTER_OPS),
+    value: z.union([z.number(), z.string()]),
+    // Time-series transform (migration 075) — how to look at the metric over
+    // the stored quarterly series instead of its latest scalar. Only fields in
+    // SERIES_FIELDS carry one; rev_growth_qoq/revenue REQUIRE one.
+    transform: z.enum(TRANSFORMS).optional(),
+  })
+  .superRefine((f, ctx) => {
+    if (f.transform && !SERIES_FIELDS[f.field]) {
+      ctx.addIssue({
+        code: "custom",
+        message: `${f.field} has no quarterly series — transform not allowed`,
+      });
+    }
+    if (!f.transform && SERIES_ONLY_FIELDS.has(f.field)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `${f.field} is series-only — a transform is required`,
+      });
+    }
+  });
 export type Filter = z.infer<typeof filterSchema>;
+export { SERIES_FIELDS, SERIES_ONLY_FIELDS, TRANSFORMS };
+export type { Transform };
 
 export const weightsSchema = z.object({
   quality: z.number().min(0).max(100),
@@ -305,7 +336,7 @@ export function isHousePreset(config: ScreenConfig): boolean {
 export interface MetricMeta {
   field: FilterField;
   label: string; // friendly name, e.g. "Revenue growth"
-  unit: "%" | "×" | "$" | "";
+  unit: "%" | "×" | "$" | "pp" | "q" | "";
   op: FilterOp; // implied operator
   min: number;
   max: number;
@@ -332,14 +363,86 @@ export const METRIC_META: Record<string, MetricMeta> = {
   inflection_signals: { field: "inflection_signals", label: "Inflection signals", unit: "", op: ">=", min: 0, max: 3, step: 1, default: 1 },
   net_debt_ebitda: { field: "net_debt_ebitda", label: "Net debt / EBITDA", unit: "×", op: "<=", min: -2, max: 10, step: 0.5, default: 3 },
   interest_coverage: { field: "interest_coverage", label: "Interest coverage", unit: "×", op: ">=", min: 0, max: 20, step: 1, default: 2 },
+  // Series-only fields (migration 075) — only meaningful WITH a transform;
+  // the meta gives them a friendly label + a scale for %-based transforms.
+  rev_growth_qoq: { field: "rev_growth_qoq", label: "Rev growth (QoQ)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0 },
 };
+
+// ---- filter transforms (migration 075) -------------------------------------
+// A transform re-reads the metric over its stored quarterly series (streaks /
+// deltas / trends / own-history percentile) instead of its latest scalar —
+// see web/lib/screen/transforms.ts (mirrored in screen.py).
+
+/** Chip wording per transform, composed with the metric's label. */
+export const TRANSFORM_LABELS: Record<Transform, (metric: string) => string> = {
+  delta_qoq: (m) => `${m} Δ QoQ`,
+  yoy: (m) => `${m} Δ YoY`,
+  streak_qtrs: (m) => `${m} improving streak`,
+  slope_4q: (m) => `${m} trend (4q slope)`,
+  mean_4q: (m) => `${m} avg (4q)`,
+  min_4q: (m) => `${m} min (4q)`,
+  max_4q: (m) => `${m} max (4q)`,
+  range_4q: (m) => `${m} range (4q)`,
+  pctile_own: (m) => `${m} vs own history`,
+};
+
+// Sensible starting op + value when a transform filter is created.
+const TRANSFORM_SEEDS: Record<Transform, { op: FilterOp; value: number }> = {
+  delta_qoq: { op: ">", value: 0 },
+  yoy: { op: ">", value: 0 },
+  streak_qtrs: { op: ">=", value: 2 },
+  slope_4q: { op: ">", value: 0 },
+  mean_4q: { op: ">=", value: 0 },
+  min_4q: { op: ">=", value: 0 },
+  max_4q: { op: ">=", value: 0 },
+  range_4q: { op: "<=", value: 10 },
+  pctile_own: { op: "<=", value: 20 },
+};
+
+/**
+ * Chip metadata for a filter, transform-aware: streaks count quarters,
+ * pctile_own is 0–100, the delta/trend family reads in pp for %-based
+ * metrics. Dollar-scale transforms (e.g. revenue Δ) get no slider —
+ * undefined, same as any unknown field (the advanced editor still works).
+ */
+export function metaForFilter(f: Filter): MetricMeta | undefined {
+  const base = METRIC_META[f.field];
+  if (!f.transform) return base;
+  const label = TRANSFORM_LABELS[f.transform](base?.label ?? f.field);
+  const seed = TRANSFORM_SEEDS[f.transform];
+  const pctBased = base?.unit === "%";
+  switch (f.transform) {
+    case "streak_qtrs":
+      return { field: f.field, label, unit: "q", op: seed.op, min: 0, max: 8, step: 1, default: seed.value };
+    case "pctile_own":
+      return { field: f.field, label, unit: "%", op: seed.op, min: 0, max: 100, step: 5, default: seed.value };
+    case "slope_4q":
+      return pctBased
+        ? { field: f.field, label, unit: "pp", op: seed.op, min: -10, max: 10, step: 0.5, default: seed.value }
+        : undefined;
+    case "delta_qoq":
+    case "yoy":
+      return pctBased
+        ? { field: f.field, label, unit: "pp", op: seed.op, min: -30, max: 30, step: 1, default: seed.value }
+        : undefined;
+    case "range_4q":
+      return pctBased
+        ? { field: f.field, label, unit: "pp", op: seed.op, min: 0, max: 30, step: 1, default: seed.value }
+        : undefined;
+    case "mean_4q":
+    case "min_4q":
+    case "max_4q":
+      return base ? { ...base, label, op: seed.op, default: seed.value } : undefined;
+  }
+}
 
 /** The natural operator for a metric (implied — no operator dropdown). */
 export function impliedOp(field: FilterField): FilterOp {
   return METRIC_META[field]?.op ?? ">=";
 }
 
-/** A readable chip label for a filter, e.g. "P/S ≤ 15" / "Rev growth ≥ 20%". */
+/** A readable chip label for a filter, e.g. "P/S ≤ 15" / "Rev growth ≥ 20%" /
+ *  "Rev growth (QoQ) improving streak ≥ 2q". */
 export function filterChipLabel(f: Filter): string {
   if (TEXT_FIELDS.has(f.field)) {
     if ((f.field === "sector" || f.field === "industry") && !String(f.value))
@@ -347,16 +450,26 @@ export function filterChipLabel(f: Filter): string {
     const verb = f.op === "!=" ? "exclude" : "only";
     return `${verb} ${f.value}`;
   }
-  const m = METRIC_META[f.field];
+  const m = metaForFilter(f);
   const sym = f.op === "<=" || f.op === "<" ? "≤" : f.op === ">=" || f.op === ">" ? "≥" : f.op;
-  const label = m?.label ?? f.field;
+  const label =
+    m?.label ??
+    (f.transform
+      ? TRANSFORM_LABELS[f.transform](METRIC_META[f.field]?.label ?? f.field)
+      : f.field);
   const unit = m?.unit ?? "";
   return `${label} ${sym} ${f.value}${unit}`;
 }
 
 // The "+ add filter" menu — named, friendly filters (not a blank field/op/value
-// row). Each seeds a chip with its implied operator + default value.
-export const NAMED_FILTERS: { field: FilterField; label: string }[] = [
+// row). Each seeds a chip with its implied operator + default value. Entries
+// with a `transform` are curated time-series filters (migration 075); the full
+// metric × transform space stays reachable via the Advanced editor.
+export const NAMED_FILTERS: {
+  field: FilterField;
+  label: string;
+  transform?: Transform;
+}[] = [
   { field: "sector", label: "Sector" },
   { field: "industry", label: "Industry" },
   { field: "ps", label: "P/S multiple" },
@@ -376,13 +489,23 @@ export const NAMED_FILTERS: { field: FilterField; label: string }[] = [
   { field: "inflection_signals", label: "Inflection signals" },
   { field: "net_debt_ebitda", label: "Net debt / EBITDA" },
   { field: "interest_coverage", label: "Interest coverage" },
+  // Curated transform filters (migration 075).
+  { field: "rev_growth_qoq", transform: "streak_qtrs", label: "Rev growth improving" },
+  { field: "gross_margin", transform: "streak_qtrs", label: "Gross margin expanding" },
+  { field: "fcf_margin", transform: "slope_4q", label: "FCF margin trend" },
+  { field: "revenue", transform: "streak_qtrs", label: "Revenue up in a row" },
 ];
 
-/** Build a default filter for a metric, ready to drop into the bar as a chip. */
-export function newFilterFor(field: FilterField): Filter {
+/** Build a default filter for a metric (optionally over a transform), ready to
+ *  drop into the bar as a chip. */
+export function newFilterFor(field: FilterField, transform?: Transform): Filter {
   // Sector reads as "only <sector>"; other text fields default to "exclude".
   if (field === "sector") return { field, op: "==", value: "" };
   if (TEXT_FIELDS.has(field)) return { field, op: "!=", value: "" };
+  if (transform) {
+    const seed = TRANSFORM_SEEDS[transform];
+    return { field, op: seed.op, value: seed.value, transform };
+  }
   const m = METRIC_META[field];
   return { field, op: impliedOp(field), value: m?.default ?? 0 };
 }

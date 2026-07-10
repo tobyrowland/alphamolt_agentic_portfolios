@@ -22,6 +22,14 @@ import {
   AI_BUDGET_MAX_VALUE,
   TEXT_FIELDS,
 } from "@/lib/screen/config";
+import {
+  applyTransform,
+  seriesFor,
+  SERIES_FIELDS,
+  SERIES_ONLY_FIELDS,
+  TRANSFORMS,
+  type QuarterSeries,
+} from "@/lib/screen/transforms";
 
 /** One scored dimension of the research card (moat / earnings / growth). */
 export interface CardDim {
@@ -105,6 +113,12 @@ export interface ScreenFacts {
   // Survivability (hard-filter material, never scored):
   net_debt_ebitda: number | null;
   interest_coverage: number | null;
+  /** Quarterly metric series (migration 075) — newest-first object-of-arrays
+   *  ({period_ends, revenue, rev_growth_qoq, gross_margin, operating_margin,
+   *  net_margin, fcf_margin}, up to 12 quarters). Filter TRANSFORMS (streaks /
+   *  deltas / slopes / own-history percentiles) compute over it at read time.
+   *  Optional: the client's bulk payload may omit it. */
+  quarters?: QuarterSeries | null;
   // AI verdict overlay (lens; Level 0 itself is strategy-neutral)
   bull: boolean | null;
   bear: boolean | null;
@@ -430,8 +444,8 @@ export function firingBreakCount(facts: ScreenFacts, card: ResearchCard | null):
 }
 
 function matchesFilter(row: ScreenFacts, f: Filter): boolean {
-  const raw = (row as unknown as Record<string, unknown>)[f.field === "ps" ? "ps" : f.field];
   if (TEXT_FIELDS.has(f.field)) {
+    const raw = (row as unknown as Record<string, unknown>)[f.field];
     const a = (raw == null ? "" : String(raw)).toLowerCase();
     const b = String(f.value).toLowerCase();
     if (b === "") return true; // unset text filter = no constraint (e.g. sector not yet picked)
@@ -442,7 +456,20 @@ function matchesFilter(row: ScreenFacts, f: Filter): boolean {
     if (f.op === "<") return a < b;
     return a > b;
   }
-  const v = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+  // Transform filters (migration 075): compare against time-series math over
+  // the quarterly series instead of the row scalar. Unknown transform / a
+  // field with no series ⇒ no constraint (parity with screen.py).
+  let v: number | null;
+  if (f.transform) {
+    const key = SERIES_FIELDS[f.field];
+    if (!key || !(TRANSFORMS as readonly string[]).includes(f.transform)) return true;
+    v = applyTransform(seriesFor(row.quarters, key), f.transform);
+  } else if (SERIES_ONLY_FIELDS.has(f.field)) {
+    return true; // series-only field without a transform = no constraint
+  } else {
+    const raw = (row as unknown as Record<string, unknown>)[f.field];
+    v = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+  }
   if (v == null) return false; // a numeric filter excludes names missing that datum
   const t = Number(f.value);
   switch (f.op) {

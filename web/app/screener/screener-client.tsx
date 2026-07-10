@@ -15,9 +15,14 @@ import {
   METRIC_META,
   NAMED_FILTERS,
   PRESETS,
+  SERIES_FIELDS,
+  SERIES_ONLY_FIELDS,
   TEXT_FIELDS,
+  TRANSFORMS,
+  TRANSFORM_LABELS,
   encodeConfig,
   filterChipLabel,
+  metaForFilter,
   newFilterFor,
   presetConfig,
   screenConfigSchema,
@@ -25,6 +30,7 @@ import {
   type FilterField,
   type FilterOp,
   type ScreenConfig,
+  type Transform,
 } from "@/lib/screen/config";
 import {
   BUDGET,
@@ -471,9 +477,13 @@ export default function ScreenerClient({
       if (sameSet && rowsRef.current.length) {
         // Local re-rank — instant, zero bytes. firing_breaks/thesis_line are
         // weight-independent (and the card text isn't in memory), so carry them
-        // over from the existing rows by ticker.
+        // over from the existing rows by ticker. Filters are stripped: the rows
+        // in memory ARE the filtered set (sameSet), and re-applying them here
+        // would wrongly drop rows whose filter inputs aren't in the display
+        // projection (transform filters read the `quarters` series, which —
+        // like the research card — never ships in the bulk payload).
         const facts = rowsRef.current as unknown as ScreenFacts[];
-        const result = scoreScreen(facts, config, facts.length);
+        const result = scoreScreen(facts, { ...config, filters: [] }, facts.length);
         const byTicker = new Map(rowsRef.current.map((r) => [r.ticker, r]));
         const rows = result.rows.map((sr) => {
           const prevRow = byTicker.get(sr.ticker);
@@ -799,9 +809,9 @@ export default function ScreenerClient({
   function removeFilter(i: number) {
     patch({ filters: config.filters.filter((_, idx) => idx !== i) });
   }
-  function addNamedFilter(field: FilterField) {
+  function addNamedFilter(field: FilterField, transform?: Transform) {
     setAddOpen(false);
-    patch({ filters: [...config.filters, newFilterFor(field)] });
+    patch({ filters: [...config.filters, newFilterFor(field, transform)] });
   }
   // One-click "exclude this sector/industry" from a row — appends a text `!=`
   // filter (the same mechanism FilterChip + applyFilters already honour), with a
@@ -821,7 +831,12 @@ export default function ScreenerClient({
     patch({ filters: [...config.filters, { field, op: "!=", value: v }] });
   }
 
-  const usedFields = useMemo(() => new Set(config.filters.map((f) => f.field)), [config.filters]);
+  // Dedupe key includes the transform (migration 075) so e.g. a plain
+  // "Gross margin ≥ 40" chip doesn't hide the "Gross margin expanding" entry.
+  const usedFields = useMemo(
+    () => new Set(config.filters.map((f) => `${f.field}|${f.transform ?? ""}`)),
+    [config.filters],
+  );
   // "Run as a portfolio" applies this screen as the portfolio's selection
   // recipe (screen_config) and lands on the portfolio page — see
   // app/screener/run/route.ts. On a Universe tab the target book is known,
@@ -896,15 +911,15 @@ export default function ScreenerClient({
               (nf) =>
                 nf.field === "sector" ||
                 nf.field === "industry" ||
-                !usedFields.has(nf.field),
+                !usedFields.has(`${nf.field}|${nf.transform ?? ""}`),
             ).map((nf) => (
               <button
-                key={nf.field}
+                key={`${nf.field}|${nf.transform ?? ""}`}
                 type="button"
-                onClick={() => addNamedFilter(nf.field)}
+                onClick={() => addNamedFilter(nf.field, nf.transform)}
                 className="block w-full text-left font-mono text-[11px] text-text-dim hover:text-text hover:bg-white/5 rounded px-2 py-1.5"
               >
-                {METRIC_META[nf.field]
+                {!nf.transform && METRIC_META[nf.field]
                   ? `${nf.label} ${METRIC_META[nf.field].op === "<=" ? "below" : "above"}…`
                   : `${nf.label}…`}
               </button>
@@ -1495,7 +1510,9 @@ function FilterChip({
   const listField = isSector || isIndustry;
   const listValues = isSector ? sectors : industries;
   const listLabel = isSector ? "Sector" : "Industry";
-  const m = METRIC_META[filter.field];
+  // Transform-aware (migration 075): a streak slider counts quarters, a
+  // pctile_own slider is 0–100, the delta/trend family reads in pp.
+  const m = metaForFilter(filter);
   return (
     <details className="inline-block align-top">
       <summary className="list-none cursor-pointer font-mono text-[11px] text-text border border-[var(--color-cyan)]/35 bg-[var(--color-cyan)]/[0.05] rounded-md px-2.5 py-1.5 inline-flex items-center gap-2 marker:hidden [&::-webkit-details-marker]:hidden">
@@ -1605,7 +1622,16 @@ function AdvancedAdd({ onAdd }: { onAdd: (f: Filter) => void }) {
   const [field, setField] = useState<FilterField>("rule_of_40");
   const [op, setOp] = useState<FilterOp>(">=");
   const [value, setValue] = useState("40");
+  // Time-series transform (migration 075) — offered only for fields with a
+  // stored quarterly series; series-only fields (rev_growth_qoq, revenue)
+  // can't be read as a plain scalar, so a transform is forced for them.
+  const [transform, setTransform] = useState<Transform | "">("");
   const isText = TEXT_FIELDS.has(field);
+  const seriesCapable = !isText && !!SERIES_FIELDS[field];
+  const seriesOnly = SERIES_ONLY_FIELDS.has(field);
+  const effTransform: Transform | "" = seriesCapable
+    ? transform || (seriesOnly ? "streak_qtrs" : "")
+    : "";
   return (
     <div className="flex items-center gap-2 flex-wrap mb-2 rounded-lg border border-white/10 bg-black/20 p-2">
       <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-text-muted">Advanced</span>
@@ -1619,6 +1645,24 @@ function AdvancedAdd({ onAdd }: { onAdd: (f: Filter) => void }) {
           <option key={f} value={f} className="bg-black">{f}</option>
         ))}
       </select>
+      {seriesCapable && (
+        <select
+          aria-label="Transform"
+          title="How to read the metric over its quarterly history — streaks, quarter-over-quarter change, 4-quarter trend, or its percentile vs the stock's own history."
+          value={effTransform}
+          onChange={(e) => setTransform(e.target.value as Transform | "")}
+          className="bg-black/40 border border-white/10 rounded px-1.5 py-1 text-xs text-text"
+        >
+          {!seriesOnly && (
+            <option value="" className="bg-black">current value</option>
+          )}
+          {TRANSFORMS.map((t) => (
+            <option key={t} value={t} className="bg-black">
+              {TRANSFORM_LABELS[t]("").trim()}
+            </option>
+          ))}
+        </select>
+      )}
       <select
         aria-label="Operator"
         value={op}
@@ -1638,7 +1682,12 @@ function AdvancedAdd({ onAdd }: { onAdd: (f: Filter) => void }) {
       <button
         type="button"
         onClick={() =>
-          onAdd({ field, op, value: isText ? value : Number(value) || 0 })
+          onAdd({
+            field,
+            op,
+            value: isText ? value : Number(value) || 0,
+            ...(effTransform ? { transform: effTransform } : {}),
+          })
         }
         className="font-mono text-[11px] rounded-md border border-white/10 text-text-muted px-2.5 py-1 hover:text-text"
       >

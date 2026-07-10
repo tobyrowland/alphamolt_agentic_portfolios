@@ -1,0 +1,1082 @@
+[
+ {
+  "name": "basic_up:delta_qoq",
+  "series": [
+   10,
+   8,
+   6,
+   4,
+   2,
+   1,
+   1,
+   0.5
+  ],
+  "transform": "delta_qoq",
+  "expected": 2.0
+ },
+ {
+  "name": "basic_up:yoy",
+  "series": [
+   10,
+   8,
+   6,
+   4,
+   2,
+   1,
+   1,
+   0.5
+  ],
+  "transform": "yoy",
+  "expected": 8.0
+ },
+ {
+  "name": "basic_up:streak_qtrs",
+  "series": [
+   10,
+   8,
+   6,
+   4,
+   2,
+   1,
+   1,
+   0.5
+  ],
+  "transform": "streak_qtrs",
+  "expected": 5.0
+ },
+ {
+  "name": "basic_up:slope_4q",
+  "series": [
+   10,
+   8,
+   6,
+   4,
+   2,
+   1,
+   1,
+   0.5
+  ],
+  "transform": "slope_4q",
+  "expected": 2.0
+ },
+ {
+  "name": "basic_up:mean_4q",
+  "series": [
+   10,
+   8,
+   6,
+   4,
+   2,
+   1,
+   1,
+   0.5
+  ],
+  "transform": "mean_4q",
+  "expected": 7.0
+ },
+ {
+  "name": "basic_up:min_4q",
+  "series": [
+   10,
+   8,
+   6,
+   4,
+   2,
+   1,
+   1,
+   0.5
+  ],
+  "transform": "min_4q",
+  "expected": 4.0
+ },
+ {
+  "name": "basic_up:max_4q",
+  "series": [
+   10,
+   8,
+   6,
+   4,
+   2,
+   1,
+   1,
+   0.5
+  ],
+  "transform": "max_4q",
+  "expected": 10.0
+ },
+ {
+  "name": "basic_up:range_4q",
+  "series": [
+   10,
+   8,
+   6,
+   4,
+   2,
+   1,
+   1,
+   0.5
+  ],
+  "transform": "range_4q",
+  "expected": 6.0
+ },
+ {
+  "name": "basic_up:pctile_own",
+  "series": [
+   10,
+   8,
+   6,
+   4,
+   2,
+   1,
+   1,
+   0.5
+  ],
+  "transform": "pctile_own",
+  "expected": 100.0
+ },
+ {
+  "name": "flat:delta_qoq",
+  "series": [
+   3,
+   3,
+   3,
+   3
+  ],
+  "transform": "delta_qoq",
+  "expected": 0.0
+ },
+ {
+  "name": "flat:yoy",
+  "series": [
+   3,
+   3,
+   3,
+   3
+  ],
+  "transform": "yoy",
+  "expected": null
+ },
+ {
+  "name": "flat:streak_qtrs",
+  "series": [
+   3,
+   3,
+   3,
+   3
+  ],
+  "transform": "streak_qtrs",
+  "expected": 0.0
+ },
+ {
+  "name": "flat:slope_4q",
+  "series": [
+   3,
+   3,
+   3,
+   3
+  ],
+  "transform": "slope_4q",
+  "expected": 0.0
+ },
+ {
+  "name": "flat:mean_4q",
+  "series": [
+   3,
+   3,
+   3,
+   3
+  ],
+  "transform": "mean_4q",
+  "expected": 3.0
+ },
+ {
+  "name": "flat:min_4q",
+  "series": [
+   3,
+   3,
+   3,
+   3
+  ],
+  "transform": "min_4q",
+  "expected": 3.0
+ },
+ {
+  "name": "flat:max_4q",
+  "series": [
+   3,
+   3,
+   3,
+   3
+  ],
+  "transform": "max_4q",
+  "expected": 3.0
+ },
+ {
+  "name": "flat:range_4q",
+  "series": [
+   3,
+   3,
+   3,
+   3
+  ],
+  "transform": "range_4q",
+  "expected": 0.0
+ },
+ {
+  "name": "flat:pctile_own",
+  "series": [
+   3,
+   3,
+   3,
+   3
+  ],
+  "transform": "pctile_own",
+  "expected": 100.0
+ },
+ {
+  "name": "leading_null:delta_qoq",
+  "series": [
+   null,
+   5,
+   4
+  ],
+  "transform": "delta_qoq",
+  "expected": null
+ },
+ {
+  "name": "leading_null:yoy",
+  "series": [
+   null,
+   5,
+   4
+  ],
+  "transform": "yoy",
+  "expected": null
+ },
+ {
+  "name": "leading_null:streak_qtrs",
+  "series": [
+   null,
+   5,
+   4
+  ],
+  "transform": "streak_qtrs",
+  "expected": null
+ },
+ {
+  "name": "leading_null:slope_4q",
+  "series": [
+   null,
+   5,
+   4
+  ],
+  "transform": "slope_4q",
+  "expected": null
+ },
+ {
+  "name": "leading_null:mean_4q",
+  "series": [
+   null,
+   5,
+   4
+  ],
+  "transform": "mean_4q",
+  "expected": 4.5
+ },
+ {
+  "name": "leading_null:min_4q",
+  "series": [
+   null,
+   5,
+   4
+  ],
+  "transform": "min_4q",
+  "expected": 4.0
+ },
+ {
+  "name": "leading_null:max_4q",
+  "series": [
+   null,
+   5,
+   4
+  ],
+  "transform": "max_4q",
+  "expected": 5.0
+ },
+ {
+  "name": "leading_null:range_4q",
+  "series": [
+   null,
+   5,
+   4
+  ],
+  "transform": "range_4q",
+  "expected": 1.0
+ },
+ {
+  "name": "leading_null:pctile_own",
+  "series": [
+   null,
+   5,
+   4
+  ],
+  "transform": "pctile_own",
+  "expected": null
+ },
+ {
+  "name": "second_null:delta_qoq",
+  "series": [
+   5,
+   null,
+   4,
+   3
+  ],
+  "transform": "delta_qoq",
+  "expected": null
+ },
+ {
+  "name": "second_null:yoy",
+  "series": [
+   5,
+   null,
+   4,
+   3
+  ],
+  "transform": "yoy",
+  "expected": null
+ },
+ {
+  "name": "second_null:streak_qtrs",
+  "series": [
+   5,
+   null,
+   4,
+   3
+  ],
+  "transform": "streak_qtrs",
+  "expected": null
+ },
+ {
+  "name": "second_null:slope_4q",
+  "series": [
+   5,
+   null,
+   4,
+   3
+  ],
+  "transform": "slope_4q",
+  "expected": null
+ },
+ {
+  "name": "second_null:mean_4q",
+  "series": [
+   5,
+   null,
+   4,
+   3
+  ],
+  "transform": "mean_4q",
+  "expected": 4.0
+ },
+ {
+  "name": "second_null:min_4q",
+  "series": [
+   5,
+   null,
+   4,
+   3
+  ],
+  "transform": "min_4q",
+  "expected": 3.0
+ },
+ {
+  "name": "second_null:max_4q",
+  "series": [
+   5,
+   null,
+   4,
+   3
+  ],
+  "transform": "max_4q",
+  "expected": 5.0
+ },
+ {
+  "name": "second_null:range_4q",
+  "series": [
+   5,
+   null,
+   4,
+   3
+  ],
+  "transform": "range_4q",
+  "expected": 2.0
+ },
+ {
+  "name": "second_null:pctile_own",
+  "series": [
+   5,
+   null,
+   4,
+   3
+  ],
+  "transform": "pctile_own",
+  "expected": null
+ },
+ {
+  "name": "short:delta_qoq",
+  "series": [
+   2,
+   1
+  ],
+  "transform": "delta_qoq",
+  "expected": 1.0
+ },
+ {
+  "name": "short:yoy",
+  "series": [
+   2,
+   1
+  ],
+  "transform": "yoy",
+  "expected": null
+ },
+ {
+  "name": "short:streak_qtrs",
+  "series": [
+   2,
+   1
+  ],
+  "transform": "streak_qtrs",
+  "expected": 1.0
+ },
+ {
+  "name": "short:slope_4q",
+  "series": [
+   2,
+   1
+  ],
+  "transform": "slope_4q",
+  "expected": null
+ },
+ {
+  "name": "short:mean_4q",
+  "series": [
+   2,
+   1
+  ],
+  "transform": "mean_4q",
+  "expected": 1.5
+ },
+ {
+  "name": "short:min_4q",
+  "series": [
+   2,
+   1
+  ],
+  "transform": "min_4q",
+  "expected": 1.0
+ },
+ {
+  "name": "short:max_4q",
+  "series": [
+   2,
+   1
+  ],
+  "transform": "max_4q",
+  "expected": 2.0
+ },
+ {
+  "name": "short:range_4q",
+  "series": [
+   2,
+   1
+  ],
+  "transform": "range_4q",
+  "expected": 1.0
+ },
+ {
+  "name": "short:pctile_own",
+  "series": [
+   2,
+   1
+  ],
+  "transform": "pctile_own",
+  "expected": null
+ },
+ {
+  "name": "down:delta_qoq",
+  "series": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "transform": "delta_qoq",
+  "expected": -1.0
+ },
+ {
+  "name": "down:yoy",
+  "series": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "transform": "yoy",
+  "expected": -4.0
+ },
+ {
+  "name": "down:streak_qtrs",
+  "series": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "transform": "streak_qtrs",
+  "expected": 0.0
+ },
+ {
+  "name": "down:slope_4q",
+  "series": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "transform": "slope_4q",
+  "expected": -1.0
+ },
+ {
+  "name": "down:mean_4q",
+  "series": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "transform": "mean_4q",
+  "expected": 2.5
+ },
+ {
+  "name": "down:min_4q",
+  "series": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "transform": "min_4q",
+  "expected": 1.0
+ },
+ {
+  "name": "down:max_4q",
+  "series": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "transform": "max_4q",
+  "expected": 4.0
+ },
+ {
+  "name": "down:range_4q",
+  "series": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "transform": "range_4q",
+  "expected": 3.0
+ },
+ {
+  "name": "down:pctile_own",
+  "series": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "transform": "pctile_own",
+  "expected": 16.666666666666664
+ },
+ {
+  "name": "null_mid:delta_qoq",
+  "series": [
+   5,
+   4,
+   null,
+   2,
+   1
+  ],
+  "transform": "delta_qoq",
+  "expected": 1.0
+ },
+ {
+  "name": "null_mid:yoy",
+  "series": [
+   5,
+   4,
+   null,
+   2,
+   1
+  ],
+  "transform": "yoy",
+  "expected": 4.0
+ },
+ {
+  "name": "null_mid:streak_qtrs",
+  "series": [
+   5,
+   4,
+   null,
+   2,
+   1
+  ],
+  "transform": "streak_qtrs",
+  "expected": 1.0
+ },
+ {
+  "name": "null_mid:slope_4q",
+  "series": [
+   5,
+   4,
+   null,
+   2,
+   1
+  ],
+  "transform": "slope_4q",
+  "expected": null
+ },
+ {
+  "name": "null_mid:mean_4q",
+  "series": [
+   5,
+   4,
+   null,
+   2,
+   1
+  ],
+  "transform": "mean_4q",
+  "expected": 3.6666666666666665
+ },
+ {
+  "name": "null_mid:min_4q",
+  "series": [
+   5,
+   4,
+   null,
+   2,
+   1
+  ],
+  "transform": "min_4q",
+  "expected": 2.0
+ },
+ {
+  "name": "null_mid:max_4q",
+  "series": [
+   5,
+   4,
+   null,
+   2,
+   1
+  ],
+  "transform": "max_4q",
+  "expected": 5.0
+ },
+ {
+  "name": "null_mid:range_4q",
+  "series": [
+   5,
+   4,
+   null,
+   2,
+   1
+  ],
+  "transform": "range_4q",
+  "expected": 3.0
+ },
+ {
+  "name": "null_mid:pctile_own",
+  "series": [
+   5,
+   4,
+   null,
+   2,
+   1
+  ],
+  "transform": "pctile_own",
+  "expected": 100.0
+ },
+ {
+  "name": "empty:delta_qoq",
+  "series": [],
+  "transform": "delta_qoq",
+  "expected": null
+ },
+ {
+  "name": "empty:yoy",
+  "series": [],
+  "transform": "yoy",
+  "expected": null
+ },
+ {
+  "name": "empty:streak_qtrs",
+  "series": [],
+  "transform": "streak_qtrs",
+  "expected": null
+ },
+ {
+  "name": "empty:slope_4q",
+  "series": [],
+  "transform": "slope_4q",
+  "expected": null
+ },
+ {
+  "name": "empty:mean_4q",
+  "series": [],
+  "transform": "mean_4q",
+  "expected": null
+ },
+ {
+  "name": "empty:min_4q",
+  "series": [],
+  "transform": "min_4q",
+  "expected": null
+ },
+ {
+  "name": "empty:max_4q",
+  "series": [],
+  "transform": "max_4q",
+  "expected": null
+ },
+ {
+  "name": "empty:range_4q",
+  "series": [],
+  "transform": "range_4q",
+  "expected": null
+ },
+ {
+  "name": "empty:pctile_own",
+  "series": [],
+  "transform": "pctile_own",
+  "expected": null
+ },
+ {
+  "name": "five_long:delta_qoq",
+  "series": [
+   7,
+   6,
+   5,
+   4,
+   3
+  ],
+  "transform": "delta_qoq",
+  "expected": 1.0
+ },
+ {
+  "name": "five_long:yoy",
+  "series": [
+   7,
+   6,
+   5,
+   4,
+   3
+  ],
+  "transform": "yoy",
+  "expected": 4.0
+ },
+ {
+  "name": "five_long:streak_qtrs",
+  "series": [
+   7,
+   6,
+   5,
+   4,
+   3
+  ],
+  "transform": "streak_qtrs",
+  "expected": 4.0
+ },
+ {
+  "name": "five_long:slope_4q",
+  "series": [
+   7,
+   6,
+   5,
+   4,
+   3
+  ],
+  "transform": "slope_4q",
+  "expected": 1.0
+ },
+ {
+  "name": "five_long:mean_4q",
+  "series": [
+   7,
+   6,
+   5,
+   4,
+   3
+  ],
+  "transform": "mean_4q",
+  "expected": 5.5
+ },
+ {
+  "name": "five_long:min_4q",
+  "series": [
+   7,
+   6,
+   5,
+   4,
+   3
+  ],
+  "transform": "min_4q",
+  "expected": 4.0
+ },
+ {
+  "name": "five_long:max_4q",
+  "series": [
+   7,
+   6,
+   5,
+   4,
+   3
+  ],
+  "transform": "max_4q",
+  "expected": 7.0
+ },
+ {
+  "name": "five_long:range_4q",
+  "series": [
+   7,
+   6,
+   5,
+   4,
+   3
+  ],
+  "transform": "range_4q",
+  "expected": 3.0
+ },
+ {
+  "name": "five_long:pctile_own",
+  "series": [
+   7,
+   6,
+   5,
+   4,
+   3
+  ],
+  "transform": "pctile_own",
+  "expected": 100.0
+ },
+ {
+  "name": "negatives:delta_qoq",
+  "series": [
+   -2.5,
+   -5.0,
+   -7.5,
+   -10.0,
+   -12.5,
+   -15.0
+  ],
+  "transform": "delta_qoq",
+  "expected": 2.5
+ },
+ {
+  "name": "negatives:yoy",
+  "series": [
+   -2.5,
+   -5.0,
+   -7.5,
+   -10.0,
+   -12.5,
+   -15.0
+  ],
+  "transform": "yoy",
+  "expected": 10.0
+ },
+ {
+  "name": "negatives:streak_qtrs",
+  "series": [
+   -2.5,
+   -5.0,
+   -7.5,
+   -10.0,
+   -12.5,
+   -15.0
+  ],
+  "transform": "streak_qtrs",
+  "expected": 5.0
+ },
+ {
+  "name": "negatives:slope_4q",
+  "series": [
+   -2.5,
+   -5.0,
+   -7.5,
+   -10.0,
+   -12.5,
+   -15.0
+  ],
+  "transform": "slope_4q",
+  "expected": 2.5
+ },
+ {
+  "name": "negatives:mean_4q",
+  "series": [
+   -2.5,
+   -5.0,
+   -7.5,
+   -10.0,
+   -12.5,
+   -15.0
+  ],
+  "transform": "mean_4q",
+  "expected": -6.25
+ },
+ {
+  "name": "negatives:min_4q",
+  "series": [
+   -2.5,
+   -5.0,
+   -7.5,
+   -10.0,
+   -12.5,
+   -15.0
+  ],
+  "transform": "min_4q",
+  "expected": -10.0
+ },
+ {
+  "name": "negatives:max_4q",
+  "series": [
+   -2.5,
+   -5.0,
+   -7.5,
+   -10.0,
+   -12.5,
+   -15.0
+  ],
+  "transform": "max_4q",
+  "expected": -2.5
+ },
+ {
+  "name": "negatives:range_4q",
+  "series": [
+   -2.5,
+   -5.0,
+   -7.5,
+   -10.0,
+   -12.5,
+   -15.0
+  ],
+  "transform": "range_4q",
+  "expected": 7.5
+ },
+ {
+  "name": "negatives:pctile_own",
+  "series": [
+   -2.5,
+   -5.0,
+   -7.5,
+   -10.0,
+   -12.5,
+   -15.0
+  ],
+  "transform": "pctile_own",
+  "expected": 100.0
+ },
+ {
+  "name": "single:delta_qoq",
+  "series": [
+   42
+  ],
+  "transform": "delta_qoq",
+  "expected": null
+ },
+ {
+  "name": "single:yoy",
+  "series": [
+   42
+  ],
+  "transform": "yoy",
+  "expected": null
+ },
+ {
+  "name": "single:streak_qtrs",
+  "series": [
+   42
+  ],
+  "transform": "streak_qtrs",
+  "expected": null
+ },
+ {
+  "name": "single:slope_4q",
+  "series": [
+   42
+  ],
+  "transform": "slope_4q",
+  "expected": null
+ },
+ {
+  "name": "single:mean_4q",
+  "series": [
+   42
+  ],
+  "transform": "mean_4q",
+  "expected": null
+ },
+ {
+  "name": "single:min_4q",
+  "series": [
+   42
+  ],
+  "transform": "min_4q",
+  "expected": 42.0
+ },
+ {
+  "name": "single:max_4q",
+  "series": [
+   42
+  ],
+  "transform": "max_4q",
+  "expected": 42.0
+ },
+ {
+  "name": "single:range_4q",
+  "series": [
+   42
+  ],
+  "transform": "range_4q",
+  "expected": null
+ },
+ {
+  "name": "single:pctile_own",
+  "series": [
+   42
+  ],
+  "transform": "pctile_own",
+  "expected": null
+ }
+]
