@@ -57,6 +57,15 @@ Allowed filter fields (numbers are percentages or multiples as noted):
 - interest_coverage      (trailing EBIT ÷ interest expense, ×; higher = safer)
 Allowed ops: ${FILTER_OPS.join(", ")}.
 
+TIME-SERIES TRANSFORMS: a filter may add a "transform" that reads the metric over its quarterly history instead of its latest value. Transform-capable fields: gross_margin, operating_margin, net_margin, fcf_margin, rev_growth_qoq, revenue (quarterly revenue $, series-only — revenue MUST carry a transform). Allowed transforms:
+- delta_qoq     (latest quarter minus prior, pp — "margins expanded this quarter" = > 0)
+- yoy           (latest quarter minus the year-ago quarter, pp)
+- streak_qtrs   (consecutive quarters of improvement — "two straight quarters of improving X" = {"field":X,"transform":"streak_qtrs","op":">=","value":2})
+- slope_4q      (trend per quarter over the last 4 — "trending up over the past year" = > 0)
+- mean_4q, min_4q, max_4q, range_4q   (level/stability over the last 4 quarters; "margins stable" = range_4q <= 5)
+- pctile_own    (the latest value's percentile 0-100 within the stock's own ~3-year history — "revenue growth near its historic low" = <= 20)
+Examples: "revenue decline slowing" → {"field":"rev_growth_qoq","transform":"streak_qtrs","op":">=","value":2}; "gross margin expanding for 2+ quarters" → {"field":"gross_margin","transform":"streak_qtrs","op":">=","value":2}; "FCF trending toward breakeven" → {"field":"fcf_margin","transform":"slope_4q","op":">","value":0}. Use a transform ONLY when the brief speaks about change over time / trends / streaks / stability; plain level statements keep plain filters.
+
 Common US GICS-ish sectors you may reference for sector filters: "Health Technology", "Technology Services", "Electronic Technology", "Finance", "Retail Trade", "Consumer Services", "Producer Manufacturing", "Energy Minerals", "Commercial Services".
 
 weights: integers for "quality", "value", "momentum", "inflection" that sum to ~100. Quality = margins/Rule-of-40 strength; value = cheapness on P/S; momentum = 52-week price strength; inflection = quarter-over-quarter operating improvement (margins expanding, growth re-accelerating — the turnaround signal). Tilt them to match the brief's emphasis; inflection stays 0 unless the brief cares about trend change / turnarounds.
@@ -64,7 +73,7 @@ weights: integers for "quality", "value", "momentum", "inflection" that sum to ~
 aiMultiplier: true unless the brief says to ignore AI bull/bear signals.
 aiBudget: how far the AI research card can move a name, in sigma (0 to 1.5, default 0.7). Raise toward 1.2 only when the brief leans on AI judgment / "what's changing at the company"; lower toward 0 when the brief wants pure quant.
 
-Return ONLY strict JSON of shape {"filters":[{"field","op","value"}],"weights":{"quality","value","momentum","inflection"},"aiMultiplier","aiBudget"}. No prose, no markdown.`;
+Return ONLY strict JSON of shape {"filters":[{"field","op","value","transform"?}],"weights":{"quality","value","momentum","inflection"},"aiMultiplier","aiBudget"}. No prose, no markdown.`;
 
 const bodySchema = z.object({ brief: z.string().min(1).max(2000) });
 

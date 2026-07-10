@@ -449,6 +449,78 @@ def compute_inflection(quarterly: list[tuple[str, dict]],
     }
 
 
+# Quarters of history stored in fundamentals.quarterly_metrics (3 years). The
+# screener's filter TRANSFORMS (streaks / deltas / slopes / own-history
+# percentiles — screen.py + web/lib/screen/transforms.ts) compute over this
+# series at read time, so any new time-series filter idea needs NO new column.
+SERIES_LOOKBACK_QTRS = 12
+
+
+def compute_quarterly_series(quarterly: list[tuple[str, dict]],
+                             cf_quarterly: list[tuple[str, dict]]) -> dict | None:
+    """Per-quarter metric series (newest-first, up to SERIES_LOOKBACK_QTRS) for
+    fundamentals.quarterly_metrics — the raw material the screener's generic
+    filter transforms compute over.
+
+    Object-of-arrays keyed by metric, every array aligned to `period_ends`
+    (missing quarter values stay None so positions never shift). Values are
+    rounded to 2dp — both scorers read the same JSON, so parity is trivial.
+    Returns None when there is no quarterly history at all.
+    """
+    qs = quarterly[:SERIES_LOOKBACK_QTRS]
+    if not qs:
+        return None
+
+    def _margin(entry: dict, key: str) -> float | None:
+        num = safe_float(entry.get(key))
+        rev = safe_float(entry.get("totalRevenue"))
+        if num is None or not rev or rev <= 0:
+            return None
+        return round(num / rev * 100, 2)
+
+    period_ends = [d for d, _ in qs]
+    revenue = [safe_float(e.get("totalRevenue")) for _, e in qs]
+
+    # QoQ revenue growth per quarter: g[i] = rev[i] vs rev[i+1] (one extra
+    # quarter fetched so the oldest stored quarter still gets a value).
+    revs_ext = [safe_float(e.get("totalRevenue"))
+                for _, e in quarterly[:SERIES_LOOKBACK_QTRS + 1]]
+    rev_growth_qoq: list[float | None] = []
+    for i in range(len(qs)):
+        cur = revs_ext[i]
+        prev = revs_ext[i + 1] if i + 1 < len(revs_ext) else None
+        if cur is None or not prev or prev <= 0:
+            rev_growth_qoq.append(None)
+        else:
+            rev_growth_qoq.append(round((cur - prev) / prev * 100, 2))
+
+    # FCF margin matched to the income-statement quarter by period date (the
+    # two statements can drift a period apart — same matching as
+    # compute_inflection).
+    fcf_by_date = {d: safe_float(e.get("freeCashFlow")) for d, e in cf_quarterly}
+    fcf_margin: list[float | None] = []
+    for d, e in qs:
+        fcf = fcf_by_date.get(d)
+        rev = safe_float(e.get("totalRevenue"))
+        if fcf is None or not rev or rev <= 0:
+            fcf_margin.append(None)
+        else:
+            fcf_margin.append(round(fcf / rev * 100, 2))
+
+    return {
+        "period_ends": period_ends,
+        "revenue": revenue,
+        "rev_growth_qoq": rev_growth_qoq,
+        "gross_margin": [
+            (None if (m := _q_gross_margin(e)) is None else round(m, 2))
+            for _, e in qs
+        ],
+        "operating_margin": [_margin(e, "operatingIncome") for _, e in qs],
+        "net_margin": [_margin(e, "netIncome") for _, e in qs],
+        "fcf_margin": fcf_margin,
+    }
+
+
 def compute_survivability(raw: dict, quarterly: list[tuple[str, dict]]) -> dict:
     """Balance-sheet survivability facts: cash / debt / shares outstanding from
     the latest quarterly balance sheet, TTM EBITDA / EBIT / interest expense
@@ -1173,6 +1245,9 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
     # fundamentals writers pick them up via FUND_FIELDS.
     result.update(compute_inflection(quarterly, cf_quarterly))
     result.update(compute_survivability(raw, quarterly))
+    # Full per-quarter series (migration 076) — the screener's generic filter
+    # transforms (streak / delta / slope / own-percentile) compute over this.
+    result["quarterly_metrics"] = compute_quarterly_series(quarterly, cf_quarterly)
 
     result["data"] = datetime.now().strftime("%Y-%m-%d")
 

@@ -50,8 +50,143 @@ FILTER_FIELDS = {
     # Survivability gate (hard filters, never scored):
     "net_debt_ebitda",
     "interest_coverage",
+    # Series-only field (migration 076): no scalar matview column — usable
+    # only WITH a transform (see SERIES_FIELDS / _TRANSFORMS below).
+    "revenue",
 }
 TEXT_FIELDS = {"sector", "industry", "country"}
+
+# ---- filter transforms (migration 076) --------------------------------------
+# Time-series math over the stored quarterly metric series (the `quarters`
+# JSONB on each screen_facts row — eodhd_updater.compute_quarterly_series,
+# newest-first, up to 12 quarters). A filter carrying `transform` compares its
+# value against the transform of the metric's series instead of the row scalar.
+# Every rule here MUST match web/lib/screen/transforms.ts exactly — same null
+# rules, same arithmetic expressions (shared parity fixture:
+# tests/fixtures/transform_parity.json).
+
+# Filter field → key inside the `quarters` series object.
+SERIES_FIELDS = {
+    "gross_margin": "gross_margin",
+    "operating_margin": "operating_margin",
+    "net_margin": "net_margin",
+    "fcf_margin": "fcf_margin",
+    "rev_growth_qoq": "rev_growth_qoq",
+    "revenue": "revenue",
+}
+# Fields with no scalar matview column — a transform-less filter on one is a
+# no-constraint (matches everything), the same on both scorers.
+# (rev_growth_qoq gained a scalar column in migration 075, so it filters
+# plainly too; only `revenue` remains series-only.)
+SERIES_ONLY_FIELDS = {"revenue"}
+
+
+def _series_for(quarters, key: str) -> list[float | None] | None:
+    """One metric's numeric series (newest-first) off the quarters object;
+    None when absent/malformed. Mirrors transforms.ts seriesFor."""
+    if not isinstance(quarters, dict):
+        return None
+    raw = quarters.get(key)
+    if not isinstance(raw, list):
+        return None
+    return [_f(v) for v in raw]
+
+
+def _t_delta_qoq(s: list[float | None]) -> float | None:
+    if len(s) < 2 or s[0] is None or s[1] is None:
+        return None
+    return s[0] - s[1]
+
+
+def _t_yoy(s: list[float | None]) -> float | None:
+    if len(s) < 5 or s[0] is None or s[4] is None:
+        return None
+    return s[0] - s[4]
+
+
+def _t_streak_qtrs(s: list[float | None]) -> float | None:
+    """Consecutive improving steps from the newest value backwards — the same
+    semantics as eodhd_updater._improvement_streak."""
+    if len(s) < 2 or s[0] is None or s[1] is None:
+        return None
+    n = 0
+    for cur, prev in zip(s, s[1:]):
+        if cur is None or prev is None or cur <= prev:
+            break
+        n += 1
+    return float(n)
+
+
+def _t_slope_4q(s: list[float | None]) -> float | None:
+    """Least-squares trend per quarter over the last 4 points (positive =
+    improving toward the present). Closed form for times [0,−1,−2,−3] so both
+    implementations evaluate the identical expression. Needs all 4 present."""
+    if len(s) < 4 or any(v is None for v in s[:4]):
+        return None
+    v0, v1, v2, v3 = s[0], s[1], s[2], s[3]
+    return (1.5 * v0 + 0.5 * v1 - 0.5 * v2 - 1.5 * v3) / 5
+
+
+def _present_4(s: list[float | None]) -> list[float]:
+    return [v for v in s[:4] if v is not None]
+
+
+def _t_mean_4q(s: list[float | None]) -> float | None:
+    vals = _present_4(s)
+    if len(vals) < 2:
+        return None
+    return sum(vals) / len(vals)
+
+
+def _t_min_4q(s: list[float | None]) -> float | None:
+    vals = _present_4(s)
+    return min(vals) if vals else None
+
+
+def _t_max_4q(s: list[float | None]) -> float | None:
+    vals = _present_4(s)
+    return max(vals) if vals else None
+
+
+def _t_range_4q(s: list[float | None]) -> float | None:
+    vals = _present_4(s)
+    if len(vals) < 2:
+        return None
+    return max(vals) - min(vals)
+
+
+def _t_pctile_own(s: list[float | None]) -> float | None:
+    """The latest value's empirical percentile (0–100) within the whole stored
+    series — count(v ≤ latest)/n, the lens pctRank convention. Needs ≥ 4."""
+    if not s or s[0] is None:
+        return None
+    latest = s[0]
+    vals = [v for v in s if v is not None]
+    if len(vals) < 4:
+        return None
+    return sum(1 for v in vals if v <= latest) / len(vals) * 100
+
+
+_TRANSFORMS = {
+    "delta_qoq": _t_delta_qoq,       # latest quarter minus prior
+    "yoy": _t_yoy,                   # latest quarter minus the year-ago quarter
+    "streak_qtrs": _t_streak_qtrs,   # consecutive improving steps
+    "slope_4q": _t_slope_4q,         # LSQ trend per quarter over the last 4
+    "mean_4q": _t_mean_4q,
+    "min_4q": _t_min_4q,
+    "max_4q": _t_max_4q,
+    "range_4q": _t_range_4q,
+    "pctile_own": _t_pctile_own,     # latest vs the name's own stored history
+}
+
+
+def apply_transform(series: list[float | None] | None, transform) -> float | None:
+    """Evaluate a transform over a series; None series / unknown transform /
+    not enough data ⇒ None (a numeric filter then excludes the row)."""
+    fn = _TRANSFORMS.get(transform)
+    if fn is None or series is None:
+        return None
+    return fn(series)
 
 MOM_FLOOR = -50.0  # falling-knife collar
 MOM_CAP = 40.0     # blow-off-top collar
@@ -188,8 +323,8 @@ def _matches(row: dict, f: dict) -> bool:
     op = f.get("op")
     if field not in FILTER_FIELDS:
         return True
-    raw = row.get(field)
     if field in TEXT_FIELDS:
+        raw = row.get(field)
         a = ("" if raw is None else str(raw)).lower()
         b = str(f.get("value", "")).lower()
         if b == "":
@@ -198,10 +333,22 @@ def _matches(row: dict, f: dict) -> bool:
             "==": a == b, "!=": a != b, "<=": a <= b,
             ">=": a >= b, "<": a < b, ">": a > b,
         }.get(op, True)
-    if raw is None:
+    # Transform filters (migration 076): compare against time-series math over
+    # the quarterly series instead of the row scalar. Unknown transform / a
+    # field with no series ⇒ no constraint (parity with score.ts).
+    transform = f.get("transform")
+    if transform:
+        key = SERIES_FIELDS.get(field)
+        if key is None or transform not in _TRANSFORMS:
+            return True
+        v = apply_transform(_series_for(row.get("quarters"), key), transform)
+    elif field in SERIES_ONLY_FIELDS:
+        return True  # series-only field without a transform = no constraint
+    else:
+        v = _f(row.get(field))
+    if v is None:
         return False  # a numeric filter excludes names missing that datum
     try:
-        v = float(raw)
         t = float(f.get("value"))
     except (TypeError, ValueError):
         return True

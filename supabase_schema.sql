@@ -760,6 +760,12 @@ CREATE TABLE IF NOT EXISTS fundamentals (
     interest_expense_ttm NUMERIC,
     net_debt_ebitda     NUMERIC,  -- (debt − cash) / TTM EBITDA; NULL when EBITDA ≤ 0
     interest_coverage   NUMERIC,  -- TTM EBIT / TTM interest; 999 = profitable + no interest
+    -- Quarterly metric series (migration 076): object-of-arrays, newest-first,
+    -- up to 12 quarters — {period_ends, revenue, rev_growth_qoq, gross_margin,
+    -- operating_margin, net_margin, fcf_margin}. Computed at write time by
+    -- eodhd_updater.compute_quarterly_series; the screener's filter transforms
+    -- (streak/delta/slope/pctile) compute over it at read time.
+    quarterly_metrics   JSONB,
     PRIMARY KEY (ticker, period_end)
 );
 CREATE INDEX IF NOT EXISTS idx_fundamentals_period ON fundamentals (period_end);

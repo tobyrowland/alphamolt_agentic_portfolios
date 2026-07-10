@@ -197,6 +197,39 @@ but never projected) and makes the whole QoQ family individually filterable —
 `gm_expansion_qtrs`, `fcf_delta_qoq`, `fcf_improving_qtrs` — so a screen can
 say "QoQ growth ≥ 5% and improving for 2 straight quarters" directly.
 
+**Filter transforms (migration 076).** Filters can now do time-series math
+without a bespoke column per idea. The quarterly history the EODHD fetch used
+to discard is stored on the latest fundamentals row
+(`fundamentals.quarterly_metrics` JSONB — object-of-arrays, newest-first, up
+to 12 quarters: `period_ends`, `revenue`, `rev_growth_qoq`, `gross_margin`,
+`operating_margin`, `net_margin`, `fcf_margin`; built by
+`eodhd_updater.compute_quarterly_series`, written via `FUND_BLOBS` on the
+daily `fundamentals_updater` rotation — one `--batch 4000` run backfills) and
+surfaced to both scorers as `screen_facts().quarters`. A filter may then carry
+a **`transform`** — `delta_qoq`, `yoy`, `streak_qtrs`, `slope_4q`, `mean_4q`,
+`min_4q`, `max_4q`, `range_4q`, `pctile_own` — evaluated over the metric's
+series at read time, so "FCF margin trending up over the past year" is just
+`{field: fcf_margin, transform: slope_4q, op: >, value: 0}`: any series metric
+× any transform × any threshold, no migration. Transform-capable fields are
+`SERIES_FIELDS` (the four margins + `rev_growth_qoq` + `revenue`);
+transform-less they read their scalar column as always. `revenue` is
+**series-only** (no scalar matview column — schema-enforced to always carry a
+transform; transform-less it is a no-constraint on both scorers). Implemented
+once per language in `web/lib/screen/transforms.ts` and `screen.py`
+(`_TRANSFORMS`), held identical by a shared fixture
+(`tests/fixtures/transform_parity.json`) that `tests/test_transforms.py`
+evaluates through BOTH implementations (the TS side runs under
+`node --experimental-strip-types`). A name missing its series is excluded by a
+transform filter (the standard missing-datum rule); the 074/075 write-time
+columns stay — the Inflection *lens* still scores on the deltas, the
+precomputed `*_qtrs` streaks remain plain filters, and transforms are the
+generic way to read a metric over time. UI: curated entries in the
+"+ add filter" menu (FCF margin trend / revenue up in a row — streak-shaped
+ideas are already covered by the `*_qtrs` entries) plus a transform dropdown
+in the Advanced row; chips + sliders are transform-aware (`metaForFilter`).
+`/api/compile-brief` knows the vocabulary, so trend/streak/stability language
+in a brief compiles to transform filters.
+
 ### screen.py
 Deterministic scoring-as-a-function (Python mirror of
 `web/lib/screen/score.ts`). Reads Level 0 via the `screen_facts()` RPC +
