@@ -45,6 +45,14 @@ export const FILTER_FIELDS = [
   // Inflection gate: how many of the three QoQ streaks (GM expanding, QoQ
   // revenue growth improving, FCF margin improving) are ≥ 2 quarters (0–3).
   "inflection_signals",
+  // Quarter-on-quarter facts, individually filterable (migration 075):
+  "rev_growth_qoq", // latest QoQ revenue growth %
+  "rev_qoq_accel", // latest QoQ growth minus prior QoQ growth, pp
+  "rev_accel_qtrs", // consecutive quarters of improving QoQ growth
+  "gm_delta_qoq", // latest quarterly gross margin minus prior, pp
+  "gm_expansion_qtrs", // consecutive quarters of GM expansion
+  "fcf_delta_qoq", // latest quarterly FCF margin minus prior, pp
+  "fcf_improving_qtrs", // consecutive quarters of improving FCF margin
   // Survivability gate (hard filters, never scored):
   "net_debt_ebitda",
   "interest_coverage",
@@ -361,6 +369,14 @@ export const METRIC_META: Record<string, MetricMeta> = {
   above_low_26w: { field: "above_low_26w", label: "% above 6-month low", unit: "%", op: ">=", min: 0, max: 100, step: 5, default: 10 },
   ps_vs_median: { field: "ps_vs_median", label: "P/S vs own median", unit: "%", op: "<=", min: -80, max: 100, step: 5, default: 0 },
   inflection_signals: { field: "inflection_signals", label: "Inflection signals", unit: "", op: ">=", min: 0, max: 3, step: 1, default: 1 },
+  // Quarter-on-quarter facts (migration 075).
+  rev_growth_qoq: { field: "rev_growth_qoq", label: "Revenue growth (QoQ)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0 },
+  rev_qoq_accel: { field: "rev_qoq_accel", label: "QoQ growth acceleration", unit: "%", op: ">=", min: -30, max: 30, step: 1, default: 0 },
+  rev_accel_qtrs: { field: "rev_accel_qtrs", label: "QoQ accel streak (qtrs)", unit: "", op: ">=", min: 0, max: 8, step: 1, default: 2 },
+  gm_delta_qoq: { field: "gm_delta_qoq", label: "GM change (QoQ)", unit: "%", op: ">=", min: -20, max: 20, step: 1, default: 0 },
+  gm_expansion_qtrs: { field: "gm_expansion_qtrs", label: "GM expansion streak (qtrs)", unit: "", op: ">=", min: 0, max: 8, step: 1, default: 2 },
+  fcf_delta_qoq: { field: "fcf_delta_qoq", label: "FCF margin change (QoQ)", unit: "%", op: ">=", min: -20, max: 20, step: 1, default: 0 },
+  fcf_improving_qtrs: { field: "fcf_improving_qtrs", label: "FCF improving streak (qtrs)", unit: "", op: ">=", min: 0, max: 8, step: 1, default: 2 },
   net_debt_ebitda: { field: "net_debt_ebitda", label: "Net debt / EBITDA", unit: "×", op: "<=", min: -2, max: 10, step: 0.5, default: 3 },
   interest_coverage: { field: "interest_coverage", label: "Interest coverage", unit: "×", op: ">=", min: 0, max: 20, step: 1, default: 2 },
   // Series-only fields (migration 075) — only meaningful WITH a transform;
@@ -487,6 +503,13 @@ export const NAMED_FILTERS: {
   { field: "above_low_26w", label: "% above 6-month low" },
   { field: "ps_vs_median", label: "P/S vs own median" },
   { field: "inflection_signals", label: "Inflection signals" },
+  // Quarter-on-quarter growth (migration 075). GM/FCF deltas stay
+  // advanced-only to keep the menu scannable.
+  { field: "rev_growth_qoq", label: "Revenue growth (QoQ)" },
+  { field: "rev_qoq_accel", label: "QoQ growth acceleration" },
+  { field: "rev_accel_qtrs", label: "QoQ accel streak" },
+  { field: "gm_expansion_qtrs", label: "GM expansion streak" },
+  { field: "fcf_improving_qtrs", label: "FCF improving streak" },
   { field: "net_debt_ebitda", label: "Net debt / EBITDA" },
   { field: "interest_coverage", label: "Interest coverage" },
   // Curated transform filters (migration 075).

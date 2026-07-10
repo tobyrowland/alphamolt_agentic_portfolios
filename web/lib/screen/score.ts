@@ -102,6 +102,8 @@ export interface ScreenFacts {
   /** Signed % premium to the name's own 12-mo median P/S (negative = below). */
   ps_vs_median: number | null;
   // Quarterly inflection (computed at write time by eodhd_updater):
+  /** Latest QoQ revenue growth % (migration 075). */
+  rev_growth_qoq: number | null;
   gm_delta_qoq: number | null; // latest quarterly gross margin minus prior, pp
   gm_expansion_qtrs: number | null;
   rev_qoq_accel: number | null; // latest QoQ rev growth minus prior QoQ growth, pp

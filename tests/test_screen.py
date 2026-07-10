@@ -22,8 +22,9 @@ def facts(*rows: dict) -> list[dict]:
         "operating_margin": None, "rule_of_40": None, "ps": None,
         "ps_median_12m": None, "ps_trend_pct": None,
         "ret_52w": None, "perf_52w_vs_spy": None,
-        # Turnaround facts (migration 074).
+        # Turnaround facts (migrations 074/075).
         "drawdown_52w": None, "above_low_26w": None, "ps_vs_median": None,
+        "rev_growth_qoq": None,
         "gm_delta_qoq": None, "gm_expansion_qtrs": None,
         "rev_qoq_accel": None, "rev_accel_qtrs": None,
         "fcf_delta_qoq": None, "fcf_improving_qtrs": None,
@@ -430,6 +431,20 @@ class TestTurnaroundFilters(unittest.TestCase):
         out = screen.apply_filters(
             rows, [{"field": "inflection_signals", "op": ">=", "value": 1}])
         self.assertEqual([r["ticker"] for r in out], ["INFLECTING"])
+
+    def test_qoq_growth_filters(self):
+        # Migration 075: raw QoQ growth + its derivatives are plain filters —
+        # "QoQ growth ≥ 5% and improving for 2 straight quarters".
+        rows = facts(
+            {"ticker": "COMPOUNDING", "rev_growth_qoq": 8, "rev_accel_qtrs": 3},
+            {"ticker": "ONEOFF", "rev_growth_qoq": 12, "rev_accel_qtrs": 1},
+            {"ticker": "SHRINKING", "rev_growth_qoq": -4, "rev_accel_qtrs": 2},
+        )
+        out = screen.apply_filters(rows, [
+            {"field": "rev_growth_qoq", "op": ">=", "value": 5},
+            {"field": "rev_accel_qtrs", "op": ">=", "value": 2},
+        ])
+        self.assertEqual([r["ticker"] for r in out], ["COMPOUNDING"])
 
 
 class TestAiBudget(unittest.TestCase):

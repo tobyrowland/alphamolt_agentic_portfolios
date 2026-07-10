@@ -190,7 +190,12 @@ inflection-heavy weights (Q15/V20/M5/I60) and `aiBudget: 1.2` (the card is the
 named filters the owner adds once coverage exists — a numeric filter excludes
 names missing the datum, so baking them into the preset day-1 would empty it.
 Migration 074 also restores `ps_trend_pct` to the matview (dropped by 066's
-rebuild from 057's body).
+rebuild from 057's body). Migration 075 surfaces the raw `rev_growth_qoq`
+(latest quarter-on-quarter revenue growth %, written since the table existed
+but never projected) and makes the whole QoQ family individually filterable —
+`rev_growth_qoq`, `rev_qoq_accel`, `rev_accel_qtrs`, `gm_delta_qoq`,
+`gm_expansion_qtrs`, `fcf_delta_qoq`, `fcf_improving_qtrs` — so a screen can
+say "QoQ growth ≥ 5% and improving for 2 straight quarters" directly.
 
 **Filter transforms (migration 075).** Filters can now do time-series math
 without a bespoke column per idea. The quarterly history the EODHD fetch used

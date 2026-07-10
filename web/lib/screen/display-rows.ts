@@ -49,6 +49,7 @@ export function projectDisplayRows(initial: ScreenResponse) {
       drawdown_52w: r4(r.drawdown_52w),
       above_low_26w: r4(r.above_low_26w),
       ps_vs_median: r4(r.ps_vs_median),
+      rev_growth_qoq: r4(r.rev_growth_qoq),
       gm_delta_qoq: r4(r.gm_delta_qoq),
       gm_expansion_qtrs: r.gm_expansion_qtrs,
       rev_qoq_accel: r4(r.rev_qoq_accel),
