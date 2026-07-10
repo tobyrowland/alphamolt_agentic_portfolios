@@ -342,42 +342,47 @@ export function isHousePreset(config: ScreenConfig): boolean {
 
 export interface MetricMeta {
   field: FilterField;
-  label: string; // friendly name, e.g. "Revenue growth"
+  label: string; // friendly name — ALWAYS names the metric ("Rev growth accelerating", never a bare "QoQ accel streak")
   unit: "%" | "×" | "$" | "pp" | "q" | "";
   op: FilterOp; // implied operator
   min: number;
   max: number;
   step: number;
   default: number;
+  /** One-sentence plain-English explanation, surfaced as a hover tooltip on
+   *  the chip + the "+ add filter" menu. Set for every metric whose label
+   *  alone doesn't fully say what's measured. */
+  help?: string;
 }
 
 // Numeric metrics only — text fields (sector/country) get a different control.
 export const METRIC_META: Record<string, MetricMeta> = {
-  ps: { field: "ps", label: "P/S", unit: "×", op: "<=", min: 0, max: 30, step: 0.5, default: 15 },
-  rev_growth_ttm: { field: "rev_growth_ttm", label: "Revenue growth", unit: "%", op: ">=", min: 0, max: 100, step: 5, default: 20 },
+  ps: { field: "ps", label: "P/S", unit: "×", op: "<=", min: 0, max: 30, step: 0.5, default: 15, help: "Price-to-sales multiple (market cap ÷ trailing-12-month revenue)." },
+  rev_growth_ttm: { field: "rev_growth_ttm", label: "Revenue growth (TTM)", unit: "%", op: ">=", min: 0, max: 100, step: 5, default: 20, help: "Trailing-12-month revenue vs the prior 12 months." },
   gross_margin: { field: "gross_margin", label: "Gross margin", unit: "%", op: ">=", min: 0, max: 100, step: 5, default: 60 },
-  fcf_margin: { field: "fcf_margin", label: "FCF margin", unit: "%", op: ">=", min: -20, max: 60, step: 5, default: 10 },
+  fcf_margin: { field: "fcf_margin", label: "FCF margin", unit: "%", op: ">=", min: -20, max: 60, step: 5, default: 10, help: "Free cash flow as a % of revenue." },
   net_margin: { field: "net_margin", label: "Net margin", unit: "%", op: ">=", min: -40, max: 60, step: 5, default: 0 },
   operating_margin: { field: "operating_margin", label: "Operating margin", unit: "%", op: ">=", min: -40, max: 60, step: 5, default: 0 },
-  rule_of_40: { field: "rule_of_40", label: "Rule of 40", unit: "", op: ">=", min: 0, max: 120, step: 5, default: 40 },
+  rule_of_40: { field: "rule_of_40", label: "Rule of 40", unit: "", op: ">=", min: 0, max: 120, step: 5, default: 40, help: "Revenue growth % + profit margin %. 40+ signals a healthy growth/profitability balance." },
   ret_52w: { field: "ret_52w", label: "52-week return", unit: "%", op: ">=", min: -50, max: 150, step: 10, default: 0 },
-  perf_52w_vs_spy: { field: "perf_52w_vs_spy", label: "vs SPY (52w)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0 },
+  perf_52w_vs_spy: { field: "perf_52w_vs_spy", label: "vs SPY (52w)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0, help: "52-week price return minus SPY's over the same window." },
   price: { field: "price", label: "Price", unit: "$", op: ">=", min: 0, max: 500, step: 5, default: 5 },
   // Turnaround facts (migration 074).
-  drawdown_52w: { field: "drawdown_52w", label: "% off 52-week high", unit: "%", op: ">=", min: 0, max: 90, step: 5, default: 40 },
-  above_low_26w: { field: "above_low_26w", label: "% above 6-month low", unit: "%", op: ">=", min: 0, max: 100, step: 5, default: 10 },
-  ps_vs_median: { field: "ps_vs_median", label: "P/S vs own median", unit: "%", op: "<=", min: -80, max: 100, step: 5, default: 0 },
-  inflection_signals: { field: "inflection_signals", label: "Inflection signals", unit: "", op: ">=", min: 0, max: 3, step: 1, default: 1 },
-  // Quarter-on-quarter facts (migration 075).
-  rev_growth_qoq: { field: "rev_growth_qoq", label: "Revenue growth (QoQ)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0 },
-  rev_qoq_accel: { field: "rev_qoq_accel", label: "QoQ growth acceleration", unit: "%", op: ">=", min: -30, max: 30, step: 1, default: 0 },
-  rev_accel_qtrs: { field: "rev_accel_qtrs", label: "QoQ accel streak (qtrs)", unit: "", op: ">=", min: 0, max: 8, step: 1, default: 2 },
-  gm_delta_qoq: { field: "gm_delta_qoq", label: "GM change (QoQ)", unit: "%", op: ">=", min: -20, max: 20, step: 1, default: 0 },
-  gm_expansion_qtrs: { field: "gm_expansion_qtrs", label: "GM expansion streak (qtrs)", unit: "", op: ">=", min: 0, max: 8, step: 1, default: 2 },
-  fcf_delta_qoq: { field: "fcf_delta_qoq", label: "FCF margin change (QoQ)", unit: "%", op: ">=", min: -20, max: 20, step: 1, default: 0 },
-  fcf_improving_qtrs: { field: "fcf_improving_qtrs", label: "FCF improving streak (qtrs)", unit: "", op: ">=", min: 0, max: 8, step: 1, default: 2 },
-  net_debt_ebitda: { field: "net_debt_ebitda", label: "Net debt / EBITDA", unit: "×", op: "<=", min: -2, max: 10, step: 0.5, default: 3 },
-  interest_coverage: { field: "interest_coverage", label: "Interest coverage", unit: "×", op: ">=", min: 0, max: 20, step: 1, default: 2 },
+  drawdown_52w: { field: "drawdown_52w", label: "% off 52-week high", unit: "%", op: ">=", min: 0, max: 90, step: 5, default: 40, help: "How far the price sits below its 52-week closing high." },
+  above_low_26w: { field: "above_low_26w", label: "% above 6-month low", unit: "%", op: ">=", min: 0, max: 100, step: 5, default: 10, help: "How far the price has recovered above its 26-week closing low — a base forming, not a falling knife." },
+  ps_vs_median: { field: "ps_vs_median", label: "P/S vs own median", unit: "%", op: "<=", min: -80, max: 100, step: 5, default: 0, help: "Today's P/S vs the stock's OWN 12-month median, as a signed % premium. Negative = cheaper than its usual multiple." },
+  inflection_signals: { field: "inflection_signals", label: "Inflection signals (0–3)", unit: "", op: ">=", min: 0, max: 3, step: 1, default: 1, help: "How many of the three turnaround trends — gross margin expanding, QoQ revenue growth improving, FCF margin improving — have run for 2+ consecutive quarters." },
+  // Quarter-on-quarter facts (migration 075). Labels ALWAYS name the metric —
+  // deltas read in percentage points (pp), streaks in quarters (q).
+  rev_growth_qoq: { field: "rev_growth_qoq", label: "Revenue growth (QoQ)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0, help: "Latest quarter's revenue vs the quarter before it." },
+  rev_qoq_accel: { field: "rev_qoq_accel", label: "Rev growth acceleration", unit: "pp", op: ">=", min: -30, max: 30, step: 1, default: 0, help: "How much QoQ revenue growth improved on the prior quarter, in percentage points. Positive = growth speeding up (even while still negative)." },
+  rev_accel_qtrs: { field: "rev_accel_qtrs", label: "Rev growth accelerating", unit: "q", op: ">=", min: 0, max: 8, step: 1, default: 2, help: "Consecutive quarters QoQ revenue growth has improved. 2q = two straight quarters of accelerating revenue." },
+  gm_delta_qoq: { field: "gm_delta_qoq", label: "Gross margin change (QoQ)", unit: "pp", op: ">=", min: -20, max: 20, step: 1, default: 0, help: "Latest quarter's gross margin minus the prior quarter's, in percentage points." },
+  gm_expansion_qtrs: { field: "gm_expansion_qtrs", label: "Gross margin expanding", unit: "q", op: ">=", min: 0, max: 8, step: 1, default: 2, help: "Consecutive quarters gross margin has expanded." },
+  fcf_delta_qoq: { field: "fcf_delta_qoq", label: "FCF margin change (QoQ)", unit: "pp", op: ">=", min: -20, max: 20, step: 1, default: 0, help: "Latest quarter's free-cash-flow margin minus the prior quarter's, in percentage points." },
+  fcf_improving_qtrs: { field: "fcf_improving_qtrs", label: "FCF margin improving", unit: "q", op: ">=", min: 0, max: 8, step: 1, default: 2, help: "Consecutive quarters free-cash-flow margin has improved (trending toward / past breakeven)." },
+  net_debt_ebitda: { field: "net_debt_ebitda", label: "Net debt / EBITDA", unit: "×", op: "<=", min: -2, max: 10, step: 0.5, default: 3, help: "(Debt − cash) ÷ trailing-12-month EBITDA. Lower or negative = safer balance sheet." },
+  interest_coverage: { field: "interest_coverage", label: "Interest coverage", unit: "×", op: ">=", min: 0, max: 20, step: 1, default: 2, help: "Trailing EBIT ÷ interest expense. Higher = safer; 999 = profitable with no interest expense at all." },
 };
 
 // ---- filter transforms (migration 076) -------------------------------------
@@ -411,6 +416,24 @@ const TRANSFORM_SEEDS: Record<Transform, { op: FilterOp; value: number }> = {
   pctile_own: { op: "<=", value: 20 },
 };
 
+/** Tooltip explanation per transform, composed with the metric's label —
+ *  same surface as MetricMeta.help. */
+const TRANSFORM_HELP: Record<Transform, (metric: string) => string> = {
+  delta_qoq: (m) => `Latest quarter's ${m} minus the prior quarter's.`,
+  yoy: (m) => `Latest quarter's ${m} minus the same quarter a year ago.`,
+  streak_qtrs: (m) =>
+    `Consecutive quarters ${m} has improved, counting back from the latest. 2q = two straight quarters.`,
+  slope_4q: (m) =>
+    `Trend of ${m} per quarter over the last 4 quarters (least-squares). Positive = improving toward the present.`,
+  mean_4q: (m) => `Average ${m} over the last 4 quarters.`,
+  min_4q: (m) => `Lowest ${m} across the last 4 quarters.`,
+  max_4q: (m) => `Highest ${m} across the last 4 quarters.`,
+  range_4q: (m) =>
+    `Spread (max − min) of ${m} across the last 4 quarters — small = stable, large = lumpy.`,
+  pctile_own: (m) =>
+    `Where today's ${m} sits within its own ~3-year quarterly history (0 = lowest, 100 = highest).`,
+};
+
 /**
  * Chip metadata for a filter, transform-aware: streaks count quarters,
  * pctile_own is 0–100, the delta/trend family reads in pp for %-based
@@ -420,31 +443,33 @@ const TRANSFORM_SEEDS: Record<Transform, { op: FilterOp; value: number }> = {
 export function metaForFilter(f: Filter): MetricMeta | undefined {
   const base = METRIC_META[f.field];
   if (!f.transform) return base;
-  const label = TRANSFORM_LABELS[f.transform](base?.label ?? f.field);
+  const metric = base?.label ?? (f.field === "revenue" ? "Revenue" : f.field);
+  const label = TRANSFORM_LABELS[f.transform](metric);
+  const help = TRANSFORM_HELP[f.transform](metric.toLowerCase());
   const seed = TRANSFORM_SEEDS[f.transform];
   const pctBased = base?.unit === "%";
   switch (f.transform) {
     case "streak_qtrs":
-      return { field: f.field, label, unit: "q", op: seed.op, min: 0, max: 8, step: 1, default: seed.value };
+      return { field: f.field, label, help, unit: "q", op: seed.op, min: 0, max: 8, step: 1, default: seed.value };
     case "pctile_own":
-      return { field: f.field, label, unit: "%", op: seed.op, min: 0, max: 100, step: 5, default: seed.value };
+      return { field: f.field, label, help, unit: "%", op: seed.op, min: 0, max: 100, step: 5, default: seed.value };
     case "slope_4q":
       return pctBased
-        ? { field: f.field, label, unit: "pp", op: seed.op, min: -10, max: 10, step: 0.5, default: seed.value }
+        ? { field: f.field, label, help, unit: "pp", op: seed.op, min: -10, max: 10, step: 0.5, default: seed.value }
         : undefined;
     case "delta_qoq":
     case "yoy":
       return pctBased
-        ? { field: f.field, label, unit: "pp", op: seed.op, min: -30, max: 30, step: 1, default: seed.value }
+        ? { field: f.field, label, help, unit: "pp", op: seed.op, min: -30, max: 30, step: 1, default: seed.value }
         : undefined;
     case "range_4q":
       return pctBased
-        ? { field: f.field, label, unit: "pp", op: seed.op, min: 0, max: 30, step: 1, default: seed.value }
+        ? { field: f.field, label, help, unit: "pp", op: seed.op, min: 0, max: 30, step: 1, default: seed.value }
         : undefined;
     case "mean_4q":
     case "min_4q":
     case "max_4q":
-      return base ? { ...base, label, op: seed.op, default: seed.value } : undefined;
+      return base ? { ...base, label, help, op: seed.op, default: seed.value } : undefined;
   }
 }
 
@@ -485,7 +510,7 @@ export const NAMED_FILTERS: {
   { field: "sector", label: "Sector" },
   { field: "industry", label: "Industry" },
   { field: "ps", label: "P/S multiple" },
-  { field: "rev_growth_ttm", label: "Revenue growth" },
+  { field: "rev_growth_ttm", label: "Revenue growth (TTM)" },
   { field: "gross_margin", label: "Gross margin" },
   { field: "fcf_margin", label: "FCF margin" },
   { field: "rule_of_40", label: "Rule of 40" },
@@ -498,14 +523,15 @@ export const NAMED_FILTERS: {
   { field: "drawdown_52w", label: "% off 52-week high" },
   { field: "above_low_26w", label: "% above 6-month low" },
   { field: "ps_vs_median", label: "P/S vs own median" },
-  { field: "inflection_signals", label: "Inflection signals" },
-  // Quarter-on-quarter growth (migration 075). GM/FCF deltas stay
-  // advanced-only to keep the menu scannable.
+  { field: "inflection_signals", label: "Inflection signals (0–3)" },
+  // Quarter-on-quarter growth (migration 075). Labels always name the metric
+  // (never a bare "QoQ accel streak"); GM/FCF deltas stay advanced-only to
+  // keep the menu scannable.
   { field: "rev_growth_qoq", label: "Revenue growth (QoQ)" },
-  { field: "rev_qoq_accel", label: "QoQ growth acceleration" },
-  { field: "rev_accel_qtrs", label: "QoQ accel streak" },
-  { field: "gm_expansion_qtrs", label: "GM expansion streak" },
-  { field: "fcf_improving_qtrs", label: "FCF improving streak" },
+  { field: "rev_qoq_accel", label: "Rev growth acceleration" },
+  { field: "rev_accel_qtrs", label: "Rev growth accelerating (streak)" },
+  { field: "gm_expansion_qtrs", label: "Gross margin expanding (streak)" },
+  { field: "fcf_improving_qtrs", label: "FCF margin improving (streak)" },
   { field: "net_debt_ebitda", label: "Net debt / EBITDA" },
   { field: "interest_coverage", label: "Interest coverage" },
   // Curated transform filters (migration 076). The streak-shaped ideas are

@@ -918,6 +918,7 @@ export default function ScreenerClient({
                 key={`${nf.field}|${nf.transform ?? ""}`}
                 type="button"
                 onClick={() => addNamedFilter(nf.field, nf.transform)}
+                title={metaForFilter(newFilterFor(nf.field, nf.transform))?.help}
                 className="block w-full text-left font-mono text-[11px] text-text-dim hover:text-text hover:bg-white/5 rounded px-2 py-1.5"
               >
                 {!nf.transform && METRIC_META[nf.field]
@@ -953,6 +954,7 @@ export default function ScreenerClient({
             config.filters.map((f, i) => (
               <span
                 key={`${f.field}-${i}`}
+                title={metaForFilter(f)?.help}
                 className="font-mono text-[11px] text-text border border-white/10 bg-white/[0.03] rounded-md px-2.5 py-1.5"
               >
                 {filterChipLabel(f)}
@@ -1516,7 +1518,10 @@ function FilterChip({
   const m = metaForFilter(filter);
   return (
     <details className="inline-block align-top">
-      <summary className="list-none cursor-pointer font-mono text-[11px] text-text border border-[var(--color-cyan)]/35 bg-[var(--color-cyan)]/[0.05] rounded-md px-2.5 py-1.5 inline-flex items-center gap-2 marker:hidden [&::-webkit-details-marker]:hidden">
+      <summary
+        title={m?.help}
+        className="list-none cursor-pointer font-mono text-[11px] text-text border border-[var(--color-cyan)]/35 bg-[var(--color-cyan)]/[0.05] rounded-md px-2.5 py-1.5 inline-flex items-center gap-2 marker:hidden [&::-webkit-details-marker]:hidden"
+      >
         {filterChipLabel(filter)}
         <span
           role="button"
