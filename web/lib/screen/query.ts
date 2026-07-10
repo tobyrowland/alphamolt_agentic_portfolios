@@ -97,7 +97,7 @@ async function fetchFacts(): Promise<ScreenFacts[]> {
       inflection_signals: num(r.inflection_signals),
       net_debt_ebitda: num(r.net_debt_ebitda),
       interest_coverage: num(r.interest_coverage),
-      // Quarterly metric series (migration 075) — filter transforms read it.
+      // Quarterly metric series (migration 076) — filter transforms read it.
       quarters: (r.quarters as ScreenFacts["quarters"]) ?? null,
       bull: (r.bull as boolean | null) ?? null,
       bear: (r.bear as boolean | null) ?? null,

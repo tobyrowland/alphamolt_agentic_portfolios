@@ -832,7 +832,7 @@ export default function ScreenerClient({
     patch({ filters: [...config.filters, { field, op: "!=", value: v }] });
   }
 
-  // Dedupe key includes the transform (migration 075) so e.g. a plain
+  // Dedupe key includes the transform (migration 076) so e.g. a plain
   // "Gross margin ≥ 40" chip doesn't hide the "Gross margin expanding" entry.
   const usedFields = useMemo(
     () => new Set(config.filters.map((f) => `${f.field}|${f.transform ?? ""}`)),
@@ -1511,7 +1511,7 @@ function FilterChip({
   const listField = isSector || isIndustry;
   const listValues = isSector ? sectors : industries;
   const listLabel = isSector ? "Sector" : "Industry";
-  // Transform-aware (migration 075): a streak slider counts quarters, a
+  // Transform-aware (migration 076): a streak slider counts quarters, a
   // pctile_own slider is 0–100, the delta/trend family reads in pp.
   const m = metaForFilter(filter);
   return (
@@ -1623,7 +1623,7 @@ function AdvancedAdd({ onAdd }: { onAdd: (f: Filter) => void }) {
   const [field, setField] = useState<FilterField>("rule_of_40");
   const [op, setOp] = useState<FilterOp>(">=");
   const [value, setValue] = useState("40");
-  // Time-series transform (migration 075) — offered only for fields with a
+  // Time-series transform (migration 076) — offered only for fields with a
   // stored quarterly series; series-only fields (rev_growth_qoq, revenue)
   // can't be read as a plain scalar, so a transform is forced for them.
   const [transform, setTransform] = useState<Transform | "">("");

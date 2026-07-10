@@ -1,5 +1,5 @@
 /**
- * Screener filter transforms (migration 075) — time-series math over the
+ * Screener filter transforms (migration 076) — time-series math over the
  * stored quarterly metric series (`screen_facts().quarters`, written by
  * eodhd_updater.compute_quarterly_series).
  *
@@ -34,9 +34,9 @@ export const TRANSFORMS = [
 export type Transform = (typeof TRANSFORMS)[number];
 
 /** Filter field → key inside the `quarters` series object. Fields listed here
- *  accept a `transform`; `rev_growth_qoq` and `revenue` exist ONLY as series
- *  (no scalar matview column), so they require one. MUST match screen.py
- *  SERIES_FIELDS. */
+ *  accept a `transform`; without one they read their scalar matview column as
+ *  always (rev_growth_qoq's scalar landed in migration 075). MUST match
+ *  screen.py SERIES_FIELDS. */
 export const SERIES_FIELDS: Record<string, string> = {
   gross_margin: "gross_margin",
   operating_margin: "operating_margin",
@@ -49,7 +49,7 @@ export const SERIES_FIELDS: Record<string, string> = {
 /** Fields with no scalar matview column — usable only WITH a transform. A
  *  transform-less filter on one is a no-constraint (matches everything), the
  *  same on both scorers; the config schema + UI prevent creating that state. */
-export const SERIES_ONLY_FIELDS = new Set(["rev_growth_qoq", "revenue"]);
+export const SERIES_ONLY_FIELDS = new Set(["revenue"]);
 
 /** The quarterly series object stored on a screen-facts row (`quarters`). */
 export interface QuarterSeries {

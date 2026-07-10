@@ -89,7 +89,7 @@ FUND_FIELDS = {
 # Per-period series stored verbatim — NOT floats, so they bypass the
 # safe_float FUND_FIELDS loop. The four text blobs (pipe-delimited,
 # newest-first) power the company-page income chart; `quarterly_metrics`
-# (migration 075) is the JSONB object-of-arrays quarterly series the
+# (migration 076) is the JSONB object-of-arrays quarterly series the
 # screener's filter transforms compute over (eodhd_updater.
 # compute_quarterly_series).
 FUND_BLOBS = (

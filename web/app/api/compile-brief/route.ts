@@ -57,7 +57,7 @@ Allowed filter fields (numbers are percentages or multiples as noted):
 - interest_coverage      (trailing EBIT ÷ interest expense, ×; higher = safer)
 Allowed ops: ${FILTER_OPS.join(", ")}.
 
-TIME-SERIES TRANSFORMS: a filter may add a "transform" that reads the metric over its quarterly history instead of its latest value. Transform-capable fields: gross_margin, operating_margin, net_margin, fcf_margin, rev_growth_qoq (QoQ revenue growth %, series-only), revenue (quarterly revenue $, series-only) — rev_growth_qoq and revenue MUST carry a transform. Allowed transforms:
+TIME-SERIES TRANSFORMS: a filter may add a "transform" that reads the metric over its quarterly history instead of its latest value. Transform-capable fields: gross_margin, operating_margin, net_margin, fcf_margin, rev_growth_qoq, revenue (quarterly revenue $, series-only — revenue MUST carry a transform). Allowed transforms:
 - delta_qoq     (latest quarter minus prior, pp — "margins expanded this quarter" = > 0)
 - yoy           (latest quarter minus the year-ago quarter, pp)
 - streak_qtrs   (consecutive quarters of improvement — "two straight quarters of improving X" = {"field":X,"transform":"streak_qtrs","op":">=","value":2})

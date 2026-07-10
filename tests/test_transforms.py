@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Screener filter transforms (migration 075).
+"""Screener filter transforms (migration 076).
 
 Three layers:
   1. Python transform semantics against the shared fixture
@@ -113,16 +113,30 @@ class TestTransformFilters(unittest.TestCase):
 
     def test_series_only_field_requires_transform(self):
         rows = [_row(quarters=QUARTERS)]
-        # rev_growth_qoq WITH a transform: improving 3 straight quarters.
+        # `revenue` WITH a transform: up 3 straight quarters (110>105>100>98).
         out = screen.apply_filters(rows, [
-            {"field": "rev_growth_qoq", "transform": "streak_qtrs",
+            {"field": "revenue", "transform": "streak_qtrs",
              "op": ">=", "value": 3},
         ])
         self.assertEqual(len(out), 1)
         # WITHOUT a transform it's a no-constraint (matches everything) —
         # parity with score.ts, which has no scalar column to read either.
         out = screen.apply_filters(rows, [
-            {"field": "rev_growth_qoq", "op": ">=", "value": 999},
+            {"field": "revenue", "op": ">=", "value": 1e12},
+        ])
+        self.assertEqual(len(out), 1)
+
+    def test_rev_growth_qoq_scalar_and_transform(self):
+        # rev_growth_qoq has BOTH reads since migrations 075/076: transform-less
+        # hits the scalar matview column; a transform hits the series.
+        rows = [_row(quarters=QUARTERS, rev_growth_qoq=4.0)]
+        out = screen.apply_filters(rows, [
+            {"field": "rev_growth_qoq", "op": ">=", "value": 5},
+        ])
+        self.assertEqual(out, [])  # scalar 4 < 5
+        out = screen.apply_filters(rows, [
+            {"field": "rev_growth_qoq", "transform": "streak_qtrs",
+             "op": ">=", "value": 3},  # series improving 3 straight quarters
         ])
         self.assertEqual(len(out), 1)
 

@@ -50,14 +50,13 @@ FILTER_FIELDS = {
     # Survivability gate (hard filters, never scored):
     "net_debt_ebitda",
     "interest_coverage",
-    # Series-only fields (migration 075): no scalar matview column — usable
+    # Series-only field (migration 076): no scalar matview column — usable
     # only WITH a transform (see SERIES_FIELDS / _TRANSFORMS below).
-    "rev_growth_qoq",
     "revenue",
 }
 TEXT_FIELDS = {"sector", "industry", "country"}
 
-# ---- filter transforms (migration 075) --------------------------------------
+# ---- filter transforms (migration 076) --------------------------------------
 # Time-series math over the stored quarterly metric series (the `quarters`
 # JSONB on each screen_facts row — eodhd_updater.compute_quarterly_series,
 # newest-first, up to 12 quarters). A filter carrying `transform` compares its
@@ -77,7 +76,9 @@ SERIES_FIELDS = {
 }
 # Fields with no scalar matview column — a transform-less filter on one is a
 # no-constraint (matches everything), the same on both scorers.
-SERIES_ONLY_FIELDS = {"rev_growth_qoq", "revenue"}
+# (rev_growth_qoq gained a scalar column in migration 075, so it filters
+# plainly too; only `revenue` remains series-only.)
+SERIES_ONLY_FIELDS = {"revenue"}
 
 
 def _series_for(quarters, key: str) -> list[float | None] | None:
@@ -332,7 +333,7 @@ def _matches(row: dict, f: dict) -> bool:
             "==": a == b, "!=": a != b, "<=": a <= b,
             ">=": a >= b, "<": a < b, ">": a > b,
         }.get(op, True)
-    # Transform filters (migration 075): compare against time-series math over
+    # Transform filters (migration 076): compare against time-series math over
     # the quarterly series instead of the row scalar. Unknown transform / a
     # field with no series ⇒ no constraint (parity with score.ts).
     transform = f.get("transform")

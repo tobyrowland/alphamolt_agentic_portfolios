@@ -56,9 +56,8 @@ export const FILTER_FIELDS = [
   // Survivability gate (hard filters, never scored):
   "net_debt_ebitda",
   "interest_coverage",
-  // Series-only fields (migration 075): live in the `quarters` series, not as
-  // scalar columns — usable only WITH a transform (schema-enforced below).
-  "rev_growth_qoq",
+  // Series-only field (migration 076): lives in the `quarters` series, not as
+  // a scalar column — usable only WITH a transform (schema-enforced below).
   "revenue",
 ] as const;
 export type FilterField = (typeof FILTER_FIELDS)[number];
@@ -73,9 +72,9 @@ export const filterSchema = z
     field: z.enum(FILTER_FIELDS),
     op: z.enum(FILTER_OPS),
     value: z.union([z.number(), z.string()]),
-    // Time-series transform (migration 075) — how to look at the metric over
+    // Time-series transform (migration 076) — how to look at the metric over
     // the stored quarterly series instead of its latest scalar. Only fields in
-    // SERIES_FIELDS carry one; rev_growth_qoq/revenue REQUIRE one.
+    // SERIES_FIELDS carry one; series-only `revenue` REQUIRES one.
     transform: z.enum(TRANSFORMS).optional(),
   })
   .superRefine((f, ctx) => {
@@ -379,12 +378,9 @@ export const METRIC_META: Record<string, MetricMeta> = {
   fcf_improving_qtrs: { field: "fcf_improving_qtrs", label: "FCF improving streak (qtrs)", unit: "", op: ">=", min: 0, max: 8, step: 1, default: 2 },
   net_debt_ebitda: { field: "net_debt_ebitda", label: "Net debt / EBITDA", unit: "×", op: "<=", min: -2, max: 10, step: 0.5, default: 3 },
   interest_coverage: { field: "interest_coverage", label: "Interest coverage", unit: "×", op: ">=", min: 0, max: 20, step: 1, default: 2 },
-  // Series-only fields (migration 075) — only meaningful WITH a transform;
-  // the meta gives them a friendly label + a scale for %-based transforms.
-  rev_growth_qoq: { field: "rev_growth_qoq", label: "Rev growth (QoQ)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0 },
 };
 
-// ---- filter transforms (migration 075) -------------------------------------
+// ---- filter transforms (migration 076) -------------------------------------
 // A transform re-reads the metric over its stored quarterly series (streaks /
 // deltas / trends / own-history percentile) instead of its latest scalar —
 // see web/lib/screen/transforms.ts (mirrored in screen.py).
@@ -512,9 +508,9 @@ export const NAMED_FILTERS: {
   { field: "fcf_improving_qtrs", label: "FCF improving streak" },
   { field: "net_debt_ebitda", label: "Net debt / EBITDA" },
   { field: "interest_coverage", label: "Interest coverage" },
-  // Curated transform filters (migration 075).
-  { field: "rev_growth_qoq", transform: "streak_qtrs", label: "Rev growth improving" },
-  { field: "gross_margin", transform: "streak_qtrs", label: "Gross margin expanding" },
+  // Curated transform filters (migration 076). The streak-shaped ideas are
+  // already covered by the precomputed *_qtrs entries above; only genuinely
+  // new reads earn a menu slot — the rest live in the Advanced editor.
   { field: "fcf_margin", transform: "slope_4q", label: "FCF margin trend" },
   { field: "revenue", transform: "streak_qtrs", label: "Revenue up in a row" },
 ];

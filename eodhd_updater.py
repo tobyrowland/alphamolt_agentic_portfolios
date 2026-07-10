@@ -1245,7 +1245,7 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
     # fundamentals writers pick them up via FUND_FIELDS.
     result.update(compute_inflection(quarterly, cf_quarterly))
     result.update(compute_survivability(raw, quarterly))
-    # Full per-quarter series (migration 075) — the screener's generic filter
+    # Full per-quarter series (migration 076) — the screener's generic filter
     # transforms (streak / delta / slope / own-percentile) compute over this.
     result["quarterly_metrics"] = compute_quarterly_series(quarterly, cf_quarterly)
 

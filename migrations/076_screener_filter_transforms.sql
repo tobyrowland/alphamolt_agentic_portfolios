@@ -1,4 +1,4 @@
--- Migration 075: screener filter transforms — store the quarterly metric
+-- Migration 076: screener filter transforms — store the quarterly metric
 -- series so time-series filters stop needing bespoke columns.
 --
 -- Before this, every time-series filter idea ("two consecutive quarters of
@@ -25,10 +25,11 @@
 --      tests/fixtures/transform_parity.json). "Two consecutive quarters of
 --      improving QoQ revenue growth" is now just
 --      {field: rev_growth_qoq, transform: streak_qtrs, op: >=, value: 2} —
---      any metric × any transform, no new column, no matview rebuild.
+--      any series metric × any transform, no new column, no matview rebuild.
 --
--- The 074 write-time inflection columns (gm_expansion_qtrs etc.) stay — the
--- Inflection LENS still scores on them; transforms are the FILTER layer.
+-- The 074/075 write-time columns stay: the Inflection LENS still scores on the
+-- deltas/streaks, and rev_growth_qoq keeps its plain scalar filter (075) —
+-- transforms are an additional way to READ a metric, not a replacement.
 --
 -- Coverage note: `quarterly_metrics` populates on the daily fundamentals
 -- rotation (fundamentals_updater.py, 150 stalest/run) — run
@@ -43,7 +44,7 @@
 ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS quarterly_metrics JSONB;
 
 -- ---- 2. screen_facts_mv: surface the latest row's series as `quarters` -----
--- Same body as migration 074 plus the one new column.
+-- Same body as migration 075 plus the one new column.
 DROP MATERIALIZED VIEW IF EXISTS screen_facts_mv;
 CREATE MATERIALIZED VIEW screen_facts_mv AS
 WITH base AS (
@@ -56,6 +57,7 @@ WITH base AS (
         lp.close            AS price,
         lp.date             AS price_asof,
         f.rev_growth_ttm,
+        f.rev_growth_qoq,
         f.gross_margin,
         f.fcf_margin,
         f.net_margin,
@@ -76,14 +78,10 @@ WITH base AS (
         v.ps_trend_pct,
         CASE WHEN p52.close IS NOT NULL AND p52.close > 0
              THEN (lp.close / p52.close - 1) * 100 END AS ret_52w,
-        -- Washout structure: % below the 52-week closing high (positive =
-        -- drawn down) and % above the 26-week closing low (base forming).
         CASE WHEN px.high_52w IS NOT NULL AND px.high_52w > 0 AND lp.close IS NOT NULL
              THEN (1 - lp.close / px.high_52w) * 100 END AS drawdown_52w,
         CASE WHEN px.low_26w IS NOT NULL AND px.low_26w > 0 AND lp.close IS NOT NULL
              THEN (lp.close / px.low_26w - 1) * 100 END AS above_low_26w,
-        -- Cheapness vs the name's OWN 12-mo median P/S, as a signed % premium
-        -- (negative = below its usual multiple).
         CASE WHEN v.ps IS NOT NULL AND v.ps_median_12m > 0
              THEN (v.ps / v.ps_median_12m - 1) * 100 END AS ps_vs_median,
         CASE WHEN left(a.bull_eval, 1) = '✅' THEN true
@@ -101,8 +99,8 @@ WITH base AS (
         a.research_card                                                AS research_card
     FROM securities s
     JOIN LATERAL (
-        SELECT rev_growth_ttm, gross_margin, fcf_margin, net_margin,
-               operating_margin, rule_of_40,
+        SELECT rev_growth_ttm, rev_growth_qoq, gross_margin, fcf_margin,
+               net_margin, operating_margin, rule_of_40,
                gm_delta_qoq, gm_expansion_qtrs, rev_qoq_accel, rev_accel_qtrs,
                fcf_delta_qoq, fcf_improving_qtrs, inflection_signals,
                net_debt_ebitda, interest_coverage, quarterly_metrics
@@ -147,8 +145,9 @@ sec_stats AS (
 )
 SELECT
     b.ticker, b.name, b.sector, b.industry, b.country, b.price, b.price_asof,
-    b.rev_growth_ttm, b.gross_margin, b.fcf_margin, b.net_margin,
-    b.operating_margin, b.rule_of_40, b.ps, b.ps_median_12m, b.ps_trend_pct,
+    b.rev_growth_ttm, b.rev_growth_qoq, b.gross_margin, b.fcf_margin,
+    b.net_margin, b.operating_margin, b.rule_of_40, b.ps, b.ps_median_12m,
+    b.ps_trend_pct,
     b.ret_52w, b.drawdown_52w, b.above_low_26w, b.ps_vs_median,
     b.gm_delta_qoq, b.gm_expansion_qtrs, b.rev_qoq_accel, b.rev_accel_qtrs,
     b.fcf_delta_qoq, b.fcf_improving_qtrs, b.inflection_signals,
@@ -171,7 +170,8 @@ GRANT SELECT ON screen_facts_mv TO anon, authenticated, service_role;
 DROP FUNCTION IF EXISTS screen_facts();
 CREATE OR REPLACE FUNCTION public.screen_facts()
 RETURNS TABLE(ticker text, name text, sector text, industry text, country text,
-    price numeric, price_asof date, rev_growth_ttm numeric, gross_margin numeric,
+    price numeric, price_asof date, rev_growth_ttm numeric,
+    rev_growth_qoq numeric, gross_margin numeric,
     fcf_margin numeric, net_margin numeric, operating_margin numeric,
     rule_of_40 numeric, ps numeric, ps_median_12m numeric, ps_trend_pct numeric,
     ret_52w numeric, drawdown_52w numeric, above_low_26w numeric,
@@ -186,9 +186,9 @@ RETURNS TABLE(ticker text, name text, sector text, industry text, country text,
 LANGUAGE sql STABLE SET search_path TO 'public', 'pg_temp'
 AS $function$
     SELECT ticker, name, sector, industry, country, price, price_asof,
-           rev_growth_ttm, gross_margin, fcf_margin, net_margin, operating_margin,
-           rule_of_40, ps, ps_median_12m, ps_trend_pct, ret_52w,
-           drawdown_52w, above_low_26w, ps_vs_median,
+           rev_growth_ttm, rev_growth_qoq, gross_margin, fcf_margin, net_margin,
+           operating_margin, rule_of_40, ps, ps_median_12m, ps_trend_pct,
+           ret_52w, drawdown_52w, above_low_26w, ps_vs_median,
            gm_delta_qoq, gm_expansion_qtrs, rev_qoq_accel, rev_accel_qtrs,
            fcf_delta_qoq, fcf_improving_qtrs, inflection_signals,
            net_debt_ebitda, interest_coverage, quarters,

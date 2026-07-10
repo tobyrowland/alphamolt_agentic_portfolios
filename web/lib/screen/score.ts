@@ -115,7 +115,7 @@ export interface ScreenFacts {
   // Survivability (hard-filter material, never scored):
   net_debt_ebitda: number | null;
   interest_coverage: number | null;
-  /** Quarterly metric series (migration 075) — newest-first object-of-arrays
+  /** Quarterly metric series (migration 076) — newest-first object-of-arrays
    *  ({period_ends, revenue, rev_growth_qoq, gross_margin, operating_margin,
    *  net_margin, fcf_margin}, up to 12 quarters). Filter TRANSFORMS (streaks /
    *  deltas / slopes / own-history percentiles) compute over it at read time.
@@ -458,7 +458,7 @@ function matchesFilter(row: ScreenFacts, f: Filter): boolean {
     if (f.op === "<") return a < b;
     return a > b;
   }
-  // Transform filters (migration 075): compare against time-series math over
+  // Transform filters (migration 076): compare against time-series math over
   // the quarterly series instead of the row scalar. Unknown transform / a
   // field with no series ⇒ no constraint (parity with screen.py).
   let v: number | null;
