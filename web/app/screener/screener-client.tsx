@@ -63,6 +63,7 @@ interface Row {
   drawdown_52w: number | null;
   above_low_26w: number | null;
   ps_vs_median: number | null;
+  rev_growth_qoq: number | null;
   gm_delta_qoq: number | null;
   gm_expansion_qtrs: number | null;
   rev_qoq_accel: number | null;

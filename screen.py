@@ -44,6 +44,9 @@ FILTER_FIELDS = {
     # Inflection gate: how many of the three QoQ streaks (GM expanding, QoQ
     # revenue growth improving, FCF margin improving) are ≥ 2 quarters (0–3).
     "inflection_signals",
+    # Quarter-on-quarter facts, individually filterable (migration 075):
+    "rev_growth_qoq", "rev_qoq_accel", "rev_accel_qtrs",
+    "gm_delta_qoq", "gm_expansion_qtrs", "fcf_delta_qoq", "fcf_improving_qtrs",
     # Survivability gate (hard filters, never scored):
     "net_debt_ebitda",
     "interest_coverage",
