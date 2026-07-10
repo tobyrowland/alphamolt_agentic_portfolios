@@ -49,6 +49,10 @@ Allowed filter fields (numbers are percentages or multiples as noted):
 - above_low_26w          (% above the 26-week / 6-month low)
 - ps_vs_median           (signed % premium to the stock's OWN 12-month median P/S; negative = below its usual multiple)
 - inflection_signals     (0-3: how many of gross-margin expansion, QoQ revenue-growth improvement, FCF-margin improvement have run 2+ consecutive quarters)
+- rev_growth_qoq         (latest quarter-on-quarter revenue growth %)
+- rev_qoq_accel          (latest QoQ growth minus prior QoQ growth, percentage points; >0 = growth improving even if still negative)
+- rev_accel_qtrs, gm_expansion_qtrs, fcf_improving_qtrs   (consecutive quarters each trend has been improving; 2 = "two straight quarters")
+- gm_delta_qoq, fcf_delta_qoq   (latest quarterly gross-margin / FCF-margin change, percentage points)
 - net_debt_ebitda        (net debt ÷ trailing EBITDA, ×; lower/negative = safer)
 - interest_coverage      (trailing EBIT ÷ interest expense, ×; higher = safer)
 Allowed ops: ${FILTER_OPS.join(", ")}.

@@ -83,10 +83,11 @@ async function fetchFacts(): Promise<ScreenFacts[]> {
         ret52w != null && spyRet != null
           ? Math.round((ret52w - spyRet) * 10) / 10
           : null,
-      // Turnaround facts (migration 074).
+      // Turnaround facts (migrations 074/075).
       drawdown_52w: num(r.drawdown_52w),
       above_low_26w: num(r.above_low_26w),
       ps_vs_median: num(r.ps_vs_median),
+      rev_growth_qoq: num(r.rev_growth_qoq),
       gm_delta_qoq: num(r.gm_delta_qoq),
       gm_expansion_qtrs: num(r.gm_expansion_qtrs),
       rev_qoq_accel: num(r.rev_qoq_accel),

@@ -1,63 +1,18 @@
--- Migration 074: turnaround screener facts — washout / inflection / survivability.
+-- Migration 075: surface rev_growth_qoq (raw quarter-on-quarter revenue
+-- growth %) to the screener.
 --
--- The turnaround strategy needs three gates the screener couldn't express:
---   1. WASHOUT  — price 40–70% off its 52-week high but already off its
---      3–6-month low (base forming, not still knife-ing), and P/S below the
---      name's own median. All price-structure facts, computed here from
---      prices_daily / the latest valuation row.
---   2. INFLECTION — two consecutive quarters of gross margin expanding, QoQ
---      revenue growth improving, or FCF margin trending toward breakeven.
---      Quarter-over-quarter facts computed at WRITE time by eodhd_updater
---      (fundamentals has no per-quarter history — rows are latest-snapshot),
---      stored on the latest fundamentals row and surfaced here.
---   3. SURVIVABILITY — net debt / EBITDA and interest coverage, extracted from
---      EODHD balance-sheet + income statements by eodhd_updater. Hard-filter
---      material, never scored.
+-- Migration 074 shipped the QoQ *derivatives* (acceleration, streaks,
+-- inflection_signals) but not the underlying QoQ growth rate itself — so a
+-- screen couldn't say "QoQ revenue growth ≥ 5%". `fundamentals.rev_growth_qoq`
+-- has been written by every fundamentals writer since the table existed (full
+-- coverage), it just never reached the matview. This adds it to
+-- screen_facts_mv + screen_facts(); the per-signal deltas/streaks become
+-- FILTERABLE in the same release purely in config (they were already matview
+-- columns — web/lib/screen/config.ts + screen.py).
 --
--- These are FACTS (deterministic derivations of raw statements/prices), not
--- strategy — the strategy lives in the new `turnaround` preset's filters +
--- weights (web/lib/screen/config.ts). Level 0 stays neutral.
---
--- Also fixes a mig-066 regression: 066 rebuilt the matview from 057's body,
--- silently dropping `ps_trend_pct` (added by 058) — the web loader has been
--- reading it as NULL since. Restored below. The `valuation.ps_trend_pct`
--- column itself is created defensively here too: migration 058's ALTER was
--- never applied to the live database (which is why 066's drop went unnoticed),
--- so the first run of this migration failed on the missing column.
---
--- Coverage note: the inflection/survivability columns populate on the daily
--- fundamentals rotation (fundamentals_updater.py, 150 stalest/run) — run
--- `python fundamentals_updater.py --batch 4000` once to backfill the whole
--- Tier-1 universe in a day. The price-structure columns (drawdown_52w,
--- above_low_26w, ps_vs_median) have full coverage from the first refresh.
---
--- Heavy rebuild: run in the Supabase SQL editor (the MCP gateway times out on
--- the ~3k-LATERAL-join matview rebuild). Then `refresh_screen_facts()`.
+-- Same body as migration 074, plus f.rev_growth_qoq. Heavy rebuild: run in the
+-- Supabase SQL editor, then `SELECT refresh_screen_facts();`.
 
--- ---- 1. fundamentals: write-time inflection + survivability columns --------
--- (cash / debt / shares_out already exist — eodhd_updater now populates them,
--- which also un-gates the research card's balance_sheet_risk dimension.)
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS gm_delta_qoq         NUMERIC; -- latest quarterly gross margin minus prior, pp
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS gm_expansion_qtrs    NUMERIC; -- consecutive quarters of GM expansion (0 = not expanding)
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS rev_qoq_accel        NUMERIC; -- latest QoQ revenue growth minus prior QoQ growth, pp
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS rev_accel_qtrs       NUMERIC; -- consecutive quarters of improving QoQ revenue growth
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS fcf_delta_qoq        NUMERIC; -- latest quarterly FCF margin minus prior, pp
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS fcf_improving_qtrs   NUMERIC; -- consecutive quarters of improving FCF margin
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS inflection_signals   NUMERIC; -- how many of the three streaks are ≥ 2 quarters (0–3)
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS ebitda_ttm           NUMERIC;
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS interest_expense_ttm NUMERIC;
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS net_debt_ebitda      NUMERIC; -- (debt − cash) / TTM EBITDA; NULL when EBITDA ≤ 0
-ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS interest_coverage    NUMERIC; -- TTM EBIT / TTM interest; 999 = profitable + no interest
-
--- valuation.ps_trend_pct — defined by migration 058 but never applied to the
--- live DB; the matview below reads it, so create it if it's still missing.
--- Stays NULL until backfill_tier1_valuation.py repopulates (display-only).
-ALTER TABLE valuation ADD COLUMN IF NOT EXISTS ps_trend_pct NUMERIC;
-
--- ---- 2. screen_facts_mv: washout facts + surface the new columns -----------
--- Same body as migration 066, plus: ps_trend_pct restored (058 regression),
--- a price-structure LATERAL (52w high / 26w low over prices_daily), the
--- ps_vs_median derivation, and the fundamentals inflection/survivability set.
 DROP MATERIALIZED VIEW IF EXISTS screen_facts_mv;
 CREATE MATERIALIZED VIEW screen_facts_mv AS
 WITH base AS (
@@ -70,6 +25,7 @@ WITH base AS (
         lp.close            AS price,
         lp.date             AS price_asof,
         f.rev_growth_ttm,
+        f.rev_growth_qoq,
         f.gross_margin,
         f.fcf_margin,
         f.net_margin,
@@ -89,14 +45,10 @@ WITH base AS (
         v.ps_trend_pct,
         CASE WHEN p52.close IS NOT NULL AND p52.close > 0
              THEN (lp.close / p52.close - 1) * 100 END AS ret_52w,
-        -- Washout structure: % below the 52-week closing high (positive =
-        -- drawn down) and % above the 26-week closing low (base forming).
         CASE WHEN px.high_52w IS NOT NULL AND px.high_52w > 0 AND lp.close IS NOT NULL
              THEN (1 - lp.close / px.high_52w) * 100 END AS drawdown_52w,
         CASE WHEN px.low_26w IS NOT NULL AND px.low_26w > 0 AND lp.close IS NOT NULL
              THEN (lp.close / px.low_26w - 1) * 100 END AS above_low_26w,
-        -- Cheapness vs the name's OWN 12-mo median P/S, as a signed % premium
-        -- (negative = below its usual multiple).
         CASE WHEN v.ps IS NOT NULL AND v.ps_median_12m > 0
              THEN (v.ps / v.ps_median_12m - 1) * 100 END AS ps_vs_median,
         CASE WHEN left(a.bull_eval, 1) = '✅' THEN true
@@ -114,8 +66,8 @@ WITH base AS (
         a.research_card                                                AS research_card
     FROM securities s
     JOIN LATERAL (
-        SELECT rev_growth_ttm, gross_margin, fcf_margin, net_margin,
-               operating_margin, rule_of_40,
+        SELECT rev_growth_ttm, rev_growth_qoq, gross_margin, fcf_margin,
+               net_margin, operating_margin, rule_of_40,
                gm_delta_qoq, gm_expansion_qtrs, rev_qoq_accel, rev_accel_qtrs,
                fcf_delta_qoq, fcf_improving_qtrs, inflection_signals,
                net_debt_ebitda, interest_coverage
@@ -160,8 +112,9 @@ sec_stats AS (
 )
 SELECT
     b.ticker, b.name, b.sector, b.industry, b.country, b.price, b.price_asof,
-    b.rev_growth_ttm, b.gross_margin, b.fcf_margin, b.net_margin,
-    b.operating_margin, b.rule_of_40, b.ps, b.ps_median_12m, b.ps_trend_pct,
+    b.rev_growth_ttm, b.rev_growth_qoq, b.gross_margin, b.fcf_margin,
+    b.net_margin, b.operating_margin, b.rule_of_40, b.ps, b.ps_median_12m,
+    b.ps_trend_pct,
     b.ret_52w, b.drawdown_52w, b.above_low_26w, b.ps_vs_median,
     b.gm_delta_qoq, b.gm_expansion_qtrs, b.rev_qoq_accel, b.rev_accel_qtrs,
     b.fcf_delta_qoq, b.fcf_improving_qtrs, b.inflection_signals,
@@ -180,11 +133,11 @@ LEFT JOIN sec_stats sec ON sec.sector  = b.sector;
 CREATE UNIQUE INDEX IF NOT EXISTS screen_facts_mv_ticker ON screen_facts_mv (ticker);
 GRANT SELECT ON screen_facts_mv TO anon, authenticated, service_role;
 
--- ---- 3. screen_facts(): surface the new columns to both scorers ------------
 DROP FUNCTION IF EXISTS screen_facts();
 CREATE OR REPLACE FUNCTION public.screen_facts()
 RETURNS TABLE(ticker text, name text, sector text, industry text, country text,
-    price numeric, price_asof date, rev_growth_ttm numeric, gross_margin numeric,
+    price numeric, price_asof date, rev_growth_ttm numeric,
+    rev_growth_qoq numeric, gross_margin numeric,
     fcf_margin numeric, net_margin numeric, operating_margin numeric,
     rule_of_40 numeric, ps numeric, ps_median_12m numeric, ps_trend_pct numeric,
     ret_52w numeric, drawdown_52w numeric, above_low_26w numeric,
@@ -199,9 +152,9 @@ RETURNS TABLE(ticker text, name text, sector text, industry text, country text,
 LANGUAGE sql STABLE SET search_path TO 'public', 'pg_temp'
 AS $function$
     SELECT ticker, name, sector, industry, country, price, price_asof,
-           rev_growth_ttm, gross_margin, fcf_margin, net_margin, operating_margin,
-           rule_of_40, ps, ps_median_12m, ps_trend_pct, ret_52w,
-           drawdown_52w, above_low_26w, ps_vs_median,
+           rev_growth_ttm, rev_growth_qoq, gross_margin, fcf_margin, net_margin,
+           operating_margin, rule_of_40, ps, ps_median_12m, ps_trend_pct,
+           ret_52w, drawdown_52w, above_low_26w, ps_vs_median,
            gm_delta_qoq, gm_expansion_qtrs, rev_qoq_accel, rev_accel_qtrs,
            fcf_delta_qoq, fcf_improving_qtrs, inflection_signals,
            net_debt_ebitda, interest_coverage,
@@ -211,6 +164,3 @@ AS $function$
            peer_basis
     FROM screen_facts_mv;
 $function$;
-
--- screen_ai_overlay() is unchanged (066's definition stands): the Python buyer
--- reads the new columns straight off screen_facts() rows.
