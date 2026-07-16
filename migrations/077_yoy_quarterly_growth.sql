@@ -31,6 +31,12 @@ ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS rev_growth_yoy_q    NUMERIC;
 ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS rev_yoy_accel       NUMERIC;
 ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS rev_yoy_accel_qtrs  NUMERIC;
 
+-- fundamentals.quarterly_metrics — defined by migration 076 but (like 058's
+-- ps_trend_pct before it) never applied to the live DB; the matview below
+-- reads it, so create it if it's still missing. Populates on the fundamentals
+-- rotation / backfill.
+ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS quarterly_metrics JSONB;
+
 -- ---- 2. screen_facts_mv ----------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS screen_facts_mv;
 CREATE MATERIALIZED VIEW screen_facts_mv AS
