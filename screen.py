@@ -324,6 +324,12 @@ def _percentiles(values: list[float | None]) -> list[float | None]:
 
 
 def _matches(row: dict, f: dict) -> bool:
+    # OR group: {"any": [filter, ...]} — passes when ANY branch matches. One
+    # level deep, standard missing-datum rule per branch (a name missing every
+    # branch's datum fails the group). MUST match score.ts matchesScreenFilter.
+    sub = f.get("any")
+    if isinstance(sub, list):
+        return any(_matches(row, s) for s in sub if isinstance(s, dict))
     field = f.get("field")
     op = f.get("op")
     if field not in FILTER_FIELDS:

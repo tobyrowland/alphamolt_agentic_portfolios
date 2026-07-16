@@ -102,6 +102,27 @@ export type Filter = z.infer<typeof filterSchema>;
 export { SERIES_FIELDS, SERIES_ONLY_FIELDS, TRANSFORMS };
 export type { Transform };
 
+// ---- OR groups -------------------------------------------------------------
+// A filter slot can be a GROUP of plain filters OR'd together: a name passes
+// the slot when ANY branch matches ("FCF improving 2q OR revenue growth
+// accelerating 2q"). Groups AND with the other slots exactly like plain
+// filters, are one level deep (no nested groups), and follow the standard
+// missing-datum rule per branch — a name missing every branch's datum fails
+// the group. Evaluated identically in web/lib/screen/score.ts and screen.py.
+export const orFilterSchema = z.object({
+  any: z.array(filterSchema).min(2).max(4),
+});
+export type OrFilter = z.infer<typeof orFilterSchema>;
+export type ScreenFilter = Filter | OrFilter;
+export const screenFilterSchema: z.ZodType<ScreenFilter> = z.union([
+  filterSchema,
+  orFilterSchema,
+]);
+
+export function isOrFilter(f: ScreenFilter): f is OrFilter {
+  return "any" in f && Array.isArray((f as OrFilter).any);
+}
+
 export const weightsSchema = z.object({
   quality: z.number().min(0).max(100),
   value: z.number().min(0).max(100),
@@ -123,7 +144,7 @@ export const AI_BUDGET_MAX_VALUE = 1.5;
 export const screenConfigSchema = z.object({
   brief: z.string().max(2000).optional(),
   preset: z.string().optional(),
-  filters: z.array(filterSchema).max(20).default([]),
+  filters: z.array(screenFilterSchema).max(20).default([]),
   weights: weightsSchema.default({ quality: 45, value: 25, momentum: 20, inflection: 0 }),
   aiMultiplier: z.boolean().default(true),
   // How far the AI research-card adjustment can move a name, in σ (migration
@@ -323,7 +344,7 @@ export function configFromParams(params: {
   const cfg = presetConfig(params.preset ?? DEFAULT_PRESET);
   if (params.sector) {
     cfg.filters = [
-      ...cfg.filters.filter((f) => f.field !== "sector"),
+      ...cfg.filters.filter((f) => isOrFilter(f) || f.field !== "sector"),
       { field: "sector", op: "==", value: params.sector },
     ];
     cfg.preset = "custom";
@@ -506,6 +527,13 @@ export function filterChipLabel(f: Filter): string {
       : f.field);
   const unit = m?.unit ?? "";
   return `${label} ${sym} ${f.value}${unit}`;
+}
+
+/** Chip label for any filter slot — an OR group reads as its branches joined
+ *  with "OR". */
+export function screenFilterLabel(f: ScreenFilter): string {
+  if (isOrFilter(f)) return f.any.map(filterChipLabel).join("  OR  ");
+  return filterChipLabel(f);
 }
 
 // The "+ add filter" menu — named, friendly filters (not a blank field/op/value

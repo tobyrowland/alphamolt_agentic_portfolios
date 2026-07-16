@@ -17,8 +17,10 @@ import {
   FILTER_FIELDS,
   FILTER_OPS,
   filterSchema,
+  screenFilterSchema,
   weightsSchema,
   type Filter,
+  type ScreenFilter,
 } from "@/lib/screen/config";
 import { z } from "zod";
 
@@ -29,7 +31,7 @@ const MODEL = "gemini-2.5-flash";
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 const compiledSchema = z.object({
-  filters: z.array(filterSchema).max(20).default([]),
+  filters: z.array(screenFilterSchema).max(20).default([]),
   weights: weightsSchema,
   aiMultiplier: z.boolean().default(true),
   aiBudget: z.number().min(0).max(1.5).default(0.7),
@@ -66,6 +68,8 @@ TIME-SERIES TRANSFORMS: a filter may add a "transform" that reads the metric ove
 - mean_4q, min_4q, max_4q, range_4q   (level/stability over the last 4 quarters; "margins stable" = range_4q <= 5)
 - pctile_own    (the latest value's percentile 0-100 within the stock's own ~3-year history — "revenue growth near its historic low" = <= 20)
 Examples: "revenue decline slowing" → {"field":"rev_growth_yoy_q","transform":"streak_qtrs","op":">=","value":2}; "gross margin expanding for 2+ quarters" → {"field":"gross_margin","transform":"streak_qtrs","op":">=","value":2}; "FCF trending toward breakeven" → {"field":"fcf_margin","transform":"slope_4q","op":">","value":0}. Use a transform ONLY when the brief speaks about change over time / trends / streaks / stability; plain level statements keep plain filters.
+
+OR GROUPS: when the brief says "either X or Y" / "at least one of", emit ONE filter of shape {"any":[filter,filter,...]} (2-4 plain filters; no nesting). The group passes if ANY branch is true, and combines with the other filters as usual (everything else stays AND). Example: "either FCF improving two quarters or revenue growth accelerating two quarters" → {"any":[{"field":"fcf_improving_qtrs","op":">=","value":2},{"field":"rev_yoy_accel_qtrs","op":">=","value":2}]}. Use a group ONLY for genuine alternatives; independent requirements stay separate filters.
 
 Common US GICS-ish sectors you may reference for sector filters: "Health Technology", "Technology Services", "Electronic Technology", "Finance", "Retail Trade", "Consumer Services", "Producer Manufacturing", "Energy Minerals", "Commercial Services".
 
@@ -121,8 +125,19 @@ export async function POST(req: Request) {
       aiMultiplier?: unknown;
       aiBudget?: unknown;
     };
-    const filters: Filter[] = [];
+    const filters: ScreenFilter[] = [];
     for (const f of raw.filters ?? []) {
+      // OR group: validate each branch; keep the group when ≥ 2 survive.
+      const maybeAny = (f as { any?: unknown[] })?.any;
+      if (Array.isArray(maybeAny)) {
+        const branches: Filter[] = [];
+        for (const sub of maybeAny) {
+          const r = filterSchema.safeParse(sub);
+          if (r.success && FILTER_FIELDS.includes(r.data.field)) branches.push(r.data);
+        }
+        if (branches.length >= 2) filters.push({ any: branches.slice(0, 4) });
+        continue;
+      }
       const r = filterSchema.safeParse(f);
       if (r.success && FILTER_FIELDS.includes(r.data.field)) filters.push(r.data);
     }

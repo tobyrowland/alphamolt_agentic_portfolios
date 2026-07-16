@@ -243,6 +243,16 @@ in the Advanced row; chips + sliders are transform-aware (`metaForFilter`).
 `/api/compile-brief` knows the vocabulary, so trend/streak/stability language
 in a brief compiles to transform filters.
 
+**OR groups.** A filter slot can be `{any: [filter, …]}` (2–4 plain filters,
+one level deep): the name passes the slot when ANY branch matches — "FCF
+improving 2q OR revenue growth accelerating 2q" — and the group ANDs with the
+other slots like any chip. Standard missing-datum rule per branch (a name
+missing every branch's datum fails the group). Evaluated identically in both
+scorers (`score.ts matchesScreenFilter` / `screen.py _matches`); built in the
+UI via "+ add filter → Either / or (any of)…" (`OrGroupAdd`), rendered as one
+combined chip (`OrChip`); the brief compiler emits groups for "either X or Y"
+language. Branches may carry transforms.
+
 ### screen.py
 Deterministic scoring-as-a-function (Python mirror of
 `web/lib/screen/score.ts`). Reads Level 0 via the `screen_facts()` RPC +

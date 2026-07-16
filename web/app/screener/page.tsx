@@ -52,7 +52,9 @@ export async function generateMetadata({
 
   // Index curated house presets + sector screens; noindex arbitrary custom
   // permutations (brief §7) so we don't mint near-infinite low-value URLs.
-  const house = isHousePreset(config) && !config.filters.some((f) => f.field === "sector");
+  const house =
+    isHousePreset(config) &&
+    !config.filters.some((f) => "field" in f && f.field === "sector");
   const sector = sp.sector;
   const presetMeta = config.preset ? PRESETS[config.preset] : undefined;
 
