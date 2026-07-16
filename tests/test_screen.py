@@ -97,6 +97,70 @@ class TestFilters(unittest.TestCase):
         self.assertEqual([r["ticker"] for r in out], ["SAAS"])
 
 
+class TestOrFilters(unittest.TestCase):
+    """OR groups: {"any": [...]} passes when ANY branch matches; groups AND
+    with the other filters. Mirrors score.ts matchesScreenFilter."""
+
+    def test_either_branch_passes(self):
+        rows = facts(
+            {"ticker": "FCFONLY", "fcf_improving_qtrs": 3, "rev_yoy_accel_qtrs": 0},
+            {"ticker": "REVONLY", "fcf_improving_qtrs": 0, "rev_yoy_accel_qtrs": 2},
+            {"ticker": "NEITHER", "fcf_improving_qtrs": 1, "rev_yoy_accel_qtrs": 1},
+        )
+        out = screen.apply_filters(rows, [{"any": [
+            {"field": "fcf_improving_qtrs", "op": ">=", "value": 2},
+            {"field": "rev_yoy_accel_qtrs", "op": ">=", "value": 2},
+        ]}])
+        self.assertEqual({r["ticker"] for r in out}, {"FCFONLY", "REVONLY"})
+
+    def test_missing_data_on_all_branches_fails_group(self):
+        rows = facts({"ticker": "NODATA"})
+        out = screen.apply_filters(rows, [{"any": [
+            {"field": "fcf_improving_qtrs", "op": ">=", "value": 2},
+            {"field": "rev_yoy_accel_qtrs", "op": ">=", "value": 2},
+        ]}])
+        self.assertEqual(out, [])
+
+    def test_group_ands_with_plain_filters(self):
+        rows = facts(
+            {"ticker": "BOTH", "ps": 5, "fcf_improving_qtrs": 3},
+            {"ticker": "CHEAPONLY", "ps": 5, "fcf_improving_qtrs": 0,
+             "rev_yoy_accel_qtrs": 0},
+            {"ticker": "RICHINFLECT", "ps": 30, "fcf_improving_qtrs": 3},
+        )
+        out = screen.apply_filters(rows, [
+            {"field": "ps", "op": "<=", "value": 15},
+            {"any": [
+                {"field": "fcf_improving_qtrs", "op": ">=", "value": 2},
+                {"field": "rev_yoy_accel_qtrs", "op": ">=", "value": 2},
+            ]},
+        ])
+        self.assertEqual([r["ticker"] for r in out], ["BOTH"])
+
+    def test_transform_branch_inside_group(self):
+        # A branch may carry a time-series transform (migration 076): "revenue
+        # up 2 quarters in a row OR FCF streak ≥ 2".
+        rows = facts(
+            {"ticker": "REVSTREAK", "fcf_improving_qtrs": 0,
+             "quarters": {"revenue": [120, 110, 100, 100]}},
+            {"ticker": "FLAT", "fcf_improving_qtrs": 0,
+             "quarters": {"revenue": [100, 100, 100, 100]}},
+        )
+        out = screen.apply_filters(rows, [{"any": [
+            {"field": "revenue", "op": ">=", "value": 2, "transform": "streak_qtrs"},
+            {"field": "fcf_improving_qtrs", "op": ">=", "value": 2},
+        ]}])
+        self.assertEqual([r["ticker"] for r in out], ["REVSTREAK"])
+
+    def test_malformed_branches_ignored(self):
+        rows = facts({"ticker": "A", "fcf_improving_qtrs": 3})
+        out = screen.apply_filters(rows, [{"any": [
+            "not-a-filter",
+            {"field": "fcf_improving_qtrs", "op": ">=", "value": 2},
+        ]}])
+        self.assertEqual([r["ticker"] for r in out], ["A"])
+
+
 class TestPercentiles(unittest.TestCase):
     def test_basic(self):
         self.assertEqual(screen._percentiles([1, 2, 3, 4]), [0.25, 0.5, 0.75, 1.0])

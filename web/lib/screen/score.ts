@@ -16,7 +16,8 @@
  * Python buyer ranks the identical top N (the parity constraint, brief §7).
  */
 
-import type { Filter, ScreenConfig } from "@/lib/screen/config";
+import type { Filter, ScreenConfig, ScreenFilter } from "@/lib/screen/config";
+import { isOrFilter } from "@/lib/screen/config";
 import {
   AI_BUDGET_DEFAULT,
   AI_BUDGET_MAX_VALUE,
@@ -504,9 +505,21 @@ function matchesFilter(row: ScreenFacts, f: Filter): boolean {
   }
 }
 
-export function applyFilters(facts: ScreenFacts[], filters: Filter[]): ScreenFacts[] {
+/** One filter slot: a plain filter, or an OR group ({any: [...]}) that passes
+ *  when ANY branch matches. Groups follow the standard missing-datum rule per
+ *  branch, so a name missing every branch's datum fails the group. MUST match
+ *  screen.py _matches. */
+function matchesScreenFilter(row: ScreenFacts, f: ScreenFilter): boolean {
+  if (isOrFilter(f)) return f.any.some((sub) => matchesFilter(row, sub));
+  return matchesFilter(row, f);
+}
+
+export function applyFilters(
+  facts: ScreenFacts[],
+  filters: ScreenFilter[],
+): ScreenFacts[] {
   if (!filters.length) return facts;
-  return facts.filter((row) => filters.every((f) => matchesFilter(row, f)));
+  return facts.filter((row) => filters.every((f) => matchesScreenFilter(row, f)));
 }
 
 export interface ScreenResult {

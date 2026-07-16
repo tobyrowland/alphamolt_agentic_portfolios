@@ -23,14 +23,18 @@ import {
   TRANSFORM_LABELS,
   encodeConfig,
   filterChipLabel,
+  isOrFilter,
   metaForFilter,
+  screenFilterLabel,
   newFilterFor,
   presetConfig,
   screenConfigSchema,
   type Filter,
   type FilterField,
   type FilterOp,
+  type OrFilter,
   type ScreenConfig,
+  type ScreenFilter,
   type Transform,
 } from "@/lib/screen/config";
 import {
@@ -283,6 +287,8 @@ export default function ScreenerClient({
   const [needSignInToSave, setNeedSignInToSave] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Either/or group builder (OR filters) — opened from the add-filter menu.
+  const [orOpen, setOrOpen] = useState(false);
   const [visible, setVisible] = useState(SSR_ROWS);
   // View filters (redesign brief §3/§4) — purely client-side, never bust cache.
   const [view, setView] = useState<"all" | "researched">("all");
@@ -833,7 +839,11 @@ export default function ScreenerClient({
   }
 
   function setFilter(i: number, p: Partial<Filter>) {
-    patch({ filters: config.filters.map((f, idx) => (idx === i ? { ...f, ...p } : f)) as Filter[] });
+    patch({
+      filters: config.filters.map((f, idx) =>
+        idx === i ? { ...f, ...p } : f,
+      ) as ScreenFilter[],
+    });
   }
   function removeFilter(i: number) {
     patch({ filters: config.filters.filter((_, idx) => idx !== i) });
@@ -851,6 +861,7 @@ export default function ScreenerClient({
     if (
       config.filters.some(
         (f) =>
+          !isOrFilter(f) &&
           f.field === field &&
           f.op === "!=" &&
           String(f.value).toLowerCase() === v.toLowerCase(),
@@ -862,8 +873,14 @@ export default function ScreenerClient({
 
   // Dedupe key includes the transform (migration 076) so e.g. a plain
   // "Gross margin ≥ 40" chip doesn't hide the "Gross margin expanding" entry.
+  // OR groups never dedupe menu entries (their branches are alternatives).
   const usedFields = useMemo(
-    () => new Set(config.filters.map((f) => `${f.field}|${f.transform ?? ""}`)),
+    () =>
+      new Set(
+        config.filters
+          .filter((f): f is Filter => !isOrFilter(f))
+          .map((f) => `${f.field}|${f.transform ?? ""}`),
+      ),
     [config.filters],
   );
   // "Run as a portfolio" applies this screen as the portfolio's selection
@@ -1012,16 +1029,20 @@ export default function ScreenerClient({
           Filters
         </span>
 
-        {config.filters.map((f, i) => (
-          <FilterChip
-            key={`${f.field}-${i}`}
-            filter={f}
-            sectors={sectors}
-            industries={industries}
-            onChange={(p) => setFilter(i, p)}
-            onRemove={() => removeFilter(i)}
-          />
-        ))}
+        {config.filters.map((f, i) =>
+          isOrFilter(f) ? (
+            <OrChip key={`or-${i}`} group={f} onRemove={() => removeFilter(i)} />
+          ) : (
+            <FilterChip
+              key={`${f.field}-${i}`}
+              filter={f}
+              sectors={sectors}
+              industries={industries}
+              onChange={(p) => setFilter(i, p)}
+              onRemove={() => removeFilter(i)}
+            />
+          ),
+        )}
 
         {/* + add filter menu */}
         <details
@@ -1057,9 +1078,20 @@ export default function ScreenerClient({
               type="button"
               onClick={() => {
                 setAddOpen(false);
+                setOrOpen((v) => !v);
+              }}
+              title="Combine two or more conditions so a stock passes if ANY of them is true — e.g. FCF improving 2q OR revenue growth accelerating 2q."
+              className="block w-full text-left font-mono text-[11px] text-text-muted/70 hover:text-text hover:bg-white/5 rounded px-2 py-1.5 border-t border-white/10 mt-1 pt-2"
+            >
+              Either / or (any of)…
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAddOpen(false);
                 setAdvancedOpen((v) => !v);
               }}
-              className="block w-full text-left font-mono text-[11px] text-text-muted/70 hover:text-text hover:bg-white/5 rounded px-2 py-1.5 border-t border-white/10 mt-1 pt-2"
+              className="block w-full text-left font-mono text-[11px] text-text-muted/70 hover:text-text hover:bg-white/5 rounded px-2 py-1.5"
             >
               Advanced (field · operator · value)…
             </button>
@@ -1080,11 +1112,11 @@ export default function ScreenerClient({
           {config.filters.length > 0 ? (
             config.filters.map((f, i) => (
               <span
-                key={`${f.field}-${i}`}
-                title={metaForFilter(f)?.help}
+                key={i}
+                title={isOrFilter(f) ? "Passes if ANY of these is true" : metaForFilter(f)?.help}
                 className="font-mono text-[11px] text-text border border-white/10 bg-white/[0.03] rounded-md px-2.5 py-1.5"
               >
-                {filterChipLabel(f)}
+                {screenFilterLabel(f)}
               </span>
             ))
           ) : (
@@ -1110,6 +1142,17 @@ export default function ScreenerClient({
             setAdvancedOpen(false);
             patch({ filters: [...config.filters, f] });
           }}
+        />
+      )}
+
+      {/* Either/or group builder (OR filters). */}
+      {customSelected && orOpen && (
+        <OrGroupAdd
+          onAdd={(g) => {
+            setOrOpen(false);
+            patch({ filters: [...config.filters, g] });
+          }}
+          onCancel={() => setOrOpen(false)}
         />
       )}
 
@@ -1826,6 +1869,167 @@ function AdvancedAdd({ onAdd }: { onAdd: (f: Filter) => void }) {
       >
         Add
       </button>
+    </div>
+  );
+}
+
+/** An OR-group chip: shows the branches joined with OR; removable as one unit
+ *  (edit = remove + rebuild — branches share one slot, so per-branch sliders
+ *  would be ambiguous). */
+function OrChip({ group, onRemove }: { group: OrFilter; onRemove: () => void }) {
+  return (
+    <span
+      title="Passes if ANY of these is true — the group counts as one filter alongside the others."
+      className="font-mono text-[11px] text-text border border-[var(--color-cyan)]/35 bg-[var(--color-cyan)]/[0.05] rounded-md px-2.5 py-1.5 inline-flex items-center gap-2"
+    >
+      <span>
+        {group.any.map((sub, i) => (
+          <span key={i}>
+            {i > 0 && (
+              <span className="text-[var(--color-cyan)] px-1">OR</span>
+            )}
+            {filterChipLabel(sub)}
+          </span>
+        ))}
+      </span>
+      <span
+        role="button"
+        tabIndex={0}
+        aria-label="Remove filter group"
+        onClick={onRemove}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onRemove();
+          }
+        }}
+        className="text-text-muted hover:text-text cursor-pointer"
+      >
+        ✕
+      </span>
+    </span>
+  );
+}
+
+// Branch choices for the either/or builder: the friendly numeric filters
+// (text fields excluded — "sector A OR sector B" is already two chips away
+// via exclude, and mixing text ops into the group panel muddies it).
+const OR_BRANCH_CHOICES = NAMED_FILTERS.filter(
+  (nf) => !TEXT_FIELDS.has(nf.field),
+);
+
+/** Builder for an either/or group: 2–4 branches, each a friendly named filter
+ *  with its implied operator + an editable threshold. */
+function OrGroupAdd({
+  onAdd,
+  onCancel,
+}: {
+  onAdd: (g: OrFilter) => void;
+  onCancel: () => void;
+}) {
+  const seed = (idx: number): Filter => {
+    const nf = OR_BRANCH_CHOICES[idx % OR_BRANCH_CHOICES.length];
+    return newFilterFor(nf.field, nf.transform);
+  };
+  // Seed with the canonical turnaround pair — FCF improving OR growth
+  // accelerating — so the panel demonstrates itself.
+  const [branches, setBranches] = useState<Filter[]>(() => {
+    const fcf = OR_BRANCH_CHOICES.findIndex((nf) => nf.field === "fcf_improving_qtrs");
+    const rev = OR_BRANCH_CHOICES.findIndex((nf) => nf.field === "rev_yoy_accel_qtrs");
+    return [seed(fcf >= 0 ? fcf : 0), seed(rev >= 0 ? rev : 1)];
+  });
+
+  const setBranch = (i: number, f: Filter) =>
+    setBranches((bs) => bs.map((b, idx) => (idx === i ? f : b)));
+
+  return (
+    <div className="mb-2 rounded-lg border border-white/10 bg-black/20 p-2">
+      <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-text-muted mb-1.5">
+        Either / or — a stock passes if <span className="text-text">any</span>{" "}
+        of these is true
+      </div>
+      {branches.map((b, i) => {
+        const m = metaForFilter(b);
+        return (
+          <div key={i} className="flex items-center gap-2 flex-wrap mb-1.5">
+            <span className="font-mono text-[10px] text-[var(--color-cyan)] w-6 text-right">
+              {i === 0 ? "" : "OR"}
+            </span>
+            <select
+              aria-label={`Condition ${i + 1}`}
+              value={`${b.field}|${b.transform ?? ""}`}
+              onChange={(e) => {
+                const [field, transform] = e.target.value.split("|");
+                setBranch(
+                  i,
+                  newFilterFor(
+                    field as FilterField,
+                    (transform || undefined) as Transform | undefined,
+                  ),
+                );
+              }}
+              className="bg-black/40 border border-white/10 rounded px-1.5 py-1 text-xs text-text"
+            >
+              {OR_BRANCH_CHOICES.map((nf) => (
+                <option
+                  key={`${nf.field}|${nf.transform ?? ""}`}
+                  value={`${nf.field}|${nf.transform ?? ""}`}
+                  className="bg-black"
+                >
+                  {nf.label}
+                </option>
+              ))}
+            </select>
+            <span className="font-mono text-[11px] text-text-muted">{b.op}</span>
+            <input
+              aria-label={`Condition ${i + 1} value`}
+              value={String(b.value)}
+              onChange={(e) =>
+                setBranch(i, { ...b, value: Number(e.target.value) || 0 })
+              }
+              className="w-16 bg-black/40 border border-white/10 rounded px-1.5 py-1 text-xs text-text"
+            />
+            {m?.unit && (
+              <span className="font-mono text-[10.5px] text-text-muted">{m.unit}</span>
+            )}
+            {branches.length > 2 && (
+              <button
+                type="button"
+                aria-label={`Remove condition ${i + 1}`}
+                onClick={() => setBranches((bs) => bs.filter((_, idx) => idx !== i))}
+                className="font-mono text-[11px] text-text-muted hover:text-text"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-3 mt-1">
+        {branches.length < 4 && (
+          <button
+            type="button"
+            onClick={() => setBranches((bs) => [...bs, seed(bs.length)])}
+            className="font-mono text-[10.5px] text-text-muted hover:text-text"
+          >
+            + or…
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onAdd({ any: branches })}
+          className="font-mono text-[11px] rounded-md border border-[var(--color-cyan)]/50 text-[var(--color-cyan)] px-2.5 py-1 hover:bg-[var(--color-cyan)]/10"
+        >
+          Add either/or filter
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="font-mono text-[10.5px] text-text-muted hover:text-text"
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
