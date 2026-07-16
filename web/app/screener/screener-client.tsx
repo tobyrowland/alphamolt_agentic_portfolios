@@ -71,6 +71,9 @@ interface Row {
   above_low_26w: number | null;
   ps_vs_median: number | null;
   rev_growth_qoq: number | null;
+  rev_growth_yoy_q: number | null;
+  rev_yoy_accel: number | null;
+  rev_yoy_accel_qtrs: number | null;
   gm_delta_qoq: number | null;
   gm_expansion_qtrs: number | null;
   rev_qoq_accel: number | null;
@@ -196,7 +199,7 @@ const WEIGHT_HELP: Record<"quality" | "value" | "momentum" | "inflection", strin
   momentum:
     "Momentum — trailing 52-week return vs SPY (alpha), collared so falling knives and blow-off tops don't dominate. Raise it to favour names beating the market.",
   inflection:
-    "Inflection — what changed last quarter: QoQ revenue-growth acceleration, gross-margin change and FCF-margin change, blended. Raise it to favour businesses whose operating trend is turning (the turnaround signal); names without quarterly data yet rank neutral.",
+    "Inflection — what changed last quarter: YoY quarterly revenue-growth acceleration (vs the same quarter last year, so seasonality doesn't read as a turn), gross-margin change and FCF-margin change, blended. Raise it to favour businesses whose operating trend is turning (the turnaround signal); names without quarterly data yet rank neutral.",
 };
 const RANKING_HELP =
   "Each name's Score is a single number: a cross-sectional z-score blend of Quality, Value, Momentum and Inflection (the 'base'), adjusted by the AI's read of durability, shown as a universe percentile. A research tool, not a recommendation.";

@@ -44,7 +44,11 @@ FILTER_FIELDS = {
     # Inflection gate: how many of the three QoQ streaks (GM expanding, QoQ
     # revenue growth improving, FCF margin improving) are ≥ 2 quarters (0–3).
     "inflection_signals",
-    # Quarter-on-quarter facts, individually filterable (migration 075):
+    # YoY quarterly growth family (migration 077) — each quarter vs the SAME
+    # quarter last year, so seasonality never reads as growth/inflection:
+    "rev_growth_yoy_q", "rev_yoy_accel", "rev_yoy_accel_qtrs",
+    # Sequential quarter-on-quarter facts (migration 075) — kept filterable
+    # for saved configs; superseded by the YoY family in the friendly menu:
     "rev_growth_qoq", "rev_qoq_accel", "rev_accel_qtrs",
     "gm_delta_qoq", "gm_expansion_qtrs", "fcf_delta_qoq", "fcf_improving_qtrs",
     # Survivability gate (hard filters, never scored):
@@ -72,6 +76,7 @@ SERIES_FIELDS = {
     "net_margin": "net_margin",
     "fcf_margin": "fcf_margin",
     "rev_growth_qoq": "rev_growth_qoq",
+    "rev_growth_yoy_q": "rev_growth_yoy",
     "revenue": "revenue",
 }
 # Fields with no scalar matview column — a transform-less filter on one is a
@@ -420,11 +425,17 @@ def _lens_values(row: dict) -> tuple[float | None, float | None, float | None, f
     # Momentum: collared alpha vs SPY (perf_52w_vs_spy = ret_52w − SPY 52w).
     perf = _f(row.get("perf_52w_vs_spy"))
     xm = None if perf is None else max(MOM_FLOOR, min(MOM_CAP, perf))
-    # Inflection (migration 074): collared blend of the latest QoQ deltas —
-    # revenue-growth acceleration, gross-margin change, FCF-margin change.
-    # Null only when ALL three are missing (a missing component contributes 0),
-    # so uncovered names sit at the neutral median instead of sinking.
-    rqa = _f(row.get("rev_qoq_accel"))
+    # Inflection (migration 074): collared blend of the latest quarterly
+    # deltas — revenue-growth acceleration, gross-margin change, FCF-margin
+    # change. Null only when ALL three are missing (a missing component
+    # contributes 0), so uncovered names sit at the neutral median.
+    # Revenue acceleration is YoY-quarterly based (migration 077 — vs the same
+    # quarter last year, so seasonality never reads as inflection), falling
+    # back to the legacy sequential value while the rotation repopulates.
+    # MUST match web/lib/screen/score.ts.
+    rqa = _f(row.get("rev_yoy_accel"))
+    if rqa is None:
+        rqa = _f(row.get("rev_qoq_accel"))
     gmd = _f(row.get("gm_delta_qoq"))
     fcd = _f(row.get("fcf_delta_qoq"))
     if rqa is None and gmd is None and fcd is None:

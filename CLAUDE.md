@@ -201,6 +201,14 @@ but never projected) and makes the whole QoQ family individually filterable —
 `rev_growth_qoq`, `rev_qoq_accel`, `rev_accel_qtrs`, `gm_delta_qoq`,
 `gm_expansion_qtrs`, `fcf_delta_qoq`, `fcf_improving_qtrs` — so a screen can
 say "QoQ growth ≥ 5% and improving for 2 straight quarters" directly.
+**Migration 077 rebased revenue growth on the YoY-quarterly read** — each
+quarter vs the SAME quarter last year, so seasonality never reads as growth or
+inflection: new facts `rev_growth_yoy_q` / `rev_yoy_accel` /
+`rev_yoy_accel_qtrs` (plus a `rev_growth_yoy` series in `quarterly_metrics`
+for transforms) now drive `inflection_signals`, the Inflection lens's revenue
+input (sequential fallback while the rotation repopulates) and the friendly
+filter menu; the sequential family stays filterable (Advanced) for saved
+configs but is labelled as seasonal.
 
 **Filter transforms (migration 076).** Filters can now do time-series math
 without a bespoke column per idea. The quarterly history the EODHD fetch used

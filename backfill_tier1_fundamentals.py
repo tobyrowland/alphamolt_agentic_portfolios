@@ -72,6 +72,11 @@ FUND_FIELDS = {
     # compute_survivability from the same EODHD statements.
     "gm_delta_qoq": "gm_delta_qoq",
     "gm_expansion_qtrs": "gm_expansion_qtrs",
+    # YoY quarterly growth family (migration 077) — the inflection signal's
+    # basis (sequential QoQ kept below for back-compat filters).
+    "rev_growth_yoy_q": "rev_growth_yoy_q",
+    "rev_yoy_accel": "rev_yoy_accel",
+    "rev_yoy_accel_qtrs": "rev_yoy_accel_qtrs",
     "rev_qoq_accel": "rev_qoq_accel",
     "rev_accel_qtrs": "rev_accel_qtrs",
     "fcf_delta_qoq": "fcf_delta_qoq",

@@ -18,7 +18,8 @@ def q(date, **fields):
 
 
 DATES = ["2026-03-31", "2025-12-31", "2025-09-30", "2025-06-30",
-         "2025-03-31", "2024-12-31", "2024-09-30", "2024-06-30", "2024-03-31"]
+         "2025-03-31", "2024-12-31", "2024-09-30", "2024-06-30", "2024-03-31",
+         "2023-12-31", "2023-09-30", "2023-06-30", "2023-03-31"]
 
 
 class ImprovementStreakTests(unittest.TestCase):
@@ -57,13 +58,34 @@ class ComputeInflectionTests(unittest.TestCase):
         self.assertAlmostEqual(out["gm_delta_qoq"], 2.0)
         self.assertEqual(out["inflection_signals"], 1)  # GM only; no FCF data
 
-    def test_qoq_growth_improving_while_still_shrinking(self):
-        # Revenue still down YoY but the QoQ decline is easing: the classic
-        # turnaround shape. QoQ growth series: -2%, -5%, -10% (newest first).
+    def test_legacy_sequential_facts_still_computed(self):
+        # The sequential family (074/075) stays populated for saved configs —
+        # but with only 5 quarters the YoY basis can't be assessed, so it no
+        # longer produces an inflection signal (migration 077).
         revs = [98, 100, 105.26, 116.96, 120]
         out = compute_inflection(self._quarters(revs), [])
         self.assertEqual(out["rev_accel_qtrs"], 2)
         self.assertGreater(out["rev_qoq_accel"], 0)
+        self.assertIsNone(out["rev_yoy_accel_qtrs"])
+        self.assertIsNone(out["inflection_signals"])
+
+    def test_yoy_growth_ignores_seasonality(self):
+        # A seasonal business (big Q4, weak Q1) with YoY quarterly growth
+        # steadily accelerating: the sequential read whipsaws with the seasons,
+        # the YoY read sees the clean acceleration — and the inflection signal
+        # follows the YoY read (migration 077).
+        base = [148.68, 143.84, 139.08, 134.4, 118, 116, 114, 112,
+                100, 100, 100, 100]
+        season = [1.3, 0.9, 1.0, 1.0]
+        revs = [round(season[i % 4] * b, 4) for i, b in enumerate(base)]
+        out = compute_inflection(self._quarters(revs), [])
+        # YoY growth: 26% → 24% → 22% → 20% … (season cancels: same quarter
+        # position a year apart shares the multiplier).
+        self.assertAlmostEqual(out["rev_growth_yoy_q"], 26.0, places=1)
+        self.assertAlmostEqual(out["rev_yoy_accel"], 2.0, places=1)
+        self.assertEqual(out["rev_yoy_accel_qtrs"], 7)
+        # The sequential read is seasonal noise (Q4 spike then Q1 drop).
+        self.assertLessEqual(out["rev_accel_qtrs"], 1)
         self.assertEqual(out["inflection_signals"], 1)
 
     def test_fcf_matched_by_period_date(self):
@@ -87,14 +109,20 @@ class ComputeInflectionTests(unittest.TestCase):
         self.assertIsNone(out["gm_delta_qoq"])
 
     def test_all_three_signals_count(self):
-        revs = [130, 115, 105, 100, 98]   # QoQ growth accelerating
-        gps = [78, 63, 52, 48, 47]        # GM expanding every quarter
+        # YoY quarterly growth accelerating (needs 6+ quarters so consecutive
+        # YoY steps are assessable), GM expanding, FCF margin improving.
+        revs = [148.68, 143.84, 139.08, 134.4, 118, 116, 114, 112,
+                100, 100, 100, 100]
+        gps = [round(r * (60 - i) / 100, 4) for i, r in enumerate(revs)]
         quarterly = self._quarters(revs, gps)
-        cf = [(DATES[0], {"freeCashFlow": 13}),
-              (DATES[1], {"freeCashFlow": 5.75}),
-              (DATES[2], {"freeCashFlow": 1.05}),
-              (DATES[3], {"freeCashFlow": -2})]
+        cf = [(DATES[0], {"freeCashFlow": 14.9}),
+              (DATES[1], {"freeCashFlow": 7.2}),
+              (DATES[2], {"freeCashFlow": 1.4}),
+              (DATES[3], {"freeCashFlow": -2.7})]
         out = compute_inflection(quarterly, cf)
+        self.assertGreaterEqual(out["rev_yoy_accel_qtrs"], 2)
+        self.assertGreaterEqual(out["gm_expansion_qtrs"], 2)
+        self.assertGreaterEqual(out["fcf_improving_qtrs"], 2)
         self.assertEqual(out["inflection_signals"], 3)
 
 

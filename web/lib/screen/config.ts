@@ -46,7 +46,14 @@ export const FILTER_FIELDS = [
   // revenue growth improving, FCF margin improving) are ≥ 2 quarters (0–3).
   "inflection_signals",
   // Quarter-on-quarter facts, individually filterable (migration 075):
-  "rev_growth_qoq", // latest QoQ revenue growth %
+  // YoY quarterly growth family (migration 077) — each quarter vs the SAME
+  // quarter last year, so seasonality never reads as growth/inflection:
+  "rev_growth_yoy_q", // latest quarter's revenue vs the year-ago quarter, %
+  "rev_yoy_accel", // change in YoY quarterly growth vs the prior quarter, pp
+  "rev_yoy_accel_qtrs", // consecutive quarters of improving YoY growth
+  // Sequential quarter-on-quarter family (migration 075) — kept filterable
+  // for saved configs; superseded by the YoY family in the friendly menu:
+  "rev_growth_qoq", // latest QoQ revenue growth % (vs the immediately-prior quarter)
   "rev_qoq_accel", // latest QoQ growth minus prior QoQ growth, pp
   "rev_accel_qtrs", // consecutive quarters of improving QoQ growth
   "gm_delta_qoq", // latest quarterly gross margin minus prior, pp
@@ -239,7 +246,7 @@ export const PRESETS: Record<string, Preset> = {
     config: {
       ...base,
       brief:
-        "Turnarounds, not value traps. Washout gate: price 40–70% off the 52-week high but at least 10% above the 6-month low (a base forming, not still falling), and P/S below the stock's own 12-month median. Then rank almost entirely on operating inflection — gross margin expanding, QoQ revenue growth improving, FCF trending toward breakeven — and lean harder than usual on the AI research card's trajectory read.",
+        "Turnarounds, not value traps. Washout gate: price 40–70% off the 52-week high but at least 10% above the 6-month low (a base forming, not still falling), and P/S below the stock's own 12-month median. Then rank almost entirely on operating inflection — gross margin expanding, quarterly revenue growth improving year-on-year, FCF trending toward breakeven — and lean harder than usual on the AI research card's trajectory read.",
       filters: [
         { field: "drawdown_52w", op: ">=", value: 40 },
         { field: "drawdown_52w", op: "<=", value: 70 },
@@ -371,12 +378,15 @@ export const METRIC_META: Record<string, MetricMeta> = {
   drawdown_52w: { field: "drawdown_52w", label: "% off 52-week high", unit: "%", op: ">=", min: 0, max: 90, step: 5, default: 40, help: "How far the price sits below its 52-week closing high." },
   above_low_26w: { field: "above_low_26w", label: "% above 6-month low", unit: "%", op: ">=", min: 0, max: 100, step: 5, default: 10, help: "How far the price has recovered above its 26-week closing low — a base forming, not a falling knife." },
   ps_vs_median: { field: "ps_vs_median", label: "P/S vs own median", unit: "%", op: "<=", min: -80, max: 100, step: 5, default: 0, help: "Today's P/S vs the stock's OWN 12-month median, as a signed % premium. Negative = cheaper than its usual multiple." },
-  inflection_signals: { field: "inflection_signals", label: "Inflection signals (0–3)", unit: "", op: ">=", min: 0, max: 3, step: 1, default: 1, help: "How many of the three turnaround trends — gross margin expanding, QoQ revenue growth improving, FCF margin improving — have run for 2+ consecutive quarters." },
+  inflection_signals: { field: "inflection_signals", label: "Inflection signals (0–3)", unit: "", op: ">=", min: 0, max: 3, step: 1, default: 1, help: "How many of the three turnaround trends — gross margin expanding, YoY quarterly revenue growth improving, FCF margin improving — have run for 2+ consecutive quarters." },
   // Quarter-on-quarter facts (migration 075). Labels ALWAYS name the metric —
   // deltas read in percentage points (pp), streaks in quarters (q).
-  rev_growth_qoq: { field: "rev_growth_qoq", label: "Revenue growth (QoQ)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0, help: "Latest quarter's revenue vs the quarter before it." },
-  rev_qoq_accel: { field: "rev_qoq_accel", label: "Rev growth acceleration", unit: "pp", op: ">=", min: -30, max: 30, step: 1, default: 0, help: "How much QoQ revenue growth improved on the prior quarter, in percentage points. Positive = growth speeding up (even while still negative)." },
-  rev_accel_qtrs: { field: "rev_accel_qtrs", label: "Rev growth accelerating", unit: "q", op: ">=", min: 0, max: 8, step: 1, default: 2, help: "Consecutive quarters QoQ revenue growth has improved. 2q = two straight quarters of accelerating revenue." },
+  rev_growth_yoy_q: { field: "rev_growth_yoy_q", label: "Quarterly revenue growth (YoY)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0, help: "Latest quarter's revenue vs the SAME quarter last year — seasonality-free, unlike sequential QoQ." },
+  rev_yoy_accel: { field: "rev_yoy_accel", label: "Growth acceleration (YoY)", unit: "pp", op: ">=", min: -30, max: 30, step: 1, default: 0, help: "How much YoY quarterly growth improved on the prior quarter, in percentage points. Positive = growth speeding up (even while still negative)." },
+  rev_yoy_accel_qtrs: { field: "rev_yoy_accel_qtrs", label: "Growth accelerating (YoY)", unit: "q", op: ">=", min: 0, max: 8, step: 1, default: 2, help: "Consecutive quarters YoY quarterly revenue growth has improved. 2q = two straight quarters of accelerating growth." },
+  rev_growth_qoq: { field: "rev_growth_qoq", label: "Revenue growth (seq. QoQ)", unit: "%", op: ">=", min: -50, max: 100, step: 5, default: 0, help: "Latest quarter's revenue vs the quarter immediately before it — SEASONAL; prefer the YoY quarterly growth filter." },
+  rev_qoq_accel: { field: "rev_qoq_accel", label: "Rev acceleration (seq. QoQ)", unit: "pp", op: ">=", min: -30, max: 30, step: 1, default: 0, help: "Sequential QoQ growth change vs the prior quarter — seasonal; prefer the YoY acceleration filter." },
+  rev_accel_qtrs: { field: "rev_accel_qtrs", label: "Rev accelerating (seq. QoQ)", unit: "q", op: ">=", min: 0, max: 8, step: 1, default: 2, help: "Consecutive quarters of improving sequential QoQ growth — seasonal; prefer the YoY streak filter." },
   gm_delta_qoq: { field: "gm_delta_qoq", label: "Gross margin change (QoQ)", unit: "pp", op: ">=", min: -20, max: 20, step: 1, default: 0, help: "Latest quarter's gross margin minus the prior quarter's, in percentage points." },
   gm_expansion_qtrs: { field: "gm_expansion_qtrs", label: "Gross margin expanding", unit: "q", op: ">=", min: 0, max: 8, step: 1, default: 2, help: "Consecutive quarters gross margin has expanded." },
   fcf_delta_qoq: { field: "fcf_delta_qoq", label: "FCF margin change (QoQ)", unit: "pp", op: ">=", min: -20, max: 20, step: 1, default: 0, help: "Latest quarter's free-cash-flow margin minus the prior quarter's, in percentage points." },
@@ -527,9 +537,11 @@ export const NAMED_FILTERS: {
   // Quarter-on-quarter growth (migration 075). Labels always name the metric
   // (never a bare "QoQ accel streak"); GM/FCF deltas stay advanced-only to
   // keep the menu scannable.
-  { field: "rev_growth_qoq", label: "Revenue growth (QoQ)" },
-  { field: "rev_qoq_accel", label: "Rev growth acceleration" },
-  { field: "rev_accel_qtrs", label: "Rev growth accelerating (streak)" },
+  // YoY quarterly growth (migration 077) — the sequential QoQ family stays
+  // filterable via Advanced but leaves the friendly menu (seasonality trap).
+  { field: "rev_growth_yoy_q", label: "Quarterly revenue growth (YoY)" },
+  { field: "rev_yoy_accel", label: "Growth acceleration (YoY)" },
+  { field: "rev_yoy_accel_qtrs", label: "Growth accelerating (YoY streak)" },
   { field: "gm_expansion_qtrs", label: "Gross margin expanding (streak)" },
   { field: "fcf_improving_qtrs", label: "FCF margin improving (streak)" },
   { field: "net_debt_ebitda", label: "Net debt / EBITDA" },
