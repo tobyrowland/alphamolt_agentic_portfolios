@@ -14,7 +14,12 @@ import { revalidatePath } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 import { requireUser } from "@/lib/auth/require-user";
 import { uniquePortfolioSlug } from "@/lib/slug";
-import { PRESETS, DEFAULT_PRESET, presetConfig } from "@/lib/screen/config";
+import {
+  PRESETS,
+  DEFAULT_PRESET,
+  presetConfig,
+  screenConfigSchema,
+} from "@/lib/screen/config";
 import { MAX_PAPER_PORTFOLIOS } from "@/lib/portfolios-query";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -248,6 +253,52 @@ export async function updatePortfolioDetails(input: {
   }
 
   revalidate(data.slug);
+  return { ok: true };
+}
+
+/**
+ * Save the currently-viewed screen as this portfolio's universe
+ * (portfolios.screen_config) — the explicit commit behind the Universe tab's
+ * "Save universe" button. Edits on that tab are VIEW-ONLY until saved: the
+ * buyers keep drafting from the last-saved config (screen.py reads
+ * `screen_config` at heartbeat time), so switching presets or tweaking a
+ * Custom screen never silently retargets the agents.
+ */
+export async function saveUniverseScreenConfig(input: {
+  portfolioId: string;
+  config: unknown;
+}): Promise<ActionResult> {
+  const { user } = await requireUser();
+
+  // Same zod schema the scorers use — a malformed/hand-rolled config can
+  // never become an agent's selection recipe.
+  const parsed = screenConfigSchema.safeParse(input.config);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: "That screen config looks malformed — refresh and try again.",
+    };
+  }
+
+  // Single update with the ownership check in the WHERE clause (the
+  // updatePortfolioDetails pattern — no separate lookup, no race window).
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("portfolios")
+    .update({ screen_config: parsed.data })
+    .eq("id", input.portfolioId)
+    .eq("owner_user_id", user.id)
+    .select("slug")
+    .maybeSingle();
+
+  if (error) {
+    console.error("saveUniverseScreenConfig failed:", error);
+    return { ok: false, error: "Could not save the universe. Try again." };
+  }
+  if (!data) return { ok: false, error: NOT_FOUND_ERROR };
+
+  revalidate(data.slug);
+  revalidatePath(`/portfolios/${data.slug}/universe`);
   return { ok: true };
 }
 

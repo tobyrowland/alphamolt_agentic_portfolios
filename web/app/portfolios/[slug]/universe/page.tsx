@@ -35,10 +35,11 @@ interface PageParams {
 /**
  * The Universe tab of a portfolio: the screener page, verbatim, loaded with
  * this book's saved screen (portfolios.screen_config). Owner-only — everyone
- * else is bounced to the portfolio page. Persisting a changed screen goes
- * through the screener's existing "Run this screen as a portfolio" flow,
- * which (with the pf param) applies to this book and lands back on the
- * portfolio page.
+ * else is bounced to the portfolio page. Edits here are VIEW-ONLY: the agents
+ * keep drafting from the saved config until the owner clicks "Save universe"
+ * (the save bar under the presets → saveUniverseScreenConfig). The screener's
+ * "Run this screen as a portfolio" flow (pf param) remains as the intro
+ * popout's route in.
  */
 
 // Format the screener's freshness stamp — same as web/app/screener/page.tsx.
