@@ -166,7 +166,12 @@ join to `ai_analysis`, finishing migration 053's deferred step).
 Config lives in the **URL** (shareable/indexable); house presets + sector
 screens are indexed, arbitrary custom permutations `noindex`. **Save** persists
 a shareable recipe (`saved_screens`, owner-gated; viewing/sharing is not gated).
-A portfolio's selection recipe lives in `portfolios.screen_config`.
+A portfolio's selection recipe lives in `portfolios.screen_config`, edited on
+the portfolio's Universe tab — where edits are **view-only** until the owner
+clicks **Save universe** (`saveUniverseScreenConfig`): the save bar names the
+config the agents actually pick from, lights up when the view drifts from it,
+and offers a revert. Selecting a preset or tweaking Custom never silently
+retargets the agents.
 
 **Turnaround support (migration 074).** The screener carries the turnaround
 strategy's three gates as facts + config, no new pipeline: *washout* —

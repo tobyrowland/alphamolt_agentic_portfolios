@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { saveScreen } from "@/lib/screen/saved-mutations";
+import { saveUniverseScreenConfig } from "@/lib/portfolios-mutations";
 import {
   excludeFromScreener,
   unexcludeFromScreener,
@@ -159,6 +160,24 @@ function isCustomConfig(c: ScreenConfig): boolean {
   return !c.preset || c.preset === "custom" || !PRESETS[c.preset];
 }
 
+/** Canonical form of a config for saved-vs-viewing comparison on the Universe
+ *  tab. Parsing through the schema normalises defaults and key order (the
+ *  isHousePreset pattern), so two configs compare equal iff the agents would
+ *  rank the identical universe. */
+function universeKey(c: ScreenConfig): string {
+  try {
+    return JSON.stringify(screenConfigSchema.parse(c));
+  } catch {
+    return JSON.stringify(c);
+  }
+}
+
+/** Readable name for a config in the Universe save bar. */
+function configLabel(c: ScreenConfig): string {
+  if (isCustomConfig(c)) return "a Custom screen";
+  return `the ${PRESETS[c.preset!].label} preset`;
+}
+
 // Hover explanations for the three rhead metric columns (header mouseover).
 const COL_HELP = {
   ps: "Price-to-sales — market cap ÷ trailing-12-month revenue. Lower is cheaper on sales.",
@@ -251,6 +270,12 @@ export default function ScreenerClient({
   const [signedIn, setSignedIn] = useState(false);
   const [saveLink, setSaveLink] = useState<string | null>(null);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
+  // Universe tab (portfolio context): the SAVED screen_config the agents pick
+  // from. Edits here are view-only until "Save universe" commits them — the
+  // page's initialConfig IS the saved config, so it seeds the baseline.
+  const [savedUniverse, setSavedUniverse] = useState<ScreenConfig>(initialConfig);
+  const [universeBusy, setUniverseBusy] = useState(false);
+  const [universeMsg, setUniverseMsg] = useState<string | null>(null);
   // Logged-out Save → offer a real sign-in link (not just a text nudge).
   const [needSignInToSave, setNeedSignInToSave] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -846,6 +871,33 @@ export default function ScreenerClient({
     pfCtx ? `&pf=${pfCtx.id}` : ""
   }`;
 
+  // Universe tab: does the viewed config differ from the saved one the agents
+  // actually pick from? Drives the Save-universe bar below the presets.
+  const universeDirty =
+    !!pfCtx && universeKey(config) !== universeKey(savedUniverse);
+
+  async function onSaveUniverse() {
+    if (!pfCtx || universeBusy || !universeDirty) return;
+    setUniverseBusy(true);
+    setUniverseMsg(null);
+    try {
+      const res = await saveUniverseScreenConfig({
+        portfolioId: pfCtx.id,
+        config,
+      });
+      if (res.ok) {
+        setSavedUniverse(config);
+        setUniverseMsg("Saved — agents pick from this screen at their next rebalance.");
+      } else {
+        setUniverseMsg(res.error);
+      }
+    } catch {
+      setUniverseMsg("Could not save the universe. Try again.");
+    } finally {
+      setUniverseBusy(false);
+    }
+  }
+
   const card = "rounded-xl border border-white/10 bg-white/[0.02]";
 
   return (
@@ -876,6 +928,78 @@ export default function ScreenerClient({
         onSelect={selectPreset}
         onSelectCustom={selectCustom}
       />
+
+      {/* Universe save bar (portfolio context only): edits on this tab are
+          view-only — the agents keep drafting from the SAVED screen_config
+          until "Save universe" commits the viewed one. The bar always shows
+          which config the agents are on, and lights up when the view drifts. */}
+      {pfCtx && (
+        <div
+          className={`mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 ${
+            universeDirty
+              ? "border-[var(--color-cyan)]/50 bg-[var(--color-cyan)]/[0.05]"
+              : "border-white/10 bg-white/[0.02]"
+          }`}
+        >
+          <span className="font-mono text-[11px] text-text-muted min-w-0">
+            {universeDirty ? (
+              <>
+                Viewing <span className="text-text">{configLabel(config)}</span>{" "}
+                — {pfCtx.name}&apos;s agents still pick from{" "}
+                <span className="text-text">{configLabel(savedUniverse)}</span>{" "}
+                until you save.
+              </>
+            ) : (
+              <>
+                <span aria-hidden className="text-green">✓</span>{" "}
+                {pfCtx.name}&apos;s agents pick from{" "}
+                <span className="text-text">{configLabel(savedUniverse)}</span>{" "}
+                — this view is the saved universe.
+              </>
+            )}
+          </span>
+          <span className="flex items-center gap-3 shrink-0">
+            {universeMsg && (
+              <span
+                aria-live="polite"
+                className="font-mono text-[10.5px] text-text-muted"
+              >
+                {universeMsg}
+              </span>
+            )}
+            {universeDirty && (
+              <button
+                type="button"
+                onClick={() => {
+                  setConfig(savedUniverse);
+                  setUniverseMsg(null);
+                }}
+                title="Discard the viewed changes and go back to the saved universe"
+                className="font-mono text-[10.5px] text-text-muted hover:text-text"
+              >
+                Revert
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={!universeDirty || universeBusy}
+              onClick={onSaveUniverse}
+              title={
+                universeDirty
+                  ? "Make this screen the universe your agents pick from"
+                  : "The saved universe already matches this view"
+              }
+              className={`font-mono text-[11px] rounded-md px-3 py-1.5 border transition-colors ${
+                universeDirty
+                  ? "border-[var(--color-cyan)]/60 text-[var(--color-cyan)] hover:bg-[var(--color-cyan)]/10"
+                  : "border-white/10 text-text-muted/50 cursor-not-allowed"
+              }`}
+            >
+              {universeBusy ? "Saving…" : "Save universe"}
+            </button>
+          </span>
+        </div>
+      )}
 
       {/* Screen bar: friendly filter chips + collapsed weighting on the right.
           Only shown in Custom mode — house presets define their own filters. */}
