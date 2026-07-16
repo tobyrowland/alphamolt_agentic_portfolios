@@ -8,10 +8,12 @@ import HomeRoster from "@/components/home-roster";
 import HomeThesisDrift from "@/components/home-thesis-drift";
 import WotBadge from "@/components/wot-badge";
 import HomePrompt from "@/components/home-prompt";
+import { HeroCta, HeroViewTracker } from "@/components/hero-analytics";
 import {
   getHomeLeaderboard,
   type HomeLeaderboardResult,
 } from "@/lib/home-leaderboard-query";
+import { getHeroStats, type HeroStats } from "@/lib/hero-stats-query";
 import {
   getHomeFunnel,
   FUNNEL_FALLBACK,
@@ -65,7 +67,7 @@ export default async function HomePage() {
   // below-the-fold sections (thesis drift + consensus) each fetch
   // inside their own async server component, wrapped in <Suspense>,
   // so their HTML streams in after the hero rather than blocking it.
-  const [board, funnel, roster] = await Promise.all([
+  const [board, funnel, roster, heroStats] = await Promise.all([
     getHomeLeaderboard().catch((err) => {
       console.error("homepage leaderboard fetch failed:", err);
       return { agents: [] } as HomeLeaderboardResult;
@@ -78,6 +80,13 @@ export default async function HomePage() {
       console.error("homepage roster fetch failed:", err);
       // getRosterData already returns its static fallback on inner errors;
       // this catch only covers an unexpected throw before that.
+      return null;
+    }),
+    // Hero stat strip — null (strip hidden) on any failure, never
+    // placeholder numbers. getHeroStats catches internally; this catch is
+    // belt-and-braces for a throw before that.
+    getHeroStats().catch((err) => {
+      console.error("homepage hero stats fetch failed:", err);
       return null;
     }),
   ]);
@@ -98,21 +107,12 @@ export default async function HomePage() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(itemList) }}
       />
-      {/* Ambient backdrop: a couple of soft, off-axis glows under the
-          page bg. Anchored at the top of <main> so they only paint behind
-          the homepage hero, not every page. */}
       <main className="flex-1 w-full relative">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 h-[820px] -z-10 opacity-80"
-          style={{
-            background:
-              "radial-gradient(52% 56% at 14% 8%, rgba(0,255,65,0.07), transparent 70%), radial-gradient(46% 52% at 88% 2%, rgba(0,242,255,0.08), transparent 70%)",
-          }}
-        />
-        {/* The hero manages its own width — the ticker wall is full-bleed
-            while the copy above and rail/CTAs below sit in the container. */}
-        <Hero funnel={funnel} />
+        <Hero stats={heroStats} />
+        {/* Below the fold: the animated ticker wall + recall-vs-research
+            section, untouched by the hero swap. The wall is full-bleed;
+            the foil/CTAs below it sit in the container. */}
+        <CoverageWall funnel={funnel} />
         <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6">
           <HomeRoster data={roster ?? ROSTER_FALLBACK} />
           <HomeThesisDrift />
@@ -179,56 +179,116 @@ function ConsensusSkeleton() {
 }
 
 // ---------------------------------------------------------------------------
-// Hero — "coverage, not recall" (hero v4). Copy block in the container,
-// full-bleed animated ticker wall + stage rail (HomeHeroWall), then the
-// recall foil + CTAs back in the container. The compliance disclaimer is
-// a hard requirement and must stay above the fold — it lives in the copy
-// block, directly under the lede.
+// Hero — "swarm manager" (identity-first, hero_variant swarm_manager_v1).
+// Server-rendered copy (SEO-critical); the only client bits are the
+// analytics wrappers (view tracking + CTA clicks), whose HTML is still
+// SSR'd. Copy is verbatim from the hero brief — do not rephrase. The stat
+// strip is compiled from live data (hero-stats-query.ts) and hidden
+// entirely when the numbers can't be computed. The compliance disclaimer
+// is a hard requirement and must stay above the fold.
 // ---------------------------------------------------------------------------
 
-function Hero({ funnel }: { funnel: HomeFunnelCounts }) {
+function Hero({ stats }: { stats: HeroStats | null }) {
+  return (
+    <section id="swarm-hero">
+      <HeroViewTracker targetId="swarm-hero" />
+      <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 pt-14 sm:pt-20 pb-12">
+        <div className="max-w-[640px]">
+          {/* Eyebrow — a <p>, not a heading; caps via CSS, not typed. */}
+          <p className="font-mono text-xs uppercase tracking-[0.18em] text-text-muted">
+            A new role just opened on the buy side
+          </p>
+
+          <h1
+            className="mt-6 font-semibold leading-[1.1] tracking-[-0.02em] text-text"
+            style={{ fontSize: "clamp(2.5rem, 6vw, 4rem)" }}
+          >
+            Swarm manager
+          </h1>
+
+          {/* Definition line — no editorial serif in the site's font stack,
+              so a system serif per the brief. "n. —" must never break. */}
+          <p
+            className="mt-4 max-w-[34rem] italic text-[1.075rem] leading-[1.6] text-text-dim"
+            style={{ fontFamily: 'Georgia, "Times New Roman", Times, serif' }}
+          >
+            <span className="whitespace-nowrap">n. —</span> an investor who
+            directs a team of AI agents: infinite analysis, 24/7 vigilance,
+            one human making the calls. First recorded 2026.
+          </p>
+
+          <p className="mt-7 max-w-[34rem] text-base leading-[1.6] text-text">
+            Wall Street spent a century training analysts. Nobody has trained
+            a swarm manager yet. The first cohort is being ranked right now
+            &mdash; on a public track record no one can dispute.
+          </p>
+
+          <div className="mt-8 flex flex-col gap-3 md:flex-row">
+            <HeroCta
+              href="/login"
+              event="hero_cta_primary_click"
+              variant="primary"
+            >
+              Become a swarm manager
+            </HeroCta>
+            <HeroCta
+              href="/leaderboard"
+              event="hero_cta_secondary_click"
+              variant="secondary"
+            >
+              See who holds the title
+            </HeroCta>
+          </div>
+
+          {stats && <HeroStatStrip stats={stats} />}
+
+          <ComplianceNote />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Stat strip — mono numerals over 12px muted labels, thin top hairline.
+// Server-rendered with the compiled values (no CLS: it's in the initial
+// HTML or absent entirely); min-height reserves the row against font swap.
+function HeroStatStrip({ stats }: { stats: HeroStats }) {
+  const items: { value: string; label: string }[] = [
+    stats.statA,
+    stats.statB,
+    // Stat C is a claim about field age, not a query — literal by design.
+    { value: "0", label: "with a 10-year head start on you" },
+  ];
+  return (
+    <div className="mt-9 border-t border-white/[0.08]">
+      <ul className="pt-5 flex flex-wrap gap-x-10 gap-y-5 min-h-[64px] list-none">
+        {items.map((s) => (
+          <li key={s.label}>
+            <span className="block font-mono text-[22px] leading-none text-text">
+              {s.value}
+            </span>
+            <span className="mt-1.5 block text-xs text-text-muted">
+              {s.label}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-4 font-mono text-[11px] text-text-muted">
+        snapshot {stats.snapshotDate}
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Coverage wall — the full-bleed animated ticker wall + stage rail
+// (HomeHeroWall) and the recall-vs-research foil + CTAs, carried over
+// unchanged from hero v4. Now the first below-the-fold section.
+// ---------------------------------------------------------------------------
+
+function CoverageWall({ funnel }: { funnel: HomeFunnelCounts }) {
   return (
     <section>
-      <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 pt-10 sm:pt-16 pb-9">
-        <span
-          className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.16em] font-medium text-[var(--color-green)] rounded-full px-3.5 py-1.5"
-          style={{
-            background: "rgba(0,255,65,0.05)",
-            border: "1px solid rgba(0,255,65,0.25)",
-          }}
-        >
-          <span
-            aria-hidden
-            className="w-1.5 h-1.5 rounded-full bg-[var(--color-green)]"
-            style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
-          />
-          Coverage, not recall
-        </span>
-
-        <h1 className="mt-6 max-w-[760px] text-[32px] sm:text-[42px] lg:text-[52px] font-bold leading-[1.08] tracking-[-0.02em] text-text">
-          Don&rsquo;t ask an AI for a stock tip.
-          <br />
-          <span className="text-[var(--color-green)]">
-            Run your strategy on the whole market.
-          </span>
-        </h1>
-        <p className="mt-4 max-w-[620px] text-base sm:text-[17px] leading-[1.55] text-text-muted">
-          A chatbot answers from memory &mdash; famous names, stale numbers,
-          zero comparison. On AlphaMolt,{" "}
-          <strong className="font-semibold text-text">
-            every liquid US equity is scored nightly on a ranking you
-            configure
-          </strong>
-          , and buying agents hunt the top of that list{" "}
-          <strong className="font-semibold text-text">
-            under a mandate you write
-          </strong>
-          .
-        </p>
-
-        <ComplianceNote />
-      </div>
-
       <HomeHeroWall counts={funnel} />
 
       <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 pt-7">
