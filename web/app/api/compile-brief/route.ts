@@ -48,23 +48,24 @@ Allowed filter fields (numbers are percentages or multiples as noted):
 - drawdown_52w           (% below the 52-week high; 55 = 55% off the high)
 - above_low_26w          (% above the 26-week / 6-month low)
 - ps_vs_median           (signed % premium to the stock's OWN 12-month median P/S; negative = below its usual multiple)
-- inflection_signals     (0-3: how many of gross-margin expansion, QoQ revenue-growth improvement, FCF-margin improvement have run 2+ consecutive quarters)
-- rev_growth_qoq         (latest quarter-on-quarter revenue growth %)
-- rev_qoq_accel          (latest QoQ growth minus prior QoQ growth, percentage points; >0 = growth improving even if still negative)
-- rev_accel_qtrs, gm_expansion_qtrs, fcf_improving_qtrs   (consecutive quarters each trend has been improving; 2 = "two straight quarters")
+- inflection_signals     (0-3: how many of gross-margin expansion, YoY quarterly revenue-growth improvement, FCF-margin improvement have run 2+ consecutive quarters)
+- rev_growth_yoy_q       (latest quarter's revenue vs the SAME quarter last year, % — the DEFAULT for any "quarterly growth" language; seasonality-free)
+- rev_yoy_accel          (change in YoY quarterly growth vs the prior quarter's, percentage points; >0 = growth improving even if still negative)
+- rev_yoy_accel_qtrs, gm_expansion_qtrs, fcf_improving_qtrs   (consecutive quarters each trend has been improving; 2 = "two straight quarters")
+- rev_growth_qoq         (SEQUENTIAL quarter-on-quarter growth % vs the immediately-prior quarter — seasonal; use ONLY if the brief explicitly says sequential/vs-last-quarter)
 - gm_delta_qoq, fcf_delta_qoq   (latest quarterly gross-margin / FCF-margin change, percentage points)
 - net_debt_ebitda        (net debt ÷ trailing EBITDA, ×; lower/negative = safer)
 - interest_coverage      (trailing EBIT ÷ interest expense, ×; higher = safer)
 Allowed ops: ${FILTER_OPS.join(", ")}.
 
-TIME-SERIES TRANSFORMS: a filter may add a "transform" that reads the metric over its quarterly history instead of its latest value. Transform-capable fields: gross_margin, operating_margin, net_margin, fcf_margin, rev_growth_qoq, revenue (quarterly revenue $, series-only — revenue MUST carry a transform). Allowed transforms:
+TIME-SERIES TRANSFORMS: a filter may add a "transform" that reads the metric over its quarterly history instead of its latest value. Transform-capable fields: gross_margin, operating_margin, net_margin, fcf_margin, rev_growth_yoy_q, rev_growth_qoq, revenue (quarterly revenue $, series-only — revenue MUST carry a transform). Allowed transforms:
 - delta_qoq     (latest quarter minus prior, pp — "margins expanded this quarter" = > 0)
 - yoy           (latest quarter minus the year-ago quarter, pp)
 - streak_qtrs   (consecutive quarters of improvement — "two straight quarters of improving X" = {"field":X,"transform":"streak_qtrs","op":">=","value":2})
 - slope_4q      (trend per quarter over the last 4 — "trending up over the past year" = > 0)
 - mean_4q, min_4q, max_4q, range_4q   (level/stability over the last 4 quarters; "margins stable" = range_4q <= 5)
 - pctile_own    (the latest value's percentile 0-100 within the stock's own ~3-year history — "revenue growth near its historic low" = <= 20)
-Examples: "revenue decline slowing" → {"field":"rev_growth_qoq","transform":"streak_qtrs","op":">=","value":2}; "gross margin expanding for 2+ quarters" → {"field":"gross_margin","transform":"streak_qtrs","op":">=","value":2}; "FCF trending toward breakeven" → {"field":"fcf_margin","transform":"slope_4q","op":">","value":0}. Use a transform ONLY when the brief speaks about change over time / trends / streaks / stability; plain level statements keep plain filters.
+Examples: "revenue decline slowing" → {"field":"rev_growth_yoy_q","transform":"streak_qtrs","op":">=","value":2}; "gross margin expanding for 2+ quarters" → {"field":"gross_margin","transform":"streak_qtrs","op":">=","value":2}; "FCF trending toward breakeven" → {"field":"fcf_margin","transform":"slope_4q","op":">","value":0}. Use a transform ONLY when the brief speaks about change over time / trends / streaks / stability; plain level statements keep plain filters.
 
 Common US GICS-ish sectors you may reference for sector filters: "Health Technology", "Technology Services", "Electronic Technology", "Finance", "Retail Trade", "Consumer Services", "Producer Manufacturing", "Energy Minerals", "Commercial Services".
 

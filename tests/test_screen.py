@@ -25,6 +25,8 @@ def facts(*rows: dict) -> list[dict]:
         # Turnaround facts (migrations 074/075).
         "drawdown_52w": None, "above_low_26w": None, "ps_vs_median": None,
         "rev_growth_qoq": None,
+        "rev_growth_yoy_q": None, "rev_yoy_accel": None,
+        "rev_yoy_accel_qtrs": None,
         "gm_delta_qoq": None, "gm_expansion_qtrs": None,
         "rev_qoq_accel": None, "rev_accel_qtrs": None,
         "fcf_delta_qoq": None, "fcf_improving_qtrs": None,
@@ -363,6 +365,30 @@ class TestInflectionLens(unittest.TestCase):
             rows, {"weights": {"quality": 0, "value": 0, "momentum": 0, "inflection": 100}})
         self.assertEqual(out[0]["ticker"], "REAL")
 
+    def test_yoy_accel_beats_sequential_when_both_present(self):
+        # Migration 077: the lens's revenue input is the YoY-quarterly
+        # acceleration; the sequential value is only a rollout fallback. A name
+        # whose sequential accel is huge but whose YoY read is negative must
+        # rank below a genuine YoY improver.
+        rows = facts(
+            {"ticker": "SEASONAL", "rev_yoy_accel": -5, "rev_qoq_accel": 25},
+            {"ticker": "GENUINE", "rev_yoy_accel": 6, "rev_qoq_accel": -10},
+        )
+        out = screen.score_screen(
+            rows, {"weights": {"quality": 0, "value": 0, "momentum": 0, "inflection": 100}})
+        self.assertEqual(out[0]["ticker"], "GENUINE")
+
+    def test_sequential_fallback_when_yoy_missing(self):
+        # Rollout fallback: a row the rotation hasn't repopulated yet (no YoY
+        # facts) still scores on its sequential accel — matching score.ts.
+        rows = facts(
+            {"ticker": "OLDDATA", "rev_qoq_accel": 8},
+            {"ticker": "FRESH", "rev_yoy_accel": -8},
+        )
+        out = screen.score_screen(
+            rows, {"weights": {"quality": 0, "value": 0, "momentum": 0, "inflection": 100}})
+        self.assertEqual(out[0]["ticker"], "OLDDATA")
+
     def test_zero_inflection_weight_is_backwards_compatible(self):
         # A config predating the lens (no inflection key) must rank identically
         # even when the facts now carry inflection data.
@@ -445,6 +471,20 @@ class TestTurnaroundFilters(unittest.TestCase):
             {"field": "rev_accel_qtrs", "op": ">=", "value": 2},
         ])
         self.assertEqual([r["ticker"] for r in out], ["COMPOUNDING"])
+
+    def test_yoy_quarterly_growth_filters(self):
+        # Migration 077: the seasonality-free family — "quarterly revenue
+        # growth (YoY) ≥ 10% and improving for 2 straight quarters".
+        rows = facts(
+            {"ticker": "TURNING", "rev_growth_yoy_q": 14, "rev_yoy_accel_qtrs": 3},
+            {"ticker": "PEAKED", "rev_growth_yoy_q": 30, "rev_yoy_accel_qtrs": 0},
+            {"ticker": "EARLY", "rev_growth_yoy_q": 4, "rev_yoy_accel_qtrs": 4},
+        )
+        out = screen.apply_filters(rows, [
+            {"field": "rev_growth_yoy_q", "op": ">=", "value": 10},
+            {"field": "rev_yoy_accel_qtrs", "op": ">=", "value": 2},
+        ])
+        self.assertEqual([r["ticker"] for r in out], ["TURNING"])
 
 
 class TestAiBudget(unittest.TestCase):

@@ -389,26 +389,47 @@ def _improvement_streak(series: list[float | None]) -> int | None:
 
 def compute_inflection(quarterly: list[tuple[str, dict]],
                        cf_quarterly: list[tuple[str, dict]]) -> dict:
-    """Quarter-over-quarter inflection facts from the income + cash-flow series
+    """Quarterly inflection facts from the income + cash-flow series
     (newest-first, as produced by _sorted_entries).
 
     Three signals, each a latest-step delta (pp) plus a consecutive-improvement
-    streak: gross margin expanding, QoQ revenue growth improving (works while
-    still negative YoY), FCF margin trending toward breakeven.
+    streak: gross margin expanding, YoY quarterly revenue growth improving
+    (works while still negative), FCF margin trending toward breakeven.
     `inflection_signals` counts how many streaks clear INFLECTION_STREAK_QTRS.
+
+    Revenue growth is measured YEAR-ON-YEAR per quarter (rev[i] vs rev[i+4] —
+    the same quarter last year), so seasonality never reads as an inflection.
+    The sequential (rev[i] vs rev[i+1]) facts are still computed and stored for
+    saved configs that filter on them, but they no longer drive the signal.
     """
     # Gross margin per quarter.
     gm_series = [_q_gross_margin(e) for _, e in quarterly[:_INFLECTION_LOOKBACK]]
 
-    # QoQ revenue growth per quarter: g[i] = rev[i] vs rev[i+1].
+    # Revenue per quarter, with enough tail for both growth bases.
     revs = [safe_float(e.get("totalRevenue"))
-            for _, e in quarterly[:_INFLECTION_LOOKBACK + 1]]
+            for _, e in quarterly[:_INFLECTION_LOOKBACK + 4]]
+
+    # Sequential QoQ growth per quarter: g[i] = rev[i] vs rev[i+1] (legacy —
+    # kept for back-compat filters, not the signal).
     qoq_series: list[float | None] = []
-    for cur, prev in zip(revs, revs[1:]):
+    for i in range(_INFLECTION_LOOKBACK):
+        cur = revs[i] if i < len(revs) else None
+        prev = revs[i + 1] if i + 1 < len(revs) else None
         if cur is None or not prev or prev <= 0:
             qoq_series.append(None)
         else:
             qoq_series.append((cur - prev) / prev * 100)
+
+    # YoY quarterly growth per quarter: y[i] = rev[i] vs rev[i+4] (the
+    # seasonality-free basis the inflection signal uses).
+    yoy_series: list[float | None] = []
+    for i in range(_INFLECTION_LOOKBACK):
+        cur = revs[i] if i < len(revs) else None
+        prev = revs[i + 4] if i + 4 < len(revs) else None
+        if cur is None or not prev or prev <= 0:
+            yoy_series.append(None)
+        else:
+            yoy_series.append((cur - prev) / prev * 100)
 
     # FCF margin per quarter — cash-flow quarters matched to income-statement
     # revenue by period date (the two statements can drift a period apart).
@@ -428,10 +449,11 @@ def compute_inflection(quarterly: list[tuple[str, dict]],
         return round(series[0] - series[1], 1)
 
     gm_streak = _improvement_streak(gm_series)
-    rev_streak = _improvement_streak(qoq_series)
+    rev_seq_streak = _improvement_streak(qoq_series)
+    rev_yoy_streak = _improvement_streak(yoy_series)
     fcf_streak = _improvement_streak(fcf_series)
 
-    streaks = [gm_streak, rev_streak, fcf_streak]
+    streaks = [gm_streak, rev_yoy_streak, fcf_streak]
     if all(s is None for s in streaks):
         signals = None
     else:
@@ -441,8 +463,14 @@ def compute_inflection(quarterly: list[tuple[str, dict]],
     return {
         "gm_delta_qoq": _delta(gm_series),
         "gm_expansion_qtrs": gm_streak,
+        # YoY quarterly growth family (migration 077) — the signal basis.
+        "rev_growth_yoy_q": (None if yoy_series[0] is None
+                             else round(yoy_series[0], 1)),
+        "rev_yoy_accel": _delta(yoy_series),
+        "rev_yoy_accel_qtrs": rev_yoy_streak,
+        # Sequential family (legacy, migrations 074/075) — back-compat only.
         "rev_qoq_accel": _delta(qoq_series),
-        "rev_accel_qtrs": rev_streak,
+        "rev_accel_qtrs": rev_seq_streak,
         "fcf_delta_qoq": _delta(fcf_series),
         "fcf_improving_qtrs": fcf_streak,
         "inflection_signals": signals,
@@ -481,10 +509,10 @@ def compute_quarterly_series(quarterly: list[tuple[str, dict]],
     period_ends = [d for d, _ in qs]
     revenue = [safe_float(e.get("totalRevenue")) for _, e in qs]
 
-    # QoQ revenue growth per quarter: g[i] = rev[i] vs rev[i+1] (one extra
-    # quarter fetched so the oldest stored quarter still gets a value).
+    # QoQ revenue growth per quarter: g[i] = rev[i] vs rev[i+1] (extra
+    # quarters fetched so the oldest stored quarter still gets a value).
     revs_ext = [safe_float(e.get("totalRevenue"))
-                for _, e in quarterly[:SERIES_LOOKBACK_QTRS + 1]]
+                for _, e in quarterly[:SERIES_LOOKBACK_QTRS + 4]]
     rev_growth_qoq: list[float | None] = []
     for i in range(len(qs)):
         cur = revs_ext[i]
@@ -493,6 +521,17 @@ def compute_quarterly_series(quarterly: list[tuple[str, dict]],
             rev_growth_qoq.append(None)
         else:
             rev_growth_qoq.append(round((cur - prev) / prev * 100, 2))
+
+    # YoY quarterly revenue growth: y[i] = rev[i] vs rev[i+4] (same quarter
+    # last year — the seasonality-free basis, migration 077).
+    rev_growth_yoy: list[float | None] = []
+    for i in range(len(qs)):
+        cur = revs_ext[i]
+        prev = revs_ext[i + 4] if i + 4 < len(revs_ext) else None
+        if cur is None or not prev or prev <= 0:
+            rev_growth_yoy.append(None)
+        else:
+            rev_growth_yoy.append(round((cur - prev) / prev * 100, 2))
 
     # FCF margin matched to the income-statement quarter by period date (the
     # two statements can drift a period apart — same matching as
@@ -511,6 +550,7 @@ def compute_quarterly_series(quarterly: list[tuple[str, dict]],
         "period_ends": period_ends,
         "revenue": revenue,
         "rev_growth_qoq": rev_growth_qoq,
+        "rev_growth_yoy": rev_growth_yoy,
         "gross_margin": [
             (None if (m := _q_gross_margin(e)) is None else round(m, 2))
             for _, e in qs

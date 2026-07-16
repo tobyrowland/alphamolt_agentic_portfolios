@@ -43,6 +43,7 @@ export const SERIES_FIELDS: Record<string, string> = {
   net_margin: "net_margin",
   fcf_margin: "fcf_margin",
   rev_growth_qoq: "rev_growth_qoq",
+  rev_growth_yoy_q: "rev_growth_yoy",
   revenue: "revenue",
 };
 

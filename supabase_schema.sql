@@ -753,6 +753,11 @@ CREATE TABLE IF NOT EXISTS fundamentals (
     gm_expansion_qtrs   NUMERIC,  -- consecutive quarters of GM expansion
     rev_qoq_accel       NUMERIC,  -- latest QoQ revenue growth minus prior QoQ growth, pp
     rev_accel_qtrs      NUMERIC,  -- consecutive quarters of improving QoQ revenue growth
+    -- YoY quarterly growth family (migration 077) — each quarter vs the SAME
+    -- quarter last year (seasonality-free); the inflection signal's basis.
+    rev_growth_yoy_q    NUMERIC,  -- latest quarter vs the year-ago quarter, %
+    rev_yoy_accel       NUMERIC,  -- change in YoY quarterly growth vs prior quarter, pp
+    rev_yoy_accel_qtrs  NUMERIC,  -- consecutive quarters of improving YoY growth
     fcf_delta_qoq       NUMERIC,  -- latest quarterly FCF margin minus prior, pp
     fcf_improving_qtrs  NUMERIC,  -- consecutive quarters of improving FCF margin
     inflection_signals  NUMERIC,  -- how many of the three streaks are ≥ 2 quarters (0–3)

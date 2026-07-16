@@ -102,11 +102,21 @@ export interface ScreenFacts {
   /** Signed % premium to the name's own 12-mo median P/S (negative = below). */
   ps_vs_median: number | null;
   // Quarterly inflection (computed at write time by eodhd_updater):
-  /** Latest QoQ revenue growth % (migration 075). */
+  /** Latest QoQ revenue growth % — SEQUENTIAL, vs the immediately-prior
+   *  quarter (migration 075). Kept for saved configs; the YoY family below is
+   *  the seasonality-free basis. */
   rev_growth_qoq: number | null;
+  /** Latest quarter's revenue vs the SAME quarter last year, % (migration
+   *  077) — the growth filter's proper basis. */
+  rev_growth_yoy_q: number | null;
+  /** Change in YoY quarterly growth vs the prior quarter's, pp — the
+   *  Inflection lens's revenue input. */
+  rev_yoy_accel: number | null;
+  /** Consecutive quarters of improving YoY quarterly growth. */
+  rev_yoy_accel_qtrs: number | null;
   gm_delta_qoq: number | null; // latest quarterly gross margin minus prior, pp
   gm_expansion_qtrs: number | null;
-  rev_qoq_accel: number | null; // latest QoQ rev growth minus prior QoQ growth, pp
+  rev_qoq_accel: number | null; // sequential accel (legacy, migration 074)
   rev_accel_qtrs: number | null;
   fcf_delta_qoq: number | null; // latest quarterly FCF margin minus prior, pp
   fcf_improving_qtrs: number | null;
@@ -319,11 +329,15 @@ function lensValues(r: ScreenFacts): {
   const perf = num(r.perf_52w_vs_spy);
   const xM = perf == null ? null : Math.max(MOM_FLOOR, Math.min(MOM_CAP, perf));
 
-  // Inflection (migration 074): collared blend of the latest QoQ deltas —
-  // revenue-growth acceleration, gross-margin change, FCF-margin change. Null
-  // only when ALL three are missing (a missing component contributes 0), so
-  // uncovered names sit at the neutral median instead of sinking.
-  const rqa = num(r.rev_qoq_accel);
+  // Inflection (migration 074): collared blend of the latest quarterly
+  // deltas — revenue-growth acceleration, gross-margin change, FCF-margin
+  // change. Null only when ALL three are missing (a missing component
+  // contributes 0), so uncovered names sit at the neutral median.
+  // Revenue acceleration is YoY-quarterly based (migration 077 — vs the same
+  // quarter last year, so seasonality never reads as inflection), falling
+  // back to the legacy sequential value while the rotation repopulates.
+  // MUST match screen.py.
+  const rqa = num(r.rev_yoy_accel) ?? num(r.rev_qoq_accel);
   const gmd = num(r.gm_delta_qoq);
   const fcd = num(r.fcf_delta_qoq);
   let xI: number | null;
