@@ -29,6 +29,10 @@ interface Props {
   portfolioId?: string;
   holdings: HoldingWithMtm[];
   thesesByTicker: Record<string, InvestmentThesis>;
+  /** Held tickers' live values keyed by SIGNAL field names (theses-query
+   *  getCurrentSignalFacts) — powers the per-signal current-vs-threshold
+   *  gauges. Optional: absent values just render the plain text rows. */
+  currentByTicker?: Record<string, Record<string, number>>;
   /** Render the per-row "Sell" button. Owner-only on the portfolio
    *  detail page. Default false so public viewers see no sell control. */
   canSell?: boolean;
@@ -38,6 +42,7 @@ export default function HoldingsList({
   portfolioId,
   holdings,
   thesesByTicker,
+  currentByTicker = {},
   canSell = false,
 }: Props) {
   const [openTicker, setOpenTicker] = useState<string | null>(null);
@@ -128,7 +133,10 @@ export default function HoldingsList({
                 className="border-t border-white/[0.06] bg-white/[0.015] px-4 py-4 space-y-4"
               >
                 {thesis ? (
-                  <ThesisPanel thesis={thesis} />
+                  <ThesisPanel
+                    thesis={thesis}
+                    current={currentByTicker[h.ticker] ?? {}}
+                  />
                 ) : (
                   <p className="text-sm text-text-muted italic">
                     No thesis recorded for this position. Either the buy
@@ -183,7 +191,13 @@ function ThesisBadge({ thesis }: { thesis: InvestmentThesis }) {
   );
 }
 
-function ThesisPanel({ thesis }: { thesis: InvestmentThesis }) {
+function ThesisPanel({
+  thesis,
+  current,
+}: {
+  thesis: InvestmentThesis;
+  current: Record<string, number>;
+}) {
   const snapshot = (thesis.snapshot ?? {}) as Record<string, unknown>;
   return (
     <div className="space-y-4 text-sm">
@@ -215,6 +229,7 @@ function ThesisPanel({ thesis }: { thesis: InvestmentThesis }) {
           title="What would break this thesis"
           accent="red"
           signals={thesis.break_signals}
+          current={current}
         />
       )}
 
@@ -223,6 +238,7 @@ function ThesisPanel({ thesis }: { thesis: InvestmentThesis }) {
           title="What would strengthen it"
           accent="green"
           signals={thesis.extend_signals}
+          current={current}
         />
       )}
 
@@ -235,10 +251,12 @@ function SignalList({
   title,
   accent,
   signals,
+  current,
 }: {
   title: string;
   accent: "red" | "green";
   signals: ThesisSignal[];
+  current: Record<string, number>;
 }) {
   const accentColor = accent === "red" ? "text-red" : "text-green";
   return (
@@ -246,28 +264,135 @@ function SignalList({
       <h4 className="text-[11px] font-mono uppercase tracking-wider text-text-dim mb-1">
         {title}
       </h4>
-      <ul className="space-y-1">
+      <ul className="space-y-1.5">
         {signals.map((sig, i) => (
           <li
             key={`${sig.field}-${sig.op}-${i}`}
-            className="font-mono text-[12px] text-text-muted flex items-baseline gap-2"
+            className="font-mono text-[12px] text-text-muted"
           >
-            <span className={`${accentColor} shrink-0`} aria-hidden="true">
-              ▸
-            </span>
-            <span className="text-text">{sig.field}</span>
-            <span className="text-text-dim">{sig.op}</span>
-            <span className="text-text">{String(sig.value)}</span>
-            {sig.description && (
-              <span className="text-text-muted italic">
-                — {sig.description}
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className={`${accentColor} shrink-0`} aria-hidden="true">
+                ▸
               </span>
+              <span className="text-text">{sig.field}</span>
+              <span className="text-text-dim">{sig.op}</span>
+              <span className="text-text">{String(sig.value)}</span>
+              <SignalGauge sig={sig} current={current} accent={accent} />
+            </div>
+            {sig.description && (
+              <div className="pl-4 text-text-muted italic text-[11.5px]">
+                {sig.description}
+              </div>
             )}
           </li>
         ))}
       </ul>
     </section>
   );
+}
+
+// ----- Signal gauge ----------------------------------------------------------
+// "Where does the name sit today vs this trip-wire?" — a compact track with
+// the threshold at center and a dot for the current value. For a break signal
+// the condition being true is bad (red); for an extend signal it's good
+// (green). "Near" = within 25% of the gauge span on the safe side (amber).
+
+const GAUGE_OPS: Record<string, (cur: number, thr: number) => boolean> = {
+  "<": (c, t) => c < t,
+  "<=": (c, t) => c <= t,
+  ">": (c, t) => c > t,
+  ">=": (c, t) => c >= t,
+};
+
+/** Unit suffix for a signal field, for the "now" readout. */
+function signalUnit(field: string): string {
+  if (field.endsWith("_pct")) return "%";
+  if (field === "ps_now") return "×";
+  return "";
+}
+
+function SignalGauge({
+  sig,
+  current,
+  accent,
+}: {
+  sig: ThesisSignal;
+  current: Record<string, number>;
+  accent: "red" | "green";
+}) {
+  const cur = current[sig.field];
+  const thr = toNumber(sig.value);
+  const cmp = GAUGE_OPS[sig.op];
+  // Only mapped fields with a live value and a directional op get a gauge;
+  // anything else (change_pct ops, ==, unmapped fields) keeps the plain row.
+  if (cur == null || thr == null || !cmp) return null;
+
+  const met = cmp(cur, thr);
+  // Scale: threshold at center, span wide enough that typical values sit
+  // inside the track (± max(60% of |threshold|, 5 units)).
+  const span = Math.max(Math.abs(thr) * 0.6, 5);
+  const pos = Math.min(0.95, Math.max(0.05, 0.5 + (cur - thr) / (2 * span)));
+  // Which side of the threshold trips the condition (for tinting the track).
+  const tripsBelow = sig.op === "<" || sig.op === "<=";
+  const near = !met && Math.abs(cur - thr) <= span * 0.25;
+
+  // Dot + label tone. Break met = red (tripped); extend met = green (met);
+  // near = amber warning that the trip-wire is close.
+  const tone = met
+    ? accent === "red"
+      ? "var(--color-red, #ff3333)"
+      : "var(--color-green, #00ff88)"
+    : near
+      ? "#f5a623"
+      : "rgba(255,255,255,0.55)";
+  const label = met ? (accent === "red" ? "tripped" : "met") : near ? "close" : "now";
+  const unit = signalUnit(sig.field);
+
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 ml-auto shrink-0"
+      title={`Current ${sig.field}: ${cur}${unit} · trips when ${sig.op} ${sig.value}${unit}`}
+    >
+      <span
+        aria-hidden="true"
+        className="relative inline-block h-[5px] w-24 rounded-full overflow-hidden bg-white/[0.08]"
+      >
+        {/* Trip side of the track, softly tinted toward the accent. */}
+        <span
+          className="absolute inset-y-0"
+          style={{
+            [tripsBelow ? "left" : "right"]: 0,
+            width: "50%",
+            background:
+              accent === "red"
+                ? "rgba(255,51,51,0.18)"
+                : "rgba(0,255,136,0.15)",
+          }}
+        />
+        {/* Threshold tick at center. */}
+        <span
+          className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2"
+          style={{ background: "rgba(255,255,255,0.45)" }}
+        />
+        {/* Current-value dot. */}
+        <span
+          className="absolute top-1/2 h-[9px] w-[9px] -translate-y-1/2 -translate-x-1/2 rounded-full border border-black/60"
+          style={{ left: `${pos * 100}%`, background: tone }}
+        />
+      </span>
+      <span
+        className="text-[10.5px] tabular-nums whitespace-nowrap"
+        style={{ color: tone }}
+      >
+        {label} {formatSignalValue(cur)}
+        {unit}
+      </span>
+    </span>
+  );
+}
+
+function formatSignalValue(n: number): string {
+  return Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(1);
 }
 
 // Pick a handful of the most legible snapshot fields to show inline. The

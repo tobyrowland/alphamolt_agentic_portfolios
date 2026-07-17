@@ -101,3 +101,58 @@ export async function getActiveThesesForPortfolio(
   }
   return byTicker;
 }
+
+// ---------------------------------------------------------------------------
+// Current signal facts — "where does the name sit vs its trip-wires today?"
+// ---------------------------------------------------------------------------
+
+/** Signal-vocabulary field → screen_facts_mv column. The same mapping the
+ *  scorers use for firing-break counts (score.ts SIGNAL_FIELD_MAP /
+ *  screen.py _SIGNAL_FIELD_MAP). perf_52w_vs_spy is deliberately absent:
+ *  legacy theses store it as a ratio while the matview carries ret_52w in %,
+ *  so a gauge would compare mismatched units. */
+const SIGNAL_FACT_COLUMNS: Record<string, string> = {
+  gross_margin_pct: "gross_margin",
+  operating_margin_pct: "operating_margin",
+  net_margin_pct: "net_margin",
+  fcf_margin_pct: "fcf_margin",
+  rev_growth_ttm_pct: "rev_growth_ttm",
+  rule_of_40: "rule_of_40",
+  r40_score: "rule_of_40",
+  ps_now: "ps",
+  price: "price",
+};
+
+/** Per-ticker current values keyed by SIGNAL field names (not column names),
+ *  so the thesis panel can look a signal's live value up directly. Reads the
+ *  screener matview (public-read; the same freshness the screener shows).
+ *  Fail-open: an error returns {} and the panel renders without gauges. */
+export async function getCurrentSignalFacts(
+  tickers: string[],
+): Promise<Record<string, Record<string, number>>> {
+  if (tickers.length === 0) return {};
+  const supabase = getSupabase();
+  const columns = Array.from(new Set(Object.values(SIGNAL_FACT_COLUMNS)));
+  const { data, error } = await supabase
+    .from("screen_facts_mv")
+    .select(`ticker, ${columns.join(", ")}`)
+    .in("ticker", tickers);
+
+  if (error) {
+    console.error("getCurrentSignalFacts failed:", error);
+    return {};
+  }
+
+  const out: Record<string, Record<string, number>> = {};
+  for (const row of (data ?? []) as unknown as Record<string, unknown>[]) {
+    const ticker = String(row.ticker ?? "");
+    if (!ticker) continue;
+    const vals: Record<string, number> = {};
+    for (const [signalField, column] of Object.entries(SIGNAL_FACT_COLUMNS)) {
+      const n = Number(row[column]);
+      if (row[column] != null && Number.isFinite(n)) vals[signalField] = n;
+    }
+    out[ticker] = vals;
+  }
+  return out;
+}
