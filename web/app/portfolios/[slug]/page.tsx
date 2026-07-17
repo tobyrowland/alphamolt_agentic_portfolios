@@ -40,6 +40,7 @@ import {
 import {
   getActiveThesesForAgent,
   getActiveThesesForPortfolio,
+  getCurrentSignalFacts,
   type InvestmentThesis,
 } from "@/lib/theses-query";
 import {
@@ -97,6 +98,9 @@ async function getPortfolioPageData(slug: string): Promise<{
   /** The full agent library — owner-only (only the owner can build the team). */
   library: LibraryAgent[];
   thesesByTicker: Record<string, InvestmentThesis>;
+  /** Held tickers' live values keyed by signal-vocabulary field — powers the
+   *  thesis panels' current-vs-threshold gauges. */
+  currentByTicker: Record<string, Record<string, number>>;
   trades: Trade[];
   totalTrades: number;
   holdingsCount: number;
@@ -117,6 +121,7 @@ async function getPortfolioPageData(slug: string): Promise<{
       team: [],
       library: [],
       thesesByTicker: {},
+      currentByTicker: {},
       trades: [],
       totalTrades: 0,
       holdingsCount: 0,
@@ -189,6 +194,16 @@ async function getPortfolioPageData(slug: string): Promise<{
   ]);
   const { trades, totalTrades } = recent;
 
+  // Live values for the thesis panels' signal gauges — where each holding
+  // sits today vs its recorded break/extend trip-wires. Needs the holdings
+  // list, so it runs after the snapshot resolves. Fail-open ({}).
+  const heldTickers = (snapshot?.holdings ?? []).map((h) => h.ticker);
+  const currentByTicker = heldTickers.length
+    ? await getCurrentSignalFacts(heldTickers).catch(
+        () => ({}) as Record<string, Record<string, number>>,
+      )
+    : {};
+
   return {
     portfolio,
     isOwner,
@@ -197,6 +212,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     team,
     library,
     thesesByTicker,
+    currentByTicker,
     trades,
     totalTrades,
     holdingsCount,
@@ -218,6 +234,7 @@ export default async function PortfolioPage({ params }: PageParams) {
     team,
     library,
     thesesByTicker,
+    currentByTicker,
     trades,
     totalTrades,
     holdingsCount,
@@ -333,6 +350,7 @@ export default async function PortfolioPage({ params }: PageParams) {
             portfolioId={portfolio.id}
             holdings={snapshot.holdings}
             thesesByTicker={thesesByTicker}
+            currentByTicker={currentByTicker}
             canSell={isOwner}
           />
           {snapshot.holdings.length > 0 && (
