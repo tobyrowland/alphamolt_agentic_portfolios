@@ -18,9 +18,11 @@
  */
 
 import Link from "next/link";
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { HoldingWithMtm } from "@/lib/portfolio";
+import type { PricePoint } from "@/lib/price-history-query";
 import type { InvestmentThesis, ThesisSignal } from "@/lib/theses-query";
+import PriceSinceBuySparkline from "@/components/price-since-buy-sparkline";
 import SellHoldingButton from "@/components/portfolio/sell-holding-button";
 
 interface Props {
@@ -46,6 +48,33 @@ export default function HoldingsList({
   canSell = false,
 }: Props) {
   const [openTicker, setOpenTicker] = useState<string | null>(null);
+  // Lazy per-ticker price history for the "price since buy" sparkline —
+  // fetched once on first expand (the ps-history pattern from the screener).
+  const [priceHistory, setPriceHistory] = useState<
+    Record<string, PricePoint[] | "loading">
+  >({});
+  const priceRequested = useRef(new Set<string>());
+  const loadPriceHistory = useCallback((ticker: string, since: string | null) => {
+    const t = ticker.toUpperCase();
+    if (priceRequested.current.has(t)) return;
+    priceRequested.current.add(t);
+    setPriceHistory((prev) => ({ ...prev, [t]: "loading" }));
+    (async () => {
+      try {
+        const qs = new URLSearchParams({ ticker: t });
+        if (since) qs.set("since", since);
+        const res = await fetch(`/api/portfolio/price-history?${qs}`, {
+          cache: "force-cache",
+        });
+        const json = res.ok
+          ? ((await res.json()) as { history?: PricePoint[] })
+          : null;
+        setPriceHistory((prev) => ({ ...prev, [t]: json?.history ?? [] }));
+      } catch {
+        setPriceHistory((prev) => ({ ...prev, [t]: [] }));
+      }
+    })();
+  }, []);
 
   if (holdings.length === 0) {
     return (
@@ -60,6 +89,14 @@ export default function HoldingsList({
       {holdings.map((h) => {
         const thesis = thesesByTicker[h.ticker];
         const isOpen = openTicker === h.ticker;
+        // Chart window: from ~3 months before the buy for context; without a
+        // recorded thesis, the trailing year (the route's default).
+        const buyDate = thesis?.opened_at?.slice(0, 10) ?? null;
+        const chartSince = buyDate
+          ? new Date(new Date(`${buyDate}T00:00:00Z`).getTime() - 90 * 86400000)
+              .toISOString()
+              .slice(0, 10)
+          : null;
         return (
           <li
             key={h.ticker}
@@ -67,7 +104,10 @@ export default function HoldingsList({
           >
             <button
               type="button"
-              onClick={() => setOpenTicker(isOpen ? null : h.ticker)}
+              onClick={() => {
+                if (!isOpen) loadPriceHistory(h.ticker, chartSince);
+                setOpenTicker(isOpen ? null : h.ticker);
+              }}
               className="w-full px-3 sm:px-4 py-3 hover:bg-white/[0.04] transition-colors text-left"
               aria-expanded={isOpen}
               aria-controls={`thesis-panel-${h.ticker}`}
@@ -132,6 +172,25 @@ export default function HoldingsList({
                 id={`thesis-panel-${h.ticker}`}
                 className="border-t border-white/[0.06] bg-white/[0.015] px-4 py-4 space-y-4"
               >
+                <section className="max-w-[420px]">
+                  <h4 className="text-[11px] font-mono uppercase tracking-wider text-text-dim mb-1.5">
+                    {buyDate ? "Price since buy" : "Price — last 12 months"}
+                  </h4>
+                  <PriceSinceBuySparkline
+                    points={
+                      priceHistory[h.ticker] === "loading" ||
+                      priceHistory[h.ticker] == null
+                        ? []
+                        : (priceHistory[h.ticker] as PricePoint[])
+                    }
+                    costBasis={h.avg_cost_usd}
+                    buyDate={buyDate}
+                    loading={
+                      priceHistory[h.ticker] === "loading" ||
+                      priceHistory[h.ticker] == null
+                    }
+                  />
+                </section>
                 {thesis ? (
                   <ThesisPanel
                     thesis={thesis}
