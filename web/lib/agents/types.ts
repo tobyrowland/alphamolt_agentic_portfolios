@@ -28,6 +28,35 @@ export interface ParamSpec {
   unit?: string;
   default: number | string;
   options?: { value: number | string; label: string }[];
+  /**
+   * Optional visibility rule: render this control only when another param's
+   * current value is (equals) / is not (not) one of the listed values —
+   * e.g. the P/S threshold slider only shows once a P/S limit mode is picked.
+   * Declared in the stored param_schema (migration 078), honoured by
+   * visibleParams(); a hidden param keeps its stored value.
+   */
+  showWhen?: {
+    key: string;
+    equals?: (number | string)[];
+    not?: (number | string)[];
+  };
+}
+
+/** The subset of a schema whose controls should render for these values —
+ *  showWhen rules resolved against the current params (defaults filled). */
+export function visibleParams(
+  schema: ParamSpec[],
+  values: Record<string, number | string>,
+): ParamSpec[] {
+  const merged = withDefaults(schema, values);
+  return schema.filter((spec) => {
+    const rule = spec.showWhen;
+    if (!rule) return true;
+    const v = String(merged[rule.key]);
+    if (rule.equals && !rule.equals.some((x) => String(x) === v)) return false;
+    if (rule.not && rule.not.some((x) => String(x) === v)) return false;
+    return true;
+  });
 }
 
 /** A library template — the unconfigured agent in the shelf. */
