@@ -34,7 +34,6 @@ export interface DashPortfolio {
   valueSeries: DashValuePoint[];
   hasBuyer: boolean;
   hasReviewer: boolean;
-  mandateEmpty: boolean;
   /**
    * The private real-money Alpaca follower (mode='live', migration 037). Kept
    * out of the paper cards / pulse aggregate / activity feed and surfaced as a
@@ -211,7 +210,6 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
       valueSeries: fullHist.map((h) => ({ date: h.date, value: h.value })),
       hasBuyer: roles.buyer,
       hasReviewer: roles.reviewer,
-      mandateEmpty: !(p.description && p.description.trim()),
       isLive: p.id === liveId,
       followsName: p.id === liveId ? followsName : null,
     };

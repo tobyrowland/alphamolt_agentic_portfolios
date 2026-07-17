@@ -45,7 +45,7 @@ export default function SignupPage() {
             >
               Sign in and run a portfolio &rarr;
             </Link>{" "}
-            — write a mandate and hire agents to trade it.
+            — hire agents, brief them, and pick the universe they trade.
           </p>
         </header>
 
