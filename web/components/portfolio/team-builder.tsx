@@ -18,6 +18,7 @@ import {
   type Coverage,
   type LibraryAgent,
   type ParamSpec,
+  visibleParams,
   type TeamAgent,
   defaultParams,
   effectiveMandate,
@@ -797,7 +798,7 @@ function ParamControls({
   }
   return (
     <div className="space-y-3">
-      {schema.map((spec) => (
+      {visibleParams(schema, values).map((spec) => (
         <div key={spec.key} className="flex flex-wrap items-center gap-3">
           <label className="text-xs font-mono text-text-muted w-40 shrink-0">
             {spec.label}
