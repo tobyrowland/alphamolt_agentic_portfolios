@@ -678,6 +678,9 @@ The house agents drive the pipeline:
 - `agent-pelosi` — "Pelosi Tracker", buyer, `Rules-based`, `pelosi_mirror`
   strategy, a self-sourced buyer that copies Nancy Pelosi's disclosed trades
   (migration 068)
+- `double-down` — "Double-Down Buyer", buyer, `Claude Opus 4.8`, `double_down`
+  strategy, a self-sourced buyer that adds to the portfolio's own
+  high-conviction holdings up to a per-position ceiling (migration 079)
 - `manual` — placeholder for owner-initiated trades (migration 035)
 
 Supports `--handle`, `--force` (ignore interval guard), and `--dry-run`.
@@ -784,8 +787,33 @@ be drafted over screen candidates. So `agent_heartbeat._run_portfolio_swarm`
 runs each self-sourced buyer's **full strategy standalone** against the shared
 book *before* the snake draft (its buys/sells settle, the draft sees the
 resulting cash) and excludes it from the draft itself. It still trades the
-shared pot and is journaled like any other member. `pelosi_mirror` is the only
-member of the set today.
+shared pot and is journaled like any other member. `pelosi_mirror` (external
+disclosure feed) and `double_down` (the portfolio's own holdings) are the
+members of the set today.
+
+### double_down.py
+The Double-Down **strategy** (`double_down`, registered in
+`agent_strategies.STRATEGIES`). A conviction-add buyer for human portfolios — a
+**self-sourced buyer**: its candidate feed is the portfolio's **current
+holdings**, NOT the screen. Each heartbeat it re-evaluates the names the
+portfolio already owns and **presses the winners** — adds to the ones that still
+look really good, sizing each up toward a `max_position_pct` ceiling (default
+8%) in `add_position_pct` steps (default 4%). It **never opens a new position
+and never sells**. The "does this still look really good?" judgement reuses the
+shared buyer thinking core (`llm_watchlist_buyer.evaluate_candidates`, Claude
+brain) — the SAME per-name LLM eval, research-card + Level 0 fact inputs and
+thesis discipline the other buyers use, pointed at held names with an "add to
+the winner" framing; only `verdict="BUY"` at/above `min_conviction` (default
+5/5) triggers an add. Idempotent modulo price drift — a name at the ceiling has
+nothing to add, so a re-run on an unchanged book is a no-op (the ceiling is what
+stops a runaway "keep adding forever" loop). Respects the 90-day post-sell
+cooldown (won't fight a recent exit/trim) and records a fresh thesis per add
+(which supersedes the position's prior active thesis, as every re-buy does). The
+decision core `plan_double_down` is pure (evals + book → plan), unit-tested
+without a DB/LLM in `tests/test_double_down.py`; `rebalance_double_down` trades
+through the standard `ctx.buy` facade so it works on a paper book or a live
+Alpaca account like any other strategy. The hireable library agent is
+`double-down` ("Double-Down Buyer", `Claude Opus 4.8`, migration 079).
 
 ### lifecycle_emails.py (every 30 min)
 Automated lifecycle emails to human users (`profiles`), gated by the

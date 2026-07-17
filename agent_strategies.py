@@ -967,6 +967,13 @@ def _sector_rebalancer_lazy(ctx: RebalanceContext) -> RebalanceResult:
     return rebalance_sector_rebalancer(ctx)
 
 
+def _double_down_lazy(ctx: RebalanceContext) -> RebalanceResult:
+    # Lazy import — the conviction-add core pulls in the LLM buyer's thinking
+    # core + SDKs only when it runs.
+    from double_down import rebalance_double_down
+    return rebalance_double_down(ctx)
+
+
 # NOTE: `watchlist_curator` is intentionally NOT registered. The configurable
 # screener is the funnel's selection stage now (screener brief v2 §3) — a
 # portfolio's candidate set is the top N of its `screen_config`, read directly
@@ -981,6 +988,7 @@ STRATEGIES: dict[str, Strategy] = {
     "portfolio_reviewer": _portfolio_reviewer_lazy,
     "pelosi_mirror": _pelosi_mirror_lazy,
     "sector_rebalancer": _sector_rebalancer_lazy,
+    "double_down": _double_down_lazy,
 }
 
 
@@ -996,7 +1004,7 @@ STRATEGIES: dict[str, Strategy] = {
 # the draft (agent_heartbeat._run_portfolio_swarm). It still trades the shared
 # pot and is journaled like any other member.
 
-SELF_SOURCED_BUYER_STRATEGIES: set[str] = {"pelosi_mirror"}
+SELF_SOURCED_BUYER_STRATEGIES: set[str] = {"pelosi_mirror", "double_down"}
 
 
 def is_self_sourced_buyer(strategy_name: str | None) -> bool:
@@ -1023,6 +1031,7 @@ STRATEGY_PHASES: dict[str, str] = {
     "portfolio_reviewer": "trade",
     "pelosi_mirror": "trade",
     "sector_rebalancer": "trade",
+    "double_down": "trade",
 }
 
 
