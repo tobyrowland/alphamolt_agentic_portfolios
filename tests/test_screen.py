@@ -161,6 +161,50 @@ class TestOrFilters(unittest.TestCase):
         self.assertEqual([r["ticker"] for r in out], ["A"])
 
 
+class TestRevenueTtmFilter(unittest.TestCase):
+    """Derived revenue_ttm scalar: TTM revenue in $M summed from the latest 4
+    quarters of the `quarters` revenue series at read time (there is no
+    matview column). Mirrors score.ts revenueTtmM."""
+
+    def test_sums_latest_four_quarters_in_millions(self):
+        row = {"quarters": {"revenue": [30e6, 28e6, 27e6, 25e6, 1e12]}}
+        self.assertEqual(screen._revenue_ttm_m(row), 110.0)
+
+    def test_filters_on_derived_value(self):
+        rows = facts(
+            {"ticker": "BIG", "quarters": {"revenue": [30e6, 28e6, 27e6, 25e6]}},
+            {"ticker": "SMALL", "quarters": {"revenue": [10e6, 10e6, 10e6, 10e6]}},
+        )
+        out = screen.apply_filters(
+            rows, [{"field": "revenue_ttm", "op": ">=", "value": 100}])
+        self.assertEqual([r["ticker"] for r in out], ["BIG"])
+
+    def test_missing_series_excluded(self):
+        rows = facts({"ticker": "NOQ"})
+        out = screen.apply_filters(
+            rows, [{"field": "revenue_ttm", "op": ">=", "value": 0}])
+        self.assertEqual(out, [])
+
+    def test_short_or_gappy_window_excluded(self):
+        # Fewer than 4 quarters, or a null inside the latest 4, is not a TTM.
+        self.assertIsNone(screen._revenue_ttm_m(
+            {"quarters": {"revenue": [30e6, 28e6, 27e6]}}))
+        self.assertIsNone(screen._revenue_ttm_m(
+            {"quarters": {"revenue": [30e6, None, 27e6, 25e6]}}))
+
+    def test_transform_still_reads_raw_series(self):
+        # revenue + transform is untouched by the derived scalar — the streak
+        # reads the raw quarterly series, not the TTM.
+        rows = facts(
+            {"ticker": "UP", "quarters": {"revenue": [120e6, 110e6, 100e6, 90e6]}},
+        )
+        out = screen.apply_filters(rows, [
+            {"field": "revenue", "op": ">=", "value": 2, "transform": "streak_qtrs"},
+            {"field": "revenue_ttm", "op": ">=", "value": 100},
+        ])
+        self.assertEqual([r["ticker"] for r in out], ["UP"])
+
+
 class TestPercentiles(unittest.TestCase):
     def test_basic(self):
         self.assertEqual(screen._percentiles([1, 2, 3, 4]), [0.25, 0.5, 0.75, 1.0])

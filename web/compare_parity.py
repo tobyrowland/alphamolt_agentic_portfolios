@@ -30,6 +30,12 @@ py = {
 }
 
 ok = True
+if len(ts) != len(py):
+    # Filters must exclude the SAME rows on both sides — a row the TS scorer
+    # dropped but Python kept would otherwise slip through unchecked (the loop
+    # below only walks the TS rows).
+    print(f"ROW COUNT DIVERGES: ts={len(ts)} py={len(py)}")
+    ok = False
 for row in ts:
     t = row["ticker"]
     p = py.get(t)

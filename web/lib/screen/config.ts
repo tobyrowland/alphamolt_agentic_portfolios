@@ -66,6 +66,13 @@ export const FILTER_FIELDS = [
   // Series-only field (migration 076): lives in the `quarters` series, not as
   // a scalar column — usable only WITH a transform (schema-enforced below).
   "revenue",
+  // Derived scalar: trailing-12-month revenue in $M, computed at read time as
+  // the sum of the latest 4 quarters of the `revenue` series (no matview
+  // column — fundamentals.revenue is never written by the rotation, but the
+  // quarterly series is). Implemented in BOTH scorers (score.ts revenueTtmM /
+  // screen.py _revenue_ttm_m); a name without 4 reported quarters is excluded
+  // by the standard missing-datum rule.
+  "revenue_ttm",
 ] as const;
 export type FilterField = (typeof FILTER_FIELDS)[number];
 
@@ -371,7 +378,7 @@ export function isHousePreset(config: ScreenConfig): boolean {
 export interface MetricMeta {
   field: FilterField;
   label: string; // friendly name — ALWAYS names the metric ("Rev growth accelerating", never a bare "QoQ accel streak")
-  unit: "%" | "×" | "$" | "pp" | "q" | "";
+  unit: "%" | "×" | "$" | "$M" | "pp" | "q" | "";
   op: FilterOp; // implied operator
   min: number;
   max: number;
@@ -387,6 +394,7 @@ export interface MetricMeta {
 export const METRIC_META: Record<string, MetricMeta> = {
   ps: { field: "ps", label: "P/S", unit: "×", op: "<=", min: 0, max: 30, step: 0.5, default: 15, help: "Price-to-sales multiple (market cap ÷ trailing-12-month revenue)." },
   rev_growth_ttm: { field: "rev_growth_ttm", label: "Revenue growth (TTM)", unit: "%", op: ">=", min: 0, max: 100, step: 5, default: 20, help: "Trailing-12-month revenue vs the prior 12 months." },
+  revenue_ttm: { field: "revenue_ttm", label: "Revenue (TTM)", unit: "$M", op: ">=", min: 0, max: 5000, step: 50, default: 100, help: "Trailing-12-month revenue in millions of dollars — the sum of the latest four reported quarters. Names without four reported quarters are excluded. For thresholds above $5B, type the value in the Advanced row (e.g. 10000 = $10B)." },
   gross_margin: { field: "gross_margin", label: "Gross margin", unit: "%", op: ">=", min: 0, max: 100, step: 5, default: 60 },
   fcf_margin: { field: "fcf_margin", label: "FCF margin", unit: "%", op: ">=", min: -20, max: 60, step: 5, default: 10, help: "Free cash flow as a % of revenue." },
   net_margin: { field: "net_margin", label: "Net margin", unit: "%", op: ">=", min: -40, max: 60, step: 5, default: 0 },
@@ -549,6 +557,7 @@ export const NAMED_FILTERS: {
   { field: "industry", label: "Industry" },
   { field: "ps", label: "P/S multiple" },
   { field: "rev_growth_ttm", label: "Revenue growth (TTM)" },
+  { field: "revenue_ttm", label: "Revenue (TTM)" },
   { field: "gross_margin", label: "Gross margin" },
   { field: "fcf_margin", label: "FCF margin" },
   { field: "rule_of_40", label: "Rule of 40" },
