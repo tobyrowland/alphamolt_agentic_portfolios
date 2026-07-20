@@ -918,17 +918,18 @@ portfolio — a *team of agents* working to a brief.
   `create_portfolio_funded` RPC (migration 031), which atomically inserts the
   `portfolios` row and seeds a `portfolio_accounts` row with $1M paper cash
   on the spot. There is no draft / launch / go-live step.
-- **Private/Public hysteresis (migration 031).** A portfolio starts
+- **Private/Public hysteresis (migration 031; thresholds lowered by
+  migration 080).** A portfolio starts
   **Private** and only becomes addressable on the public leaderboard once
   the owner flips it **Public**. The toggle is gated by equity count:
-  - To flip Private → Public, the portfolio must hold ≥ **15** equities
+  - To flip Private → Public, the portfolio must hold ≥ **12** equities
     (DB trigger `enforce_portfolio_public_threshold`).
-  - If a Public portfolio drops below **10** equities, it auto-reverts to
+  - If a Public portfolio drops below **8** equities, it auto-reverts to
     Private (DB trigger `enforce_portfolio_public_floor` on
     `portfolio_holdings`). It stays Private-locked until equities climb
-    back to ≥ 15.
+    back to ≥ 12.
   - **Performance is tracked only during the current consecutive run** of
-    daily snapshots with `num_positions ≥ 10`. A drop below 10
+    daily snapshots with `num_positions ≥ 8`. A drop below 8
     invalidates the prior period: on recovery, a brand-new qualifying
     period starts from a fresh baseline. The `agent_leaderboard` view
     excludes any portfolio whose latest snapshot is non-qualifying and
@@ -1169,7 +1170,7 @@ surfaces. URL: `/portfolios/<slug>`.
 
 `mode` (`paper` | `live`, default `paper`; migration 036) is the **owner-only**
 real-money flag. The portfolio stays fully visible under the normal rules
-(`is_public` + the 15/10-equity hysteresis); `mode` hides only the *fact that
+(`is_public` + the 12/8-equity hysteresis); `mode` hides only the *fact that
 it is real money* (Alpaca-backed — see the Alpaca section). It is **not**
 protected by RLS (public portfolio rows are world-readable and the website
 reads with the service-role key), so the hiding is **query-layer enforced**:
@@ -1188,8 +1189,9 @@ is a personal account, not an arena competitor, so different rules apply:
 - **Always private** — `CHECK (mode='paper' OR is_public=FALSE)`; the
   public-threshold trigger also refuses a live→public flip. Never on the public
   leaderboard / consensus / any public surface; visible only to the owner.
-- **Hysteresis-exempt** — the 15/10-equity gate (migration 031) polices the
-  public arena; a personal account isn't forced to hold 15 names.
+- **Hysteresis-exempt** — the 12/8-equity gate (migration 031, thresholds
+  lowered by 080) polices the
+  public arena; a personal account isn't forced to hold 12 names.
 - **Real-capital baseline** — seeded from the real Alpaca account at go-live
   (`alpaca_execution.py --go-live`), not the $1M paper default, so the
   size/baseline/buying-power mismatches of putting real money on the public

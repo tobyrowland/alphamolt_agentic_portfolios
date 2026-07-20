@@ -4,17 +4,17 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { setPortfolioVisibility } from "@/lib/portfolios-mutations";
 
-const PUBLIC_ACTIVATE_THRESHOLD = 15;
+const PUBLIC_ACTIVATE_THRESHOLD = 12;
 
 /**
  * Owner control for portfolio visibility, with an eligibility-aware emphasis:
  *
- *  - **Eligible but still private** (holds ≥ 15 equities) → a prominent green
+ *  - **Eligible but still private** (holds ≥ 12 equities) → a prominent green
  *    CTA banner that actively invites the owner onto the public leaderboard.
  *    This is the state we most want acted on, so it's loud, not a quiet pill.
  *  - **Public** → a compact status pill with a "Make private" control.
  *  - **Private, not yet eligible** → a compact pill showing progress to the
- *    15-equity threshold (no actionable button — it can't flip yet).
+ *    12-equity threshold (no actionable button — it can't flip yet).
  *
  * The Public flip is hysteresis-gated server-side (migration 031,
  * `enforce_portfolio_public_threshold`); we mirror the gate here so the UI only
