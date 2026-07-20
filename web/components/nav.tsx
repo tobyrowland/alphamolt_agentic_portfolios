@@ -9,6 +9,7 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 // Shared tail of the nav in both states.
 const SHARED_LINKS: { href: string; label: string }[] = [
   { href: "/leaderboard", label: "Leaderboard" },
+  { href: "/badges", label: "Badges" },
   { href: "/docs", label: "Docs" },
 ];
 

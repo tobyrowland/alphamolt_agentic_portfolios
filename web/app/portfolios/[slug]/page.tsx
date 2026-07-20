@@ -17,6 +17,9 @@ import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
 import BuildRunLive from "@/components/portfolio/build-run-live";
 import EditablePortfolioName from "@/components/portfolio/editable-portfolio-name";
+import BadgeRow from "@/components/badges/badge-row";
+import { getEarnedBadges } from "@/lib/badges-query";
+import type { EarnedBadge } from "@/lib/badges";
 import {
   getPortfolio,
   getPortfolioByPortfolioId,
@@ -105,6 +108,8 @@ async function getPortfolioPageData(slug: string): Promise<{
   trades: Trade[];
   totalTrades: number;
   holdingsCount: number;
+  /** Earned badges (public — shown to every viewer). */
+  earnedBadges: EarnedBadge[];
   /** Owner-only, live followers only: the followed paper book + the owner's
    *  paper books to re-point at (follows_portfolio_id, migration 070). */
   liveFollow: {
@@ -126,6 +131,7 @@ async function getPortfolioPageData(slug: string): Promise<{
       trades: [],
       totalTrades: 0,
       holdingsCount: 0,
+      earnedBadges: [],
       liveFollow: null,
     };
   }
@@ -147,6 +153,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     recent,
     holdingsCount,
     liveFollow,
+    earnedBadges,
   ] = await Promise.all([
     ownerAgentId
       ? getPortfolio(ownerAgentId).catch((err) => {
@@ -192,6 +199,11 @@ async function getPortfolioPageData(slug: string): Promise<{
             return null;
           })
       : Promise.resolve(null),
+    // Earned badges — public (shown to every viewer), immutable once granted.
+    getEarnedBadges(portfolioId).catch((err) => {
+      console.error("getEarnedBadges failed for", slug, err);
+      return [] as EarnedBadge[];
+    }),
   ]);
   const { trades, totalTrades } = recent;
 
@@ -217,6 +229,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     trades,
     totalTrades,
     holdingsCount,
+    earnedBadges,
     liveFollow,
   };
 }
@@ -239,6 +252,7 @@ export default async function PortfolioPage({ params }: PageParams) {
     trades,
     totalTrades,
     holdingsCount,
+    earnedBadges,
     liveFollow,
   } = await getPortfolioPageData(slug);
   if (!portfolio) notFound();
@@ -488,6 +502,13 @@ export default async function PortfolioPage({ params }: PageParams) {
                 </>
               )}
             </div>
+            {/* Earned badges — public, shown to every viewer, near the chips.
+                Renders nothing when none earned (no empty sockets). */}
+            {earnedBadges.length > 0 && (
+              <div className="mt-3">
+                <BadgeRow badges={earnedBadges} max={8} />
+              </div>
+            )}
           </header>
 
           {portfolioContent}

@@ -14,6 +14,7 @@ import {
   type WsbRecentTrade,
 } from "@/lib/leaderboard-wsb-query";
 import type { LeaderboardRow } from "@/components/leaderboard-table";
+import type { EarnedBadge } from "@/lib/badges";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { absoluteUrl } from "@/lib/site";
 
@@ -59,18 +60,19 @@ export default async function LeaderboardPage({
 
   if (user) {
     // Signed-in users keep the existing data-dense view.
-    const { rows, latestDate } = await getLeaderboard();
+    const { rows, latestDate, badgesByHandle } = await getLeaderboard();
     return (
       <SignedInLeaderboard
         rows={rows}
         latestDate={latestDate}
+        badgesByHandle={badgesByHandle}
         initialPeriod={initialPeriod}
       />
     );
   }
 
   // Anonymous visitor — WSB scoreboard.
-  const { rows, extrasByHandle, recentTrades, latestDate } =
+  const { rows, extrasByHandle, recentTrades, latestDate, badgesByHandle } =
     await getLeaderboardWsb();
   return (
     <AnonymousWsbLeaderboard
@@ -78,6 +80,7 @@ export default async function LeaderboardPage({
       extrasByHandle={extrasByHandle}
       recentTrades={recentTrades}
       latestDate={latestDate}
+      badgesByHandle={badgesByHandle}
       initialPeriod={initialPeriod}
     />
   );
@@ -92,12 +95,14 @@ function AnonymousWsbLeaderboard({
   extrasByHandle,
   recentTrades,
   latestDate,
+  badgesByHandle,
   initialPeriod,
 }: {
   rows: LeaderboardRow[];
   extrasByHandle: Record<string, WsbAgentExtras>;
   recentTrades: WsbRecentTrade[];
   latestDate: string | null;
+  badgesByHandle: Record<string, EarnedBadge[]>;
   initialPeriod: ReturnType<typeof parseInitialPeriod>;
 }) {
   const hasData = rows.length > 0 && latestDate;
@@ -178,6 +183,7 @@ function AnonymousWsbLeaderboard({
               <LeaderboardWsbBoard
                 rows={rows}
                 extrasByHandle={extrasByHandle}
+                badgesByHandle={badgesByHandle}
                 initialPeriod={initialPeriod}
               />
             )}
@@ -332,10 +338,12 @@ function buildWsbShareText(
 function SignedInLeaderboard({
   rows,
   latestDate,
+  badgesByHandle,
   initialPeriod,
 }: {
   rows: LeaderboardRow[];
   latestDate: string | null;
+  badgesByHandle: Record<string, EarnedBadge[]>;
   initialPeriod: ReturnType<typeof parseInitialPeriod>;
 }) {
   const shareUrl = `${absoluteUrl("/leaderboard")}?v=1`;
@@ -399,7 +407,11 @@ function SignedInLeaderboard({
             </div>
           ) : (
             <>
-              <LeaderboardTable rows={rows} initialPeriod={initialPeriod} />
+              <LeaderboardTable
+                rows={rows}
+                badgesByHandle={badgesByHandle}
+                initialPeriod={initialPeriod}
+              />
               <p className="text-xs text-text-muted font-mono mt-3 max-w-[860px] leading-relaxed">
                 Return reads &lsquo;calculating&rsquo; for portfolios whose
                 inception is inside the selected window — a 14-day-old

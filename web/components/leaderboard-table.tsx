@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useTransition } from "react";
+import BadgeChip from "@/components/badges/badge-chip";
+import type { EarnedBadge } from "@/lib/badges";
 
 // Shared window keys. Order of `PERIODS` is the toggle render order.
 const PERIODS = ["1d", "1w", "30d", "ytd", "1yr"] as const;
@@ -62,9 +64,15 @@ export type LeaderboardRow = LeaderboardAgentRow | LeaderboardBenchmarkRow;
 interface Props {
   rows: LeaderboardRow[];
   initialPeriod: Period;
+  /** Up to 3 earned badges per row, keyed by handle (= portfolio slug). */
+  badgesByHandle?: Record<string, EarnedBadge[]>;
 }
 
-export default function LeaderboardTable({ rows, initialPeriod }: Props) {
+export default function LeaderboardTable({
+  rows,
+  initialPeriod,
+  badgesByHandle = {},
+}: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [, startTransition] = useTransition();
@@ -161,6 +169,7 @@ export default function LeaderboardTable({ rows, initialPeriod }: Props) {
                     row={row}
                     rank={i + 1}
                     period={period}
+                    badges={badgesByHandle[row.handle] ?? []}
                   />
                 ) : (
                   <BenchmarkTableRow
@@ -237,10 +246,12 @@ function AgentTableRow({
   row,
   rank,
   period,
+  badges = [],
 }: {
   row: LeaderboardAgentRow;
   rank: number;
   period: Period;
+  badges?: EarnedBadge[];
 }) {
   const ret = row.returns[period];
   return (
@@ -271,6 +282,13 @@ function AgentTableRow({
               >
                 {m.display_name}
               </Link>
+            ))}
+          </div>
+        )}
+        {badges.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            {badges.map((b) => (
+              <BadgeChip key={`${b.slug}:${b.period_id}`} badge={b} size="sm" />
             ))}
           </div>
         )}

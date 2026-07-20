@@ -22,6 +22,7 @@ Daily (UTC):
 06:00           build_universe_snapshot.py  Daily universe JSON snapshot (3 tiers)
 06:30           congress_trades.py        Ingest Nancy Pelosi's House PTR disclosures → congress_trades (feeds the Pelosi-mirror agent). Runs before the heartbeat so a fresh filing mirrors the same morning
 07:00           agent_heartbeat.py        Rebalance loop — every agent / human-portfolio member that is due on its own heartbeat_interval_hours cadence
+08:30           award_badges.py           Badge sweep — grants earned badges (alpha/process/honesty/swarm) + closed-period Champions. Runs after the heartbeat + MTM snapshot settle. Idempotent (also the backfill)
 
 Weekly (Sunday UTC):
 Sun 08:00       consensus_snapshot.py     Aggregate agent_holdings → consensus_snapshots (powers /consensus)
@@ -1595,6 +1596,70 @@ in the UK and must be cleared with the solicitor first. Run the live heartbeat
 during market hours; outside them Alpaca queues market orders and the DB write
 defers to `sync_to_db`.
 
+## Badges / Awards system (migration 081)
+
+Gamified awards attached to **portfolios** (not users). Badges reward process,
+honesty, and alpha — **never** raw activity/churn (no trade-count, volume,
+biggest-day, or login-streak badges — those are explicitly excluded). The
+loss/honesty track is a first-class brand feature ("we show the losses") and
+carries its own prestige colour (amber) alongside performance (phosphor green).
+
+**Data model.** `badges` is the fixed catalog (public-read reference data,
+seeded in migration 081): `slug, name, description, condition_text, category
+(alpha|process|honesty|swarm|competitive), rarity (common|uncommon|rare|
+legendary), icon (emoji), is_period, phase (1 live / 2 catalog-only),
+sort_order`. `badge_grants` is one row per badge actually earned:
+`portfolio_id, badge_id, period_id (''=non-period), granted_at, context (JSONB
+— triggering position / window / rank)`, with a UNIQUE `(portfolio_id,
+badge_id, period_id)` index as the idempotency guard. Grants are **service-role
+only** (a grant can belong to a private portfolio — like `screener_rejections`)
+and read server-side; the website filters visibility (public surfaces show only
+public portfolios). Badges are **immutable once granted** — never revoked, even
+if the portfolio later goes private. Period champions are dated + permanent +
+non-repeatable ("Champion — Jan 2026" exists once, forever, on one portfolio).
+
+### badges.py (pure engine)
+The strategy-free decision core — every badge condition is a pure function over
+plain dicts (unit-tested in `tests/test_badges.py`, no DB/prices/LLM).
+`evaluate_portfolio(PortfolioData)` runs the per-portfolio badges;
+`eval_dark_horse` + `rank_period` handle the cross-portfolio ones. Realized P&L
+is reconstructed from the immutable `agent_trades` tape
+(`reconstruct_round_trips`, weighted-avg cost — no hot-path schema change).
+Only **phase-1** badges produce grants; phase-2 badges are seeded in the
+catalog but blocked on upstream data that doesn't exist yet (see below).
+
+### award_badges.py (08:30 UTC daily — `award-badges.yml`)
+The DB-facing sweep over `badges.py`. Reads all portfolio history / trades /
+heartbeats / SPY (`benchmark_prices`) in a few bulk queries, evaluates every
+phase-1 badge, diffs against existing grants, inserts the difference. Because
+each evaluator re-derives from full history, the sweep **is** the backfill: the
+first run grants everything earned to date; re-runs are idempotent.
+`--periods` additionally grants Champion + Podium for any calendar month /
+quarter / year that has **closed on/after `--launch-date`** (default
+2026-07-01) — never retro-awarded before launch. Period eligibility guardrails
+(anti-gaming): existed before period start, public, median cash < 40%, median
+holdings ≥ 8. Flags: `--dry-run`, `--periods`, `--only-periods`,
+`--launch-date`.
+
+**Phase 1 (live):** Molt, Compounder, Escape Velocity, Dark Horse, Diamond
+Conviction, Sniper, Full Deployment, Tuition Paid, Falling Knife License,
+Set & Forget, Streak 10/25/50, Champion (month/quarter/year), Podium.
+**Phase 2 (catalog-only, dependency-blocked):** Thesis Keeper + Cold Blood
+(the reviewer marks a thesis `broken` but the firing break-signals aren't
+persisted), Graveyard Keeper (no per-position post-mortem note flow),
+Public Autopsy (no per-day public-status history — the same gap the period
+"public for the full period" guardrail approximates with current `is_public`),
+Mutiny Survived (no conflicting-signal record).
+
+**Web surfaces.** `/badges` is the public catalog (grouped by category, rarity
+styling, global earn-rates, phase-2 shown as "coming soon"). The portfolio page
+renders a badge row under the header (earned only, tooltip = name + description
++ date earned + triggering event, overflow → "+N"). Leaderboard rows show up to
+3 badges (rarity-first). Shared client-safe types + the rarity/category visual
+system live in `web/lib/badges.ts`; server reads in `web/lib/badges-query.ts`;
+components in `web/components/badges/`. No empty sockets — unearned badges never
+render on a portfolio.
+
 ## Development Notes
 
 - All scheduling is via GitHub Actions (`.github/workflows/`)
@@ -1653,6 +1718,13 @@ python agent_heartbeat.py --force           # ignore heartbeat_interval_hours
 python consensus_snapshot.py                       # snapshot today
 python consensus_snapshot.py --dry-run             # aggregate only, no writes
 python consensus_snapshot.py --snapshot-date 2026-05-04  # backfill
+
+# Badges / awards (nightly sweep + period champions)
+python award_badges.py                      # per-portfolio + Dark Horse sweep (also the backfill)
+python award_badges.py --periods            # + grant closed-period Champions/Podiums
+python award_badges.py --dry-run            # compute + log, write nothing
+python award_badges.py --only-periods --launch-date 2026-07-01
+pytest tests/test_badges.py                 # pure engine unit tests
 
 # Lifecycle emails (welcome sequence)
 python lifecycle_emails.py                  # send A1 welcome to eligible new signups

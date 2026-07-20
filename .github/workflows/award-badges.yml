@@ -1,0 +1,76 @@
+name: Award Badges
+
+# Nightly badge sweep + period champions.
+#
+# The per-portfolio / Dark Horse sweep re-derives every phase-1 badge from the
+# full history + trade tape, so it is idempotent and doubles as the backfill:
+# the first run grants everything earned to date. `--periods` additionally
+# grants Champion / Podium badges for any calendar month / quarter / year that
+# has closed on/after the launch date (never retro-awarded before launch).
+#
+# 08:30 UTC daily — after the 07:00 heartbeat rebalance and the leaderboard's
+# 05:30 mark-to-market snapshot have settled, so the sweep reads fresh state.
+
+on:
+  schedule:
+    - cron: "30 8 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Compute and log only — write no grants"
+        required: false
+        type: boolean
+        default: false
+      only_periods:
+        description: "Only run period champions (skip the per-portfolio sweep)"
+        required: false
+        type: boolean
+        default: false
+      launch_date:
+        description: "No period champions for periods ending before this date (YYYY-MM-DD)"
+        required: false
+        type: string
+
+jobs:
+  award:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run badge sweep
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          ARGS="--periods"
+          if [ "${{ inputs.only_periods }}" = "true" ]; then
+            ARGS="--only-periods"
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ -n "${{ inputs.launch_date }}" ]; then
+            ARGS="$ARGS --launch-date ${{ inputs.launch_date }}"
+          fi
+          python award_badges.py $ARGS
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true  # artifact-service outages must not red-flag a clean run
+        with:
+          name: award-badges-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30

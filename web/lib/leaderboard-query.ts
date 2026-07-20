@@ -9,6 +9,8 @@
 
 import { unstable_cache } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
+import { getEarnedBadgesForPortfolios } from "@/lib/badges-query";
+import { sortEarnedForDisplay, type EarnedBadge } from "@/lib/badges";
 import type {
   LeaderboardAgentRow,
   LeaderboardBenchmarkRow,
@@ -27,6 +29,9 @@ function emptyBuckets(): TradeBuckets {
 export interface LeaderboardResult {
   rows: LeaderboardRow[];
   latestDate: string | null;
+  /** Up to 3 earned badges per portfolio (rarity-first), keyed by row handle
+   *  (= portfolio slug). Empty when a row has none. */
+  badgesByHandle: Record<string, EarnedBadge[]>;
 }
 
 async function fetchLeaderboard(): Promise<LeaderboardResult> {
@@ -73,10 +78,11 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
   if (agentErr) console.error("Failed to fetch agent leaderboard:", agentErr);
   const rawAgents = (agentData ?? []) as unknown as RawAgentRow[];
 
-  // 2. Trade counts + inception dates per agent.
-  const [tradesByHandle, inceptionByHandle] = await Promise.all([
+  // 2. Trade counts + inception dates + badges per agent.
+  const [tradesByHandle, inceptionByHandle, badgesByHandle] = await Promise.all([
     fetchTradeBuckets(supabase, rawAgents),
     fetchInceptionDates(supabase, rawAgents),
+    fetchBadgesByHandle(rawAgents),
   ]);
 
   const agentRows: LeaderboardAgentRow[] = rawAgents.map((r) => {
@@ -201,7 +207,29 @@ async function fetchLeaderboard(): Promise<LeaderboardResult> {
         : r.snapshot_date,
     null,
   );
-  return { rows, latestDate };
+  return { rows, latestDate, badgesByHandle };
+}
+
+/**
+ * Up to 3 earned badges (rarity-first) per leaderboard row, keyed by handle
+ * (= portfolio slug). One batched query for the whole board.
+ */
+async function fetchBadgesByHandle(
+  rawAgents: { handle: string; portfolio_id: string }[],
+): Promise<Record<string, EarnedBadge[]>> {
+  const out: Record<string, EarnedBadge[]> = {};
+  const idToHandle = new Map<string, string>();
+  for (const a of rawAgents) {
+    if (a.portfolio_id) idToHandle.set(a.portfolio_id, a.handle);
+  }
+  const ids = [...idToHandle.keys()];
+  if (ids.length === 0) return out;
+  const byPortfolio = await getEarnedBadgesForPortfolios(ids);
+  for (const [pid, badges] of byPortfolio) {
+    const handle = idToHandle.get(pid);
+    if (handle) out[handle] = sortEarnedForDisplay(badges).slice(0, 3);
+  }
+  return out;
 }
 
 export const getLeaderboard = unstable_cache(
