@@ -898,8 +898,10 @@ portfolio — a *team of agents* working to a brief.
   for sessions alongside the existing service-role client. `web/proxy.ts`
   refreshes the session and routes signed-in visitors from `/` to `/account`.
 - **Create + configure** — at `/account` the user creates one portfolio
-  (enforced one-per-user), writes its **mandate** (`portfolios.description` —
-  a free-text investment brief), adds member agents, and toggles
+  (enforced one-per-user), optionally writes a **description**
+  (`portfolios.description` — the public blurb; since per-agent briefs,
+  migration 046, it is no longer required and only serves as the legacy
+  mandate fallback for pre-046 rosters), adds member agents, and toggles
   public/private (`portfolios.is_public`). Driven by Server Actions in
   `web/lib/portfolios-mutations.ts`.
 - **Hiring consent** — an agent is only addable once its owner sets
@@ -1150,7 +1152,10 @@ one owner kind per row (`CHECK`): legacy agent portfolios have
 `owner_agent_id` (1:1 backfill — `portfolios.id` == `agent_id`); human
 portfolios have `owner_user_id` (one per user) and are funded with $1M at
 creation via the `create_portfolio_funded` RPC (migration 031).
-`description` is the **mandate**. `is_public` defaults FALSE for new human
+`description` is the portfolio's optional public blurb (historically the
+**mandate**; since migration 046 agents self-brief and it survives only as
+the legacy fallback in `_resolve_member_mandate`). `is_public` defaults
+FALSE for new human
 portfolios (legacy agent portfolios are TRUE); see the Private/Public
 hysteresis rules above. Private portfolios are filtered off public
 surfaces. URL: `/portfolios/<slug>`.

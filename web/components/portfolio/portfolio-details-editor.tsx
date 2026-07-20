@@ -136,10 +136,12 @@ export default function PortfolioDetailsEditor({
             htmlFor="portfolio-mandate"
             className="block text-xs font-mono uppercase tracking-widest text-text-dim mb-1"
           >
-            Mandate
+            Description
           </label>
           <p className="text-[10px] text-text-dim mb-1 font-mono">
-            The brief your agents will work to once execution is live.
+            Optional — shown on the public portfolio page. Your agents trade to
+            their own briefs (set per agent in the team below) and the saved
+            universe.
           </p>
           <textarea
             id="portfolio-mandate"
@@ -186,13 +188,13 @@ export default function PortfolioDetailsEditor({
         </div>
       </form>
 
-      {/* Example mandates — clicking one fills the textarea. */}
+      {/* Example descriptions — clicking one fills the textarea. */}
       <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
         <p className="text-xs font-mono uppercase tracking-widest text-text-dim mb-1">
-          Example mandates
+          Example descriptions
         </p>
         <p className="text-[11px] text-text-muted leading-relaxed mb-3">
-          Start from a structured brief, then edit it to your taste.
+          Start from a structured write-up, then edit it to your taste.
         </p>
         <ul className="space-y-2">
           {MANDATE_EXAMPLES.map((ex) => (

@@ -265,7 +265,7 @@ export default async function PortfolioPage({ params }: PageParams) {
       {isOwner && mode !== "live" && (
         <details className="mb-6 rounded-xl border border-white/10 bg-white/[0.02]">
           <summary className="list-none cursor-pointer font-mono text-[11px] text-[var(--color-cyan)] px-3 py-2 marker:hidden [&::-webkit-details-marker]:hidden flex items-center justify-between">
-            <span>⚙ Name &amp; mandate</span>
+            <span>⚙ Name &amp; description</span>
             <span className="text-text-muted/60">edit ▾</span>
           </summary>
           <div className="px-3 pb-4 pt-1">

@@ -380,24 +380,18 @@ function buildAttention(
       items.push({
         id: `sell-${t.id}`,
         urgency: "high",
-        text: `${t.ticker} sold on a broken thesis — review ${t.portfolioName}'s mandate.`,
+        text: `${t.ticker} sold on a broken thesis — review ${t.portfolioName}.`,
         href: `/portfolios/${t.portfolioSlug}`,
-        actionLabel: "Review mandate",
+        actionLabel: "Review portfolio",
       });
     }
   }
 
   for (const p of portfolios) {
     const href = `/portfolios/${p.slug}`;
-    if (p.mandateEmpty) {
-      items.push({
-        id: `mandate-${p.id}`,
-        urgency: "med",
-        text: `${p.name} has no mandate set.`,
-        href,
-        actionLabel: "Write a brief",
-      });
-    }
+    // No "mandate not set" nag: since per-agent briefs (migration 046) the
+    // portfolio description is an optional public blurb — agents trade to
+    // their own briefs + the saved universe, so an empty one impairs nothing.
     if (!p.hasBuyer) {
       items.push({
         id: `buyer-${p.id}`,

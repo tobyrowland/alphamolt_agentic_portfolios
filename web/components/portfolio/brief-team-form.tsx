@@ -2,9 +2,10 @@
 
 /**
  * Brief-first onboarding card (onboarding brief §3): "Brief a team that's
- * standing by", ~80% pre-filled. The mandate is the one required decision;
- * universe and agents default and are editable later. On GO the portfolio is
- * created with the chosen universe preset and a pre-rostered buyer + reviewer.
+ * standing by", ~100% pre-filled. Since per-agent briefs (migration 046) the
+ * portfolio description is OPTIONAL — agents trade to their own briefs + the
+ * saved universe, so nothing here blocks. On GO the portfolio is created with
+ * the chosen universe preset; the team is hired on the portfolio page.
  */
 
 import { useState, useTransition } from "react";
@@ -64,10 +65,6 @@ export default function BriefTeamForm({
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!mandate.trim()) {
-      setError("Write a one-line mandate — it's the brief your team trades to.");
-      return;
-    }
     startTransition(async () => {
       const result = await createPortfolio({
         displayName: name.trim() || defaultName,
@@ -94,8 +91,8 @@ export default function BriefTeamForm({
           Brief your team
         </h2>
         <p className="mt-0.5 text-[13px] text-text-muted">
-          Most of it&apos;s set. Tell them what to chase — that&apos;s the part
-          only you can write.
+          Everything&apos;s pre-set — pick a universe, add an optional
+          description, and tune each agent&apos;s own brief once you&apos;re in.
         </p>
       </div>
 
@@ -137,13 +134,14 @@ export default function BriefTeamForm({
         </p>
       </Row>
 
-      {/* MANDATE — the one required decision */}
-      <Row label="Mandate" required>
+      {/* DESCRIPTION — optional public blurb (agents trade to their own
+          briefs + the universe, not to this). Templates also nudge the
+          matching universe preset. */}
+      <Row label="Description">
         <textarea
           rows={4}
           maxLength={2000}
-          required
-          placeholder="e.g. R40 winners, +10–75% vs SPY, strong quarterly revenue growth, limited margin erosion. Sell only on a broken thesis."
+          placeholder="Optional — what this portfolio is about, shown on its public page. e.g. R40 winners with strong quarterly revenue growth; sell only on a broken thesis."
           value={mandate}
           onChange={(e) => setMandate(e.target.value)}
           className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-[var(--color-green,#00FF41)]/50 placeholder:text-text-muted resize-none"
@@ -191,7 +189,7 @@ export default function BriefTeamForm({
           {pending ? "Briefing…" : "Brief the team →"}
         </button>
         <span className="text-[12px] text-text-muted">
-          You can edit the universe, agents and mandate any time before
+          You can edit the universe, agents and description any time before
           execution goes live.
         </span>
       </div>

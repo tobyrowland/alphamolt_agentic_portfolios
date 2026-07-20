@@ -91,17 +91,14 @@ export async function createPortfolio(input: {
   if (!displayName) return { ok: false, error: "Portfolio name is required." };
   if (displayName.length > MAX_NAME)
     return { ok: false, error: `Name must be ${MAX_NAME} characters or fewer.` };
-  // The mandate is the one real decision onboarding asks for (brief §2): it's
-  // the brief the team trades to, so it's required — no silent empty portfolio.
-  if (!mandate)
-    return {
-      ok: false,
-      error: "Write a one-line mandate — it's the brief your team trades to.",
-    };
+  // The description is OPTIONAL (it was the required "mandate" before per-agent
+  // briefs, migration 046): agents now trade to their own briefs + the saved
+  // screen_config, so this is just the portfolio's public blurb / a legacy
+  // fallback brief for pre-046 rosters.
   if (mandate.length > MAX_MANDATE)
     return {
       ok: false,
-      error: `Mandate must be ${MAX_MANDATE} characters or fewer.`,
+      error: `Description must be ${MAX_MANDATE} characters or fewer.`,
     };
 
   const capError = `You've hit the limit of ${MAX_PAPER_PORTFOLIOS} paper portfolios.`;
@@ -225,7 +222,7 @@ export async function updatePortfolioDetails(input: {
   if (mandate.length > MAX_MANDATE)
     return {
       ok: false,
-      error: `Mandate must be ${MAX_MANDATE} characters or fewer.`,
+      error: `Description must be ${MAX_MANDATE} characters or fewer.`,
     };
 
   // Single update with the ownership check in the WHERE clause — no
