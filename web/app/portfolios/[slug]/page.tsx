@@ -15,6 +15,7 @@ import SectorChip from "@/components/portfolio/sector-chip";
 import PortfolioTabs from "@/components/portfolio/portfolio-tabs";
 import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
+import BuildRunLive from "@/components/portfolio/build-run-live";
 import EditablePortfolioName from "@/components/portfolio/editable-portfolio-name";
 import {
   getPortfolio,
@@ -338,6 +339,13 @@ export default async function PortfolioPage({ params }: PageParams) {
         </section>
       ) : (
         <ReadOnlyTeam team={team} />
+      )}
+
+      {/* Live run panel — wakes when the owner hits "Run now" on a member
+          card and streams the agent's decisions in as they're recorded
+          (build-run-live.tsx). Renders nothing outside a run. */}
+      {isOwner && mode !== "live" && (
+        <BuildRunLive portfolioId={portfolio.id} slug={slug} />
       )}
 
       {/* Holdings */}
