@@ -33,6 +33,7 @@ import {
   removeAgentFromPortfolio,
 } from "@/lib/portfolios-mutations";
 import { runAgent } from "@/lib/run-agent-mutations";
+import { announceRunDispatched } from "@/components/portfolio/build-run-live";
 import { scheduleText } from "@/lib/agents/schedule";
 
 // ----- Action vocabulary ---------------------------------------------------
@@ -521,6 +522,9 @@ function TeamCard({
         return;
       }
       setCooldownEndsAt(Date.now() + RUN_COOLDOWN_MS);
+      // Wake the live run panel (build-run-live.tsx) so the wait becomes a
+      // show — decisions stream in as the workflow records them.
+      announceRunDispatched(portfolioId, agent.displayName);
     });
   }
 
