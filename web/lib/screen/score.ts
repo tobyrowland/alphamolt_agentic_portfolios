@@ -460,6 +460,25 @@ export function firingBreakCount(facts: ScreenFacts, card: ResearchCard | null):
   return signals.reduce((n, s) => n + (signalFires(facts, s) ? 1 : 0), 0);
 }
 
+/** Derived filter fact: trailing-12-month revenue in $M — the sum of the
+ *  latest 4 quarters of the `revenue` series. There is no scalar revenue
+ *  column in the matview (fundamentals.revenue is never written by the
+ *  rotation), so the scalar is derived from the same quarterly series the
+ *  transform filters read. Null (name excluded, standard missing-datum rule)
+ *  unless all 4 latest quarters are present. MUST match screen.py
+ *  _revenue_ttm_m. */
+export function revenueTtmM(row: ScreenFacts): number | null {
+  const s = seriesFor(row.quarters, "revenue");
+  if (!s || s.length < 4) return null;
+  let sum = 0;
+  for (let i = 0; i < 4; i++) {
+    const v = s[i];
+    if (v == null) return null;
+    sum += v;
+  }
+  return sum / 1e6;
+}
+
 function matchesFilter(row: ScreenFacts, f: Filter): boolean {
   if (TEXT_FIELDS.has(f.field)) {
     const raw = (row as unknown as Record<string, unknown>)[f.field];
@@ -481,6 +500,8 @@ function matchesFilter(row: ScreenFacts, f: Filter): boolean {
     const key = SERIES_FIELDS[f.field];
     if (!key || !(TRANSFORMS as readonly string[]).includes(f.transform)) return true;
     v = applyTransform(seriesFor(row.quarters, key), f.transform);
+  } else if (f.field === "revenue_ttm") {
+    v = revenueTtmM(row); // derived from the quarters series, $M
   } else if (SERIES_ONLY_FIELDS.has(f.field)) {
     return true; // series-only field without a transform = no constraint
   } else {

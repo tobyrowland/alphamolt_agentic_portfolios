@@ -57,6 +57,10 @@ FILTER_FIELDS = {
     # Series-only field (migration 076): no scalar matview column — usable
     # only WITH a transform (see SERIES_FIELDS / _TRANSFORMS below).
     "revenue",
+    # Derived scalar: trailing-12-month revenue in $M, computed at read time
+    # from the quarters series (_revenue_ttm_m) — fundamentals.revenue is
+    # never written by the rotation, so there is no matview column to read.
+    "revenue_ttm",
 }
 TEXT_FIELDS = {"sector", "industry", "country"}
 
@@ -230,6 +234,25 @@ _FINANCIAL_SECTORS = frozenset({"finance", "financial services", "real estate"})
 def _is_financial(sector) -> bool:
     return str(sector or "").strip().lower() in _FINANCIAL_SECTORS
 
+
+def _revenue_ttm_m(row: dict) -> float | None:
+    """Derived filter fact: trailing-12-month revenue in $M — the sum of the
+    latest 4 quarters of the `revenue` series. There is no scalar revenue
+    column in the matview (fundamentals.revenue is never written by the
+    rotation), so the scalar is derived from the same quarterly series the
+    transform filters read. None (name excluded, standard missing-datum rule)
+    unless all 4 latest quarters are present. MUST match score.ts
+    revenueTtmM."""
+    series = _series_for(row.get("quarters"), "revenue")
+    if series is None or len(series) < 4:
+        return None
+    total = 0.0
+    for v in series[:4]:
+        if v is None:
+            return None
+        total += v
+    return total / 1e6
+
 # ---- single-score constants (migration 057 / screener redesign brief §2) ----
 # One ordering score: final_z = base_z + adj_z, displayed as a universe
 # percentile round(Φ(final_z)·100). These MUST match web/lib/screen/score.ts.
@@ -353,6 +376,8 @@ def _matches(row: dict, f: dict) -> bool:
         if key is None or transform not in _TRANSFORMS:
             return True
         v = apply_transform(_series_for(row.get("quarters"), key), transform)
+    elif field == "revenue_ttm":
+        v = _revenue_ttm_m(row)  # derived from the quarters series, $M
     elif field in SERIES_ONLY_FIELDS:
         return True  # series-only field without a transform = no constraint
     else:

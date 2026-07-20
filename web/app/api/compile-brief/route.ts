@@ -43,6 +43,7 @@ Allowed filter fields (numbers are percentages or multiples as noted):
 - sector, country        (text; use op "==" or "!=")
 - ps                     (price/sales multiple)
 - rev_growth_ttm         (revenue growth %, TTM)
+- revenue_ttm            (trailing-12-month revenue in MILLIONS of dollars — absolute size. "revenue at least $100M" → {"field":"revenue_ttm","op":">=","value":100}; "$1B+ revenue" → value 1000. Use for any absolute revenue-size language; rev_growth_ttm stays the growth-rate field)
 - gross_margin, fcf_margin, net_margin, operating_margin   (%)
 - rule_of_40             (number)
 - ret_52w                (trailing 52-week price return %)

@@ -227,7 +227,14 @@ series at read time, so "FCF margin trending up over the past year" is just
 `SERIES_FIELDS` (the four margins + `rev_growth_qoq` + `revenue`);
 transform-less they read their scalar column as always. `revenue` is
 **series-only** (no scalar matview column — schema-enforced to always carry a
-transform; transform-less it is a no-constraint on both scorers). Implemented
+transform; transform-less it is a no-constraint on both scorers). The
+**absolute-size read** is the separate derived field **`revenue_ttm`** (TTM
+revenue in $M — "Revenue (TTM) above…" in the friendly menu): computed at
+read time in BOTH scorers as the sum of the latest 4 quarters of the revenue
+series (`score.ts revenueTtmM` / `screen.py _revenue_ttm_m`; null → excluded,
+standard missing-datum rule), since `fundamentals.revenue` is never written by
+the rotation and the quarterly series already has near-full coverage — no
+migration, no matview column. Implemented
 once per language in `web/lib/screen/transforms.ts` and `screen.py`
 (`_TRANSFORMS`), held identical by a shared fixture
 (`tests/fixtures/transform_parity.json`) that `tests/test_transforms.py`
