@@ -19,6 +19,7 @@ import {
   DEFAULT_PRESET,
   presetConfig,
   screenConfigSchema,
+  screenFilterLabel,
 } from "@/lib/screen/config";
 import { MAX_PAPER_PORTFOLIOS } from "@/lib/portfolios-query";
 
@@ -772,4 +773,134 @@ export async function removeAgentFromPortfolio(input: {
 
   revalidate(portfolio.slug);
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// AI-generated portfolio description
+// ---------------------------------------------------------------------------
+
+export type GenerateDescriptionResult =
+  | { ok: true; text: string }
+  | { ok: false; error: string };
+
+/** Human-readable one-liner for a saved screen config: the matching house
+ *  preset's label + blurb when it is one, else the filter chips + weights.
+ *  Same canonical-JSON comparison the screener's universe save bar uses. */
+function describeUniverse(raw: unknown): string {
+  const parsed = screenConfigSchema.safeParse(raw ?? {});
+  if (!parsed.success) return "the default quality-growth screen";
+  const key = JSON.stringify(parsed.data);
+  for (const p of Object.values(PRESETS)) {
+    try {
+      if (JSON.stringify(presetConfig(p.id)) === key) {
+        return `the "${p.label}" house screen (${p.description})`;
+      }
+    } catch {
+      /* a malformed preset never blocks generation */
+    }
+  }
+  const c = parsed.data;
+  const bits: string[] = [];
+  if (c.filters.length) {
+    bits.push(`filters: ${c.filters.map(screenFilterLabel).join("; ")}`);
+  }
+  const w = c.weights;
+  bits.push(
+    `ranking weights — quality ${w.quality}, value ${w.value}, momentum ${w.momentum}, inflection ${w.inflection ?? 0}`,
+  );
+  bits.push(`the agents pick from the top ${c.topN} ranked names`);
+  return `a custom screen (${bits.join("; ")})`;
+}
+
+/**
+ * Draft a short public description of a portfolio from what it actually IS —
+ * the saved universe screen + the hired agents and their effective briefs.
+ * Returns the text for the editor's textarea; nothing is saved until the
+ * owner clicks "Save changes", so a bad draft costs one click to discard.
+ */
+export async function generatePortfolioDescription(input: {
+  portfolioId: string;
+}): Promise<GenerateDescriptionResult> {
+  const { user } = await requireUser();
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return { ok: false, error: "Generation isn't configured on this deploy." };
+  }
+
+  const supabase = getSupabase();
+  const { data: portfolio } = await supabase
+    .from("portfolios")
+    .select("id, display_name, screen_config")
+    .eq("id", input.portfolioId)
+    .eq("owner_user_id", user.id)
+    .maybeSingle();
+  if (!portfolio) return { ok: false, error: "Portfolio not found." };
+
+  // The hired team with each member's EFFECTIVE brief (instance override
+  // ?? library default — same resolution the heartbeat uses).
+  const { data: memberRows } = await supabase
+    .from("portfolio_agents")
+    .select("mandate, enabled, agents(display_name, action, default_mandate)")
+    .eq("portfolio_id", input.portfolioId);
+  const team = ((memberRows ?? []) as unknown as Array<{
+    mandate: string | null;
+    enabled: boolean;
+    agents: {
+      display_name: string;
+      action: string | null;
+      default_mandate: string | null;
+    } | null;
+  }>)
+    .filter((m) => m.enabled && m.agents)
+    .map((m) => {
+      const brief = (m.mandate ?? m.agents!.default_mandate ?? "").trim();
+      const action = m.agents!.action ?? "manage";
+      return `- ${m.agents!.display_name} (${action})${brief ? `: ${brief}` : ""}`;
+    });
+
+  const facts = [
+    `Portfolio name: ${(portfolio as { display_name: string }).display_name}`,
+    `Universe the buyers pick from: ${describeUniverse(
+      (portfolio as { screen_config: unknown }).screen_config,
+    )}`,
+    team.length ? `Agent team:\n${team.join("\n")}` : "Agent team: none hired yet",
+  ].join("\n\n");
+
+  const system =
+    "You write the short public description shown on a paper-trading portfolio's page. " +
+    "The portfolio is run by a team of AI agents; the facts below describe its stock-selection " +
+    "screen and the agents' briefs. Write 2-3 plain sentences (under 350 characters total) that " +
+    "tell a visitor what this portfolio owns and how it decides to buy and sell. Plain text only — " +
+    "no markdown, no emoji, no hashtags, no hype words (revolutionary, cutting-edge), no financial advice. " +
+    "Don't repeat the portfolio's name. Respond with ONLY the description text.";
+
+  try {
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: "user", parts: [{ text: facts }] }],
+          generationConfig: { temperature: 0.4 },
+        }),
+      },
+    );
+    if (!resp.ok) {
+      console.error("generatePortfolioDescription: Gemini", resp.status);
+      return { ok: false, error: "Generation failed — try again." };
+    }
+    const data = await resp.json();
+    const text: string = (
+      data?.candidates?.[0]?.content?.parts
+        ?.map((p: { text?: string }) => p.text ?? "")
+        .join("") ?? ""
+    ).trim();
+    if (!text) return { ok: false, error: "Generation came back empty — try again." };
+    return { ok: true, text: text.slice(0, MAX_MANDATE) };
+  } catch (err) {
+    console.error("generatePortfolioDescription failed:", err);
+    return { ok: false, error: "Generation failed — try again." };
+  }
 }
