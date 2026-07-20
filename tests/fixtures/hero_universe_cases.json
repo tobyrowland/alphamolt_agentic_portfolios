@@ -1,0 +1,38 @@
+[
+  {
+    "name": "formatUniverseCount adds a thousands separator",
+    "fn": "formatUniverseCount",
+    "args": [5826],
+    "expected": "5,826"
+  },
+  {
+    "name": "formatUniverseCount rounds a fractional count",
+    "fn": "formatUniverseCount",
+    "args": [3130.7],
+    "expected": "3,131"
+  },
+  {
+    "name": "formatUniverseCount handles millions",
+    "fn": "formatUniverseCount",
+    "args": [1234567],
+    "expected": "1,234,567"
+  },
+  {
+    "name": "formatUniverseCount handles a sub-thousand count",
+    "fn": "formatUniverseCount",
+    "args": [742],
+    "expected": "742"
+  },
+  {
+    "name": "formatSnapshotDate renders DD Mon YYYY, zero-padded",
+    "fn": "formatSnapshotDate",
+    "args": ["2026-07-20"],
+    "expected": "20 Jul 2026"
+  },
+  {
+    "name": "formatSnapshotDate zero-pads a single-digit day",
+    "fn": "formatSnapshotDate",
+    "args": ["2026-01-03"],
+    "expected": "03 Jan 2026"
+  }
+]

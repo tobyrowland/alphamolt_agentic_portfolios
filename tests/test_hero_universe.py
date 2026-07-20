@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Homepage "swarm manager" hero — stat-strip logic (web/lib/hero-stats.ts).
+"""Homepage "fifty analysts" hero — stat-strip logic (web/lib/hero-universe.ts).
 
-The stat strip's numbers are compiled from live data with hard rules from the
-hero brief: quarter-vs-trailing-90d window selection (14-day minimum quarter
-age), first-point-on-or-after-start return baselines, best-alpha-in-bps with
-sign kept, the FOUNDING_COHORT_CAP=500 Stat A variant, and "DD Mon YYYY"
-snapshot dating. All of it lives in one pure TS module so it can be tested
-without Next/Supabase — this test evaluates the shared fixture
-(tests/fixtures/hero_stats_cases.json) through the real implementation under
-`node --experimental-strip-types` (same pattern as tests/test_transforms.py).
+The strip shows one live number (the US-listed universe count, thousands
+separated) and a data-compile snapshot date ("DD Mon YYYY"). Both are produced
+by one pure TS module so they can be tested without Next/Supabase — this test
+evaluates the shared fixture (tests/fixtures/hero_universe_cases.json) through
+the real implementation under `node --experimental-strip-types` (same pattern
+as tests/test_transforms.py).
 
-Run: pytest tests/test_hero_stats.py
+Run: pytest tests/test_hero_universe.py
 """
 
 from __future__ import annotations
@@ -22,16 +20,16 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FIXTURE = ROOT / "tests" / "fixtures" / "hero_stats_cases.json"
-RUNNER = ROOT / "tests" / "ts_hero_stats_runner.mjs"
+FIXTURE = ROOT / "tests" / "fixtures" / "hero_universe_cases.json"
+RUNNER = ROOT / "tests" / "ts_hero_universe_runner.mjs"
 
 
 def _load_cases() -> list[dict]:
     return json.loads(FIXTURE.read_text())
 
 
-class TestHeroStatsLogic(unittest.TestCase):
-    """web/lib/hero-stats.ts evaluated over the shared fixture."""
+class TestHeroUniverseLogic(unittest.TestCase):
+    """web/lib/hero-universe.ts evaluated over the shared fixture."""
 
     @classmethod
     def setUpClass(cls):
@@ -59,17 +57,7 @@ class TestHeroStatsLogic(unittest.TestCase):
     def test_fixture_covers_every_rule(self):
         # Guard against the fixture silently losing a rule family.
         fns = {c["fn"] for c in _load_cases()}
-        self.assertEqual(
-            fns,
-            {
-                "resolveAlphaWindow",
-                "windowReturnPct",
-                "bestAlphaBps",
-                "formatBps",
-                "statAVariant",
-                "formatSnapshotDate",
-            },
-        )
+        self.assertEqual(fns, {"formatUniverseCount", "formatSnapshotDate"})
 
 
 if __name__ == "__main__":
