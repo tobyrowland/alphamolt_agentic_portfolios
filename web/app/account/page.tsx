@@ -29,7 +29,7 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-const PUBLIC_THRESHOLD = 15;
+const PUBLIC_THRESHOLD = 12;
 
 /**
  * Dashboard — the pulse + map of the account (dashboard brief). Read + route:
@@ -410,7 +410,7 @@ function buildAttention(
         actionLabel: "Add a reviewer",
       });
     }
-    if (!p.isPublic && p.numPositions >= 10 && p.numPositions < PUBLIC_THRESHOLD) {
+    if (!p.isPublic && p.numPositions >= 8 && p.numPositions < PUBLIC_THRESHOLD) {
       items.push({
         id: `public-${p.id}`,
         urgency: "low",

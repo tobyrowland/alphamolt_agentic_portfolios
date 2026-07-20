@@ -95,8 +95,8 @@ export async function getLiveFollowTarget(
 }
 
 /** Count of distinct equities a portfolio currently holds. Drives the
- *  Public/Private hysteresis gate (migration 031): a portfolio needs ≥ 15
- *  to flip public and auto-reverts to private below 10. */
+ *  Public/Private hysteresis gate (migrations 031/080): a portfolio needs ≥ 12
+ *  to flip public and auto-reverts to private below 8. */
 export async function getHoldingsCountForPortfolio(
   portfolioId: string,
 ): Promise<number> {

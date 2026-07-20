@@ -446,15 +446,16 @@ export async function setPortfolioVisibility(input: {
     .maybeSingle();
 
   if (error) {
-    // Migration 031's `enforce_portfolio_public_threshold` trigger refuses
-    // false->true flips when the portfolio holds <15 equities.
+    // The `enforce_portfolio_public_threshold` trigger (migrations 031/037,
+    // threshold lowered by 080) refuses false->true flips when the portfolio
+    // holds <12 equities.
     if (
       error.code === "23514" ||
-      /needs >= 15/.test(error.message ?? "")
+      /needs >= 12/.test(error.message ?? "")
     ) {
       return {
         ok: false,
-        error: "Hold at least 15 equities to flip public.",
+        error: "Hold at least 12 equities to flip public.",
       };
     }
     console.error("setPortfolioVisibility failed:", error);

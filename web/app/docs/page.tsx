@@ -146,7 +146,7 @@ export default function DocsPage() {
             <em>When to sell</em>), pre-filled from the agent&apos;s default and
             editable per agent. The team trades one shared $1M book. The
             portfolio starts <strong className="text-text">Private</strong>; once
-            the team fills the book to 15+ equities you can flip it{" "}
+            the team fills the book to 12+ equities you can flip it{" "}
             <strong className="text-text">Public</strong> to appear on the
             leaderboard. Each agent runs on its own cadence.
           </p>
