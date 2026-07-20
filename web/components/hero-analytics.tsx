@@ -5,20 +5,24 @@ import Link from "next/link";
 import { track } from "@vercel/analytics";
 
 /**
- * Analytics for the "swarm manager" hero (hero_variant swarm_manager_v1).
+ * Analytics for the "fifty analysts" hero (hero_variant fifty_analysts_v1).
  *
  * Three events, all carrying `hero_variant` so this hero can be A/B'd
  * against a successor later:
  *   hero_view                — once, when ≥50% of the hero is visible
- *   hero_cta_primary_click   — "Become a swarm manager"
- *   hero_cta_secondary_click — "See who holds the title"
+ *   hero_cta_primary_click   — "Run your twelve — free"
+ *   hero_cta_secondary_click — "See the leaderboard"
  *
  * These are client components only for the event wiring — Next still
  * server-renders their HTML, so the CTA copy stays in view-source
  * (SEO requirement in the hero brief).
+ *
+ * `HERO_VARIANT` is the single experiment knob: it defaults to the shipped
+ * arm at 100%, so adding a B arm later is a one-line change here rather than a
+ * redeploy of the hero markup.
  */
 
-export const HERO_VARIANT = "swarm_manager_v1";
+export const HERO_VARIANT = "fifty_analysts_v1";
 
 // Renders nothing; observes the hero section and fires hero_view once at
 // 50% visibility.

@@ -13,7 +13,11 @@ import {
   getHomeLeaderboard,
   type HomeLeaderboardResult,
 } from "@/lib/home-leaderboard-query";
-import { getHeroStats, type HeroStats } from "@/lib/hero-stats-query";
+import {
+  getHeroUniverse,
+  type HeroUniverse,
+} from "@/lib/hero-universe-query";
+import { formatUniverseCount } from "@/lib/hero-universe";
 import {
   getHomeFunnel,
   FUNNEL_FALLBACK,
@@ -67,7 +71,7 @@ export default async function HomePage() {
   // below-the-fold sections (thesis drift + consensus) each fetch
   // inside their own async server component, wrapped in <Suspense>,
   // so their HTML streams in after the hero rather than blocking it.
-  const [board, funnel, roster, heroStats] = await Promise.all([
+  const [board, funnel, roster, heroUniverse] = await Promise.all([
     getHomeLeaderboard().catch((err) => {
       console.error("homepage leaderboard fetch failed:", err);
       return { agents: [] } as HomeLeaderboardResult;
@@ -82,12 +86,16 @@ export default async function HomePage() {
       // this catch only covers an unexpected throw before that.
       return null;
     }),
-    // Hero stat strip — null (strip hidden) on any failure, never
-    // placeholder numbers. getHeroStats catches internally; this catch is
-    // belt-and-braces for a throw before that.
-    getHeroStats().catch((err) => {
-      console.error("homepage hero stats fetch failed:", err);
-      return null;
+    // Hero stat strip universe count — getHeroUniverse catches internally and
+    // returns { count: null } on failure (strip then renders Stats A + C only,
+    // never a placeholder number); this catch is belt-and-braces for a throw
+    // before that, and still yields a snapshot date for the compliance line.
+    getHeroUniverse().catch((err) => {
+      console.error("homepage hero universe fetch failed:", err);
+      return {
+        count: null,
+        snapshotDate: "",
+      } satisfies HeroUniverse;
     }),
   ]);
 
@@ -108,7 +116,7 @@ export default async function HomePage() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(itemList) }}
       />
       <main className="flex-1 w-full relative">
-        <Hero stats={heroStats} />
+        <Hero universe={heroUniverse} />
         {/* Below the fold: the animated ticker wall + recall-vs-research
             section, untouched by the hero swap. The wall is full-bleed;
             the foil/CTAs below it sit in the container. */}
@@ -179,103 +187,146 @@ function ConsensusSkeleton() {
 }
 
 // ---------------------------------------------------------------------------
-// Hero — "swarm manager" (identity-first, hero_variant swarm_manager_v1).
-// Server-rendered copy (SEO-critical); the only client bits are the
-// analytics wrappers (view tracking + CTA clicks), whose HTML is still
-// SSR'd. Copy is verbatim from the hero brief — do not rephrase. The stat
-// strip is compiled from live data (hero-stats-query.ts) and hidden
-// entirely when the numbers can't be computed. The compliance disclaimer
-// is a hard requirement and must stay above the fold.
+// Hero — "fifty analysts" (hero_variant fifty_analysts_v1). Server-rendered
+// copy (SEO-critical): the only client bits are the analytics wrappers (view
+// tracking + CTA clicks), whose HTML is still SSR'd, so every word is in
+// view-source. Copy is VERBATIM from the hero brief — do not rephrase,
+// shorten, or Title Case anything; dashes and the trailing H1 period are
+// intentional. Copy with apostrophes/quotes is rendered via string
+// expressions so the exact characters reach the HTML (acceptance #1:
+// character-for-character H1) and no JSX entity-escaping intervenes.
+//
+// The stat strip shows one live number (Stat B — the universe count from
+// hero-universe-query.ts); Stats A and C are static copy. On a universe-count
+// failure the strip renders A and C only — never a placeholder number. The
+// compliance microcopy (with the data-compile snapshot date) is a hard
+// requirement and stays above the fold regardless.
+//
+// Vertical rhythm (brief): eyebrow → 28 → H1 → 22 → definition → 30 →
+// paragraph → 14 → creed → 36 → CTAs → 44 → hairline → 24 → stats → 20 →
+// microcopy.
 // ---------------------------------------------------------------------------
 
-function Hero({ stats }: { stats: HeroStats | null }) {
+function Hero({ universe }: { universe: HeroUniverse }) {
   return (
-    <section id="swarm-hero">
-      <HeroViewTracker targetId="swarm-hero" />
+    <section id="hero">
+      <HeroViewTracker targetId="hero" />
       <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 pt-14 sm:pt-20 pb-12">
-        <div className="max-w-[640px]">
-          {/* Eyebrow — a <p>, not a heading; caps via CSS, not typed. */}
+        <div className="max-w-[660px]">
+          {/* Eyebrow — a <p>, not a heading; small caps via CSS text-transform,
+              not typed caps. */}
           <p className="font-mono text-xs uppercase tracking-[0.18em] text-text-muted">
-            A new role just opened on the buy side
+            A new way to invest just opened
           </p>
 
+          {/* H1 — the page headline and largest type on the site. Balanced
+              wrapping keeps it to ~2 tidy lines at the specified clamp within
+              the content column; the trailing period is intentional. */}
           <h1
-            className="mt-6 font-semibold leading-[1.1] tracking-[-0.02em] text-text"
-            style={{ fontSize: "clamp(2.5rem, 6vw, 4rem)" }}
+            className="mt-7 font-semibold tracking-[-0.02em] text-text"
+            style={{
+              fontSize: "clamp(2.4rem, 5.5vw, 3.75rem)",
+              lineHeight: 1.12,
+              textWrap: "balance",
+            }}
           >
-            Swarm manager
+            {"Run twelve stocks like you've got fifty analysts."}
           </h1>
 
-          {/* Definition line — no editorial serif in the site's font stack,
-              so a system serif per the brief. "n. —" must never break. */}
+          {/* Definition line — a <p>, not a heading. The site's font stack has
+              no editorial serif, so a system serif per the brief. */}
           <p
-            className="mt-4 max-w-[34rem] italic text-[1.075rem] leading-[1.6] text-text-dim"
-            style={{ fontFamily: 'Georgia, "Times New Roman", Times, serif' }}
+            className="mt-[22px] max-w-[42ch] italic text-text-dim"
+            style={{
+              fontFamily: 'Georgia, "Times New Roman", Times, serif',
+              fontSize: "1.15rem",
+              lineHeight: 1.6,
+            }}
           >
-            <span className="whitespace-nowrap">n. —</span> an investor who
-            directs a team of AI agents: infinite analysis, 24/7 vigilance,
-            one human making the calls. First recorded 2026.
+            {"You were told to diversify because you don't have an analyst team. Now you do."}
           </p>
 
-          <p className="mt-7 max-w-[34rem] text-base leading-[1.6] text-text">
-            Wall Street spent a century training analysts. Nobody has trained
-            a swarm manager yet. The first cohort is being ranked right now
-            &mdash; on a public track record no one can dispute.
+          {/* Body paragraph — one paragraph so "Not because it's down. Not
+              because you're nervous." can never orphan across a container
+              boundary. Dashes/ampersand are literal in the JS string. */}
+          <p className="mt-[30px] max-w-[58ch] text-base leading-[1.6] text-text-dim">
+            {"Concentration was never the risky part — neglect was. Here, agents underwrite every buy against a strategy you write once, freeze the thesis, re-check it nightly against fresh numbers, and sell for one reason only: the case stopped being true. Not because it's down. Not because you're nervous. 8–15 convictions, $1M in paper capital, ranked against the S&P in public."}
           </p>
 
-          <div className="mt-8 flex flex-col gap-3 md:flex-row">
+          {/* Creed — same size as the body but at the brightest primary text
+              color; the contrast step IS the emphasis (no bold/italic/green). */}
+          <p className="mt-[14px] max-w-[58ch] text-base leading-[1.6] text-text">
+            You bring the strategy. The compute brings the diligence. Neither
+            brings the fear.
+          </p>
+
+          <div className="mt-9 flex flex-col gap-3 md:flex-row">
+            {/* Primary first in the DOM so it stacks on top on mobile. */}
             <HeroCta
               href="/login"
               event="hero_cta_primary_click"
               variant="primary"
             >
-              Become a swarm manager
+              {"Run your twelve — free"}
             </HeroCta>
             <HeroCta
               href="/leaderboard"
               event="hero_cta_secondary_click"
               variant="secondary"
             >
-              See who holds the title
+              See the leaderboard
             </HeroCta>
           </div>
 
-          {stats && <HeroStatStrip stats={stats} />}
+          <HeroStatStrip universe={universe} />
 
-          <ComplianceNote />
+          <ComplianceNote snapshotDate={universe.snapshotDate} />
         </div>
       </div>
     </section>
   );
 }
 
-// Stat strip — mono numerals over 12px muted labels, thin top hairline.
-// Server-rendered with the compiled values (no CLS: it's in the initial
-// HTML or absent entirely); min-height reserves the row against font swap.
-function HeroStatStrip({ stats }: { stats: HeroStats }) {
-  const items: { value: string; label: string }[] = [
-    stats.statA,
-    stats.statB,
-    // Stat C is a claim about field age, not a query — literal by design.
-    { value: "0", label: "with a 10-year head start on you" },
-  ];
+// Stat strip — three stats over a thin top hairline, mono values, 12–13px
+// muted labels. Server-rendered, so the values never change after paint (zero
+// CLS). Every cell reserves an identical value/label height, so dropping Stat
+// B on a count failure (rendering A + C only) shifts nothing. Stat B is the
+// one live number; A and C are static copy.
+function HeroStatStrip({ universe }: { universe: HeroUniverse }) {
+  const statA = { value: "8–15", label: "convictions, fully underwritten" };
+  const statC = {
+    value: "every thesis",
+    label: "frozen at buy, checked on schedule",
+    green: true,
+  };
+  // Stat B only when the count compiled — never a placeholder number.
+  const statB =
+    universe.count != null
+      ? {
+          value: formatUniverseCount(universe.count),
+          label: "US equities re-ranked nightly",
+        }
+      : null;
+  const items = [statA, ...(statB ? [statB] : []), statC];
+
   return (
-    <div className="mt-9 border-t border-white/[0.08]">
-      <ul className="pt-5 flex flex-wrap gap-x-10 gap-y-5 min-h-[64px] list-none">
+    <div className="mt-11 border-t border-white/[0.08]">
+      <ul className="pt-6 flex flex-col gap-5 sm:flex-row sm:flex-wrap sm:gap-x-10 sm:gap-y-5 list-none">
         {items.map((s) => (
-          <li key={s.label}>
-            <span className="block font-mono text-[22px] leading-none text-text">
+          <li key={s.label} className="min-h-[42px]">
+            <span
+              className={`block font-mono text-[22px] leading-none ${
+                "green" in s && s.green ? "text-green" : "text-text"
+              }`}
+            >
               {s.value}
             </span>
-            <span className="mt-1.5 block text-xs text-text-muted">
+            <span className="mt-1.5 block text-[13px] leading-snug text-text-muted">
               {s.label}
             </span>
           </li>
         ))}
       </ul>
-      <p className="mt-4 font-mono text-[11px] text-text-muted">
-        snapshot {stats.snapshotDate}
-      </p>
     </div>
   );
 }
@@ -352,26 +403,17 @@ function CoverageWall({ funnel }: { funnel: HomeFunnelCounts }) {
   );
 }
 
-// Slim compliance strip — the "paper only, not investment advice"
-// disclaimer that must stay above the fold on the homepage.
-function ComplianceNote() {
+// Compliance microcopy — mono, 12px, muted, below the stat strip. The
+// "paper only, not investment advice" disclaimer must stay above the fold.
+// The snapshot date is the data-compile date (from the cached loader); if it
+// couldn't be stamped, the "snapshot …" prefix is dropped rather than shown
+// dangling.
+function ComplianceNote({ snapshotDate }: { snapshotDate: string }) {
   return (
-    <div className="mt-6 flex items-center gap-2 text-xs text-text-muted leading-snug">
-      <svg
-        width="13"
-        height="13"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        className="shrink-0"
-        aria-hidden
-      >
-        <path d="M9 12l2 2 4-4" />
-        <circle cx="12" cy="12" r="9" />
-      </svg>
-      Paper portfolios only &mdash; no real funds, not investment advice.
-    </div>
+    <p className="mt-5 font-mono text-xs text-text-muted leading-snug">
+      {snapshotDate ? `snapshot ${snapshotDate} · ` : ""}
+      {"paper portfolios only — no real funds, not investment advice"}
+    </p>
   );
 }
 
