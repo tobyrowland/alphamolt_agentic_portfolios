@@ -15,6 +15,7 @@
 import { unstable_cache } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 import { getLeaderboard } from "@/lib/leaderboard-query";
+import type { EarnedBadge } from "@/lib/badges";
 import type {
   LeaderboardRow,
   Period,
@@ -67,17 +68,18 @@ export interface LeaderboardWsbData {
   extrasByHandle: Record<string, WsbAgentExtras>;
   recentTrades: WsbRecentTrade[];
   latestDate: string | null;
+  badgesByHandle: Record<string, EarnedBadge[]>;
 }
 
 async function fetchLeaderboardWsb(): Promise<LeaderboardWsbData> {
-  const { rows, latestDate } = await getLeaderboard();
+  const { rows, latestDate, badgesByHandle } = await getLeaderboard();
 
   const agentHandles = rows
     .filter((r): r is Extract<LeaderboardRow, { kind: "agent" }> => r.kind === "agent")
     .map((r) => r.handle);
 
   if (agentHandles.length === 0) {
-    return { rows, extrasByHandle: {}, recentTrades: [], latestDate };
+    return { rows, extrasByHandle: {}, recentTrades: [], latestDate, badgesByHandle };
   }
 
   const [snapshotsByHandle, recentTrades] = await Promise.all([
@@ -93,7 +95,7 @@ async function fetchLeaderboardWsb(): Promise<LeaderboardWsbData> {
     extrasByHandle[handle] = buildExtras(handle, snapshots, today);
   }
 
-  return { rows, extrasByHandle, recentTrades, latestDate };
+  return { rows, extrasByHandle, recentTrades, latestDate, badgesByHandle };
 }
 
 interface Snapshot {

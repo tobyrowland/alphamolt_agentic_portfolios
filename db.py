@@ -1523,6 +1523,126 @@ class SupabaseDB:
         self.client.table("run_logs").insert(row).execute()
 
     # ------------------------------------------------------------------
+    # Badges / Awards (migration 081)
+    # ------------------------------------------------------------------
+
+    def _paginate(self, table: str, columns: str, order: str | None = None,
+                  filters: list[tuple] | None = None, page_size: int = 1000) -> list[dict]:
+        """Fetch every row of a table (chunked past the PostgREST cap).
+
+        `filters` is a list of (method, column, value) tuples applied to each
+        page query (e.g. ("eq", "side", "buy")). `order` is a column name.
+        """
+        out: list[dict] = []
+        page = 0
+        while True:
+            q = self.client.table(table).select(columns)
+            for method, col, val in (filters or []):
+                q = getattr(q, method)(col, val)
+            if order:
+                q = q.order(order)
+            resp = q.range(page * page_size, (page + 1) * page_size - 1).execute()
+            batch = resp.data or []
+            out.extend(batch)
+            if len(batch) < page_size:
+                break
+            page += 1
+        return out
+
+    def get_badges(self) -> list[dict]:
+        """Return the full badge catalog ordered by sort_order."""
+        resp = (
+            self.client.table("badges")
+            .select("*")
+            .order("sort_order")
+            .execute()
+        )
+        return resp.data or []
+
+    def get_all_badge_grants(self) -> list[dict]:
+        """Every badge_grants row (for the sweep's idempotency diff)."""
+        return self._paginate(
+            "badge_grants", "portfolio_id, badge_id, period_id"
+        )
+
+    def record_badge_grants(self, rows: list[dict]) -> int:
+        """Insert new badge grants, ignoring any that already exist.
+
+        Each row: {portfolio_id, badge_id, period_id, context, granted_at?}.
+        The unique index (portfolio_id, badge_id, period_id) makes this
+        idempotent — re-running the sweep never double-grants. Returns the
+        number of rows sent (callers pre-diff against existing grants, so this
+        is the newly-granted count)."""
+        if not rows:
+            return 0
+        for r in rows:
+            self._sanitize(r)
+        (
+            self.client.table("badge_grants")
+            .upsert(
+                rows,
+                on_conflict="portfolio_id,badge_id,period_id",
+                ignore_duplicates=True,
+            )
+            .execute()
+        )
+        return len(rows)
+
+    def list_portfolios_for_badges(self) -> list[dict]:
+        """Portfolios eligible for badges: identity + visibility + type.
+
+        Excludes live (personal, always-private follower) portfolios — they
+        mirror a paper sibling and shouldn't compete for or display badges."""
+        rows = self._paginate(
+            "portfolios",
+            "id, slug, display_name, created_at, is_public, owner_user_id, mode",
+        )
+        return [r for r in rows if (r.get("mode") or "paper") != "live"]
+
+    def get_all_portfolio_history(self) -> list[dict]:
+        """Every daily MTM snapshot across all portfolios, for the sweep."""
+        return self._paginate(
+            "agent_portfolio_history",
+            "portfolio_id, snapshot_date, total_value_usd, cash_usd, "
+            "holdings_value_usd, num_positions",
+            order="snapshot_date",
+        )
+
+    def get_all_agent_trades(self) -> list[dict]:
+        """Every trade across all portfolios, for the sweep."""
+        return self._paginate(
+            "agent_trades",
+            "portfolio_id, agent_id, ticker, side, quantity, price_usd, executed_at",
+            order="executed_at",
+        )
+
+    def get_all_heartbeats(self) -> list[dict]:
+        """Every heartbeat journal row (notes carries portfolio_id)."""
+        return self._paginate(
+            "agent_heartbeats", "status, started_at, notes", order="started_at"
+        )
+
+    def get_agents_meta(self) -> dict[str, dict]:
+        """{agent_id: {handle, powered_by, strategy, is_house_agent}}."""
+        rows = self._paginate(
+            "agents", "id, handle, powered_by, strategy, is_house_agent"
+        )
+        return {r["id"]: r for r in rows if r.get("id")}
+
+    def get_benchmark_series(self, ticker: str) -> dict:
+        """{date_iso: close} for a benchmark ticker (e.g. 'SPY.US')."""
+        rows = self._paginate(
+            "benchmark_prices", "price_date, close",
+            filters=[("eq", "ticker", ticker)], order="price_date",
+        )
+        out: dict[str, float] = {}
+        for r in rows:
+            c = self.safe_float(r.get("close"))
+            if r.get("price_date") and c is not None:
+                out[r["price_date"]] = c
+        return out
+
+    # ------------------------------------------------------------------
     # Sanitization
     # ------------------------------------------------------------------
 

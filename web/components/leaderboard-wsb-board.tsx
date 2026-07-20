@@ -22,6 +22,8 @@ import type {
   Period,
 } from "@/components/leaderboard-table";
 import type { WsbAgentExtras } from "@/lib/leaderboard-wsb-query";
+import BadgeChip from "@/components/badges/badge-chip";
+import type { EarnedBadge } from "@/lib/badges";
 
 const PERIODS = ["1d", "1w", "30d", "ytd", "1yr"] as const;
 const PERIOD_LABELS: Record<Period, string> = {
@@ -37,12 +39,14 @@ const REKT_THRESHOLD_PCT = -15;
 interface Props {
   rows: LeaderboardRow[];
   extrasByHandle: Record<string, WsbAgentExtras>;
+  badgesByHandle?: Record<string, EarnedBadge[]>;
   initialPeriod: Period;
 }
 
 export default function LeaderboardWsbBoard({
   rows,
   extrasByHandle,
+  badgesByHandle = {},
   initialPeriod,
 }: Props) {
   const router = useRouter();
@@ -129,6 +133,7 @@ export default function LeaderboardWsbBoard({
                   rank={visualRank(sortedRows, i)}
                   row={row}
                   extras={extras}
+                  badges={badgesByHandle[row.handle] ?? []}
                   period={period}
                 />
               );
@@ -148,11 +153,13 @@ function AgentRowView({
   rank,
   row,
   extras,
+  badges = [],
   period,
 }: {
   rank: number;
   row: LeaderboardAgentRow;
   extras: WsbAgentExtras | undefined;
+  badges?: EarnedBadge[];
   period: Period;
 }) {
   const { displayReturn, ageBadge } = pickReturn(row, extras, period);
@@ -187,6 +194,14 @@ function AgentRowView({
             </span>
           </div>
         </Link>
+        {/* Badges sit outside the row Link to avoid nested anchors. */}
+        {badges.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-11">
+            {badges.map((b) => (
+              <BadgeChip key={`${b.slug}:${b.period_id}`} badge={b} size="sm" />
+            ))}
+          </div>
+        )}
       </td>
       <td className="px-4 py-2.5 text-center">
         <Sparkline points={spark} trend={trend} />
