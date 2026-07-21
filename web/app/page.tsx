@@ -9,6 +9,7 @@ import HomeThesisDrift from "@/components/home-thesis-drift";
 import WotBadge from "@/components/wot-badge";
 import HomePrompt from "@/components/home-prompt";
 import { HeroCta, HeroViewTracker } from "@/components/hero-analytics";
+import HeroStockStory from "@/components/hero-stock-story";
 import {
   getHomeLeaderboard,
   type HomeLeaderboardResult,
@@ -207,12 +208,20 @@ function ConsensusSkeleton() {
 // microcopy.
 // ---------------------------------------------------------------------------
 
+// The hero is a two-column unit at ≥1024px: the copy column (left) keeps
+// priority, the animated "one stock's story" panel sits to its right,
+// vertically centered against the copy. Below 1024px the layout is a single
+// column and the animation renders BELOW the CTAs but ABOVE the stat strip —
+// so the DOM order is [copy top → animation → stats], reflowed by grid
+// placement at lg (copy top = row 1 / stats = row 2 in column 1, animation =
+// column 2 spanning both rows). The copy column keeps its own ≤660px measure.
 function Hero({ universe }: { universe: HeroUniverse }) {
   return (
     <section id="hero">
       <HeroViewTracker targetId="hero" />
-      <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 pt-14 sm:pt-20 pb-12">
-        <div className="max-w-[660px]">
+      <div className="max-w-[1320px] mx-auto w-full px-4 sm:px-6 pt-14 sm:pt-20 pb-12 flex flex-col lg:grid lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)] lg:gap-x-14 lg:gap-y-0">
+        {/* Copy top — eyebrow … CTAs. Column 1, row 1 on desktop. */}
+        <div className="max-w-[660px] lg:col-start-1 lg:row-start-1 lg:self-end">
           {/* Eyebrow — a <p>, not a heading; small caps via CSS text-transform,
               not typed caps. */}
           <p className="font-mono text-xs uppercase tracking-[0.18em] text-text-muted">
@@ -277,9 +286,18 @@ function Hero({ universe }: { universe: HeroUniverse }) {
               See the leaderboard
             </HeroCta>
           </div>
+        </div>
 
+        {/* Animated "one stock's story" panel. Below CTAs on mobile (44px gap),
+            right column vertically centered on desktop. */}
+        <div className="mt-11 lg:mt-0 w-full lg:col-start-2 lg:row-start-1 lg:row-span-2 lg:self-center lg:justify-self-end lg:max-w-[560px]">
+          <HeroStockStory />
+        </div>
+
+        {/* Stat strip + compliance. Column 1, row 2 on desktop; the strip's own
+            top hairline margin gives the 44px gap in both layouts. */}
+        <div className="max-w-[660px] lg:col-start-1 lg:row-start-2 lg:self-start">
           <HeroStatStrip universe={universe} />
-
           <ComplianceNote snapshotDate={universe.snapshotDate} />
         </div>
       </div>
