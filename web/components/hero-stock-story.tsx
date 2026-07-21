@@ -20,8 +20,8 @@ import { HERO_VARIANT } from "@/components/hero-analytics";
  * the repo's existing design tokens (phosphor green `--color-green`, near-black
  * `--color-bg`, `--color-yellow` for the amber "banked gains" accent) so the
  * panel stays coherent with the live copy column and the repo's "no new hex /
- * no new styling approach" rule. Structure, class semantics, and the timeline
- * are unchanged.
+ * no new styling approach" rule (a scoped <style> block with token-referencing
+ * CSS). Structure, class semantics, and the timeline are unchanged.
  *
  * Behaviour (brief):
  *  - Runs ONLY when ≥40% visible (IntersectionObserver); hard-pauses (clears
@@ -512,7 +512,8 @@ export default function HeroStockStory() {
 // Scoped stylesheet (`.hss` prefix — the reference's class names are generic).
 // Colours resolve to the site tokens in globals.css; the only literals are
 // alpha variants of --color-green (0,255,65) and --color-yellow (255,215,0),
-// plus neutral white/black alphas — the same convention as home-hero-wall.tsx.
+// plus neutral white/black alphas — the same token-alpha convention used
+// elsewhere in the app's scoped component styles.
 const STORY_CSS = `
   .hss {
     --hss-panel: var(--color-bg-card);
