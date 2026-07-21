@@ -3,7 +3,6 @@ import { Suspense, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import Nav from "@/components/nav";
 import HomeConsensus from "@/components/home-consensus";
-import HomeHeroWall from "@/components/home-hero-wall";
 import HomeRoster from "@/components/home-roster";
 import HomeThesisDrift from "@/components/home-thesis-drift";
 import WotBadge from "@/components/wot-badge";
@@ -19,11 +18,6 @@ import {
   type HeroUniverse,
 } from "@/lib/hero-universe-query";
 import { formatUniverseCount } from "@/lib/hero-universe";
-import {
-  getHomeFunnel,
-  FUNNEL_FALLBACK,
-  type HomeFunnelCounts,
-} from "@/lib/home-funnel-query";
 import { getRosterData, ROSTER_FALLBACK } from "@/lib/home-roster-query";
 import {
   getLatestConsensus,
@@ -72,14 +66,10 @@ export default async function HomePage() {
   // below-the-fold sections (thesis drift + consensus) each fetch
   // inside their own async server component, wrapped in <Suspense>,
   // so their HTML streams in after the hero rather than blocking it.
-  const [board, funnel, roster, heroUniverse] = await Promise.all([
+  const [board, roster, heroUniverse] = await Promise.all([
     getHomeLeaderboard().catch((err) => {
       console.error("homepage leaderboard fetch failed:", err);
       return { agents: [] } as HomeLeaderboardResult;
-    }),
-    getHomeFunnel().catch((err) => {
-      console.error("homepage funnel counts fetch failed:", err);
-      return FUNNEL_FALLBACK;
     }),
     getRosterData().catch((err) => {
       console.error("homepage roster fetch failed:", err);
@@ -118,10 +108,6 @@ export default async function HomePage() {
       />
       <main className="flex-1 w-full relative">
         <Hero universe={heroUniverse} />
-        {/* Below the fold: the animated ticker wall + recall-vs-research
-            section, untouched by the hero swap. The wall is full-bleed;
-            the foil/CTAs below it sit in the container. */}
-        <CoverageWall funnel={funnel} />
         <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6">
           <HomeRoster data={roster ?? ROSTER_FALLBACK} />
           <HomeThesisDrift />
@@ -346,78 +332,6 @@ function HeroStatStrip({ universe }: { universe: HeroUniverse }) {
         ))}
       </ul>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Coverage wall — the full-bleed animated ticker wall + stage rail
-// (HomeHeroWall) and the recall-vs-research foil + CTAs, carried over
-// unchanged from hero v4. Now the first below-the-fold section.
-// ---------------------------------------------------------------------------
-
-function CoverageWall({ funnel }: { funnel: HomeFunnelCounts }) {
-  return (
-    <section>
-      <HomeHeroWall counts={funnel} />
-
-      <div className="max-w-[1180px] mx-auto w-full px-4 sm:px-6 pt-7">
-        <p className="font-mono text-[13px] text-text-muted">
-          <span className="opacity-80">
-            &gt; &ldquo;send me a good stock idea&rdquo;
-          </span>
-          {"  →  "}
-          <span
-            className="text-[var(--color-red)] line-through"
-            style={{ textDecorationColor: "rgba(255,51,51,0.6)" }}
-          >
-            &ldquo;Have you considered Apple?&rdquo;
-          </span>
-          {"  ·  "}
-          <span className="text-[var(--color-green)]">
-            recall is not research.
-          </span>
-        </p>
-
-        <div className="mt-8 flex flex-wrap items-center justify-between gap-6">
-          <div className="flex items-center gap-2 font-mono text-[11px] text-text-muted">
-            <span
-              className="rounded px-1.5 py-0.5 text-[10px] tracking-[0.08em] text-[var(--color-green)]"
-              style={{ border: "1px solid rgba(0,255,65,0.35)" }}
-            >
-              LIVE
-            </span>
-            Coverage figures read from the live database. AI research
-            refreshes across the whole universe every ~10 days.
-          </div>
-          <div className="flex flex-wrap gap-3">
-            <Link
-              href="/screener"
-              data-cta="hero-research"
-              className="inline-flex items-center px-5 py-2.5 rounded-lg text-text text-sm font-semibold tracking-tight transition-colors hover:bg-white/[0.06] focus:outline-none focus-visible:ring-2 focus-visible:ring-text/40"
-              style={{
-                background:
-                  "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01))",
-                border: "1px solid rgba(255,255,255,0.12)",
-                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06)",
-              }}
-            >
-              Browse the research &rarr;
-            </Link>
-            <Link
-              href="/login"
-              data-cta="hero-build"
-              className="inline-flex items-center px-5 py-2.5 rounded-lg bg-[var(--color-cyan)] text-bg text-sm font-semibold tracking-tight transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-cyan)]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
-              style={{
-                boxShadow:
-                  "0 10px 30px -10px rgba(0,242,255,0.5), inset 0 1px 0 rgba(255,255,255,0.45)",
-              }}
-            >
-              Enter the arena &mdash; free
-            </Link>
-          </div>
-        </div>
-      </div>
-    </section>
   );
 }
 
