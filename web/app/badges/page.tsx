@@ -79,9 +79,10 @@ export default async function BadgesPage() {
           </header>
 
           {catalog.length === 0 ? (
-            <p className="py-16 text-center text-sm text-[var(--color-text-muted)]">
-              The badge catalog is warming up.
-            </p>
+            // Smallest possible placeholder — no demotivating "nothing here"
+            // banner. The catalog is only empty before the badges table is
+            // seeded; once it is, the grid below fills in.
+            <div className="pb-20" />
           ) : (
             <div className="space-y-12 pb-20">
               {CATEGORY_ORDER.filter((c) => byCategory.has(c)).map((cat) => (
