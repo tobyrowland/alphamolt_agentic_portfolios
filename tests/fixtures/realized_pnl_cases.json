@@ -1,0 +1,61 @@
+[
+  {
+    "name": "simple profit — full round trip",
+    "trades": [
+      { "id": "b1", "ticker": "ORRN", "side": "buy", "quantity": 100, "price_usd": 10, "executed_at": "2026-01-01T00:00:00Z" },
+      { "id": "s1", "ticker": "ORRN", "side": "sell", "quantity": 100, "price_usd": 15, "executed_at": "2026-02-01T00:00:00Z" }
+    ],
+    "expected": { "s1": { "usd": 500, "pct": 50 } }
+  },
+  {
+    "name": "loss — full round trip",
+    "trades": [
+      { "id": "b1", "ticker": "AAA", "side": "buy", "quantity": 50, "price_usd": 20, "executed_at": "2026-01-01T00:00:00Z" },
+      { "id": "s1", "ticker": "AAA", "side": "sell", "quantity": 50, "price_usd": 16, "executed_at": "2026-03-01T00:00:00Z" }
+    ],
+    "expected": { "s1": { "usd": -200, "pct": -20 } }
+  },
+  {
+    "name": "weighted-average cost across two buys",
+    "trades": [
+      { "id": "b1", "ticker": "BBB", "side": "buy", "quantity": 100, "price_usd": 10, "executed_at": "2026-01-01T00:00:00Z" },
+      { "id": "b2", "ticker": "BBB", "side": "buy", "quantity": 100, "price_usd": 20, "executed_at": "2026-01-15T00:00:00Z" },
+      { "id": "s1", "ticker": "BBB", "side": "sell", "quantity": 100, "price_usd": 18, "executed_at": "2026-02-01T00:00:00Z" }
+    ],
+    "expected": { "s1": { "usd": 300, "pct": 20 } }
+  },
+  {
+    "name": "partial sells keep the same basis",
+    "trades": [
+      { "id": "b1", "ticker": "CCC", "side": "buy", "quantity": 100, "price_usd": 10, "executed_at": "2026-01-01T00:00:00Z" },
+      { "id": "s1", "ticker": "CCC", "side": "sell", "quantity": 40, "price_usd": 12, "executed_at": "2026-02-01T00:00:00Z" },
+      { "id": "s2", "ticker": "CCC", "side": "sell", "quantity": 60, "price_usd": 9, "executed_at": "2026-03-01T00:00:00Z" }
+    ],
+    "expected": { "s1": { "usd": 80, "pct": 20 }, "s2": { "usd": -60, "pct": -10 } }
+  },
+  {
+    "name": "same-instant buy is applied before the sell",
+    "trades": [
+      { "id": "s1", "ticker": "DDD", "side": "sell", "quantity": 10, "price_usd": 12, "executed_at": "2026-01-01T00:00:00Z" },
+      { "id": "b1", "ticker": "DDD", "side": "buy", "quantity": 10, "price_usd": 10, "executed_at": "2026-01-01T00:00:00Z" }
+    ],
+    "expected": { "s1": { "usd": 20, "pct": 20 } }
+  },
+  {
+    "name": "sell with no prior buy is skipped (bad data)",
+    "trades": [
+      { "id": "s1", "ticker": "EEE", "side": "sell", "quantity": 10, "price_usd": 12, "executed_at": "2026-01-01T00:00:00Z" }
+    ],
+    "expected": {}
+  },
+  {
+    "name": "two tickers do not cross-contaminate",
+    "trades": [
+      { "id": "b1", "ticker": "AAA", "side": "buy", "quantity": 100, "price_usd": 10, "executed_at": "2026-01-01T00:00:00Z" },
+      { "id": "b2", "ticker": "BBB", "side": "buy", "quantity": 100, "price_usd": 50, "executed_at": "2026-01-01T00:00:00Z" },
+      { "id": "s1", "ticker": "AAA", "side": "sell", "quantity": 100, "price_usd": 11, "executed_at": "2026-02-01T00:00:00Z" },
+      { "id": "s2", "ticker": "BBB", "side": "sell", "quantity": 100, "price_usd": 40, "executed_at": "2026-02-01T00:00:00Z" }
+    ],
+    "expected": { "s1": { "usd": 100, "pct": 10 }, "s2": { "usd": -1000, "pct": -20 } }
+  }
+]

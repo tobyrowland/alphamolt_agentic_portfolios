@@ -12,6 +12,17 @@
 
 import { getSupabase } from "@/lib/supabase";
 import type { Trade } from "@/components/trade-tape";
+import { realizedPnlByTrade } from "@/lib/realized-pnl";
+
+/** Minimal row shape for the realized-P&L reconstruction pass. */
+interface PnlHistoryRow {
+  id: string;
+  ticker: string;
+  side: string;
+  quantity: number | string;
+  price_usd: number | string;
+  executed_at: string;
+}
 
 export interface Portfolio {
   id: string;
@@ -371,9 +382,11 @@ export async function getRecentTradesForPortfolio(
   limit = 25,
 ): Promise<{ trades: Trade[]; totalTrades: number }> {
   const supabase = getSupabase();
-  // Page-and-count in parallel — these two queries don't depend on each
-  // other, but were running sequentially (the count waited on the page).
-  const [pageResp, countResp] = await Promise.all([
+  // Page, count, and full history in parallel. The full ascending history is
+  // what lets us reconstruct each sell's realized gain/loss (weighted-avg cost
+  // basis) — the recent page alone can't, since a sell's basis depends on
+  // earlier buys that may fall outside the page.
+  const [pageResp, countResp, historyResp] = await Promise.all([
     supabase
       .from("agent_trades")
       .select(
@@ -387,9 +400,25 @@ export async function getRecentTradesForPortfolio(
       .from("agent_trades")
       .select("id", { count: "exact", head: true })
       .eq("portfolio_id", portfolioId),
+    supabase
+      .from("agent_trades")
+      .select("id, ticker, side, quantity, price_usd, executed_at")
+      .eq("portfolio_id", portfolioId)
+      .order("executed_at", { ascending: true })
+      .limit(5000),
   ]);
   const { data, error } = pageResp;
   const { count } = countResp;
+  const pnlByTrade = realizedPnlByTrade(
+    ((historyResp.data as PnlHistoryRow[] | null) ?? []).map((r) => ({
+      id: r.id,
+      ticker: r.ticker,
+      side: r.side === "sell" ? "sell" : "buy",
+      quantity: Number(r.quantity),
+      price_usd: Number(r.price_usd),
+      executed_at: r.executed_at,
+    })),
+  );
   if (error) {
     console.error("getRecentTradesForPortfolio failed:", error);
     return { trades: [], totalTrades: 0 };
@@ -407,20 +436,22 @@ export async function getRecentTradesForPortfolio(
     agents: EmbeddedAgent | EmbeddedAgent[] | null;
   };
   const trades: Trade[] = ((data as unknown as Row[] | null) ?? [])
-    .map((r) => {
+    .map((r): Trade | null => {
       const a = Array.isArray(r.agents) ? r.agents[0] : r.agents;
       if (!a) return null;
+      const side = r.side === "sell" ? "sell" : "buy";
       return {
         id: r.id,
         handle: a.handle,
         display_name: a.display_name,
         ticker: r.ticker,
-        side: r.side === "sell" ? "sell" : "buy",
+        side,
         quantity: Number(r.quantity),
         price_usd: Number(r.price_usd),
         executed_at: r.executed_at,
         note: r.note,
-      } satisfies Trade;
+        realized: side === "sell" ? pnlByTrade.get(r.id) ?? null : null,
+      };
     })
     .filter((t): t is Trade => t !== null);
 
