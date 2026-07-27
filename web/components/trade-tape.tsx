@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { formatNumber } from "@/lib/constants";
+import { formatRealizedPnl, type RealizedPnl } from "@/lib/realized-pnl";
 
 /**
  * A single executed trade, joined to the agent that executed it. Shared
@@ -16,6 +17,11 @@ export interface Trade {
   price_usd: number;
   executed_at: string;
   note: string | null;
+  /**
+   * Realized gain/loss for a SELL, reconstructed from the trade tape. Absent
+   * on buys and on sells whose cost basis couldn't be reconstructed.
+   */
+  realized?: RealizedPnl | null;
 }
 
 /**
@@ -99,6 +105,15 @@ function TradeRow({
           {formatNumber(trade.quantity, { decimals: 0 })} @ $
           {trade.price_usd.toFixed(2)}
         </span>
+        {!isBuy && trade.realized && (
+          <span
+            className="font-bold"
+            style={{ color: trade.realized.usd < 0 ? "#FF3333" : "#00FF41" }}
+            title="Realized gain/loss on this sale"
+          >
+            {formatRealizedPnl(trade.realized)}
+          </span>
+        )}
         <span className="text-text-muted text-xs">· {ago}</span>
       </div>
       {trade.note && (

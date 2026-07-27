@@ -18,6 +18,11 @@
  */
 
 import { getSupabase } from "@/lib/supabase";
+import {
+  realizedPnlByTrade,
+  formatRealizedPnl,
+  type RealizedPnl,
+} from "@/lib/realized-pnl";
 
 /** One row in the activity timeline. The client renders this verbatim. */
 export interface ActivityEvent {
@@ -100,7 +105,7 @@ export async function getPortfolioActivity(
     ? heartbeatQuery.eq("agent_id", ownerAgentId)
     : heartbeatQuery.filter("notes->>portfolio_id", "eq", portfolioId);
 
-  const [heartbeatsResp, tradesResp, rejectionsResp] = await Promise.all([
+  const [heartbeatsResp, tradesResp, historyResp, rejectionsResp] = await Promise.all([
     heartbeatQuery,
     supabase
       .from("agent_trades")
@@ -108,6 +113,14 @@ export async function getPortfolioActivity(
       .eq("portfolio_id", portfolioId)
       .order("executed_at", { ascending: false })
       .limit(limit),
+    // Full ascending history for the realized-P&L reconstruction — a sell's
+    // cost basis depends on earlier buys that may fall outside the recent page.
+    supabase
+      .from("agent_trades")
+      .select("id, ticker, side, quantity, price_usd, executed_at")
+      .eq("portfolio_id", portfolioId)
+      .order("executed_at", { ascending: true })
+      .limit(5000),
     includeRejections
       ? supabase
           .from("screener_rejections")
@@ -123,6 +136,20 @@ export async function getPortfolioActivity(
   const trades = (tradesResp.data as TradeRow[] | null) ?? [];
   const rejections = (rejectionsResp.data as RejectionRow[] | null) ?? [];
 
+  // Realized gain/loss per sell, reconstructed over the portfolio's full book.
+  const pnlByTrade = realizedPnlByTrade(
+    ((historyResp.data as Omit<TradeRow, "agent_id" | "note">[] | null) ?? []).map(
+      (r) => ({
+        id: String(r.id),
+        ticker: r.ticker,
+        side: r.side === "sell" ? "sell" : "buy",
+        quantity: Number(r.quantity),
+        price_usd: Number(r.price_usd),
+        executed_at: r.executed_at,
+      }),
+    ),
+  );
+
   const agentNames = await loadAgentNames(
     new Set<string>([
       ...heartbeats.map((h) => h.agent_id),
@@ -133,7 +160,7 @@ export async function getPortfolioActivity(
 
   const events: ActivityEvent[] = [
     ...heartbeats.map((h) => heartbeatEvent(h, agentNames)),
-    ...trades.map((t) => tradeEvent(t, agentNames)),
+    ...trades.map((t) => tradeEvent(t, agentNames, pnlByTrade.get(String(t.id)))),
     ...rejections.map((r) => rejectionEvent(r, agentNames)),
   ];
 
@@ -201,18 +228,29 @@ function heartbeatEvent(
   };
 }
 
-function tradeEvent(t: TradeRow, names: Map<string, string>): ActivityEvent {
+function tradeEvent(
+  t: TradeRow,
+  names: Map<string, string>,
+  pnl?: RealizedPnl,
+): ActivityEvent {
   const isBuy = t.side !== "sell";
   const agent = names.get(t.agent_id) ?? "An agent";
   const qty = fmtQty(Number(t.quantity));
   const price = Number(t.price_usd).toFixed(2);
-  const detailBits = [`${qty} @ $${price}`, agent];
+  const detailBits = [`${qty} @ $${price}`];
+  // On a sell, lead the detail with the realized gain/loss — the thing the
+  // owner most wants from a "your agent sold" notification.
+  if (!isBuy && pnl) detailBits.push(formatRealizedPnl(pnl));
+  detailBits.push(agent);
   if (t.note) detailBits.push(t.note);
+  // Colour a sell by its outcome (green gain / red loss), not just "it sold".
+  const sellTone: ActivityEvent["tone"] =
+    pnl == null ? "negative" : pnl.usd < 0 ? "negative" : "positive";
   return {
     id: `tr-${t.id}`,
     at: t.executed_at,
     tag: isBuy ? "BUY" : "SELL",
-    tone: isBuy ? "positive" : "negative",
+    tone: isBuy ? "positive" : sellTone,
     title: `${isBuy ? "Bought" : "Sold"} ${t.ticker}`,
     detail: detailBits.join(" · "),
   };

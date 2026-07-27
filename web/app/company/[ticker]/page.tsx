@@ -6,6 +6,7 @@ import { Company, PriceSales } from "@/lib/types";
 import { formatPrice, formatNumber, formatPct } from "@/lib/constants";
 import { absoluteUrl } from "@/lib/site";
 import { isCompanyIndexable } from "@/lib/company-indexable";
+import { formatRealizedPnl } from "@/lib/realized-pnl";
 import Nav from "@/components/nav";
 import PsValuationChart from "@/components/ps-valuation-chart";
 import RevenueChart from "@/components/revenue-chart";
@@ -998,7 +999,23 @@ function PositionLedger({
               when={t.executed_at}
               whenVerb="sold"
               rationale={t.note}
-              right={<>@ {formatPrice(t.price_usd)}</>}
+              right={
+                <>
+                  @ {formatPrice(t.price_usd)}
+                  {t.realized && (
+                    <>
+                      <br />
+                      <span
+                        style={{
+                          color: t.realized.usd < 0 ? "#FF3333" : "#00FF41",
+                        }}
+                      >
+                        {formatRealizedPnl(t.realized)}
+                      </span>
+                    </>
+                  )}
+                </>
+              }
             />
           ))}
           {soldRows.length > 5 && (

@@ -8,6 +8,7 @@
 
 import { getSupabase } from "@/lib/supabase";
 import type { Trade } from "@/components/trade-tape";
+import { realizedPnlByTrade, type RealizedPnl } from "@/lib/realized-pnl";
 
 export interface CompanySwarmSnapshot {
   // Latest weekly consensus_snapshots row, or null if the ticker has
@@ -307,18 +308,66 @@ export async function getCompanyTradeTape(
   limit = 25,
 ): Promise<CompanyTrade[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("agent_trades")
-    .select(
-      "id, side, quantity, price_usd, executed_at, note, " +
-        "agents!inner(handle, display_name)",
-    )
-    .eq("ticker", ticker)
-    .order("executed_at", { ascending: false })
-    .limit(limit);
+  // The display page (descending, limited) plus the full ascending history for
+  // this ticker (all books) so each sell's realized gain/loss can be
+  // reconstructed against its OWN portfolio's cost basis.
+  const [pageResp, historyResp] = await Promise.all([
+    supabase
+      .from("agent_trades")
+      .select(
+        "id, side, quantity, price_usd, executed_at, note, " +
+          "agents!inner(handle, display_name)",
+      )
+      .eq("ticker", ticker)
+      .order("executed_at", { ascending: false })
+      .limit(limit),
+    supabase
+      .from("agent_trades")
+      .select("id, portfolio_id, side, quantity, price_usd, executed_at")
+      .eq("ticker", ticker)
+      .order("executed_at", { ascending: true })
+      .limit(5000),
+  ]);
+  const { data, error } = pageResp;
   if (error) {
     throw new Error(`agent_trades lookup: ${error.message}`);
   }
+
+  // Reconstruct per portfolio (cost basis is per book), then merge.
+  const pnlByTrade = new Map<string, RealizedPnl>();
+  const byPortfolio = new Map<
+    string,
+    Array<{ id: string; portfolio_id: string; side: string; quantity: number | string; price_usd: number | string; executed_at: string }>
+  >();
+  for (const r of (historyResp.data as Array<{
+    id: string;
+    portfolio_id: string;
+    side: string;
+    quantity: number | string;
+    price_usd: number | string;
+    executed_at: string;
+  }> | null) ?? []) {
+    let bucket = byPortfolio.get(r.portfolio_id);
+    if (!bucket) {
+      bucket = [];
+      byPortfolio.set(r.portfolio_id, bucket);
+    }
+    bucket.push(r);
+  }
+  for (const bucket of byPortfolio.values()) {
+    const map = realizedPnlByTrade(
+      bucket.map((r) => ({
+        id: String(r.id),
+        ticker,
+        side: r.side === "sell" ? "sell" : "buy",
+        quantity: Number(r.quantity),
+        price_usd: Number(r.price_usd),
+        executed_at: r.executed_at,
+      })),
+    );
+    for (const [id, pnl] of map) pnlByTrade.set(id, pnl);
+  }
+
   return ((data ?? []) as unknown as Array<{
     id: string;
     side: string;
@@ -327,17 +376,21 @@ export async function getCompanyTradeTape(
     executed_at: string;
     note: string | null;
     agents: { handle: string; display_name: string };
-  }>).map((r) => ({
-    id: r.id,
-    handle: r.agents.handle,
-    display_name: r.agents.display_name,
-    ticker,
-    side: r.side === "sell" ? "sell" : "buy",
-    quantity: Number(r.quantity),
-    price_usd: Number(r.price_usd),
-    executed_at: r.executed_at,
-    note: r.note,
-  }));
+  }>).map((r) => {
+    const side = r.side === "sell" ? "sell" : "buy";
+    return {
+      id: r.id,
+      handle: r.agents.handle,
+      display_name: r.agents.display_name,
+      ticker,
+      side,
+      quantity: Number(r.quantity),
+      price_usd: Number(r.price_usd),
+      executed_at: r.executed_at,
+      note: r.note,
+      realized: side === "sell" ? pnlByTrade.get(String(r.id)) ?? null : null,
+    };
+  });
 }
 
 /**
