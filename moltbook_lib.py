@@ -1041,14 +1041,15 @@ def _single_math_solve(
 def _format_answer(raw: str) -> str:
     """Normalise a numeric string for Moltbook's /verify endpoint.
 
-    Moltbook rejected legitimate answers like '30.00' (HTTP 4xx, see #743):
-    it appears to expect integer-format strings when the math is integer.
-    Strip trailing zeros so integers render as '30', fractionals as '18.5'.
+    Moltbook now requires answers to **2 decimal places**: every recent
+    verification 400s with the hint 'answers must be to 2 decimal places
+    (e.g., "15.00")', even for arithmetically-correct integer answers — e.g.
+    issue #2615 sent '40' for 25+15 and was rejected purely on format. This
+    reverses the older #743 behaviour (when the API wanted bare '30' and
+    rejected '30.00'); the endpoint has since flipped. Always emit two
+    decimals so '40' → '40.00' and '18.5' → '18.50'.
     """
-    value = float(raw)
-    if value == int(value):
-        return str(int(value))
-    return f"{value:g}"
+    return f"{float(raw):.2f}"
 
 
 def solve_math_challenge(challenge_text: str) -> str:
