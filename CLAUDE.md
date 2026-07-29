@@ -16,6 +16,7 @@ Daily (UTC):
 03:30           eodhd_updater.py          Fetch 20+ financial metrics from EODHD
 03:45           benchmarks_updater.py     Fetch SPY + URTH adjusted closes for leaderboard
 04:30           price_sales_updater.py    P/S ratio tracking + 52w history
+04:45           earnings_updater.py       Ingest Tier-1 earnings dates from the EODHD earnings calendar → events table (next ~90d + last 14d). Gives the arena visibility on when each name next reports
 05:00           verdict_evaluation.py     Consolidated bull (Claude) + bear (Gemini) over ONE shared batch/clock — 300 stalest Tier-1 by min(bull_at,bear_at). Models stay distinct (adversarial); only batch+clock shared so bull_at==bear_at. Runs after the Level 0 data block settles, before the 07:00 heartbeat
 05:15           research_evaluation.py    Shared per-equity research card (moat/durability/earnings-quality/balance-sheet, 1-5 + break signals) PLUS the page narrative (short/full outlook + key risks) — 300 stalest Tier-1, one per-ticker Gemini call
 05:30           portfolio_valuation.py    Mark-to-market every agent + human portfolio
@@ -75,7 +76,9 @@ Thin, reusable EODHD REST client for the Level 0 fact store. Wraps the three
 universe endpoints the legacy scripts don't use — `exchange-symbol-list/{EX}`
 (full ticker list + security type), `eod/{SYMBOL}` (daily OHLCV history) and
 `eod-bulk-last-day/{EX}` (all tickers for one trading day) — plus a
-`fundamentals` passthrough, behind one rate-limited, retrying `get()`
+`fundamentals` passthrough and `earnings_calendar()` (`/calendar/earnings` —
+scheduled/recent earnings dates over a window, `symbols`-scoped; feeds
+`earnings_updater.py`), behind one rate-limited, retrying `get()`
 (`EODHDClient`). `EODHD_API_KEY` env var.
 
 ### level0.py
@@ -405,6 +408,22 @@ day's OHLCV for every Tier 1 ticker (idempotent on `(ticker, date)`); any Tier 1
 name with no recent row (a fresh gate promotion) gets a full 2y per-ticker
 backfill. Stores `dollar_volume` + `adj_close`. Flags: `--backfill` (force 2y
 for all Tier 1), `--tickers`, `--years`, `--dry-run`.
+
+### earnings_updater.py (04:45 UTC daily)
+Level 0 earnings-date ingest — the writer that finally populates the `events`
+table's `type='earnings'` slot (a defined-but-empty scaffold until now: the read
+path `level0.FactStore.get_facts` always returned `[]`, and no surface showed an
+earnings date). Pulls the EODHD **earnings calendar** (`eodhd.earnings_calendar`
+→ `/calendar/earnings`) for the Tier 1 set — codes chunked 100-per-call to keep
+URLs short — over a window from `--back` days ago (default 14, so "last reported"
+is captured) to `--days` ahead (default 90, ≈ the quarterly cadence). Maps each
+row via the pure `_event_row` (US Tier-1 only; `report_date` = the announcement
+date we store, falling back to period-end `date`), and upserts through
+`db.upsert_events_batch` — idempotent on the `(ticker, 'earnings', date)` PK, so
+re-runs only touch changed/added dates. Logs `run_logs` (`earnings_calendar`).
+Read via the events list in `FactStore.get_facts` **and** the targeted
+`FactStore.next_earnings(ticker)` (soonest upcoming release). Cron:
+`earnings-calendar.yml`. Flags: `--days`, `--back`, `--tickers`, `--dry-run`.
 
 ### backfill_sectors.py (Sundays 02:45 UTC — weekly, + one-off full run)
 Populates `securities.gics_sector` **and** `gics_industry` from TradingView
@@ -984,7 +1003,10 @@ ps_trend_pct, ps_ath, ps_pct_of_ath, history_json, source, fetched_at — PK (ti
 
 **`estimates`** (optional, latest per ticker) `ticker (PK), consensus_rating, price_target, eps_revisions_4w, source, fetched_at`
 
-**`events`** `ticker (FK), type (earnings|split|dividend), date, value, source, fetched_at — PK (ticker, type, date)`
+**`events`** `ticker (FK), type (earnings|split|dividend), date, value, source, fetched_at — PK (ticker, type, date)`.
+The `earnings` slot is populated daily by `earnings_updater.py` from the EODHD
+earnings calendar (Tier-1, next ~90d + last 14d); `split` / `dividend` remain
+unwritten. Read via `FactStore.get_facts` (events list) + `FactStore.next_earnings`.
 
 **`ai_analysis`** (Level 0 home for AI bull/bear + narratives — migration 053,
 Stage A1) `ticker (PK, no FK — a derived lens table), bull_eval, bear_eval,
@@ -1700,6 +1722,9 @@ python universe_sync.py --skip-gate          # identity refresh only
 python prices_daily_updater.py               # daily: Tier 1 EOD prices + 2y backfill for new names
 python prices_daily_updater.py --backfill    # force full 2y for all Tier 1
 python prices_daily_updater.py --tickers NVDA AAPL
+python earnings_updater.py                   # daily: ingest Tier 1 earnings dates → events
+python earnings_updater.py --days 120 --back 0   # look further ahead, upcoming only
+python earnings_updater.py --tickers NVDA AAPL --dry-run
 pytest tests/test_level0.py                  # Level 0 unit tests
 
 # Portfolio manager

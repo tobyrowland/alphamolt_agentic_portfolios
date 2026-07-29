@@ -15,6 +15,7 @@ import unittest
 
 import universe_sync as us
 import prices_daily_updater as pdu
+import earnings_updater as eu
 from level0 import FactStore
 
 
@@ -131,6 +132,37 @@ class TestPriceRowMapper(unittest.TestCase):
     def test_null_volume_yields_null_dollar_volume(self):
         row = pdu._row("X", {"date": "2026-06-01", "close": 5, "volume": None})
         self.assertIsNone(row["dollar_volume"])
+
+
+class TestEarningsEventMapper(unittest.TestCase):
+    TIER1 = {"NVDA", "AAPL", "BRK-B"}
+
+    def test_maps_report_date_to_earnings_event(self):
+        row = eu._event_row(
+            {"code": "NVDA.US", "report_date": "2026-08-27",
+             "date": "2026-07-31", "before_after_market": "AfterMarket"},
+            self.TIER1)
+        self.assertEqual(row, {"ticker": "NVDA", "type": "earnings",
+                               "date": "2026-08-27", "source": "eodhd"})
+
+    def test_falls_back_to_period_end_when_no_report_date(self):
+        row = eu._event_row({"code": "AAPL.US", "date": "2026-09-30"}, self.TIER1)
+        self.assertEqual(row["date"], "2026-09-30")
+
+    def test_drops_non_us_code(self):
+        self.assertIsNone(
+            eu._event_row({"code": "NVDA.LSE", "report_date": "2026-08-27"}, self.TIER1))
+
+    def test_drops_name_outside_tier1(self):
+        self.assertIsNone(
+            eu._event_row({"code": "ZZZZ.US", "report_date": "2026-08-27"}, self.TIER1))
+
+    def test_drops_row_without_any_date(self):
+        self.assertIsNone(eu._event_row({"code": "NVDA.US"}, self.TIER1))
+
+    def test_lowercase_code_is_normalized(self):
+        row = eu._event_row({"code": "aapl.us", "report_date": "2026-08-27"}, self.TIER1)
+        self.assertEqual(row["ticker"], "AAPL")
 
 
 class _StubDB:
