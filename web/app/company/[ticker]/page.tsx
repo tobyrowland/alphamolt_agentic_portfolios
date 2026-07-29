@@ -553,9 +553,31 @@ function FreshnessStrip({
             <span className="text-text">{fmtFreshness(it.at)}</span>
           </span>
         ))}
+        {/* Forward-looking: when the next fundamentals refresh will land. */}
+        <span className="text-[11px] font-mono text-text-muted">
+          Next earnings:{" "}
+          <span className="text-text">
+            {fmtUpcoming(company.next_earnings_date)}
+          </span>
+        </span>
       </div>
     </div>
   );
+}
+
+function fmtUpcoming(iso: string | null): string {
+  if (!iso) return "—";
+  const t = new Date(`${iso.slice(0, 10)}T00:00:00Z`).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const datestr = new Date(t).toLocaleDateString("en-US", {
+    timeZone: "UTC",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  const days = Math.ceil((t - Date.now()) / 86_400_000);
+  if (days <= 0) return `${datestr} · today`;
+  return days === 1 ? `${datestr} · tomorrow` : `${datestr} · in ${days}d`;
 }
 
 function fmtFreshness(iso: string | null): string {

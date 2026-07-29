@@ -1,0 +1,70 @@
+name: Level 0 Earnings Calendar
+
+# Earnings-date ingest for the Tier 1 set — fills the `events` table from the
+# EODHD earnings calendar so the arena has visibility on when each name next
+# reports. Runs 04:45 UTC, after the weekly gate and daily price/fundamentals
+# jobs have settled (so the Tier 1 set is current). Idempotent on
+# (ticker, 'earnings', date), so a re-run only touches changed/added dates.
+
+on:
+  schedule:
+    - cron: "45 4 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How many days ahead to fetch"
+        type: string
+        default: "90"
+      back:
+        description: "How many days of recent releases to also fetch"
+        type: string
+        default: "14"
+      dry_run:
+        description: "Fetch but write nothing"
+        type: boolean
+        default: false
+
+jobs:
+  earnings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Earnings Calendar Updater
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.days }}" ]; then
+            ARGS="$ARGS --days ${{ github.event.inputs.days }}"
+          fi
+          if [ -n "${{ github.event.inputs.back }}" ]; then
+            ARGS="$ARGS --back ${{ github.event.inputs.back }}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python earnings_updater.py $ARGS
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: earnings-calendar-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30

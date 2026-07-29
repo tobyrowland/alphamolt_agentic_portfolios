@@ -124,6 +124,29 @@ class FactStore:
             "price_history": prices if price_history else None,
         }
 
+    def next_earnings(self, ticker: str, on: str | None = None) -> dict | None:
+        """The soonest scheduled earnings release on/after `on` (today by default).
+
+        Reads the `events` table (populated by `earnings_updater.py`) and returns
+        the nearest future `type='earnings'` row as `{ticker, date, source}`, or
+        None when no upcoming date is known. A cheap, targeted read for surfaces
+        that just want "when does this name next report" without the full facts
+        payload.
+        """
+        ticker = ticker.upper()
+        on = on or datetime.utcnow().date().isoformat()
+        rows = (
+            self.db.client.table("events")
+            .select("ticker,date,source")
+            .eq("ticker", ticker)
+            .eq("type", "earnings")
+            .gte("date", on)
+            .order("date", desc=False)
+            .limit(1)
+            .execute()
+        ).data or []
+        return rows[0] if rows else None
+
     def get_facts_bulk(self, tickers: list[str]) -> list[dict]:
         """Assemble facts for several tickers (screener weighting pass)."""
         out = []

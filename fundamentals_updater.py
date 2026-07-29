@@ -66,6 +66,84 @@ def select_stale_batch(
     return sorted(tier1_tickers, key=key)[: max(0, limit)]
 
 
+def refresh_fundamentals(
+    db: SupabaseDB,
+    tickers: list[str],
+    api_key: str,
+    *,
+    log: logging.Logger = logger,
+    delay: float = DEFAULT_DELAY,
+    dry_run: bool = False,
+    names: dict[str, str] | None = None,
+) -> dict:
+    """Fetch EODHD fundamentals for `tickers` and upsert them into `fundamentals`.
+
+    The single write path shared by BOTH the daily rotation (`main`) and the
+    earnings-triggered refresh (`earnings_updater`): one place owns the
+    `FUND_FIELDS`/`FUND_BLOBS` mapping, the synthetic fetch-date `period_end`
+    convention, and the `fetched_at` freshness stamp (`upsert_fundamentals_batch`).
+    Returns `{written, no_data, errors}`. `names` is an optional ticker→company
+    name map (only used to help EODHD symbol resolution).
+    """
+    names = names or {}
+    tickers = list(tickers)
+    fetch_date = date.today().isoformat()
+    batch: list[dict] = []
+    written = errors = no_data = 0
+
+    for idx, ticker in enumerate(tickers):
+        company = names.get(ticker) or ""
+        try:
+            data = fetch_eodhd_data(ticker, api_key, log, exchange="US", company=company)
+        except Exception as exc:  # noqa: BLE001 — log and keep going
+            log.error("fetch failed for %s: %s", ticker, exc)
+            errors += 1
+            data = None
+
+        if data:
+            row = {"ticker": ticker, "period_end": fetch_date, "source": "eodhd"}
+            has_metric = False
+            for src, dst in FUND_FIELDS.items():
+                v = db.safe_float(data.get(src))
+                if v is not None:
+                    row[dst] = v
+                    has_metric = True
+            for blob in FUND_BLOBS:  # text series stored verbatim
+                val = data.get(blob)
+                if val:
+                    row[blob] = val
+                    has_metric = True
+            if has_metric:
+                batch.append(row)
+                if dry_run:
+                    log.info("[DRY RUN] %s → %s", ticker,
+                             {k: v for k, v in row.items()
+                              if k not in ("ticker", "period_end", "source")})
+            else:
+                no_data += 1
+                log.info("%s: fetched but no usable metrics", ticker)
+        else:
+            no_data += 1
+
+        if not dry_run and len(batch) >= UPSERT_FLUSH:
+            db.upsert_fundamentals_batch(batch)
+            written += len(batch)
+            batch = []
+
+        if (idx + 1) % 100 == 0:
+            log.info("…%d/%d processed (written≈%d, no_data=%d, errors=%d)",
+                     idx + 1, len(tickers), written + len(batch), no_data, errors)
+
+        if idx < len(tickers) - 1:
+            time.sleep(delay)
+
+    if not dry_run and batch:
+        db.upsert_fundamentals_batch(batch)
+        written += len(batch)
+
+    return {"written": written, "no_data": no_data, "errors": errors}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Daily rotating refresher for Level 0 fundamentals",
@@ -103,60 +181,10 @@ def main() -> None:
     logger.info("Tier 1 active=%d; refreshing %d stalest this run",
                 len(tier1), len(target_tickers))
 
-    fetch_date = date.today().isoformat()
-    batch: list[dict] = []
-    written = errors = no_data = 0
-
-    for idx, ticker in enumerate(target_tickers):
-        name = (tier1.get(ticker) or {}).get("name") or ""
-        try:
-            data = fetch_eodhd_data(ticker, key, logger, exchange="US", company=name)
-        except Exception as exc:  # noqa: BLE001 — log and keep going
-            logger.error("fetch failed for %s: %s", ticker, exc)
-            errors += 1
-            data = None
-
-        if data:
-            row = {"ticker": ticker, "period_end": fetch_date, "source": "eodhd"}
-            has_metric = False
-            for src, dst in FUND_FIELDS.items():
-                v = db.safe_float(data.get(src))
-                if v is not None:
-                    row[dst] = v
-                    has_metric = True
-            for blob in FUND_BLOBS:  # text series stored verbatim
-                val = data.get(blob)
-                if val:
-                    row[blob] = val
-                    has_metric = True
-            if has_metric:
-                batch.append(row)
-                if args.dry_run:
-                    logger.info("[DRY RUN] %s → %s", ticker,
-                                {k: v for k, v in row.items()
-                                 if k not in ("ticker", "period_end", "source")})
-            else:
-                no_data += 1
-                logger.info("%s: fetched but no usable metrics", ticker)
-        else:
-            no_data += 1
-
-        if not args.dry_run and len(batch) >= UPSERT_FLUSH:
-            db.upsert_fundamentals_batch(batch)
-            written += len(batch)
-            batch = []
-
-        if (idx + 1) % 100 == 0:
-            logger.info("…%d/%d processed (written≈%d, no_data=%d, errors=%d)",
-                        idx + 1, len(target_tickers), written + len(batch),
-                        no_data, errors)
-
-        if idx < len(target_tickers) - 1:
-            time.sleep(args.delay)
-
-    if not args.dry_run and batch:
-        db.upsert_fundamentals_batch(batch)
-        written += len(batch)
+    names = {t: (tier1.get(t) or {}).get("name") or "" for t in target_tickers}
+    res = refresh_fundamentals(db, target_tickers, key, log=logger,
+                               delay=args.delay, dry_run=args.dry_run, names=names)
+    written, no_data, errors = res["written"], res["no_data"], res["errors"]
 
     stats = {
         "updated": written,

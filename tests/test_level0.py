@@ -15,6 +15,7 @@ import unittest
 
 import universe_sync as us
 import prices_daily_updater as pdu
+import earnings_updater as eu
 from level0 import FactStore
 
 
@@ -131,6 +132,62 @@ class TestPriceRowMapper(unittest.TestCase):
     def test_null_volume_yields_null_dollar_volume(self):
         row = pdu._row("X", {"date": "2026-06-01", "close": 5, "volume": None})
         self.assertIsNone(row["dollar_volume"])
+
+
+class TestEarningsEventMapper(unittest.TestCase):
+    TIER1 = {"NVDA", "AAPL", "BRK-B"}
+
+    def test_maps_report_date_to_earnings_event(self):
+        row = eu._event_row(
+            {"code": "NVDA.US", "report_date": "2026-08-27",
+             "date": "2026-07-31", "before_after_market": "AfterMarket"},
+            self.TIER1)
+        self.assertEqual(row, {"ticker": "NVDA", "type": "earnings",
+                               "date": "2026-08-27", "source": "eodhd"})
+
+    def test_falls_back_to_period_end_when_no_report_date(self):
+        row = eu._event_row({"code": "AAPL.US", "date": "2026-09-30"}, self.TIER1)
+        self.assertEqual(row["date"], "2026-09-30")
+
+    def test_drops_non_us_code(self):
+        self.assertIsNone(
+            eu._event_row({"code": "NVDA.LSE", "report_date": "2026-08-27"}, self.TIER1))
+
+    def test_drops_name_outside_tier1(self):
+        self.assertIsNone(
+            eu._event_row({"code": "ZZZZ.US", "report_date": "2026-08-27"}, self.TIER1))
+
+    def test_drops_row_without_any_date(self):
+        self.assertIsNone(eu._event_row({"code": "NVDA.US"}, self.TIER1))
+
+    def test_lowercase_code_is_normalized(self):
+        row = eu._event_row({"code": "aapl.us", "report_date": "2026-08-27"}, self.TIER1)
+        self.assertEqual(row["ticker"], "AAPL")
+
+
+class TestRecentReporters(unittest.TestCase):
+    ROWS = [
+        {"ticker": "NVDA", "type": "earnings", "date": "2026-07-27"},  # in window
+        {"ticker": "AAPL", "type": "earnings", "date": "2026-07-29"},  # today
+        {"ticker": "MSFT", "type": "earnings", "date": "2026-09-01"},  # future
+        {"ticker": "OLD", "type": "earnings", "date": "2026-01-01"},   # too old
+    ]
+
+    def test_selects_only_names_in_window(self):
+        got = eu.recent_reporters(self.ROWS, "2026-07-26", "2026-07-29")
+        self.assertEqual(got, ["AAPL", "NVDA"])
+
+    def test_dedupes_and_sorts(self):
+        rows = [
+            {"ticker": "NVDA", "type": "earnings", "date": "2026-07-27"},
+            {"ticker": "NVDA", "type": "earnings", "date": "2026-07-28"},
+            {"ticker": "AAPL", "type": "earnings", "date": "2026-07-27"},
+        ]
+        self.assertEqual(eu.recent_reporters(rows, "2026-07-26", "2026-07-29"),
+                         ["AAPL", "NVDA"])
+
+    def test_empty_window_yields_nothing(self):
+        self.assertEqual(eu.recent_reporters(self.ROWS, "2026-08-01", "2026-08-02"), [])
 
 
 class _StubDB:

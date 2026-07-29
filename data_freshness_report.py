@@ -50,7 +50,7 @@ SOURCE = {
     "Fundamentals": "fundamentals-update.yml",
     "AI analysis": "verdict-evaluation (bull+bear) · research-evaluation (card+narrative)",
     "Estimates": "— (no ingest)",
-    "Events": "— (no ingest)",
+    "Events": "earnings-calendar.yml",
 }
 
 
@@ -234,16 +234,36 @@ def gather(db: SupabaseDB) -> list[Row]:
         note="rotation: refreshing daily; stalest tail is dropped-from-universe names",
     ))
 
-    # 6. Estimates / Events — not ingested yet (informational).
-    for label, table in (("Estimates", "estimates"), ("Events", "events")):
-        try:
-            resp = db.client.table(table).select("ticker", count="exact", head=True).execute()
-            n = resp.count or 0
-        except Exception:  # noqa: BLE001
-            n = 0
-        rows.append(Row(label, coverage=f"{n} rows", freshest="—", stalest="—",
-                        refreshed_24h="—", status=INFO,
-                        note="no ingest job yet"))
+    # 6. Estimates — not ingested yet (informational).
+    try:
+        resp = db.client.table("estimates").select("ticker", count="exact", head=True).execute()
+        n = resp.count or 0
+    except Exception:  # noqa: BLE001
+        n = 0
+    rows.append(Row("Estimates", coverage=f"{n} rows", freshest="—", stalest="—",
+                    refreshed_24h="—", status=INFO, note="no ingest job yet"))
+
+    # 7. Events — earnings dates, ingested by earnings_updater.py. Rows are
+    # future-dated (the event date is the announcement), so freshness tracks the
+    # ingest run time (`fetched_at`), not the event date itself.
+    try:
+        resp = db.client.table("events").select("fetched_at", count="exact").eq(
+            "type", "earnings").order("fetched_at", desc=True).limit(1).execute()
+        n = resp.count or 0
+        newest = resp.data[0]["fetched_at"] if resp.data else None
+    except Exception:  # noqa: BLE001
+        n, newest = 0, None
+    if n == 0:
+        rows.append(Row("Events", coverage="0 rows", freshest="—", stalest="—",
+                        refreshed_24h="—", status=INFO, note="no earnings ingested yet"))
+    else:
+        age = _age_days(newest, now)
+        rows.append(Row(
+            "Events", coverage=f"{n} earnings",
+            freshest=newest or "—", stalest="—", refreshed_24h="—",
+            status=OK if (age is not None and age <= 2) else WATCH,
+            note="earnings dates; freshness = last ingest run",
+        ))
 
     for r in rows:
         r.source = SOURCE.get(r.name, "—")

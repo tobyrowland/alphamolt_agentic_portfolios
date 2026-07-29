@@ -18,6 +18,7 @@
 import { cache } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { getEquityL0 } from "@/lib/level0-query";
+import { getNextEarnings } from "@/lib/earnings-query";
 import type { Company, PriceSales } from "@/lib/types";
 import {
   getCompanyHolders,
@@ -88,7 +89,7 @@ export const loadCompany = cache(async (ticker: string): Promise<Company | null>
   const supabase = getSupabase();
   const t = ticker.toUpperCase();
 
-  const [equity, aiRes, secRes, finRes] = await Promise.all([
+  const [equity, aiRes, secRes, finRes, nextEarnings] = await Promise.all([
     getEquityL0(t),
     supabase
       .from("ai_analysis")
@@ -115,6 +116,9 @@ export const loadCompany = cache(async (ticker: string): Promise<Company | null>
       .order("period_end", { ascending: false })
       .limit(1)
       .maybeSingle(),
+    // Next scheduled earnings date (Level 0 `events`, populated by
+    // earnings_updater.py) — when fresh data next lands for this name.
+    getNextEarnings(t),
   ]);
 
   if (!equity) return null;
@@ -208,6 +212,7 @@ export const loadCompany = cache(async (ticker: string): Promise<Company | null>
     // Metadata
     ai_analyzed_at: ai?.analyzed_at ?? null,
     data_updated_at: equity.fundamentals_asof ?? null,
+    next_earnings_date: nextEarnings,
     scored_at: null,
     flags: null,
     in_tv_screen: equity.is_tier1,

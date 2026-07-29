@@ -64,6 +64,11 @@ _SNAPSHOT_FIELDS: tuple[str, ...] = (
     "status",
     # Quality flags + audit
     "flags", "ai_analyzed_at",
+    # Data vintage — the as-of date of each frozen datum, so a reader can see
+    # HOW OLD the snapshot's numbers were at buy time (migration: earnings-dates
+    # visibility). fundamentals_asof = latest fundamentals period_end;
+    # valuation_asof = latest valuation date.
+    "fundamentals_asof", "valuation_asof",
 )
 
 
@@ -117,6 +122,7 @@ def build_snapshot(db, ticker: str) -> dict:
         fund_rows = []
     fund = fund_rows[0] if fund_rows else {}
     if fund:
+        snapshot["fundamentals_asof"] = fund.get("period_end")
         snapshot["rule_of_40"] = fund.get("rule_of_40")
         # r40_score is the legacy companies alias for the same metric.
         snapshot["r40_score"] = fund.get("rule_of_40")
@@ -138,6 +144,7 @@ def build_snapshot(db, ticker: str) -> dict:
     val = val_rows[0] if val_rows else {}
     if val:
         snapshot["ps_now"] = val.get("ps")
+        snapshot["valuation_asof"] = val.get("date")
 
     # --- AI narrative + bull/bear (Level 0 `ai_analysis`) ---
     try:
@@ -151,13 +158,14 @@ def build_snapshot(db, ticker: str) -> dict:
         snapshot["full_outlook"] = ai.get("full_outlook")
         snapshot["bull_eval"] = ai.get("bull_eval")
         snapshot["bear_eval"] = ai.get("bear_eval")
+        snapshot["ai_analyzed_at"] = ai.get("analyzed_at")
 
     # Fields with NO Level 0 source stay None:
     #   composite_score, rating, status, sort_order (not in _SNAPSHOT_FIELDS),
     #   rev_consistency_score, net_margin_yoy_pct, sm_rd_pct_revenue,
     #   eps_yoy_pct, qrtrs_to_profitability, gm_trend, price_pct_of_52w_high,
-    #   perf_52w_vs_spy, flags, ai_analyzed_at — all pipeline-derived columns
-    #   the Level 0 fact store does not (yet) carry.
+    #   perf_52w_vs_spy, flags — all pipeline-derived columns the Level 0 fact
+    #   store does not (yet) carry.
     return snapshot
 
 

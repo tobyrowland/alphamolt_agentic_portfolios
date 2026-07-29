@@ -35,6 +35,9 @@ interface Props {
    *  getCurrentSignalFacts) — powers the per-signal current-vs-threshold
    *  gauges. Optional: absent values just render the plain text rows. */
   currentByTicker?: Record<string, Record<string, number>>;
+  /** Held tickers' next scheduled earnings date (YYYY-MM-DD) — "when new data
+   *  lands" for each thesis. Optional: absent tickers render "—". */
+  earningsByTicker?: Record<string, string>;
   /** Render the per-row "Sell" button. Owner-only on the portfolio
    *  detail page. Default false so public viewers see no sell control. */
   canSell?: boolean;
@@ -45,6 +48,7 @@ export default function HoldingsList({
   holdings,
   thesesByTicker,
   currentByTicker = {},
+  earningsByTicker = {},
   canSell = false,
 }: Props) {
   const [openTicker, setOpenTicker] = useState<string | null>(null);
@@ -195,6 +199,7 @@ export default function HoldingsList({
                   <ThesisPanel
                     thesis={thesis}
                     current={currentByTicker[h.ticker] ?? {}}
+                    nextEarnings={earningsByTicker[h.ticker] ?? null}
                   />
                 ) : (
                   <p className="text-sm text-text-muted italic">
@@ -253,11 +258,20 @@ function ThesisBadge({ thesis }: { thesis: InvestmentThesis }) {
 function ThesisPanel({
   thesis,
   current,
+  nextEarnings,
 }: {
   thesis: InvestmentThesis;
   current: Record<string, number>;
+  nextEarnings: string | null;
 }) {
   const snapshot = (thesis.snapshot ?? {}) as Record<string, unknown>;
+  // Vintage of the frozen numbers (added with the earnings-dates work). Older
+  // rows won't carry it, so fall back to the AI-analysis timestamp, then to the
+  // buy date — always tell the reader how old the snapshot data is.
+  const fundamentalsAsOf =
+    (snapshot.fundamentals_asof as string | null) ??
+    (snapshot.ai_analyzed_at as string | null) ??
+    null;
   return (
     <div className="space-y-4 text-sm">
       <header className="flex items-center justify-between gap-3 flex-wrap">
@@ -271,6 +285,21 @@ function ThesisPanel({
           <StatusPill status={thesis.status} />
         </div>
       </header>
+
+      {/* Data vintage + when fresh data next lands (next earnings). */}
+      <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono text-text-muted">
+        <span>
+          Data as of{" "}
+          <span className="text-text">
+            {fundamentalsAsOf ? formatDate(fundamentalsAsOf) : "—"}
+          </span>
+        </span>
+        <span aria-hidden="true">·</span>
+        <span>
+          Next data{" "}
+          <span className="text-text">{fmtNextEarnings(nextEarnings)}</span>
+        </span>
+      </div>
 
       {thesis.thesis_text && (
         <section>
@@ -526,6 +555,17 @@ function formatDate(iso: string): string {
   // Render as YYYY-MM-DD UTC — agents trade on UTC-aligned heartbeats and
   // mixing in a viewer-local timezone would obscure that.
   return iso.slice(0, 10);
+}
+
+// Forward-looking earnings date: "2026-08-27 (in 29d)" / "today" / "—".
+function fmtNextEarnings(iso: string | null): string {
+  if (!iso) return "—";
+  const t = new Date(`${iso.slice(0, 10)}T00:00:00Z`).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const days = Math.ceil((t - Date.now()) / 86_400_000);
+  const date = iso.slice(0, 10);
+  if (days <= 0) return `${date} (today)`;
+  return days === 1 ? `${date} (tomorrow)` : `${date} (in ${days}d)`;
 }
 
 function formatPriceLike(v: unknown): string {

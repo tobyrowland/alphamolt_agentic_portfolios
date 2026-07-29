@@ -56,6 +56,10 @@ const SNAPSHOT_FIELDS = [
   "status",
   // Quality flags + audit
   "flags", "ai_analyzed_at",
+  // Data vintage — the as-of date of each frozen datum, so a reader can see
+  // how old the snapshot's numbers were at buy time. fundamentals_asof =
+  // latest fundamentals period_end; valuation_asof = latest valuation date.
+  "fundamentals_asof", "valuation_asof",
 ] as const;
 
 /**
@@ -138,6 +142,9 @@ async function buildSnapshot(ticker: string): Promise<Record<string, unknown>> {
     // Quality flags + audit
     flags: null,
     ai_analyzed_at: ai.analyzed_at ?? null,
+    // Data vintage — carried from the Level 0 facts read above.
+    fundamentals_asof: equity.fundamentals_asof ?? null,
+    valuation_asof: equity.valuation_asof ?? null,
   };
 
   const snapshot: Record<string, unknown> = {};

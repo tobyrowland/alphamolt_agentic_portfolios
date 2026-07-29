@@ -13,6 +13,7 @@ Endpoints used:
     GET /eod/{SYMBOL}                       daily OHLCV history (per ticker)
     GET /eod-bulk-last-day/{EXCHANGE}       all tickers for one trading day
     GET /fundamentals/{SYMBOL}              full fundamentals blob
+    GET /calendar/earnings                  upcoming/recent earnings dates
 
 Environment:
     EODHD_API_KEY — required.
@@ -131,3 +132,33 @@ class EODHDClient:
         """Full fundamentals blob for one symbol (e.g. 'AAPL.US')."""
         data = self.get(f"fundamentals/{symbol}")
         return data if isinstance(data, dict) else None
+
+    def earnings_calendar(self, from_date: str | None = None,
+                          to_date: str | None = None,
+                          symbols: list[str] | None = None) -> list[dict]:
+        """Earnings announcement dates over a date window.
+
+        GET /calendar/earnings — the forward-looking earnings calendar. With a
+        `from`/`to` window it returns every scheduled (or recently-reported)
+        earnings release in that range; `symbols` (a list of EODHD codes like
+        'AAPL.US') scopes it to those names. Callers should chunk `symbols` to
+        keep the URL short.
+
+        The endpoint wraps the rows in {"earnings": [...]}; each row:
+        {code, report_date, date, before_after_market, currency, actual,
+         estimate, difference, percent}. `report_date` is the announcement
+        date (what we treat as the earnings event); `date` is the fiscal
+        period end.
+        """
+        params: dict = {}
+        if from_date:
+            params["from"] = from_date
+        if to_date:
+            params["to"] = to_date
+        if symbols:
+            params["symbols"] = ",".join(symbols)
+        data = self.get("calendar/earnings", params)
+        if isinstance(data, dict):
+            rows = data.get("earnings")
+            return rows if isinstance(rows, list) else []
+        return data if isinstance(data, list) else []
