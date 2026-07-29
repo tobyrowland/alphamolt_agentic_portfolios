@@ -16,21 +16,31 @@ has an upcoming date). `report_date` is the announcement date we store as the
 event date; the upsert is idempotent on the `(ticker, 'earnings', date)` PK, so
 re-runs only touch changed/added dates.
 
+**Earnings trigger a fundamentals refresh.** A name that just reported has fresh
+financials at EODHD, so after ingest this script re-pulls fundamentals for every
+name whose earnings landed in the last `--refresh-back` days (default 3 — EODHD
+posts the new numbers a day or two after the release), reusing
+`fundamentals_updater.refresh_fundamentals`. That jumps a fresh reporter to the
+front of the ~universe/150-day rotation instead of waiting for it to come round.
+
 Usage:
     python earnings_updater.py                 # Tier 1, next 90d + last 14d
     python earnings_updater.py --days 120       # look further ahead
     python earnings_updater.py --back 0         # upcoming only
+    python earnings_updater.py --no-fundamentals-refresh   # ingest dates only
     python earnings_updater.py --tickers NVDA AAPL
     python earnings_updater.py --dry-run
 """
 
 import argparse
 import logging
+import os
 import time
 from datetime import date, timedelta
 
 from db import SupabaseDB
 from eodhd import EODHDClient
+from fundamentals_updater import refresh_fundamentals
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +51,9 @@ logger = logging.getLogger("earnings")
 FORWARD_DAYS = 90    # how far ahead to fetch scheduled earnings
 BACK_DAYS = 14       # small trailing window so "last reported" is captured
 CHUNK = 100          # EODHD codes per /calendar/earnings call (URL-length safe)
+REFRESH_BACK = 3     # a name reporting within this many days triggers a
+                     # fundamentals refresh (EODHD posts the new numbers ~1-2d
+                     # after the release, so re-pulling for a few days catches it)
 
 
 def _event_row(row: dict, tier1: set[str]) -> dict | None:
@@ -66,6 +79,21 @@ def _event_row(row: dict, tier1: set[str]) -> dict | None:
         "date": event_date,
         "source": "eodhd",
     }
+
+
+def recent_reporters(rows: list[dict], since: str, until: str) -> list[str]:
+    """Unique tickers with an earnings event in [since, until] (ISO date strings).
+
+    These names just reported (or report today), so fresh fundamentals should
+    now be available at EODHD — the trigger for a fundamentals refresh. Pure +
+    unit-tested (ISO dates sort/compare lexically, so the string bound check is
+    correct).
+    """
+    out = {
+        r["ticker"] for r in rows
+        if r.get("type") == "earnings" and since <= (r.get("date") or "") <= until
+    }
+    return sorted(out)
 
 
 def _chunks(items: list[str], size: int):
@@ -97,6 +125,14 @@ def main() -> None:
     ap.add_argument("--back", type=int, default=BACK_DAYS,
                     help="how many days of recent releases to also fetch (default 14)")
     ap.add_argument("--tickers", nargs="+", help="limit to these tickers")
+    ap.add_argument("--refresh-back", type=int, default=REFRESH_BACK,
+                    help="names reporting within this many days get a fundamentals "
+                         f"refresh (default {REFRESH_BACK}); 0 = same-day only, "
+                         "negative disables")
+    ap.add_argument("--no-fundamentals-refresh", action="store_true",
+                    help="skip the earnings-triggered fundamentals refresh")
+    ap.add_argument("--delay", type=float, default=1.0,
+                    help="seconds between EODHD fundamentals calls (default 1.0)")
     ap.add_argument("--dry-run", action="store_true", help="fetch but write nothing")
     args = ap.parse_args()
 
@@ -123,10 +159,26 @@ def main() -> None:
     if rows and not args.dry_run:
         db.upsert_events_batch(rows)
 
+    # A name that just reported has fresh fundamentals available at EODHD — pull
+    # them now instead of waiting for the ~universe/150-day rotation to reach it.
+    reporters: list[str] = []
+    fund_res = {"written": 0, "no_data": 0, "errors": 0}
+    if not args.no_fundamentals_refresh and args.refresh_back >= 0:
+        since = (date.today() - timedelta(days=args.refresh_back)).isoformat()
+        until = date.today().isoformat()
+        reporters = recent_reporters(rows, since, until)
+        logger.info("%d name(s) reported in [%s, %s] → refreshing fundamentals",
+                    len(reporters), since, until)
+        if reporters:
+            key = os.environ.get("EODHD_API_KEY", "")
+            fund_res = refresh_fundamentals(db, reporters, key, log=logger,
+                                            delay=args.delay, dry_run=args.dry_run)
+            logger.info("Fundamentals refresh: %s", fund_res)
+
     stats = {
         "backfilled": 0,
         "updated": len(rows),
-        "errors": 0,
+        "errors": fund_res["errors"],
         "duration_secs": round(time.time() - started, 1),
         "details": {
             "tier1": len(tier1),
@@ -135,6 +187,8 @@ def main() -> None:
             "names": len({r["ticker"] for r in rows}),
             "from": from_date,
             "to": to_date,
+            "reporters_refreshed": len(reporters),
+            "fundamentals_written": fund_res["written"],
             "dry_run": args.dry_run,
         },
     }

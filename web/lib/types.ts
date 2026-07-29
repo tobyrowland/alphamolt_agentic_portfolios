@@ -79,6 +79,8 @@ export interface Company {
   // Metadata
   ai_analyzed_at: string | null;
   data_updated_at: string | null;
+  /** Next scheduled earnings date (YYYY-MM-DD) from Level 0 `events`, or null. */
+  next_earnings_date: string | null;
   scored_at: string | null;
   flags: Record<string, string> | null;
   in_tv_screen: boolean;

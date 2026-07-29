@@ -64,7 +64,12 @@ and score_ai_analysis.py to avoid duplicating the screening code.
 ### theses.py
 Investment-thesis framework. Every successful BUY through `PortfolioManager.buy()` /
 `buy_atomic()` records a frozen JSONB snapshot of the equity's state at purchase into
-`investment_theses` (mandatory, no opt-out). When the buy call passes a `thesis={...}`
+`investment_theses` (mandatory, no opt-out). The snapshot carries the equity's
+metrics **plus their data vintage** (`fundamentals_asof` = latest fundamentals
+period_end, `valuation_asof` = latest valuation date, `ai_analyzed_at`) so a
+reader can see how old the frozen numbers were at buy time — surfaced in the
+portfolio page's thesis dropdown. `_SNAPSHOT_FIELDS` is kept in lock-step with
+`web/lib/theses.ts`. When the buy call passes a `thesis={...}`
 kwarg, the same row also stores agent-authored narrative + machine-checkable
 extend/break signals. Exposes `build_snapshot`, `record_thesis`,
 `close_theses_for_position`, `check_thesis` (read-only verdict over current state),
@@ -422,8 +427,25 @@ date we store, falling back to period-end `date`), and upserts through
 `db.upsert_events_batch` — idempotent on the `(ticker, 'earnings', date)` PK, so
 re-runs only touch changed/added dates. Logs `run_logs` (`earnings_calendar`).
 Read via the events list in `FactStore.get_facts` **and** the targeted
-`FactStore.next_earnings(ticker)` (soonest upcoming release). Cron:
-`earnings-calendar.yml`. Flags: `--days`, `--back`, `--tickers`, `--dry-run`.
+`FactStore.next_earnings(ticker)` (soonest upcoming release).
+
+**Earnings trigger a fundamentals refresh.** A name that just reported has fresh
+financials at EODHD, so after ingesting the calendar this script re-pulls
+fundamentals for every name whose earnings landed in the last `--refresh-back`
+days (default 3 — EODHD posts the numbers a day or two after the release),
+reusing `fundamentals_updater.refresh_fundamentals` (the one shared write path,
+factored out of that script's rotation loop). This jumps a fresh reporter to the
+front of the ~universe/150-day fundamentals rotation. `recent_reporters()` (pure,
+unit-tested) selects the window; `--no-fundamentals-refresh` skips it.
+
+**Web surfaces.** The company page's data-freshness strip shows "Next earnings"
+(`web/lib/earnings-query.ts` → `company-page-data.ts` → `Company.
+next_earnings_date`); the portfolio page's thesis dropdown shows the frozen
+snapshot's data vintage (`snapshot.fundamentals_asof`) plus a live "Next data"
+earnings line (`getNextEarningsBulk` threaded into `HoldingsList`).
+
+Cron: `earnings-calendar.yml`. Flags: `--days`, `--back`, `--refresh-back`,
+`--no-fundamentals-refresh`, `--delay`, `--tickers`, `--dry-run`.
 
 ### backfill_sectors.py (Sundays 02:45 UTC — weekly, + one-off full run)
 Populates `securities.gics_sector` **and** `gics_industry` from TradingView

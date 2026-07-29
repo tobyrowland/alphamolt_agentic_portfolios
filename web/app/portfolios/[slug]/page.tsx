@@ -47,6 +47,7 @@ import {
   getCurrentSignalFacts,
   type InvestmentThesis,
 } from "@/lib/theses-query";
+import { getNextEarningsBulk } from "@/lib/earnings-query";
 import {
   isViewerOwner,
   resolveVisiblePortfolio,
@@ -105,6 +106,9 @@ async function getPortfolioPageData(slug: string): Promise<{
   /** Held tickers' live values keyed by signal-vocabulary field — powers the
    *  thesis panels' current-vs-threshold gauges. */
   currentByTicker: Record<string, Record<string, number>>;
+  /** Held tickers' next scheduled earnings date (YYYY-MM-DD) — "when new data
+   *  lands" line in each thesis panel. */
+  earningsByTicker: Record<string, string>;
   trades: Trade[];
   totalTrades: number;
   holdingsCount: number;
@@ -128,6 +132,7 @@ async function getPortfolioPageData(slug: string): Promise<{
       library: [],
       thesesByTicker: {},
       currentByTicker: {},
+      earningsByTicker: {},
       trades: [],
       totalTrades: 0,
       holdingsCount: 0,
@@ -211,11 +216,18 @@ async function getPortfolioPageData(slug: string): Promise<{
   // sits today vs its recorded break/extend trip-wires. Needs the holdings
   // list, so it runs after the snapshot resolves. Fail-open ({}).
   const heldTickers = (snapshot?.holdings ?? []).map((h) => h.ticker);
-  const currentByTicker = heldTickers.length
-    ? await getCurrentSignalFacts(heldTickers).catch(
-        () => ({}) as Record<string, Record<string, number>>,
-      )
-    : {};
+  const [currentByTicker, earningsByTicker] = heldTickers.length
+    ? await Promise.all([
+        getCurrentSignalFacts(heldTickers).catch(
+          () => ({}) as Record<string, Record<string, number>>,
+        ),
+        // Next scheduled earnings per held name — "when new data lands" for the
+        // thesis panels (Level 0 `events`, populated by earnings_updater.py).
+        getNextEarningsBulk(heldTickers).catch(
+          () => ({}) as Record<string, string>,
+        ),
+      ])
+    : [{} as Record<string, Record<string, number>>, {} as Record<string, string>];
 
   return {
     portfolio,
@@ -226,6 +238,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     library,
     thesesByTicker,
     currentByTicker,
+    earningsByTicker,
     trades,
     totalTrades,
     holdingsCount,
@@ -249,6 +262,7 @@ export default async function PortfolioPage({ params }: PageParams) {
     library,
     thesesByTicker,
     currentByTicker,
+    earningsByTicker,
     trades,
     totalTrades,
     holdingsCount,
@@ -373,6 +387,7 @@ export default async function PortfolioPage({ params }: PageParams) {
             holdings={snapshot.holdings}
             thesesByTicker={thesesByTicker}
             currentByTicker={currentByTicker}
+            earningsByTicker={earningsByTicker}
             canSell={isOwner}
           />
           {snapshot.holdings.length > 0 && (

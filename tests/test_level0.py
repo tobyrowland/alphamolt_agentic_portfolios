@@ -165,6 +165,31 @@ class TestEarningsEventMapper(unittest.TestCase):
         self.assertEqual(row["ticker"], "AAPL")
 
 
+class TestRecentReporters(unittest.TestCase):
+    ROWS = [
+        {"ticker": "NVDA", "type": "earnings", "date": "2026-07-27"},  # in window
+        {"ticker": "AAPL", "type": "earnings", "date": "2026-07-29"},  # today
+        {"ticker": "MSFT", "type": "earnings", "date": "2026-09-01"},  # future
+        {"ticker": "OLD", "type": "earnings", "date": "2026-01-01"},   # too old
+    ]
+
+    def test_selects_only_names_in_window(self):
+        got = eu.recent_reporters(self.ROWS, "2026-07-26", "2026-07-29")
+        self.assertEqual(got, ["AAPL", "NVDA"])
+
+    def test_dedupes_and_sorts(self):
+        rows = [
+            {"ticker": "NVDA", "type": "earnings", "date": "2026-07-27"},
+            {"ticker": "NVDA", "type": "earnings", "date": "2026-07-28"},
+            {"ticker": "AAPL", "type": "earnings", "date": "2026-07-27"},
+        ]
+        self.assertEqual(eu.recent_reporters(rows, "2026-07-26", "2026-07-29"),
+                         ["AAPL", "NVDA"])
+
+    def test_empty_window_yields_nothing(self):
+        self.assertEqual(eu.recent_reporters(self.ROWS, "2026-08-01", "2026-08-02"), [])
+
+
 class _StubDB:
     """Minimal stub exposing only what FactStore.get_distribution needs."""
 
