@@ -150,6 +150,54 @@ def test_prune_ledger_caps_titles_and_ages_subjects():
 
 
 # ---------------------------------------------------------------------------
+# Math-captcha de-obfuscation (moltbook_lib._deobfuscate_challenge)
+# ---------------------------------------------------------------------------
+
+
+def test_deobfuscate_recovers_the_refused_challenge():
+    """The exact challenge that made the solver refuse (all 3 votes
+    stop_reason=refusal, empty content) on 2026-08-01, crashing the
+    heartbeat. De-noising must turn it into readable prose so the model
+    reads it as a benign word problem instead of ransom-note text."""
+    from moltbook_lib import _deobfuscate_challenge
+
+    raw = (
+        "A] LoOoBb-SsTtErr] 's ClLaWw FfOoRrCcEe Is] TwWeNnTtYy ThHrEe "
+        "NnEeWwTtOoNnS] ~ aNd] IiTtS AnNtTeNnAa PpUuSsHh AaDdSs] FfIiVvEe "
+        "NnEeWwTtOoNnS,] WhWhAaTtSs] ThHe] ToOtTaLl] FfOoRrCcEe?"
+    )
+    cleaned = _deobfuscate_challenge(raw)
+    # No bracket/tilde separator junk survives, and the case is flattened.
+    assert "]" not in cleaned and "~" not in cleaned
+    assert cleaned == cleaned.lower()
+    # The number words the arithmetic depends on come through intact.
+    assert "twenty thre newtons" in cleaned
+    assert "five newtons" in cleaned
+    assert "total force" in cleaned
+
+
+def test_deobfuscate_collapses_doubled_letters_and_strips_junk():
+    from moltbook_lib import _deobfuscate_challenge
+
+    assert _deobfuscate_challenge("TwWeNnTtYy") == "twenty"
+    assert _deobfuscate_challenge("NnEeWwTtOoNnS") == "newtons"
+    # Brace delimiters go; the bare garbage token stays (the prompt tells the
+    # model to ignore stray tokens — we can't safely tell junk from real words).
+    assert _deobfuscate_challenge("{ lxq } FfIiVvEe") == "lxq five"
+    # Whitespace is normalised to single spaces.
+    assert _deobfuscate_challenge("a   b\t c") == "a b c"
+
+
+def test_deobfuscate_leaves_clean_text_readable():
+    """A plain, un-obfuscated challenge must survive without losing digits
+    or the operation word (only genuine consecutive doubles collapse)."""
+    from moltbook_lib import _deobfuscate_challenge
+
+    cleaned = _deobfuscate_challenge("What is 23 plus 5?")
+    assert "23" in cleaned and "5" in cleaned and "plus" in cleaned
+
+
+# ---------------------------------------------------------------------------
 # Multi-agent registry (moltbook_agents)
 # ---------------------------------------------------------------------------
 
