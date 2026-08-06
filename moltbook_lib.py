@@ -932,7 +932,7 @@ def create_post_and_verify(
 
     challenge = verification.get("challenge_text", "") or ""
     try:
-        answer = solve_math_challenge(challenge)
+        candidates = solve_math_challenge_candidates(challenge)
     except Exception as exc:
         return (
             False,
@@ -941,16 +941,17 @@ def create_post_and_verify(
             post_id,
         )
 
-    v = client.verify(code, answer)
-    if not v or not v.get("success"):
+    success, tried, v = _try_verify(client, code, candidates)
+    if not success:
         return (
             False,
-            f"posted {post_id} but verification failed (answer={answer}): {v}\n\n"
+            f"posted {post_id} but verification failed "
+            f"(tried={', '.join(tried)}): {v}\n\n"
             f"challenge: {challenge!r}",
             post_id,
         )
 
-    return True, f"posted and verified (answer={answer})", post_id
+    return True, f"posted and verified (answer={tried[-1]})", post_id
 
 
 _SOLVER_VOTES = 3
@@ -1052,37 +1053,177 @@ def _format_answer(raw: str) -> str:
     return f"{float(raw):.2f}"
 
 
-def solve_math_challenge(challenge_text: str) -> str:
-    """Solve the verification math using self-consistency voting.
+# ---------------------------------------------------------------------------
+# Deterministic challenge parsing — the no-LLM fallback + alternate candidates
+# ---------------------------------------------------------------------------
+#
+# The challenge text is a simple two-number word problem hidden under
+# ransom-note obfuscation ("tH iRrTyY TwOo] NnEeWwToOnNs"). Two production
+# failure modes make an LLM-only solver insufficient:
+#   * the obfuscation itself can trip Anthropic's safety classifier —
+#     `stop_reason == "refusal"` on all votes (2026-08-04 run), leaving no
+#     answer at all;
+#   * the surface reading can disagree with the server's answer key — e.g. a
+#     challenge with a stray '*' between the operands but "total force"
+#     wording was rejected on the additive answer (2026-08-05 run).
+# So we also parse the numbers deterministically and derive a ranked list of
+# candidate answers (sum / product / difference); `_try_verify` walks the list.
 
-    Runs the solver multiple times and majority-votes the result. The
-    challenge text is deliberately noisy (ransom-note case, word problems),
-    so a single Sonnet pass was misreading numbers often enough to rack up
-    failed retries. Voting across independent samples dramatically improves
-    accuracy at negligible cost.
+_NUMBER_WORDS: dict[str, int] = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+    "seventy": 70, "eighty": 80, "ninety": 90,
+}
+
+_ADD_WORDS = ("total", "sum", "plus", "altogether", "combined", "adds")
+_MUL_WORDS = ("times", "product", "multiplied")
+_SUB_WORDS = ("minus", "diference", "subtract", "fewer", "remaining", "left")
+
+
+def _collapse_repeats(s: str) -> str:
+    """Collapse consecutive duplicate characters ('thirrtyy' → 'thirty')."""
+    return re.sub(r"(.)\1+", r"\1", s)
+
+
+# Deduped vocab, longest-first so 'seventy' wins over 'seven' at the same
+# position. Keys are collapsed ('eighteen' → 'eighten') because the letter
+# stream is collapsed too — obfuscation doubles letters, which would otherwise
+# break the legitimately-doubled words.
+_DEDUPED_VOCAB: list[tuple[str, int]] = sorted(
+    {_collapse_repeats(w): v for w, v in _NUMBER_WORDS.items()}.items(),
+    key=lambda kv: len(kv[0]),
+    reverse=True,
+)
+
+
+def _letter_stream(text: str) -> str:
+    """Lowercased a-z stream with everything else (junk, spaces) dropped,
+    consecutive duplicates collapsed — undoes the ransom-note obfuscation."""
+    return _collapse_repeats(re.sub(r"[^a-z]", "", text.lower()))
+
+
+def _extract_challenge_numbers(challenge_text: str) -> list[float]:
+    """Pull the operand numbers out of an obfuscated challenge.
+
+    Digits win when the challenge uses them; otherwise number words are
+    matched against the de-obfuscated letter stream. A tens word immediately
+    followed by a unit word (gap ≤ 3 junk letters) is compounded ('twenty' +
+    'three' → 23); a genuine second operand always has unit words ('newtons
+    and') between, which keeps the gap large.
     """
-    # Re-raise 4xx config errors on attempt 1 instead of burning all three votes
-    # on the same hopeless request. The May 11 fix shipped `thinking.type=enabled`
-    # against opus-4-7 (which 400s) and we lost two days because three identical
-    # BadRequestErrors got bundled into a generic "no parseable answer" message.
-    from anthropic import (
-        AuthenticationError,
-        BadRequestError,
-        NotFoundError,
-        PermissionDeniedError,
-    )
+    digits = [float(m) for m in re.findall(r"\d+(?:\.\d+)?", challenge_text)]
+    if len(digits) >= 2:
+        return digits
+
+    stream = _letter_stream(challenge_text)
+    matches: list[tuple[int, int, int]] = []  # (start, end, value)
+    i = 0
+    while i < len(stream):
+        for word, value in _DEDUPED_VOCAB:
+            if stream.startswith(word, i):
+                matches.append((i, i + len(word), value))
+                i += len(word)
+                break
+        else:
+            i += 1
+
+    numbers: list[float] = []
+    idx = 0
+    while idx < len(matches):
+        start, end, value = matches[idx]
+        if (
+            20 <= value <= 90 and value % 10 == 0
+            and idx + 1 < len(matches)
+            and 1 <= matches[idx + 1][2] <= 9
+            and matches[idx + 1][0] - end <= 3
+        ):
+            numbers.append(float(value + matches[idx + 1][2]))
+            idx += 2
+        else:
+            numbers.append(float(value))
+            idx += 1
+
+    return digits + numbers if digits else numbers
+
+
+def _deterministic_candidates(challenge_text: str) -> list[str]:
+    """Ranked candidate answers computed straight from the parsed numbers.
+
+    The op suggested by the challenge wording goes first, then the other
+    plausible interpretations — the server-side answer key doesn't always
+    match the surface wording, and `_try_verify` can walk the list.
+    """
+    numbers = _extract_challenge_numbers(challenge_text)
+    if not numbers:
+        return []
+    if len(numbers) == 1:
+        return [_format_answer(str(numbers[0]))]
+
+    stream = _letter_stream(challenge_text)
+    if len(numbers) > 2:
+        prod = 1.0
+        for n in numbers:
+            prod *= n
+        results = [sum(numbers), prod]
+    else:
+        a, b = numbers
+        add, mul, diff = a + b, a * b, abs(a - b)
+        if "+" in challenge_text or any(w in stream for w in _ADD_WORDS):
+            primary = add
+        elif "*" in challenge_text or "×" in challenge_text or any(
+            w in stream for w in _MUL_WORDS
+        ):
+            primary = mul
+        elif any(w in stream for w in _SUB_WORDS):
+            primary = diff
+        else:
+            primary = add
+        results = [primary, add, mul, diff]
+
+    candidates: list[str] = []
+    for r in results:
+        formatted = _format_answer(str(r))
+        if formatted not in candidates:
+            candidates.append(formatted)
+    return candidates
+
+
+def _llm_answer_votes(challenge_text: str) -> tuple[list[str], list[str]]:
+    """Run the self-consistency vote; return (answers ranked by vote count,
+    per-attempt diagnostics). Never raises — a config-level 4xx (bad model
+    name, auth) aborts the remaining votes and is recorded as a diagnostic,
+    so the deterministic fallback still gets its chance.
+    """
+    try:
+        from anthropic import (
+            AuthenticationError,
+            BadRequestError,
+            NotFoundError,
+            PermissionDeniedError,
+        )
+        client = _anthropic_client()
+    except Exception as exc:
+        log.error("math solver: anthropic client unavailable: %s", exc)
+        return [], [f"client:{type(exc).__name__}:{exc}"]
+    # Config errors are identical on every retry — don't burn all three votes
+    # on the same hopeless request (see the May 11 `thinking.type=enabled`
+    # incident: three identical BadRequestErrors were bundled into a generic
+    # "no parseable answer" and we lost two days).
     NON_RETRYABLE = (
         BadRequestError, AuthenticationError, PermissionDeniedError, NotFoundError,
     )
-
-    client = _anthropic_client()
     attempts: list[str] = []
     diagnostics: list[str] = []
     for i in range(_SOLVER_VOTES):
         try:
             answer, label = _single_math_solve(client, challenge_text, attempt=i + 1)
-        except NON_RETRYABLE:
-            raise
+        except NON_RETRYABLE as exc:
+            log.error("math solver config error: %s", exc)
+            diagnostics.append(f"#{i + 1}=config:{type(exc).__name__}:{exc}")
+            break
         except Exception as exc:
             log.warning("math solver attempt %d raised: %s", i + 1, exc)
             diagnostics.append(f"#{i + 1}=raised:{type(exc).__name__}:{exc}")
@@ -1092,19 +1233,84 @@ def solve_math_challenge(challenge_text: str) -> str:
             attempts.append(answer)
 
     if not attempts:
-        raise RuntimeError(
-            f"no parseable answer across {_SOLVER_VOTES} attempts "
-            f"[{'; '.join(diagnostics)}]; challenge={challenge_text!r}"
-        )
+        return [], diagnostics
 
     from collections import Counter
     votes = Counter(attempts)
-    winner, count = votes.most_common(1)[0]
+    ranked = [ans for ans, _ in votes.most_common()]
     log.info(
         "math solver: %d/%d attempts agree on %s (all: %s)",
-        count, len(attempts), winner, dict(votes),
+        votes[ranked[0]], len(attempts), ranked[0], dict(votes),
     )
-    return winner
+    return ranked, diagnostics
+
+
+def solve_math_challenge_candidates(challenge_text: str) -> list[str]:
+    """Ordered candidate answers for a challenge: LLM consensus winner first,
+    then minority LLM votes, then the deterministic interpretations not
+    already covered. Raises RuntimeError only when BOTH paths come up empty
+    (the LLM produced nothing parseable AND no numbers could be extracted).
+    """
+    llm_answers, diagnostics = _llm_answer_votes(challenge_text)
+    deterministic = _deterministic_candidates(challenge_text)
+
+    candidates = list(llm_answers)
+    for ans in deterministic:
+        if ans not in candidates:
+            candidates.append(ans)
+
+    if not candidates:
+        raise RuntimeError(
+            f"no parseable answer across {_SOLVER_VOTES} attempts and no "
+            f"numbers extractable [{'; '.join(diagnostics)}]; "
+            f"challenge={challenge_text!r}"
+        )
+    if not llm_answers:
+        log.warning(
+            "math solver: LLM produced no answer [%s] — falling back to "
+            "deterministic candidates %s",
+            "; ".join(diagnostics), candidates,
+        )
+    return candidates
+
+
+def solve_math_challenge(challenge_text: str) -> str:
+    """Best single answer for a challenge (kept for the CLI smoke test —
+    the posting paths use `solve_math_challenge_candidates` + `_try_verify`)."""
+    return solve_math_challenge_candidates(challenge_text)[0]
+
+
+# How many candidate answers we'll submit to /verify for one challenge. The
+# endpoint judges each submission ('Incorrect answer' + a retry hint), so a
+# wrong first interpretation isn't terminal; keep it small to stay polite.
+_MAX_VERIFY_ATTEMPTS = 3
+
+
+def _try_verify(
+    client: MoltbookClient, code: str, candidates: list[str]
+) -> tuple[bool, list[str], dict | None]:
+    """Submit candidate answers until one verifies.
+
+    Returns (success, answers_tried, last_response). Stops early when the
+    failure isn't 'Incorrect answer' (expired/consumed codes fail every
+    candidate identically — no point burning the rest of the list).
+    """
+    tried: list[str] = []
+    last: dict | None = None
+    for answer in candidates[:_MAX_VERIFY_ATTEMPTS]:
+        tried.append(answer)
+        last = client.verify(code, answer)
+        if last and last.get("success"):
+            return True, tried, last
+        message = str((last or {}).get("message", "")).lower()
+        if "incorrect" not in message:
+            break
+        if len(tried) < min(len(candidates), _MAX_VERIFY_ATTEMPTS):
+            log.warning(
+                "verify rejected answer %s — retrying with next candidate",
+                answer,
+            )
+    return False, tried, last
 
 
 def post_and_verify(
@@ -1131,7 +1337,7 @@ def post_and_verify(
 
     challenge = verification.get("challenge_text", "") or ""
     try:
-        answer = solve_math_challenge(challenge)
+        candidates = solve_math_challenge_candidates(challenge)
     except Exception as exc:
         return (
             False,
@@ -1140,16 +1346,17 @@ def post_and_verify(
             comment_id,
         )
 
-    v = client.verify(code, answer)
-    if not v or not v.get("success"):
+    success, tried, v = _try_verify(client, code, candidates)
+    if not success:
         return (
             False,
-            f"posted {comment_id} but verification failed (answer={answer}): {v}\n\n"
+            f"posted {comment_id} but verification failed "
+            f"(tried={', '.join(tried)}): {v}\n\n"
             f"challenge: {challenge!r}",
             comment_id,
         )
 
-    return True, f"posted and verified (answer={answer})", comment_id
+    return True, f"posted and verified (answer={tried[-1]})", comment_id
 
 
 if __name__ == "__main__":

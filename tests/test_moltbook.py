@@ -227,3 +227,171 @@ def test_bear_persona_is_distinct_and_disclosed():
     assert "same operator" in bear.system_prompt
     # the anti-fabrication section must exist in every persona
     assert "Anti-fabrication rules" in bear.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Math challenge — deterministic fallback + verify retry (Aug 2026 failures)
+# ---------------------------------------------------------------------------
+
+# Real challenge from the 2026-08-04 run: every LLM vote came back
+# stop_reason=refusal (the ransom-note obfuscation trips the safety
+# classifier), so the reply died with "no parseable answer".
+CHALLENGE_REFUSED = (
+    "A] LoOoBbSsTtEr'S ] C]lAaWw Ex^eRrT s Um] tH iRrTyY TwOo] NnEeWwToOnNs "
+    "]+ ]iT s Um] RiV aAlL ] C]lAaWw Ex^eRrT s Um] E]iIgGhHtEeEnN ] "
+    "NnOoOtToOnNs, W]hAaT ] I sT ]tHe ] ToTaL ] FoRcE?"
+)
+
+# Real challenge from the 2026-08-05 run: the additive reading (23+4=27) was
+# rejected by the server ("Incorrect answer") — the stray '*' suggests the
+# answer key wanted the product. The old code gave up after one /verify.
+CHALLENGE_REJECTED = (
+    "A] L.oObBsStTeEr' S- ClAwFfOoRcE Is TwEnT y T hReE NoOoToNs * AnD ThE "
+    "OtHeR C lAwW Is FoUr NooOToNs, WhAt Is ThE ToTaL FoRcE oN tHe ClAmMy "
+    "TeRrItOrY? ~ { } <"
+)
+
+
+def test_deterministic_parser_decodes_ransom_note_numbers():
+    from moltbook_lib import _extract_challenge_numbers
+
+    assert _extract_challenge_numbers(CHALLENGE_REFUSED) == [32.0, 18.0]
+    assert _extract_challenge_numbers(CHALLENGE_REJECTED) == [23.0, 4.0]
+
+
+def test_deterministic_parser_prefers_digits():
+    from moltbook_lib import _extract_challenge_numbers
+
+    assert _extract_challenge_numbers(
+        "a claw exerts 23 notons and the other 4 notons, total force?"
+    ) == [23.0, 4.0]
+
+
+def test_deterministic_candidates_primary_op_first():
+    from moltbook_lib import _deterministic_candidates
+
+    # explicit '+' → sum first; alternates follow for the verify retry walk
+    assert _deterministic_candidates(CHALLENGE_REFUSED) == [
+        "50.00", "576.00", "14.00",
+    ]
+    # 'total' wording → sum first, but the product (the server's apparent
+    # answer key on 2026-08-05) is the second candidate
+    assert _deterministic_candidates(CHALLENGE_REJECTED) == [
+        "27.00", "92.00", "19.00",
+    ]
+
+
+def test_candidates_fall_back_when_llm_refuses(monkeypatch):
+    import moltbook_lib
+
+    monkeypatch.setattr(
+        moltbook_lib, "_llm_answer_votes",
+        lambda text: ([], ["#1=empty(stop=refusal)"]),
+    )
+    candidates = moltbook_lib.solve_math_challenge_candidates(CHALLENGE_REFUSED)
+    assert candidates[0] == "50.00"
+    # the CLI single-answer wrapper survives the refusal too
+    assert moltbook_lib.solve_math_challenge(CHALLENGE_REFUSED) == "50.00"
+
+
+def test_candidates_merge_llm_winner_with_deterministic(monkeypatch):
+    import moltbook_lib
+
+    monkeypatch.setattr(
+        moltbook_lib, "_llm_answer_votes",
+        lambda text: (["27.00"], ["#1=ok:text-answer-line"]),
+    )
+    candidates = moltbook_lib.solve_math_challenge_candidates(CHALLENGE_REJECTED)
+    assert candidates[0] == "27.00"
+    assert "92.00" in candidates  # the alternate interpretation is available
+
+
+def test_candidates_raise_only_when_both_paths_empty(monkeypatch):
+    import pytest
+    import moltbook_lib
+
+    monkeypatch.setattr(
+        moltbook_lib, "_llm_answer_votes", lambda text: ([], ["#1=empty"]),
+    )
+    with pytest.raises(RuntimeError):
+        moltbook_lib.solve_math_challenge_candidates("no numbers here at all")
+
+
+class _FakeVerifyClient:
+    def __init__(self, accept: str | None, wrong_response: dict | None = None):
+        self.accept = accept
+        self.wrong = wrong_response or {
+            "success": False, "status": 400, "message": "Incorrect answer",
+        }
+        self.calls: list[str] = []
+
+    def verify(self, code: str, answer: str) -> dict:
+        self.calls.append(answer)
+        if self.accept is not None and answer == self.accept:
+            return {"success": True}
+        return dict(self.wrong)
+
+
+def test_try_verify_walks_candidates_on_incorrect():
+    from moltbook_lib import _try_verify
+
+    client = _FakeVerifyClient(accept="92.00")
+    ok, tried, last = _try_verify(client, "code", ["27.00", "92.00", "19.00"])
+    assert ok
+    assert tried == ["27.00", "92.00"]
+    assert client.calls == ["27.00", "92.00"]
+
+
+def test_try_verify_stops_on_non_incorrect_failure():
+    from moltbook_lib import _try_verify
+
+    client = _FakeVerifyClient(
+        accept=None,
+        wrong_response={"success": False, "status": 400,
+                        "message": "Verification code expired"},
+    )
+    ok, tried, last = _try_verify(client, "code", ["27.00", "92.00", "19.00"])
+    assert not ok
+    assert client.calls == ["27.00"]  # expired code: don't burn the rest
+
+
+def test_try_verify_bounded_attempts():
+    from moltbook_lib import _MAX_VERIFY_ATTEMPTS, _try_verify
+
+    client = _FakeVerifyClient(accept=None)
+    ok, tried, last = _try_verify(
+        client, "code", ["1.00", "2.00", "3.00", "4.00", "5.00"]
+    )
+    assert not ok
+    assert len(client.calls) == _MAX_VERIFY_ATTEMPTS
+
+
+def test_post_and_verify_retries_alternate_interpretation(monkeypatch):
+    import moltbook_lib
+
+    monkeypatch.setattr(
+        moltbook_lib, "_llm_answer_votes",
+        lambda text: (["27.00"], ["#1=ok:text-answer-line"]),
+    )
+
+    class _FakeClient(_FakeVerifyClient):
+        def post_comment(self, post_id, content, parent_id=None):
+            return {
+                "success": True,
+                "comment": {
+                    "id": "c-1",
+                    "verification": {
+                        "verification_code": "vc-1",
+                        "challenge_text": CHALLENGE_REJECTED,
+                    },
+                },
+            }
+
+    client = _FakeClient(accept="92.00")
+    ok, outcome, comment_id = moltbook_lib.post_and_verify(
+        client, "p-1", "hello"
+    )
+    assert ok
+    assert comment_id == "c-1"
+    assert client.calls == ["27.00", "92.00"]
+    assert "92.00" in outcome
