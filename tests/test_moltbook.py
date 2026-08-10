@@ -227,3 +227,141 @@ def test_bear_persona_is_distinct_and_disclosed():
     assert "same operator" in bear.system_prompt
     # the anti-fabrication section must exist in every persona
     assert "Anti-fabrication rules" in bear.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 budget + read hygiene — already-handled notifications must not
+# starve the reply budget, and fully-handled posts get marked read
+# ---------------------------------------------------------------------------
+
+
+import argparse
+
+from moltbook_agents import get_profile
+
+
+def _notif(nid: str, post_id: str, ntype: str = "comment_reply") -> dict:
+    return {
+        "id": nid,
+        "type": ntype,
+        "isRead": False,
+        "relatedPostId": post_id,
+        "post": {"id": post_id, "title": "t", "content": "c"},
+    }
+
+
+class _FakeClient:
+    """Minimal MoltbookClient stand-in for _process_notifications."""
+
+    def __init__(self, notifications: list[dict]) -> None:
+        self._notifications = notifications
+        self.marked_read: list[str] = []
+
+    def notifications(self) -> list[dict]:
+        return self._notifications
+
+    def mark_notifications_read_by_post(self, post_id: str) -> bool:
+        self.marked_read.append(post_id)
+        return True
+
+
+def _args(**overrides) -> argparse.Namespace:
+    base = dict(
+        dry_run=True, no_draft=True, require_approval=False, max=10,
+        no_engage=True, no_original_posts=True, agent=None,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def test_already_handled_notifs_do_not_consume_reply_budget(monkeypatch):
+    """16 actionable, the 10 newest already replied, --max 10: the 6 new ones
+    must still be examined. The old ``actionable[:max]`` slice spent every
+    budget slot on an "already processed" skip and never reached them."""
+    handled = [_notif(f"old{i}", f"post-old{i}") for i in range(10)]
+    fresh = [_notif(f"new{i}", f"post-new{i}") for i in range(6)]
+    client = _FakeClient(handled + fresh)
+    replied = {n["id"] for n in handled}
+
+    examined: list[str] = []
+
+    def fake_build_context(_client, notif):
+        examined.append(notif["id"])
+        return None  # skip after the point we care about
+
+    monkeypatch.setattr(mh, "_build_context", fake_build_context)
+
+    stats = mh._process_notifications(
+        client, None, replied, {}, _args(), get_profile(None)
+    )
+
+    assert examined == [n["id"] for n in fresh]
+    # 10 already-handled + 6 context-build failures
+    assert stats == {"posted": 0, "failed": 0, "skipped": 16}
+
+
+def test_silenced_notification_is_marked_handled(monkeypatch):
+    """A silenced author's notification is a terminal skip — it must land in
+    the replied set so it stops re-consuming budget every run."""
+    notif = _notif("n1", "post-1")
+    client = _FakeClient([notif])
+    replied: set[str] = set()
+    ledger = {
+        "relationships": {
+            "grump": {"status": "muted", "recent_threads": []},
+        }
+    }
+
+    monkeypatch.setattr(
+        mh, "_build_context",
+        lambda _c, n: {
+            "notif_id": n["id"], "notif_type": n["type"],
+            "post_id": "post-1", "post_title": "t", "post_excerpt": "",
+            "comment_id": "c1", "comment_content": "hi",
+            "author_name": "grump", "author_desc": "", "author_karma": 0,
+            "parent_content": None,
+        },
+    )
+
+    stats = mh._process_notifications(
+        client, None, replied, ledger, _args(), get_profile(None)
+    )
+
+    assert "n1" in replied
+    assert "n1" in ledger.get("replied_notifs", [])
+    assert stats["skipped"] == 1
+
+
+def test_posts_fully_handled_requires_every_notif_handled():
+    a1 = _notif("a1", "post-a")
+    a2 = _notif("a2", "post-a")
+    b1 = _notif("b1", "post-b")
+    no_post = {"id": "x", "type": "mention", "isRead": False}
+
+    # Only one of post-a's two notifications handled → not nominated.
+    assert mh._posts_fully_handled([a1, a2, b1, no_post], {"a1", "b1"}) == [
+        "post-b"
+    ]
+    # Both handled → nominated.
+    assert sorted(
+        mh._posts_fully_handled([a1, a2, b1], {"a1", "a2", "b1"})
+    ) == ["post-a", "post-b"]
+
+
+def test_mark_read_called_only_outside_dry_run(monkeypatch):
+    """The mark-read pass fires for fully-handled posts on a real run and is
+    suppressed under --dry-run."""
+    notif = _notif("n1", "post-1")
+    replied = {"n1"}
+
+    monkeypatch.setattr(mh, "_build_context", lambda _c, n: None)
+
+    dry = _FakeClient([notif])
+    mh._process_notifications(dry, None, replied, {}, _args(), get_profile(None))
+    assert dry.marked_read == []
+
+    wet = _FakeClient([notif])
+    mh._process_notifications(
+        wet, None, replied, {}, _args(dry_run=False), get_profile(None)
+    )
+    assert wet.marked_read == ["post-1"]
