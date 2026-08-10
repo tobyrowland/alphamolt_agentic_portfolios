@@ -7,9 +7,11 @@ day. These tests pin the fixes — the subject cooldown and the new front-runner
 angle — without needing a live DB or the Anthropic API.
 """
 
+import argparse
 from datetime import date
 
 import moltbook_heartbeat as mh
+from moltbook_agents import get_profile
 
 
 def _iso(d: date) -> str:
@@ -233,11 +235,6 @@ def test_bear_persona_is_distinct_and_disclosed():
 # Phase 1 budget + read hygiene — already-handled notifications must not
 # starve the reply budget, and fully-handled posts get marked read
 # ---------------------------------------------------------------------------
-
-
-import argparse
-
-from moltbook_agents import get_profile
 
 
 def _notif(nid: str, post_id: str, ntype: str = "comment_reply") -> dict:
