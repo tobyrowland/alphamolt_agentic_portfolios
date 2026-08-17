@@ -6,21 +6,14 @@ import HoldingsList from "@/components/holdings-list";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import RebalanceCadenceToggle from "@/components/portfolio/rebalance-cadence-toggle";
-import SyncLiveButton from "@/components/portfolio/sync-live-button";
 import TeamBuilder from "@/components/portfolio/team-builder";
 import TeamScheduleNote from "@/components/portfolio/team-schedule-note";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import ActivityDrawer from "@/components/activity-drawer";
 import SectorChip from "@/components/portfolio/sector-chip";
 import PortfolioTabs from "@/components/portfolio/portfolio-tabs";
-import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
-import LiveCashPanel from "@/components/portfolio/live-cash-panel";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
 import BuildRunLive from "@/components/portfolio/build-run-live";
-import {
-  getLiveCashSummary,
-  type LiveCashSummary,
-} from "@/lib/live-cash-query";
 import EditablePortfolioName from "@/components/portfolio/editable-portfolio-name";
 import BadgeRow from "@/components/badges/badge-row";
 import { getEarnedBadges } from "@/lib/badges-query";
@@ -125,9 +118,6 @@ async function getPortfolioPageData(slug: string): Promise<{
     currentId: string | null;
     options: { id: string; name: string }[];
   } | null;
-  /** Owner-only, live followers only: the broker account's cash allowances
-   *  (sleeves — migration 083). */
-  liveCash: LiveCashSummary | null;
 }> {
   const portfolio = await resolveVisiblePortfolio(slug);
   if (!portfolio) {
@@ -146,7 +136,6 @@ async function getPortfolioPageData(slug: string): Promise<{
       holdingsCount: 0,
       earnedBadges: [],
       liveFollow: null,
-      liveCash: null,
     };
   }
   const isOwner = await isViewerOwner(portfolio);
@@ -238,17 +227,6 @@ async function getPortfolioPageData(slug: string): Promise<{
       ])
     : [{} as Record<string, Record<string, number>>, {} as Record<string, string>];
 
-  // The broker account's cash allowances (sleeves — migration 083).
-  // Owner-only, live followers only; fail-open to null so a broker hiccup
-  // never breaks the page.
-  const liveCash =
-    isOwner && mode === "live" && ownerUserId
-      ? await getLiveCashSummary(portfolioId, ownerUserId).catch((err) => {
-          console.error("live cash lookup failed for", slug, err);
-          return null;
-        })
-      : null;
-
   return {
     portfolio,
     isOwner,
@@ -264,7 +242,6 @@ async function getPortfolioPageData(slug: string): Promise<{
     holdingsCount,
     earnedBadges,
     liveFollow,
-    liveCash,
   };
 }
 
@@ -289,7 +266,6 @@ export default async function PortfolioPage({ params }: PageParams) {
     holdingsCount,
     earnedBadges,
     liveFollow,
-    liveCash,
   } = await getPortfolioPageData(slug);
   if (!portfolio) notFound();
 
@@ -375,10 +351,8 @@ export default async function PortfolioPage({ params }: PageParams) {
           paper portfolio's positions, so it shows an explainer instead. */}
       {mode === "live" ? (
         <LiveFollowerNote
-          portfolioId={portfolio.id}
           isOwner={isOwner}
           liveFollow={liveFollow}
-          liveCash={liveCash}
         />
       ) : isOwner ? (
         <section id="team" className="mb-12 sm:mb-14 scroll-mt-20">
@@ -668,18 +642,14 @@ function PaperValueCard({
 // runs no agents of its own and is never public, so instead of the team
 // builder it shows a short explainer of how it's driven.
 function LiveFollowerNote({
-  portfolioId,
   isOwner,
   liveFollow,
-  liveCash,
 }: {
-  portfolioId: string;
   isOwner: boolean;
   liveFollow: {
     currentId: string | null;
     options: { id: string; name: string }[];
   } | null;
-  liveCash: LiveCashSummary | null;
 }) {
   const followedName =
     liveFollow?.options.find((o) => o.id === liveFollow.currentId)?.name ??
@@ -707,22 +677,21 @@ function LiveFollowerNote({
           portfolio&apos;s agents do the deciding, and this account follows
           automatically after each rebalance.
         </p>
-        {/* Manual trigger: converge the Alpaca account onto the paper book now,
-            rather than waiting for the scheduled mirror. Owner-only; the action
-            re-verifies ownership + live mode server-side. */}
-        {isOwner && <SyncLiveButton portfolioId={portfolioId} />}
-        {/* Which paper book to mirror (migration 070) — with several books
-            the link must be visible and changeable. Owner-only. */}
-        {isOwner && liveFollow && liveFollow.options.length > 0 && (
-          <FollowTargetPicker
-            portfolioId={portfolioId}
-            currentId={liveFollow.currentId}
-            options={liveFollow.options}
-          />
+        {/* This page is a read-only view. Every live control — Sync to
+            Alpaca, the mirrors picker, cash allowances — lives in the hub on
+            /account, so real-money management has one home. */}
+        {isOwner && (
+          <p className="mt-3 text-[13px] text-text-dim leading-relaxed">
+            Controls for this account — sync, mirror target, cash allowances —
+            live on{" "}
+            <Link
+              href="/account"
+              className="text-[var(--color-cyan)] hover:brightness-110 transition-[filter]"
+            >
+              your account page →
+            </Link>
+          </p>
         )}
-        {/* Cash allowances for the broker account this follower trades
-            (sleeves — migration 083). Owner-only. */}
-        {isOwner && liveCash && <LiveCashPanel summary={liveCash} />}
       </div>
     </section>
   );

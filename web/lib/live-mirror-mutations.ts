@@ -171,5 +171,6 @@ export async function syncLivePortfolioToAlpaca(input: {
   if (!result.ok) return result;
 
   revalidatePath(`/portfolios/${live.slug}`);
+  revalidatePath("/account");
   return { ok: true };
 }

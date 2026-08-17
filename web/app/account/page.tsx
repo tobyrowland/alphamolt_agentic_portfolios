@@ -10,7 +10,12 @@ import PulseSection from "@/components/dashboard/pulse-section";
 import NeedsAttention, {
   type AttentionItem,
 } from "@/components/dashboard/needs-attention";
+import LiveAccountHub from "@/components/account/live-account-hub";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import {
+  getLiveCashOverview,
+  type LiveCashSummary,
+} from "@/lib/live-cash-query";
 import {
   getDashboardData,
   type DashPortfolio,
@@ -57,21 +62,33 @@ export default async function AccountPage() {
     /* ignore — greeting falls back to the email local-part */
   }
 
-  const { portfolios, livePortfolio, activity, spyValues } =
+  const { portfolios, livePortfolios, activity, spyValues } =
     await getDashboardData(user.id);
+
+  // The live control hub's data — broker cash, unallocated, every sleeve's
+  // allowance (sleeves — migration 083). Only fetched when a live portfolio
+  // exists; fail-open so a broker hiccup never breaks the dashboard.
+  const liveAccounts =
+    livePortfolios.length > 0
+      ? await getLiveCashOverview(user.id).catch((err) => {
+          console.error("live cash overview failed:", err);
+          return [];
+        })
+      : [];
 
   return (
     <>
       <Nav />
       <main className="flex-1 w-full">
         <div className="max-w-[1100px] mx-auto w-full px-4 sm:px-6 py-8 sm:py-10">
-          {portfolios.length === 0 && !livePortfolio ? (
+          {portfolios.length === 0 && livePortfolios.length === 0 ? (
             <EmptyState displayName={displayName} />
           ) : (
             <Dashboard
               displayName={displayName}
               portfolios={portfolios}
-              livePortfolio={livePortfolio}
+              livePortfolios={livePortfolios}
+              liveAccounts={liveAccounts}
               activity={activity}
               spyValues={spyValues}
             />
@@ -81,7 +98,7 @@ export default async function AccountPage() {
               not to every signed-in visitor. A live follower exists only
               after an operator runs the go-live flow, so its presence is the
               gate. */}
-          {livePortfolio && (
+          {livePortfolios.length > 0 && (
             <div className="mt-10">
               <BetaDisclaimer />
             </div>
@@ -95,13 +112,15 @@ export default async function AccountPage() {
 function Dashboard({
   displayName,
   portfolios,
-  livePortfolio,
+  livePortfolios,
+  liveAccounts,
   activity,
   spyValues,
 }: {
   displayName: string;
   portfolios: DashPortfolio[];
-  livePortfolio: DashPortfolio | null;
+  livePortfolios: DashPortfolio[];
+  liveAccounts: LiveCashSummary[];
   activity: DashTrade[];
   spyValues: DashValuePoint[];
 }) {
@@ -166,9 +185,26 @@ function Dashboard({
         </div>
       </section>
 
-      {/* Private real-money follower (migration 037) — owner-only; links out to
-          its own (private) detail page. Kept separate from the arena books. */}
-      {livePortfolio && <LiveFollowerCard p={livePortfolio} />}
+      {/* Private real-money followers (migrations 037 + 083) — owner-only.
+          One overview card per live portfolio, then the control hub: broker
+          cash, allowances, credit/debit/transfer, mirrors picker and Sync —
+          every live control lives HERE, not on the (read-only) live pages. */}
+      {livePortfolios.length > 0 && (
+        <section aria-label="Live account">
+          <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
+            Live account
+          </h2>
+          <div className="space-y-4">
+            {livePortfolios.map((p) => (
+              <LiveFollowerCard key={p.id} p={p} />
+            ))}
+            <LiveAccountHub
+              accounts={liveAccounts}
+              paperOptions={portfolios.map((p) => ({ id: p.id, name: p.name }))}
+            />
+          </div>
+        </section>
+      )}
 
       {/* Recent swarm activity */}
       <section aria-label="Recent swarm activity">
@@ -263,11 +299,7 @@ function LiveFollowerCard({ p }: { p: DashPortfolio }) {
     ? "var(--color-red,#FF3333)"
     : "var(--color-green,#00FF41)";
   return (
-    <section aria-label="Live account">
-      <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
-        Live account
-      </h2>
-      <Link
+    <Link
         href={`/portfolios/${p.slug}`}
         className="block rounded-xl border p-4 transition-colors hover:bg-[var(--color-green,#00FF41)]/[0.04]"
         style={{
@@ -315,10 +347,10 @@ function LiveFollowerCard({ p }: { p: DashPortfolio }) {
             "your arena book"
           )}
           &apos;s positions onto a real Alpaca account, sized to its actual
-          value. Trades automatically with the swarm — nothing to manage here.
+          value. Trades automatically with the swarm; controls are in the hub
+          below.
         </p>
-      </Link>
-    </section>
+    </Link>
   );
 }
 
