@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """
-Mirror a paper portfolio's composition onto a live Alpaca account.
+Mirror a paper portfolio's composition onto a live broker account.
+
+Broker-neutral: everything it needs comes through the ``broker.BrokerBackend``
+protocol, and the account is resolved from the live portfolio's
+``portfolios.broker``. The module name is historical (Alpaca was the only
+broker when it was written).
 
 The model (chosen for AlphaMolt): the **paper** portfolio is the brain — the
 swarm/mandate/agents run there as normal, at the $1M paper scale. The **live**
 portfolio is a private *follower*: it holds the same names in the same
-proportions, but sized to the **real Alpaca account value**, executed with real
+proportions, but sized to the **real broker account value**, executed with real
 money. The live portfolio has no agents/mandate of its own.
 
 "Mirror purchases" is implemented as **target-weight replication**, not
 trade-by-trade replay:
 
-    target_shares[t] = (paper_weight[t] * alpaca_equity) / price[t]
+    target_shares[t] = (paper_weight[t] * broker_equity) / price[t]
 
-then we diff against the current Alpaca positions and place orders only for the
+then we diff against the current broker positions and place orders only for the
 deltas (sells first to free buying power, then buys). This is self-correcting —
 partial fills, fractional shares, price drift, or a missed run never
 accumulate, because each pass simply re-converges the live account onto the
@@ -23,24 +28,32 @@ A name is only rebalanced when its weight drifts more than ``threshold`` (1% of
 equity by default), to avoid churning tiny fee-bearing orders every run.
 
 Entry points:
-  - `mirror_paper_to_alpaca(...)` — called by agent_heartbeat right after the
+  - `mirror_paper_to_broker(...)` — called by agent_heartbeat right after the
     paper portfolio rebalances.
   - CLI: `python alpaca_mirror.py --slug <live-slug> [--dry-run]
     [--threshold 0.01]` — resolves the paper sibling by owner, mirrors, syncs.
 
-Real orders only fire when ALPACA_LIVE_EXECUTION_ENABLED is truthy (same master
-switch as the heartbeat) or against the paper sandbox; otherwise use --dry-run
-to preview.
+Real orders only fire when the master kill-switch is truthy
+(``broker.live_execution_enabled`` — LIVE_EXECUTION_ENABLED, or the legacy
+ALPACA_LIVE_EXECUTION_ENABLED) or against a broker sandbox; otherwise use
+--dry-run to preview.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from dataclasses import dataclass
 
+import broker_sync
+from broker import (
+    LIVE_EXEC_ENV,
+    BrokerBackend,
+    BrokerError,
+    live_execution_enabled,
+    resolve_backend_for_portfolio,
+)
 from db import SupabaseDB
 from portfolio import PortfolioError, PortfolioManager
 
@@ -66,16 +79,16 @@ class MirrorOrder:
 def plan_mirror(
     paper_book: dict,
     equity: float,
-    alpaca_positions: dict[str, float],
+    broker_positions: dict[str, float],
     price_fn,
     *,
     threshold: float = DEFAULT_THRESHOLD,
     min_order_usd: float = MIN_ORDER_USD,
 ) -> list[MirrorOrder]:
-    """Pure planner: paper composition + Alpaca equity/positions -> orders.
+    """Pure planner: paper composition + broker equity/positions -> orders.
 
     ``paper_book`` is a ``PortfolioManager.get_portfolio_book`` result.
-    ``alpaca_positions`` maps symbol -> current qty held on Alpaca.
+    ``broker_positions`` maps symbol -> current qty held at the broker.
     ``price_fn(ticker) -> float`` supplies the price for share math (raises to
     signal an unusable price; that ticker is skipped). Returns orders with
     sells first (free buying power) then buys, each sorted by ticker.
@@ -93,7 +106,7 @@ def plan_mirror(
 
     sells: list[MirrorOrder] = []
     buys: list[MirrorOrder] = []
-    for ticker in sorted(set(target_w) | set(alpaca_positions)):
+    for ticker in sorted(set(target_w) | set(broker_positions)):
         try:
             price = price_fn(ticker)
         except PortfolioError:
@@ -103,7 +116,7 @@ def plan_mirror(
             continue
 
         tw = target_w.get(ticker, 0.0)
-        cur_qty = float(alpaca_positions.get(ticker, 0.0))
+        cur_qty = float(broker_positions.get(ticker, 0.0))
         cur_w = (cur_qty * price) / equity if equity else 0.0
         if abs(tw - cur_qty * price / equity) <= threshold:
             continue
@@ -125,38 +138,36 @@ def plan_mirror(
     return sells + buys
 
 
-def mirror_paper_to_alpaca(
+def mirror_paper_to_broker(
     db: SupabaseDB,
     pm: PortfolioManager,
-    executor,
+    executor: BrokerBackend,
     live_pf: dict,
     paper_pf: dict,
     *,
     threshold: float = DEFAULT_THRESHOLD,
     dry_run: bool = False,
 ) -> dict:
-    """Rebalance the live Alpaca account to match the paper portfolio.
+    """Rebalance the live broker account to match the paper portfolio.
 
     Skips when the market is closed (mirror needs fills; a queued order would
     desync the book until the next run). On success, syncs the real fills back
     into the live portfolio's normal tables. Returns a small summary dict.
+
+    Broker-neutral: everything it needs comes through the ``BrokerBackend``
+    protocol, so this loop is shared by every broker.
     """
     live_slug = live_pf.get("slug") or live_pf["id"][:8]
     if live_pf.get("mode") != "live":
         raise ValueError(f"{live_slug} is not mode='live'")
 
-    if not dry_run:
-        clock = executor.client.get_clock()
-        if not clock.get("is_open"):
-            logger.info("mirror %s: market closed — skipping this run", live_slug)
-            return {"status": "market_closed", "orders": 0}
+    if not dry_run and not executor.market_is_open():
+        logger.info("mirror %s: market closed — skipping this run", live_slug)
+        return {"status": "market_closed", "orders": 0}
 
     paper_book = pm.get_portfolio_book(paper_pf["id"])
-    account = executor.client.get_account()
-    equity = float(account.get("equity") or 0)
-    positions = {
-        p["symbol"]: float(p["qty"]) for p in executor.client.list_positions()
-    }
+    equity = executor.get_equity()
+    positions = {s: p.qty for s, p in executor.get_positions().items()}
 
     orders = plan_mirror(
         paper_book, equity, positions, pm.get_price, threshold=threshold
@@ -187,9 +198,13 @@ def mirror_paper_to_alpaca(
 
     if not dry_run and placed:
         # Record the real fills + reconcile any drift into the live book.
-        executor.sync_to_db(db, live_slug)
+        broker_sync.sync_to_db(executor, db, live_slug)
 
     return {"status": "ok", "orders": len(orders), "placed": placed}
+
+
+#: Back-compat alias — the mirror was Alpaca-only when it was written.
+mirror_paper_to_alpaca = mirror_paper_to_broker
 
 
 def _sibling_paper_portfolio(db: SupabaseDB, live_pf: dict) -> dict | None:
@@ -227,15 +242,6 @@ def _sibling_paper_portfolio(db: SupabaseDB, live_pf: dict) -> dict | None:
     return None
 
 
-_LIVE_EXEC_ENV = "ALPACA_LIVE_EXECUTION_ENABLED"
-
-
-def _live_exec_enabled() -> bool:
-    return os.environ.get(_LIVE_EXEC_ENV, "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
-
-
 def _mirror_all_live(
     db: SupabaseDB,
     pm: PortfolioManager,
@@ -245,16 +251,16 @@ def _mirror_all_live(
 ) -> int:
     """Mirror every mode='live' portfolio to its paper sibling.
 
-    The scheduled / automatic path (market-hours cron). Honors the
-    ALPACA_LIVE_EXECUTION_ENABLED master kill-switch: with it unset, a real run
+    The scheduled / automatic path (market-hours cron). Honors the master
+    kill-switch (``broker.live_execution_enabled``): with it unset, a real run
     is a no-op (unset the secret to halt all automatic live trading). A
     --dry-run always previews regardless. Per-portfolio errors are logged and
     skipped so one bad book can't abort the rest.
     """
-    if not dry_run and not _live_exec_enabled():
+    if not dry_run and not live_execution_enabled():
         logger.warning(
             "%s not set — automatic live mirror is a no-op. "
-            "Set it to enable scheduled real-money mirroring.", _LIVE_EXEC_ENV,
+            "Set it to enable scheduled real-money mirroring.", LIVE_EXEC_ENV,
         )
         return 0
 
@@ -266,11 +272,10 @@ def _mirror_all_live(
         logger.info("no live portfolios to mirror")
         return 0
 
-    from alpaca_execution import AlpacaError, AlpacaExecutionBackend
-
-    # Each live portfolio trades its OWN Alpaca account (for_slug). With more
-    # than one live portfolio, shared-account fallback is refused so one owner's
-    # targets can never land in another's account.
+    # Each live portfolio trades its OWN broker account, resolved from its
+    # `portfolios.broker` (default alpaca). With more than one live portfolio,
+    # shared-account fallback is refused so one owner's targets can never land
+    # in another's account.
     single = len(live) == 1
     rc = 0
     for live_pf in live:
@@ -280,15 +285,15 @@ def _mirror_all_live(
             logger.warning("no paper sibling for %s — skipping", slug)
             continue
         try:
-            executor = AlpacaExecutionBackend.for_slug(
-                slug, allow_shared_fallback=single,
+            executor = resolve_backend_for_portfolio(
+                live_pf, allow_shared_fallback=single,
             )
-        except AlpacaError as exc:
+        except BrokerError as exc:
             logger.warning("skipping %s: %s", slug, exc)
             rc = 1
             continue
         try:
-            summary = mirror_paper_to_alpaca(
+            summary = mirror_paper_to_broker(
                 db, pm, executor, live_pf, paper_pf,
                 threshold=threshold, dry_run=dry_run,
             )
@@ -300,7 +305,7 @@ def _mirror_all_live(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Mirror a paper portfolio to Alpaca")
+    ap = argparse.ArgumentParser(description="Mirror a paper portfolio to its live broker account")
     ap.add_argument("--slug", help="the LIVE portfolio slug")
     ap.add_argument(
         "--mirror-all-live",
@@ -337,15 +342,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        from alpaca_execution import AlpacaExecutionBackend
-        executor = AlpacaExecutionBackend.for_slug(
-            args.slug, allow_shared_fallback=True,
+        executor = resolve_backend_for_portfolio(
+            live_pf, allow_shared_fallback=True,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.error("Alpaca init failed: %s", exc)
+        logger.error("broker init failed: %s", exc)
         return 1
 
-    summary = mirror_paper_to_alpaca(
+    summary = mirror_paper_to_broker(
         db, pm, executor, live_pf, paper_pf,
         threshold=args.threshold, dry_run=args.dry_run,
     )

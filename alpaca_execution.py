@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Alpaca execution backend — the seam between AlphaMolt's trade *decisions*
-and a real broker.
+Alpaca execution backend — the Alpaca implementation of ``broker.BrokerBackend``.
 
 Today every strategy funnels its decisions through
 ``PortfolioManager.buy/sell`` -> the ``execute_portfolio_buy/_sell`` Supabase
@@ -9,6 +8,12 @@ RPCs, which move *paper* cash and holdings. This module adds a parallel
 execution target: an Alpaca account. The intent is that a single portfolio
 flagged ``live`` mirrors the same buy/sell decisions into Alpaca orders, then
 reconciles real fills/positions/cash back.
+
+The broker-neutral half of that job lives elsewhere: the protocol + shared
+policy (kill-switch, slippage band) in ``broker.py``, and reconcile / state
+write-back in ``broker_sync.py`` — this module keeps only what is genuinely
+Alpaca-specific (REST transport, order submission, status mapping) and
+delegates the rest, so a second broker inherits it rather than forking it.
 
 SPIKE STATUS (read me):
     - Scope is ONE account (yours), via the Alpaca *Trading API*, against the
@@ -40,10 +45,16 @@ import logging
 import os
 import sys
 import time
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
 
+import broker_sync
 from alpaca_client import AlpacaClient, AlpacaError
+from broker import (
+    ExecResult,
+    Fill,
+    Position,
+    band_limit_price,
+    price_band_from_env,
+)
 from db import SupabaseDB
 
 logging.basicConfig(
@@ -80,44 +91,30 @@ def _alpaca_accounts_map() -> dict[str, dict]:
     return data
 
 
-@dataclass
-class Fill:
-    """Normalised result of submitting an order."""
-
-    order_id: str
-    symbol: str
-    side: str
-    qty: float
-    status: str
-
-
 # Terminal Alpaca order states that mean "this order is done moving".
 _TERMINAL_STATES = {"filled", "canceled", "expired", "rejected", "done_for_day"}
 
-
-@dataclass
-class ExecResult:
-    """Outcome of submit-and-await-fill.
-
-    ``status`` is one of: ``filled`` (fully), ``partial`` (some qty filled),
-    ``unfilled`` (accepted/queued but nothing filled in the window — e.g.
-    market closed), ``rejected``. ``filled_qty`` / ``avg_price`` are the real
-    numbers to record in the DB; both are 0 when nothing filled.
-    """
-
-    status: str
-    filled_qty: float
-    avg_price: float
-    order_id: str | None
-    raw_status: str = ""
+# ``Fill`` / ``ExecResult`` / ``Position`` are the broker-neutral value types
+# (``broker.py``); imported above and re-exported here so existing
+# ``from alpaca_execution import ExecResult`` callers keep working.
+__all__ = [
+    "AlpacaError",
+    "AlpacaExecutionBackend",
+    "ExecResult",
+    "Fill",
+    "Position",
+]
 
 
 class AlpacaExecutionBackend:
     """Routes buy/sell decisions to an Alpaca account.
 
-    Mirrors ``PortfolioManager``'s buy/sell shape so it can later be dropped
-    in behind the same interface for a ``live``-flagged portfolio.
+    Implements ``broker.BrokerBackend`` and mirrors ``PortfolioManager``'s
+    buy/sell shape, so it drops in behind the same interface for a
+    ``live``-flagged portfolio.
     """
+
+    broker_name = "alpaca"
 
     def __init__(self, client: AlpacaClient | None = None):
         self.client = client or AlpacaClient()
@@ -126,10 +123,7 @@ class AlpacaExecutionBackend:
         # order). Caps slippage in illiquid / volatile / at-the-open conditions
         # — if the market gaps past the band the order simply doesn't fill and
         # the next mirror run re-converges. 0 disables (raw market orders).
-        try:
-            self.price_band = float(os.environ.get("ALPACA_PRICE_BAND_PCT", "0.03"))
-        except ValueError:
-            self.price_band = 0.03
+        self.price_band = price_band_from_env()
 
     @classmethod
     def for_slug(
@@ -172,6 +166,42 @@ class AlpacaExecutionBackend:
             )
         return cls()  # single-account legacy mode (bare ALPACA_* env)
 
+    # ------------------------------------------------------------------
+    # BrokerBackend protocol — normalised account state
+    # ------------------------------------------------------------------
+
+    @property
+    def is_sandbox(self) -> bool:
+        """True when pointed at Alpaca's paper sandbox (no real money)."""
+        return self.client.is_paper
+
+    def get_equity(self) -> float:
+        return float(self.client.get_account().get("equity") or 0)
+
+    def get_cash(self) -> float:
+        return float(self.client.get_account().get("cash") or 0)
+
+    def get_positions(self) -> dict[str, Position]:
+        return {
+            p["symbol"]: Position(
+                symbol=p["symbol"],
+                qty=float(p["qty"]),
+                avg_price=float(p["avg_entry_price"]),
+            )
+            for p in self.client.list_positions()
+        }
+
+    def market_is_open(self) -> bool:
+        return bool(self.client.get_clock().get("is_open"))
+
+    def latest_price(self, symbol: str) -> float | None:
+        """Best-effort live price. Never raises (see AlpacaClient)."""
+        return self.client.get_latest_trade_price(symbol)
+
+    # ------------------------------------------------------------------
+    # Order placement
+    # ------------------------------------------------------------------
+
     def _guard_live(self, allow_live: bool) -> None:
         if not self.client.is_paper and not allow_live:
             raise AlpacaError(
@@ -195,13 +225,13 @@ class AlpacaExecutionBackend:
 
     def _band_limit_price(self, side: str, ref_price: float) -> float:
         """Limit price one band away from the intended price, in the safe
-        direction (buy: cap above; sell: floor below)."""
-        if side == "buy":
-            px = ref_price * (1 + self.price_band)
-        else:
-            px = ref_price * (1 - self.price_band)
-        # Alpaca accepts 2 dp for >= $1, finer below; keep it simple and valid.
-        return round(px, 2) if px >= 1 else round(px, 4)
+        direction (buy: cap above; sell: floor below).
+
+        Thin wrapper over the shared ``broker.band_limit_price`` — the rounding
+        Alpaca accepts (2dp at/above $1, finer below) is what every broker
+        wants, so the rule lives once.
+        """
+        return band_limit_price(side, ref_price, self.price_band)
 
     def execute_and_wait(
         self,
@@ -286,52 +316,16 @@ class AlpacaExecutionBackend:
         )
 
     # ------------------------------------------------------------------
-    # Reconciliation (read-only in the spike)
+    # Reconciliation + state write-back (broker-neutral — see broker_sync)
     # ------------------------------------------------------------------
 
     def reconcile(self, db: SupabaseDB, portfolio_slug: str) -> None:
-        """Report the diff between the Alpaca account and an AlphaMolt portfolio.
+        """Read-only diff between this Alpaca account and an AlphaMolt portfolio.
 
-        Read-only. Compares per-symbol quantity and the cash balance so we can
-        see exactly what a sync would have to do, without touching the DB.
+        Delegates to ``broker_sync.reconcile`` — the comparison is pure policy
+        over the protocol, so it is shared across brokers.
         """
-        portfolio = db.get_portfolio_by_slug(portfolio_slug)
-        if not portfolio:
-            raise AlpacaError(f"portfolio not found: {portfolio_slug!r}")
-        pid = portfolio["id"]
-
-        account = self.client.get_account()
-        alpaca_cash = float(account.get("cash") or 0)
-        alpaca_pos = {
-            p["symbol"]: float(p["qty"]) for p in self.client.list_positions()
-        }
-
-        db_account = db.get_portfolio_account(pid) or {}
-        db_cash = float(db_account.get("cash_usd") or 0)
-        db_pos = {
-            h["ticker"]: float(h["quantity"])
-            for h in db.get_portfolio_holdings(pid)
-        }
-
-        print(f"\nReconcile  portfolio={portfolio_slug}  "
-              f"alpaca={'PAPER' if self.client.is_paper else 'LIVE'}\n")
-        print(f"  cash   alphamolt=${db_cash:,.2f}   alpaca=${alpaca_cash:,.2f}   "
-              f"delta=${alpaca_cash - db_cash:,.2f}")
-
-        symbols = sorted(set(alpaca_pos) | set(db_pos))
-        if not symbols:
-            print("  positions: none on either side")
-        else:
-            print(f"\n  {'symbol':<10}{'alphamolt':>12}{'alpaca':>12}{'delta':>12}")
-            for s in symbols:
-                a = alpaca_pos.get(s, 0.0)
-                d = db_pos.get(s, 0.0)
-                print(f"  {s:<10}{d:>12.2f}{a:>12.2f}{a - d:>12.2f}")
-        print()
-
-    # ------------------------------------------------------------------
-    # Write-back: mirror real Alpaca state into the normal portfolio tables
-    # ------------------------------------------------------------------
+        broker_sync.reconcile(self, db, portfolio_slug)
 
     def sync_to_db(
         self,
@@ -341,116 +335,17 @@ class AlpacaExecutionBackend:
         dry_run: bool = False,
         reset_baseline: bool = False,
     ) -> None:
-        """Mirror the live Alpaca account into the normal portfolio tables.
+        """Mirror this Alpaca account's state into the normal portfolio tables.
 
-        Idempotent *state* mirror: it overwrites ``portfolio_holdings`` +
-        ``portfolio_accounts.cash_usd`` to match Alpaca's current positions and
-        cash, so the website, MTM snapshot and leaderboard reflect the real
-        account. Safe to rerun — it converges, it doesn't accumulate.
-
-        With ``reset_baseline`` (the "go-live" reseed), it also sets
-        ``starting_cash`` to Alpaca's current account **equity** and
-        ``inception_date`` to today — so the portfolio's P/L baseline is the
-        real capital you funded, not the $1M paper default. Run this once when
-        a portfolio first goes live; the buying-power and leaderboard-baseline
-        mismatches both come from a stale $1M baseline.
-
-        Refuses unless the portfolio is ``mode='live'`` (migration 036): this
-        is destructive to the DB book (Alpaca is the source of truth for a live
-        portfolio), and must never clobber a paper portfolio's simulated book.
-
-        The Alpaca endpoint is independent of this flag — for the spike you run
-        ``mode='live'`` against the Alpaca *paper* sandbox, which mirrors a real
-        broker account shape with zero real money.
-
-        Not handled here (state-only mirror): the per-trade journal
-        (``agent_trades``) and MTM snapshot (``agent_portfolio_history``). The
-        snapshot is produced on the next ``portfolio_valuation.py`` run from the
-        mirrored holdings; journaling individual fills (Alpaca activities, deduped
-        by order id) is a follow-up — see TODO below.
+        Delegates to ``broker_sync.sync_to_db`` (idempotent state mirror;
+        refuses any portfolio that isn't ``mode='live'``). Kept as a method so
+        existing callers — the CLI, ``alpaca_mirror``, the heartbeat — are
+        unchanged.
         """
-        portfolio = db.get_portfolio_by_slug(portfolio_slug)
-        if not portfolio:
-            raise AlpacaError(f"portfolio not found: {portfolio_slug!r}")
-        mode = portfolio.get("mode")
-        if mode != "live":
-            raise AlpacaError(
-                f"refusing to sync: portfolio {portfolio_slug!r} is "
-                f"mode={mode!r}, not 'live'. Set portfolios.mode='live' first "
-                "— sync mirrors real Alpaca state into the normal tables and "
-                "must never overwrite a paper book."
-            )
-        pid = portfolio["id"]
-
-        account = self.client.get_account()
-        alpaca_cash = float(account.get("cash") or 0)
-        alpaca_equity = float(account.get("equity") or 0)
-        alpaca_pos = {
-            p["symbol"]: (float(p["qty"]), float(p["avg_entry_price"]))
-            for p in self.client.list_positions()
-        }
-
-        db_holdings = {h["ticker"]: h for h in db.get_portfolio_holdings(pid)}
-        now = datetime.now(timezone.utc).isoformat()
-
-        tag = "DRY-RUN " if dry_run else ""
-        head = "go-live reseed" if reset_baseline else "sync"
-        print(f"\n{tag}{head}  portfolio={portfolio_slug}  mode=live  "
-              f"alpaca={'PAPER' if self.client.is_paper else 'LIVE'}\n")
-
-        # Upsert every Alpaca position. Validate the symbol against `securities`
-        # (Level 0 Tier 0) — that's the real FK target of
-        # portfolio_holdings.ticker, so a Level-0-only name (e.g. a foreign ADR
-        # like TSM that the legacy `companies` TradingView screen excludes) is a
-        # perfectly valid holding and must be written, not dropped. The paper
-        # book already holds such names; the live mirror must too, or a real
-        # fill silently never reaches the DB/website. Skip only symbols absent
-        # from `securities` entirely (the FK would otherwise reject the write).
-        for symbol, (qty, avg) in sorted(alpaca_pos.items()):
-            if not db.get_security(symbol):
-                logger.warning(
-                    "skip %s: not in securities universe (FK target missing)",
-                    symbol,
-                )
-                continue
-            existing = db_holdings.get(symbol)
-            first_bought = (
-                existing.get("first_bought_at") if existing else now
-            ) or now
-            row = {
-                "portfolio_id": pid,
-                "ticker": symbol,
-                "quantity": qty,
-                "avg_cost_usd": avg,
-                "first_bought_at": first_bought,
-                "updated_at": now,
-            }
-            print(f"  upsert  {symbol:<8} qty={qty:<10.4f} avg=${avg:,.2f}")
-            if not dry_run:
-                db.upsert_portfolio_holding(row)
-
-        # Delete DB holdings Alpaca no longer reports (fully exited positions).
-        for ticker in sorted(db_holdings):
-            if ticker not in alpaca_pos:
-                print(f"  delete  {ticker:<8} (no longer held on Alpaca)")
-                if not dry_run:
-                    db.delete_portfolio_holding(pid, ticker)
-
-        account_update: dict = {"cash_usd": alpaca_cash}
-        if reset_baseline:
-            account_update["starting_cash"] = alpaca_equity
-            account_update["inception_date"] = date.today().isoformat()
-            print(f"  baseline starting_cash=${alpaca_equity:,.2f}  "
-                  f"inception={account_update['inception_date']}")
-        print(f"  cash    ${alpaca_cash:,.2f}")
-        if not dry_run:
-            db.upsert_portfolio_account(pid, account_update)
-
-        # TODO(trade journal): mirror individual fills into agent_trades by
-        # reading Alpaca activities (FILL events) and deduping on order id, so
-        # the public trade tape reflects real trades. State mirror above is
-        # enough for holdings / MTM / leaderboard.
-        print(f"\n{tag}done.\n")
+        broker_sync.sync_to_db(
+            self, db, portfolio_slug,
+            dry_run=dry_run, reset_baseline=reset_baseline,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

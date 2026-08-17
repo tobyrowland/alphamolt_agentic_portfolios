@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import re
 import sys
 import time
@@ -38,6 +37,11 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 from agent_strategies import RebalanceContext, RebalanceResult, get_strategy
+from broker import (
+    LIVE_EXEC_ENV,
+    live_execution_enabled,
+    resolve_backend_for_portfolio,
+)
 from db import SupabaseDB
 from portfolio import PortfolioManager
 
@@ -47,10 +51,11 @@ def _now_utc() -> datetime:
 
 
 # Master kill-switch for routing real orders. A portfolio with mode='live'
-# only places real Alpaca orders when this env var is truthy in the run
+# only places real broker orders when this env var is truthy in the run
 # environment — so flipping a portfolio live in the DB is NOT enough on its
 # own; the operator must also enable execution where the heartbeat runs.
-_LIVE_EXEC_ENV = "ALPACA_LIVE_EXECUTION_ENABLED"
+# Defined once in broker.py (both the neutral and legacy Alpaca names work).
+_LIVE_EXEC_ENV = LIVE_EXEC_ENV
 
 
 def _pair_live_followers(portfolios: list[dict]) -> dict[str, dict]:
@@ -91,7 +96,7 @@ def _pair_live_followers(portfolios: list[dict]) -> dict[str, dict]:
 
 
 def _mirror_live_sibling(db, pm, *, paper: dict, live: dict, dry_run: bool) -> None:
-    """Mirror a paper portfolio's composition onto its live Alpaca follower.
+    """Mirror a paper portfolio's composition onto its live broker follower.
 
     Gated like all live execution: never on a dry run, and only when the master
     switch is set. Market-hours and fill handling live in `alpaca_mirror`. Never
@@ -102,20 +107,17 @@ def _mirror_live_sibling(db, pm, *, paper: dict, live: dict, dry_run: bool) -> N
     if dry_run:
         log.info("live mirror %s skipped (dry run)", slug)
         return
-    if os.environ.get(_LIVE_EXEC_ENV, "").strip().lower() not in (
-        "1", "true", "yes", "on",
-    ):
+    if not live_execution_enabled():
         log.warning(
             "live portfolio %s present but %s not set — skipping mirror "
             "(no real orders).", slug, _LIVE_EXEC_ENV,
         )
         return
     try:
-        from alpaca_execution import AlpacaExecutionBackend
-        from alpaca_mirror import mirror_paper_to_alpaca
+        from alpaca_mirror import mirror_paper_to_broker
 
-        executor = AlpacaExecutionBackend.for_slug(slug, allow_shared_fallback=True)
-        summary = mirror_paper_to_alpaca(
+        executor = resolve_backend_for_portfolio(live, allow_shared_fallback=True)
+        summary = mirror_paper_to_broker(
             db, pm, executor, live, paper, dry_run=False,
         )
         log.info("live mirror %s: %s", slug, summary)
@@ -139,27 +141,29 @@ def _resolve_live_executor(portfolio: dict, *, dry_run: bool):
     if dry_run:
         log.info("portfolio %s is live but this is a dry run — paper.", slug)
         return "paper", None
-    if os.environ.get(_LIVE_EXEC_ENV, "").strip().lower() not in (
-        "1", "true", "yes", "on",
-    ):
+    if not live_execution_enabled():
         log.warning(
             "portfolio %s is mode='live' but %s is not set — trading PAPER "
             "this run (no real orders placed).", slug, _LIVE_EXEC_ENV,
         )
         return "paper", None
     try:
-        from alpaca_execution import AlpacaExecutionBackend
-
-        backend = AlpacaExecutionBackend()
+        # Resolve this portfolio's OWN broker account (honours ALPACA_ACCOUNTS
+        # keyed by slug, falling back to the single shared account only when no
+        # per-portfolio map is configured) — same rule the mirror path uses.
+        backend = resolve_backend_for_portfolio(
+            portfolio, allow_shared_fallback=True,
+        )
         log.warning(
             "LIVE EXECUTION ENABLED for portfolio %s — placing REAL orders "
-            "via Alpaca (%s endpoint).",
-            slug, "paper-sandbox" if backend.client.is_paper else "LIVE",
+            "via %s (%s endpoint).",
+            slug, backend.broker_name,
+            "sandbox" if backend.is_sandbox else "LIVE",
         )
         return "live", backend
     except Exception as exc:  # noqa: BLE001 — never crash the heartbeat on broker init
         log.error(
-            "portfolio %s: failed to init Alpaca executor (%s) — trading "
+            "portfolio %s: failed to init broker executor (%s) — trading "
             "PAPER this run.", slug, exc,
         )
         return "paper", None
