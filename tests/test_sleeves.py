@@ -470,6 +470,24 @@ class TestSyncRefusesSharedAccount(unittest.TestCase):
             broker_sync.sync_to_db(_FakeBackend(), _FakeDB([paper]), "paper")
         self.assertIn("not 'live'", str(ctx.exception))
 
+    def test_the_refusal_is_catchable_by_the_alpaca_cli(self):
+        # alpaca_execution's --sync-all-live loop catches the exception type it
+        # imports. broker_sync raises the neutral BrokerError, NOT AlpacaError,
+        # so a handler written against the subclass would let the shared-account
+        # refusal escape and abort the whole loop. Pin the relationship.
+        from alpaca_client import AlpacaError
+        self.assertTrue(issubclass(AlpacaError, BrokerError))
+        a = _live("l1", "a-live", key="shared")
+        b = _live("l2", "b-live", key="shared")
+        with self.assertRaises(BrokerError):
+            broker_sync.sync_to_db(_FakeBackend(), _FakeDB([a, b]), "a-live")
+        # ...and specifically NOT the narrower subclass, so `except AlpacaError`
+        # is the wrong handler.
+        try:
+            broker_sync.sync_to_db(_FakeBackend(), _FakeDB([a, b]), "a-live")
+        except BrokerError as exc:
+            self.assertNotIsInstance(exc, AlpacaError)
+
 
 if __name__ == "__main__":
     unittest.main()

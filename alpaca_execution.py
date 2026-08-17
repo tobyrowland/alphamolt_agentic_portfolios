@@ -49,6 +49,7 @@ import time
 import broker_sync
 from alpaca_client import AlpacaClient, AlpacaError
 from broker import (
+    BrokerError,
     ExecResult,
     Fill,
     Position,
@@ -65,9 +66,11 @@ logger = logging.getLogger(__name__)
 
 
 def _alpaca_accounts_map() -> dict[str, dict]:
-    """Per-portfolio Alpaca credentials from the ``ALPACA_ACCOUNTS`` secret.
+    """Alpaca credentials from the ``ALPACA_ACCOUNTS`` secret.
 
-    A JSON object keyed by **live portfolio slug**::
+    A JSON object keyed by **broker account key** —
+    ``portfolios.broker_account_key``, which falls back to the portfolio slug
+    when unset (migration 083)::
 
         {"toby-live":     {"key_id": "...", "secret_key": "...",
                            "base_url": "https://api.alpaca.markets"},
@@ -75,9 +78,11 @@ def _alpaca_accounts_map() -> dict[str, dict]:
                            "base_url": "https://api.alpaca.markets"}}
 
     Lets several owners each run a live follower against their **own** Alpaca
-    account. Unset/empty -> ``{}`` (single-account mode via the bare
-    ``ALPACA_*`` env vars). Raises ``AlpacaError`` on malformed JSON rather than
-    silently degrading to the shared account.
+    account — and lets several live portfolios of ONE owner share a single
+    account as sleeves, by giving them the same ``broker_account_key`` and so
+    resolving the same entry here. Unset/empty -> ``{}`` (single-account mode
+    via the bare ``ALPACA_*`` env vars). Raises ``AlpacaError`` on malformed
+    JSON rather than silently degrading to the shared account.
     """
     raw = os.environ.get("ALPACA_ACCOUNTS", "").strip()
     if not raw:
@@ -397,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
     if needs_shared:
         try:
             backend = AlpacaExecutionBackend()
-        except AlpacaError as exc:
+        except BrokerError as exc:
             logger.error("%s", exc)
             return 1
         client = backend.client
@@ -477,10 +482,13 @@ def main(argv: list[str] | None = None) -> int:
                         p["slug"], allow_shared_fallback=single,
                     )
                     be.sync_to_db(db, p["slug"], dry_run=args.dry_run)
-                except AlpacaError as exc:
-                    logger.error("sync %s failed: %s", p["slug"], exc)
+                except BrokerError as exc:
+                    # Includes the deliberate refusal on a shared (sleeved)
+                    # account — expected, not a fault. Catch the neutral base so
+                    # one such portfolio can't abort the whole loop.
+                    logger.warning("sync %s skipped: %s", p["slug"], exc)
 
-    except AlpacaError as exc:
+    except BrokerError as exc:
         logger.error("%s", exc)
         return 1
 
