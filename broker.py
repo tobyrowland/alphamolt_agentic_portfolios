@@ -257,15 +257,31 @@ def resolve_backend(
     return cls.for_slug(slug, allow_shared_fallback=allow_shared_fallback)
 
 
+def account_key_for_portfolio(portfolio: dict) -> str:
+    """Which broker-credentials entry this portfolio trades through.
+
+    Reads ``portfolios.broker_account_key`` (migration 083), falling back to the
+    slug — which is what the key implicitly was before that column existed, so
+    pre-083 rows resolve exactly as they did.
+
+    Two live portfolios sharing a key are **sleeves** of one broker account:
+    they share its cash and its positions, and each may only spend its own
+    allowance (``portfolio_accounts.cash_usd``).
+    """
+    key = (portfolio.get("broker_account_key") or "").strip()
+    if key:
+        return key
+    return portfolio.get("slug") or portfolio["id"][:8]
+
+
 def resolve_backend_for_portfolio(
     portfolio: dict,
     *,
     allow_shared_fallback: bool = False,
 ) -> BrokerBackend:
     """``resolve_backend`` keyed off a portfolio row."""
-    slug = portfolio.get("slug") or portfolio["id"][:8]
     return resolve_backend(
-        slug,
+        account_key_for_portfolio(portfolio),
         broker_for_portfolio(portfolio),
         allow_shared_fallback=allow_shared_fallback,
     )

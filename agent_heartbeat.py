@@ -81,6 +81,20 @@ def _pair_live_followers(portfolios: list[dict]) -> dict[str, dict]:
             continue
         follows = live.get("follows_portfolio_id")
         if follows:
+            if follows in pairs:
+                # Two live portfolios following the SAME paper book. The map is
+                # keyed by paper id, so one would silently overwrite the other
+                # and never mirror. Two sleeves are meant to track two
+                # different strategies; pointing both at one book is a config
+                # mistake, so say so rather than dropping a funded portfolio.
+                log.error(
+                    "live %s and %s both follow paper book %s — only one can "
+                    "be mirrored per book. Point each live portfolio at its "
+                    "own paper portfolio (portfolios.follows_portfolio_id).",
+                    pairs[follows].get("slug") or pairs[follows].get("id"),
+                    live.get("slug") or live.get("id"), follows,
+                )
+                continue
             pairs[follows] = live
             continue
         owned = papers_by_owner.get(live.get("owner_user_id"), [])
