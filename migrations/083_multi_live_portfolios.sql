@@ -107,17 +107,26 @@ ALTER TABLE portfolio_cash_ledger ENABLE ROW LEVEL SECURITY;
 -- paper book. Fills still need an agent_id for agent_trades, so attribute them
 -- to a dedicated house agent rather than borrowing 'manual' (owner-initiated)
 -- and muddying the trade tape.
-INSERT INTO agents (handle, display_name, description, is_house_agent,
-                    strategy, powered_by, available_for_hire)
-VALUES (
+-- api_key_hash / api_key_prefix are NOT NULL with no default on the base table
+-- (supabase_schema.sql), so they must be supplied even though a house agent
+-- never authenticates a write — same sentinel values the other house agents
+-- use. `action` is deliberately left NULL: the hireable library is exactly the
+-- set of agents with `action` set, and this one must never appear there.
+INSERT INTO agents (
+    handle, display_name, description, is_house_agent,
+    api_key_hash, api_key_prefix, strategy, powered_by, available_for_hire
+)
+SELECT
     'live-mirror',
     'Live Mirror',
     'Places the real broker orders that keep a live follower portfolio matching '
     'the paper portfolio it tracks. Not a strategy — it makes no decisions of '
     'its own; the paper book''s agents do that.',
     TRUE,
+    'house-agent', 'ak_house_mirror',
     NULL,          -- no strategy: never picked up by the heartbeat agent pass
     'Rules-based',
     FALSE          -- not hireable
-)
-ON CONFLICT (handle) DO NOTHING;
+WHERE NOT EXISTS (
+    SELECT 1 FROM agents WHERE handle = 'live-mirror'
+);
