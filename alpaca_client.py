@@ -31,6 +31,8 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
+from broker import BrokerError
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -44,8 +46,12 @@ DATA_BASE_URL = "https://data.alpaca.markets"
 DEFAULT_TIMEOUT = 15  # seconds
 
 
-class AlpacaError(Exception):
-    """Raised when an Alpaca API call fails."""
+class AlpacaError(BrokerError):
+    """Raised when an Alpaca API call fails.
+
+    Subclasses ``BrokerError`` so callers spanning brokers can catch one type
+    while still being able to distinguish Alpaca specifically.
+    """
 
 
 class AlpacaClient:

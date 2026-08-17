@@ -61,12 +61,12 @@ class RebalanceContext:
     portfolio_id: str | None = None
     members: list[dict] | None = None
     mandate: str | None = None
-    # Live execution (migration 036 + Alpaca). When mode == 'live' AND an
-    # executor is wired (by agent_heartbeat, gated on a master env switch),
-    # ctx.buy/sell place the REAL order first and record the ACTUAL fill,
-    # instead of the paper RPC at companies.price. 'paper' (default) is the
-    # unchanged simulated path. `executor` is an AlpacaExecutionBackend (typed
-    # Any to avoid importing the broker layer into the paper path).
+    # Live execution (migration 036). When mode == 'live' AND an executor is
+    # wired (by agent_heartbeat, gated on a master env switch), ctx.buy/sell
+    # place the REAL order first and record the ACTUAL fill, instead of the
+    # paper RPC at companies.price. 'paper' (default) is the unchanged
+    # simulated path. `executor` satisfies `broker.BrokerBackend` (typed Any to
+    # avoid importing the broker layer into the paper path).
     mode: str = "paper"
     executor: Any = None
 
@@ -126,7 +126,7 @@ class RebalanceContext:
         note: str,
         thesis: dict | None,
     ) -> dict:
-        """Place a REAL Alpaca order, then record the actual fill in the DB.
+        """Place a REAL broker order, then record the actual fill in the DB.
 
         Records the *filled* quantity at the *fill* price so the book matches
         the broker. If nothing filled (order rejected, or queued because the
@@ -136,7 +136,7 @@ class RebalanceContext:
         """
         if self.dry_run:
             raise RuntimeError(
-                "refusing to place a live Alpaca order during a dry run"
+                "refusing to place a live broker order during a dry run"
             )
         # Intended price = the paper book's price for this ticker; the executor
         # caps the fill within its price band around it.
@@ -147,6 +147,7 @@ class RebalanceContext:
         res = self.executor.execute_and_wait(
             ticker, side, quantity, allow_live=True, ref_price=ref_price,
         )
+        broker_name = getattr(self.executor, "broker_name", "broker")
         if res.filled_qty <= 0:
             logger.warning(
                 "LIVE %s %s x%s did not fill (%s) — DB unchanged; sync_to_db "
@@ -154,11 +155,11 @@ class RebalanceContext:
                 side, ticker, quantity, res.status,
             )
             return {
-                "status": f"alpaca_{res.status}",
+                "status": f"{broker_name}_{res.status}",
                 "filled_qty": 0,
                 "order_id": res.order_id,
             }
-        live_note = f"{note} [alpaca {res.order_id}]".strip()
+        live_note = f"{note} [{broker_name} {res.order_id}]".strip()
         if side == "buy":
             return self.pm.buy_portfolio_atomic(
                 self.portfolio_id, self.agent["id"], ticker, res.filled_qty,

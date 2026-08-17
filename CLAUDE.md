@@ -76,6 +76,14 @@ extend/break signals. Exposes `build_snapshot`, `record_thesis`,
 `mark_thesis_status`. Signal operators: `>`, `>=`, `<`, `<=`, `==`, `!=`,
 `change_pct_lt`, `change_pct_gt`. See migration 020.
 
+### broker.py / broker_sync.py
+The broker-neutral execution seam every live (real-money) path runs through —
+the `BrokerBackend` protocol, normalised `Position`/`Fill`/`ExecResult` types,
+the `BrokerError` base, the shared kill-switch + slippage-band policy, and
+backend resolution off `portfolios.broker`. `broker_sync.py` adds the
+broker-independent DB operations (`reconcile`, `sync_to_db`). See "Real-money
+execution — the broker seam" below.
+
 ### eodhd.py
 Thin, reusable EODHD REST client for the Level 0 fact store. Wraps the three
 universe endpoints the legacy scripts don't use — `exchange-symbol-list/{EX}`
@@ -1461,18 +1469,23 @@ ALPACA_API_SECRET_KEY       Alpaca Trading API secret.
 ALPACA_BASE_URL             Optional. Alpaca endpoint. Defaults to the PAPER
                             sandbox (https://paper-api.alpaca.markets). Set to
                             https://api.alpaca.markets ONLY to go live.
-ALPACA_LIVE_EXECUTION_ENABLED  Master kill-switch (default off). Even a
-                            mode='live' portfolio only places REAL Alpaca
-                            orders from agent_heartbeat.py when this is truthy
-                            in the run environment. Unset = the swarm trades
-                            the simulated book regardless of mode.
-ALPACA_PRICE_BAND_PCT       Optional. Slippage cap for live orders (default
+LIVE_EXECUTION_ENABLED      Master kill-switch (default off), broker-neutral.
+                            Even a mode='live' portfolio only places REAL
+                            broker orders from agent_heartbeat.py when this is
+                            truthy in the run environment. Unset = the swarm
+                            trades the simulated book regardless of mode.
+                            ALPACA_LIVE_EXECUTION_ENABLED is the legacy name
+                            and still works — either being truthy enables
+                            execution (broker.live_execution_enabled).
+LIVE_PRICE_BAND_PCT         Optional. Slippage cap for live orders (default
                             0.03 = 3%). Orders are placed as marketable LIMIT
                             orders one band from the intended price (buy won't
                             pay more than band% above, sell won't accept more
                             than band% below); a gap past the band simply
                             doesn't fill and the next mirror re-converges. 0
-                            disables (raw market orders).
+                            disables (raw market orders). Legacy name
+                            ALPACA_PRICE_BAND_PCT still works (the neutral name
+                            wins if both are set).
 ALPACA_ACCOUNTS             Optional. JSON object keyed by LIVE portfolio slug
                             mapping each to its OWN Alpaca account:
                             {"toby-live": {"key_id": "...", "secret_key": "...",
@@ -1501,20 +1514,49 @@ SMTP_USER / SMTP_PASSWORD   RESEND_API_KEY is unset (port default 587,
                             STARTTLS; Gmail needs an App Password).
 ```
 
-## Real-money execution (Alpaca — spike)
+## Real-money execution — the broker seam
 
-`alpaca_client.py` + `alpaca_execution.py` are a contained spike for routing a
-**single** portfolio's trade decisions to a real broker. Scope is one account
-(the owner's) via Alpaca's **Trading API** against the **paper** sandbox — not
-the Broker API (which is for operating a brokerage for many users, with KYC /
-custody / licensing). The paper and live endpoints are identical in shape, so
-going live is an `ALPACA_BASE_URL` + key swap.
+**`broker.py` is the seam** (migration 082): the live path runs against a
+`BrokerBackend` **Protocol**, not against a named broker. It holds the protocol
+itself (`get_equity` / `get_cash` / `get_positions` / `market_is_open` /
+`latest_price` / `execute_and_wait`), the normalised value types every backend
+returns (`Position` / `Fill` / `ExecResult`), the `BrokerError` base every
+backend's error subclasses, the **shared policy** that is genuinely
+broker-independent — the master kill-switch (`live_execution_enabled`) and the
+slippage band (`band_limit_price` / `price_band_from_env`), each previously
+duplicated per caller — and `resolve_backend` / `resolve_backend_for_portfolio`,
+which dispatch on `portfolios.broker` (TEXT, default `'alpaca'`; unknown values
+raise a clear `BrokerError` rather than being schema-constrained, so brokers are
+added in code without a migration). Pure: no DB, no network, no broker SDK.
+
+**`broker_sync.py`** holds the DB-facing operations that are *also*
+broker-independent, so every backend inherits them: read-only `reconcile` (diff
+broker vs portfolio) and `sync_to_db` (the idempotent **state** mirror, refusing
+any portfolio that isn't `mode='live'`). Both were methods on the Alpaca backend;
+it now delegates to these.
+
+The mirror loop (`alpaca_mirror.mirror_paper_to_broker`, aliased from the old
+`mirror_paper_to_alpaca`) and the heartbeat's `ctx.buy/sell` forward path drive a
+backend **only** through the protocol — verified by `tests/test_broker.py`, which
+runs the whole mirror + sync against a fake backend with no Alpaca anywhere.
+Adding a broker is: implement the protocol, subclass `BrokerError`, add one line
+to `broker._BACKEND_FACTORIES`. `plan_mirror`, the price band, `sync_to_db` and
+the whole `live-mirror.yml` CLI come for free.
+
+### Alpaca backend (the first implementation)
+
+`alpaca_client.py` + `alpaca_execution.py` route a portfolio's trade decisions to
+an Alpaca account. Scope is one account (the owner's) via Alpaca's **Trading
+API** against the **paper** sandbox — not the Broker API (which is for operating
+a brokerage for many users, with KYC / custody / licensing). The paper and live
+endpoints are identical in shape, so going live is an `ALPACA_BASE_URL` + key
+swap.
 
 - `alpaca_client.py` — thin REST wrapper (account, clock, positions, orders).
-- `alpaca_execution.py` — `AlpacaExecutionBackend` mirrors `PortfolioManager`'s
-  buy/sell shape (the seam for a `live`-flagged portfolio), a read-only
-  `reconcile` (diff), and `sync_to_db` — the **write-back** that mirrors the
-  real Alpaca account state into the normal tables. CLI: `--status`,
+- `alpaca_execution.py` — `AlpacaExecutionBackend` implements
+  `broker.BrokerBackend` and mirrors `PortfolioManager`'s buy/sell shape (the
+  seam for a `live`-flagged portfolio); `reconcile` / `sync_to_db` remain as
+  methods but delegate to `broker_sync`. CLI: `--status`,
   `--positions`, `--orders`, `--buy`, `--sell`, `--reconcile <slug>`,
   `--sync <slug>`, `--go-live <slug>` (one-time baseline reseed) (`--dry-run`
   to plan).
@@ -1772,6 +1814,9 @@ python award_badges.py --periods            # + grant closed-period Champions/Po
 python award_badges.py --dry-run            # compute + log, write nothing
 python award_badges.py --only-periods --launch-date 2026-07-01
 pytest tests/test_badges.py                 # pure engine unit tests
+
+# Broker seam (live execution)
+pytest tests/test_broker.py                 # protocol + shared policy + sync/mirror
 
 # Lifecycle emails (welcome sequence)
 python lifecycle_emails.py                  # send A1 welcome to eligible new signups
