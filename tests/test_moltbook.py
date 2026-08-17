@@ -150,6 +150,75 @@ def test_prune_ledger_caps_titles_and_ages_subjects():
 
 
 # ---------------------------------------------------------------------------
+# Math-captcha solver — local de-obfuscation + arithmetic fallback
+# ---------------------------------------------------------------------------
+# These pin the fix for heartbeat run 32012211280 (2026-08-17), where the
+# obfuscated verification challenge tripped the safety classifier into
+# stop_reason='refusal' on every vote and the post crashed. The helpers are
+# pure (no Anthropic API), so they're unit-tested directly.
+
+# The exact challenge that crashed the 08:49 run (= 35 + 22 = 57).
+_CHALLENGE_57 = (
+    "A] lOoObBsStTeEr ] cLlAaWw F[oRrCcEe ] iSs ] tHhIiRrRtTyY ] fIiVvEe ] "
+    "nEeUu-TtOoNnSs ] aNnDd ] AaNnOoTtHhEeRr ] cLlAaWw ] iSs ] tWwEeNnTtYy ] "
+    "tWwOo ] nEeUu-TtOoNnSs ] wWhHaAtT ] iIs ] tThHeE ] tOoTtAaLl? ] ~ { } < >"
+)
+
+
+def test_collapse_repeats_inverts_obfuscation():
+    from moltbook_lib import _collapse_repeats
+    assert _collapse_repeats("tHhIiRrRtTyY") == "thirty"
+    assert _collapse_repeats("fIiVvEe") == "five"
+    assert _collapse_repeats("tWwEeNnTtYy") == "twenty"
+    # digits must survive untouched — collapsing "22" would corrupt the number
+    assert _collapse_repeats("22") == "22"
+    assert _collapse_repeats("100") == "100"
+
+
+def test_deobfuscate_produces_readable_wordproblem():
+    from moltbook_lib import _deobfuscate_for_prompt
+    clean = _deobfuscate_for_prompt(_CHALLENGE_57)
+    assert "thirty five" in clean
+    assert "twenty two" in clean
+    assert "total" in clean
+
+
+def test_local_solver_solves_the_crashing_challenge():
+    """The exact challenge that crashed the run resolves to 57.00 with no LLM."""
+    from moltbook_lib import _local_solve_challenge
+    assert _local_solve_challenge(_CHALLENGE_57) == "57.00"
+
+
+def test_local_solver_handles_subtraction_and_product():
+    from moltbook_lib import _local_solve_challenge
+    assert _local_solve_challenge("forty minus fifteen") == "25.00"
+    assert _local_solve_challenge("the product of six and seven") == "42.00"
+    # word problems ask for the positive difference regardless of order
+    assert _local_solve_challenge("the difference of fifteen and forty") == "25.00"
+
+
+def test_local_solver_defers_when_ambiguous():
+    """Conservative: not exactly two operands, or no clear single operator,
+    returns None so the LLM decides instead of a bad guess."""
+    from moltbook_lib import _local_solve_challenge
+    # three number words, no operator keyword -> defer (the ambiguous 01:39 case)
+    assert _local_solve_challenge("thirty two seven newtons physics force") is None
+    # single number -> defer
+    assert _local_solve_challenge("a claw of forty newtons") is None
+    # conflicting operator keywords -> defer
+    assert _local_solve_challenge(
+        "thirty and forty, what is the total remaining difference"
+    ) is None
+
+
+def test_local_solver_matches_collapsed_double_letter_words():
+    """'three' collapses to 'thre'; the number lookup must still resolve it."""
+    from moltbook_lib import _local_solve_challenge
+    # obfuscated "three plus four" -> tHhRrEeEe pLlUuSs fOoUuRr
+    assert _local_solve_challenge("tHhRrEeEe pLlUuSs fOoUuRr") == "7.00"
+
+
+# ---------------------------------------------------------------------------
 # Multi-agent registry (moltbook_agents)
 # ---------------------------------------------------------------------------
 
