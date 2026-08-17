@@ -1236,8 +1236,11 @@ indistinguishable from a paper one.
 
 **Two portfolio types per user (migration 037).** `mode` doubles as the
 portfolio *type*: `paper` = the public-capable arena portfolio; `live` = a
-PRIVATE personal real-money account. Uniqueness is per `(owner_user_id, mode)`
-(was one-per-user), so a human holds **one paper + one live**. A live portfolio
+PRIVATE personal real-money account. Migration 070 raised the paper cap to
+**5 per user** (count-based, in `create_portfolio_funded`) and migration 083
+lifted the one-live-per-user index so several live portfolios can share one
+broker account as **sleeves** (see "Sleeves" below) — `broker_account_key`
+declares which account each uses. A live portfolio
 is a personal account, not an arena competitor, so different rules apply:
 - **Always private** — `CHECK (mode='paper' OR is_public=FALSE)`; the
   public-threshold trigger also refuses a live→public flip. Never on the public
@@ -1636,6 +1639,70 @@ The live portfolio's own (private) detail page also exposes an owner-only
 in `web/lib/live-mirror-mutations.ts`) that `workflow_dispatch`es `live-mirror.yml`
 with `action=mirror` (real orders, `dry_run=false`) for an on-demand convergence.
 
+### Sleeves — several live portfolios sharing one broker account (migration 083)
+
+A broker gives an individual **one live account**, so running two live
+strategies means splitting one account. A **sleeve** is a live portfolio that
+owns a share of a shared account:
+
+- **Shares are attributed.** Of the broker's 15 NVDA, 10 are sleeve A's and 5
+  are sleeve B's — recorded in `portfolio_holdings`, known only to AlphaMolt.
+- **Cash is an allowance.** Each sleeve's `portfolio_accounts.cash_usd` is the
+  most it may spend (the `execute_portfolio_buy` RPC already enforces it, as it
+  does for paper). Cash not credited to any sleeve is **unallocated**.
+- **Unowned money is not attributed, deliberately.** Dividends, interest, fees
+  and fresh deposits all land in the broker's cash and simply move the
+  unallocated figure; the owner credits it out when they choose
+  (`live_cash.py`). Per-sleeve dividend attribution is a large amount of
+  machinery for amounts immaterial on a growth-equity book, and auto-detecting
+  a deposit is precisely the guess that misattributes real money silently.
+- **Sale proceeds need no action** — a sell is recorded against the selling
+  sleeve, so the cash returns to its own allowance automatically.
+
+Two invariants, checked before trading:
+
+```
+SUM over sleeves of holdings[symbol]  ==  broker position for symbol
+SUM over sleeves of allowance         <=  broker cash   (difference = unallocated)
+```
+
+**The safety property.** `plan_mirror` sizes off a sleeve's **own** equity
+(recorded holdings + its allowance) and diffs against its **own** recorded
+positions — never the broker aggregate. That is what keeps sleeves from
+destroying each other: passing the aggregate makes a symbol held only by
+another sleeve appear at target weight 0 and get sold in full, every run, with
+real money. `tests/test_sleeves.py` pins both the correct behaviour and the old
+broken one.
+
+Three refusals back it up: the mirror **refuses to trade** a shared account
+whose combined records disagree with the broker (`check_account_alignment` —
+a wrong split is unrecoverable, so a human resolves it); `broker_sync.sync_to_db`
+**refuses to run at all** on a shared account (its whole-book overwrite would
+hand one sleeve every position in the account); and `_pair_live_followers`
+**errors** when two live portfolios follow the same paper book instead of
+silently dropping one. A sole-occupant account keeps its pre-083 behaviour
+exactly — sync still owns reconciliation, and drift only warns.
+
+`portfolios.broker_account_key` declares which credentials entry a live
+portfolio uses (key into `ALPACA_ACCOUNTS`); two live rows with the same key are
+sleeves of one account. NULL falls back to the slug, so pre-083 rows are
+unchanged. Migration 083 also lifts the one-live-per-user index, adds
+`portfolio_cash_ledger` (audit of allowance movements) and seeds the
+`live-mirror` house agent that mirror fills are attributed to.
+
+### sleeves.py
+Pure sleeve arithmetic — `recorded_positions`, `position_drift`,
+`unallocated_cash`, `plan_credit`, `sleeve_own_positions`. No DB, no broker
+(`tests/test_sleeves.py`).
+
+### live_cash.py (operator, on-demand)
+Moves allowances between the unallocated pot and each sleeve. `--status`
+(broker cash, per-sleeve allowance + holdings, unallocated), `--credit SLUG AMT`,
+`--debit SLUG AMT`, `--transfer FROM TO AMT`, `--note`, `--dry-run`. Refuses to
+credit beyond unallocated or debit below zero, and writes every movement to
+`portfolio_cash_ledger`. Reads the broker for the cash balance only — never
+places an order.
+
 The per-decision routing below (`ctx.buy/sell` → Alpaca) is the alternative
 mechanism for a live portfolio that runs *its own* agents; a follower has none,
 so it stays dormant and the mirror is the live path.
@@ -1817,6 +1884,14 @@ pytest tests/test_badges.py                 # pure engine unit tests
 
 # Broker seam (live execution)
 pytest tests/test_broker.py                 # protocol + shared policy + sync/mirror
+pytest tests/test_sleeves.py                # sleeve isolation + allowances + refusals
+
+# Live cash allowances (sleeves sharing one broker account)
+python live_cash.py --status                 # broker cash, allowances, unallocated
+python live_cash.py --status --account toby-live
+python live_cash.py --credit scrappy-live 2500
+python live_cash.py --debit scrappy-live 500
+python live_cash.py --transfer scrappy-live other-live 1000 --dry-run
 
 # Lifecycle emails (welcome sequence)
 python lifecycle_emails.py                  # send A1 welcome to eligible new signups

@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timezone
 
-from broker import BrokerBackend, BrokerError
+from broker import BrokerBackend, BrokerError, account_key_for_portfolio
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,44 @@ def _require_portfolio(db, portfolio_slug: str) -> dict:
     return portfolio
 
 
+def _account_sleeve_slugs(db, portfolio: dict) -> list[str]:
+    """Slugs of every live portfolio sharing this one's broker account."""
+    key = account_key_for_portfolio(portfolio)
+    return sorted(
+        p.get("slug") or p["id"][:8]
+        for p in db.get_human_portfolios()
+        if (p.get("mode") or "paper") == "live"
+        and account_key_for_portfolio(p) == key
+    )
+
+
+def _refuse_if_shared(db, portfolio: dict, portfolio_slug: str) -> None:
+    """Block the state overwrite when the broker account has several sleeves.
+
+    ``sync_to_db`` works by treating the broker as the source of truth for the
+    WHOLE book. That is correct when one live portfolio owns the account, and
+    catastrophic when several share it (migration 083): the broker reports one
+    pooled set of positions, so copying it into a single portfolio would hand
+    that sleeve every share in the account — including the others' — and wipe
+    their records. There is no way to recover the split afterwards, because the
+    broker never knew it.
+
+    For shared accounts the mirror books each fill against the sleeve that
+    ordered it, and ``reconcile`` reports any divergence for a human to resolve.
+    """
+    siblings = _account_sleeve_slugs(db, portfolio)
+    if len(siblings) > 1:
+        raise BrokerError(
+            f"refusing to sync: broker account "
+            f"{account_key_for_portfolio(portfolio)!r} is shared by "
+            f"{len(siblings)} live portfolios ({', '.join(siblings)}). "
+            f"Overwriting {portfolio_slug!r} from the broker's pooled state "
+            f"would give it the other sleeves' positions and destroy the "
+            f"per-sleeve split, which cannot be reconstructed. Use "
+            f"`--reconcile` to see the differences instead."
+        )
+
+
 def reconcile(backend: BrokerBackend, db, portfolio_slug: str) -> None:
     """Report the diff between the broker account and an AlphaMolt portfolio.
 
@@ -50,22 +88,46 @@ def reconcile(backend: BrokerBackend, db, portfolio_slug: str) -> None:
     exactly what a sync would have to do, without touching the DB.
     """
     portfolio = _require_portfolio(db, portfolio_slug)
-    pid = portfolio["id"]
 
     broker_cash = backend.get_cash()
     broker_pos = {s: p.qty for s, p in backend.get_positions().items()}
 
-    db_account = db.get_portfolio_account(pid) or {}
-    db_cash = float(db_account.get("cash_usd") or 0)
-    db_pos = {
-        h["ticker"]: float(h["quantity"])
-        for h in db.get_portfolio_holdings(pid)
-    }
+    # Compare the broker against EVERY sleeve on the account, not just the one
+    # named — on a shared account a single sleeve is expected to differ from the
+    # pooled total, so comparing it alone would report alarming false drift.
+    sleeve_pfs = [
+        p for p in db.get_human_portfolios()
+        if (p.get("mode") or "paper") == "live"
+        and account_key_for_portfolio(p) == account_key_for_portfolio(portfolio)
+    ] or [portfolio]
+    shared = len(sleeve_pfs) > 1
 
-    print(f"\nReconcile  portfolio={portfolio_slug}  "
+    db_cash = 0.0
+    db_pos: dict[str, float] = {}
+    per_sleeve: list[tuple[str, float]] = []
+    for pf in sleeve_pfs:
+        acct = db.get_portfolio_account(pf["id"]) or {}
+        allowance = float(acct.get("cash_usd") or 0)
+        db_cash += allowance
+        per_sleeve.append((pf.get("slug") or pf["id"][:8], allowance))
+        for h in db.get_portfolio_holdings(pf["id"]):
+            db_pos[h["ticker"]] = db_pos.get(h["ticker"], 0.0) + float(
+                h["quantity"]
+            )
+
+    label = "sleeves" if shared else "portfolio"
+    print(f"\nReconcile  {label}="
+          f"{', '.join(s for s, _ in sorted(per_sleeve))}  "
+          f"account={account_key_for_portfolio(portfolio)}  "
           f"broker={_endpoint_label(backend)}\n")
+
+    if shared:
+        for slug, allowance in sorted(per_sleeve):
+            print(f"  allowance  {slug:<24} ${allowance:>14,.2f}")
+        print(f"  {'unallocated':<35} ${broker_cash - db_cash:>14,.2f}")
     print(f"  cash   alphamolt=${db_cash:,.2f}   broker=${broker_cash:,.2f}   "
-          f"delta=${broker_cash - db_cash:,.2f}")
+          f"delta=${broker_cash - db_cash:,.2f}"
+          f"{'  (unallocated — expected)' if shared else ''}")
 
     symbols = sorted(set(broker_pos) | set(db_pos))
     if not symbols:
@@ -75,7 +137,8 @@ def reconcile(backend: BrokerBackend, db, portfolio_slug: str) -> None:
         for s in symbols:
             a = broker_pos.get(s, 0.0)
             d = db_pos.get(s, 0.0)
-            print(f"  {s:<10}{d:>12.2f}{a:>12.2f}{a - d:>12.2f}")
+            flag = "  <-- DRIFT" if abs(a - d) > 1e-4 else ""
+            print(f"  {s:<10}{d:>12.2f}{a:>12.2f}{a - d:>12.2f}{flag}")
     print()
 
 
@@ -115,6 +178,7 @@ def sync_to_db(
             "— sync mirrors real broker state into the normal tables and "
             "must never overwrite a paper book."
         )
+    _refuse_if_shared(db, portfolio, portfolio_slug)
     pid = portfolio["id"]
 
     broker_cash = backend.get_cash()

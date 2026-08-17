@@ -49,9 +49,11 @@ import time
 import broker_sync
 from alpaca_client import AlpacaClient, AlpacaError
 from broker import (
+    BrokerError,
     ExecResult,
     Fill,
     Position,
+    account_key_for_portfolio,
     band_limit_price,
     price_band_from_env,
 )
@@ -65,9 +67,11 @@ logger = logging.getLogger(__name__)
 
 
 def _alpaca_accounts_map() -> dict[str, dict]:
-    """Per-portfolio Alpaca credentials from the ``ALPACA_ACCOUNTS`` secret.
+    """Alpaca credentials from the ``ALPACA_ACCOUNTS`` secret.
 
-    A JSON object keyed by **live portfolio slug**::
+    A JSON object keyed by **broker account key** —
+    ``portfolios.broker_account_key``, which falls back to the portfolio slug
+    when unset (migration 083)::
 
         {"toby-live":     {"key_id": "...", "secret_key": "...",
                            "base_url": "https://api.alpaca.markets"},
@@ -75,9 +79,11 @@ def _alpaca_accounts_map() -> dict[str, dict]:
                            "base_url": "https://api.alpaca.markets"}}
 
     Lets several owners each run a live follower against their **own** Alpaca
-    account. Unset/empty -> ``{}`` (single-account mode via the bare
-    ``ALPACA_*`` env vars). Raises ``AlpacaError`` on malformed JSON rather than
-    silently degrading to the shared account.
+    account — and lets several live portfolios of ONE owner share a single
+    account as sleeves, by giving them the same ``broker_account_key`` and so
+    resolving the same entry here. Unset/empty -> ``{}`` (single-account mode
+    via the bare ``ALPACA_*`` env vars). Raises ``AlpacaError`` on malformed
+    JSON rather than silently degrading to the shared account.
     """
     raw = os.environ.get("ALPACA_ACCOUNTS", "").strip()
     if not raw:
@@ -139,10 +145,13 @@ class AlpacaExecutionBackend:
         - ``ALPACA_ACCOUNTS`` set -> **authoritative**. ``slug`` present uses its
           credentials; ``slug`` absent raises ``AlpacaError`` (never silently
           trade one owner's targets through another's account).
-        - ``ALPACA_ACCOUNTS`` unset -> legacy single-account mode (bare
-          ``ALPACA_*`` env), but only when ``allow_shared_fallback`` is True.
-          Callers iterating more than one live portfolio pass False, so a second
-          live portfolio can never land in the shared account by accident.
+        - ``ALPACA_ACCOUNTS`` unset -> single-account mode (the bare
+          ``ALPACA_*`` env vars), but only when ``allow_shared_fallback`` is
+          True. Callers pass True while every live portfolio resolves to the
+          SAME account key — several sleeves of one account are unambiguous, so
+          the plain credentials keep working and no per-portfolio map is needed.
+          They pass False once two genuinely different accounts are in play, so
+          one owner's targets can never land in another's account by accident.
         """
         accounts = _alpaca_accounts_map()
         if accounts:
@@ -160,9 +169,11 @@ class AlpacaExecutionBackend:
             return cls(client)
         if not allow_shared_fallback:
             raise AlpacaError(
-                f"ALPACA_ACCOUNTS not set and {slug!r} can't use the shared "
-                f"account here (multiple live portfolios) — configure "
-                f"ALPACA_ACCOUNTS with a per-portfolio entry"
+                f"ALPACA_ACCOUNTS not set and {slug!r} can't use the bare "
+                f"ALPACA_* credentials here, because live portfolios resolve "
+                f"to more than one broker account. Either give every sleeve "
+                f"the same portfolios.broker_account_key (one shared account), "
+                f"or configure ALPACA_ACCOUNTS with an entry per account."
             )
         return cls()  # single-account legacy mode (bare ALPACA_* env)
 
@@ -397,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     if needs_shared:
         try:
             backend = AlpacaExecutionBackend()
-        except AlpacaError as exc:
+        except BrokerError as exc:
             logger.error("%s", exc)
             return 1
         client = backend.client
@@ -470,17 +481,24 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if not live:
                 logger.info("no live portfolios to reconcile")
-            single = len(live) == 1
+            # "One distinct account", not "one portfolio" — several sleeves of
+            # a single account resolve the same credentials unambiguously, so
+            # the bare ALPACA_* env vars stay usable for them.
+            single = len({account_key_for_portfolio(p) for p in live}) == 1
             for p in live:
                 try:
                     be = AlpacaExecutionBackend.for_slug(
-                        p["slug"], allow_shared_fallback=single,
+                        account_key_for_portfolio(p),
+                        allow_shared_fallback=single,
                     )
                     be.sync_to_db(db, p["slug"], dry_run=args.dry_run)
-                except AlpacaError as exc:
-                    logger.error("sync %s failed: %s", p["slug"], exc)
+                except BrokerError as exc:
+                    # Includes the deliberate refusal on a shared (sleeved)
+                    # account — expected, not a fault. Catch the neutral base so
+                    # one such portfolio can't abort the whole loop.
+                    logger.warning("sync %s skipped: %s", p["slug"], exc)
 
-    except AlpacaError as exc:
+    except BrokerError as exc:
         logger.error("%s", exc)
         return 1
 

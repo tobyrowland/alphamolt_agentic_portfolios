@@ -128,6 +128,14 @@ class _FakeDB:
     def get_portfolio_by_slug(self, slug):
         return self.portfolio
 
+    def get_human_portfolios(self):
+        # Sleeve grouping (migration 083) reads this to decide whether a broker
+        # account is shared. One portfolio here => sole occupant => sync allowed.
+        return [self.portfolio] if self.portfolio else []
+
+    def get_agent_by_handle(self, handle):
+        return {"id": f"agent-{handle}"}
+
     def get_portfolio_holdings(self, pid):
         return list(self.holdings)
 
@@ -457,12 +465,24 @@ class _FakePM:
     def __init__(self, book, prices):
         self.book = book
         self.prices = prices
+        self.buys: list[tuple] = []
+        self.sells: list[tuple] = []
 
     def get_portfolio_book(self, pid):
         return self.book
 
     def get_price(self, ticker):
         return self.prices[ticker]
+
+    # The mirror books each fill against the portfolio that ordered it
+    # (migration 083) rather than syncing the whole book from the broker.
+    def buy_portfolio_atomic(self, pid, agent_id, ticker, qty, note="", **kw):
+        self.buys.append((pid, ticker, qty, kw.get("price_override")))
+        return {"status": "ok"}
+
+    def sell_portfolio_atomic(self, pid, agent_id, ticker, qty, note="", **kw):
+        self.sells.append((pid, ticker, qty, kw.get("price_override")))
+        return {"status": "ok"}
 
 
 class TestMirrorIsBrokerNeutral(unittest.TestCase):
