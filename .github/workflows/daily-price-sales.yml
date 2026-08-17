@@ -18,7 +18,12 @@ on:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The updater walks the whole Tier-1 universe at ~1 call/sec, so a run takes
+    # 22-28 min and grows with the universe. At the old 30-min ceiling roughly
+    # one run in three was killed mid-sweep (GitHub reports the timeout as
+    # "cancelled", and the script never reaches its run_logs write — so the
+    # misses were invisible in the DB). 60 leaves real headroom.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
