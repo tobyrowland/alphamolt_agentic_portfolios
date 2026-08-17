@@ -14,8 +14,13 @@ import ActivityDrawer from "@/components/activity-drawer";
 import SectorChip from "@/components/portfolio/sector-chip";
 import PortfolioTabs from "@/components/portfolio/portfolio-tabs";
 import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
+import LiveCashPanel from "@/components/portfolio/live-cash-panel";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
 import BuildRunLive from "@/components/portfolio/build-run-live";
+import {
+  getLiveCashSummary,
+  type LiveCashSummary,
+} from "@/lib/live-cash-query";
 import EditablePortfolioName from "@/components/portfolio/editable-portfolio-name";
 import BadgeRow from "@/components/badges/badge-row";
 import { getEarnedBadges } from "@/lib/badges-query";
@@ -120,6 +125,9 @@ async function getPortfolioPageData(slug: string): Promise<{
     currentId: string | null;
     options: { id: string; name: string }[];
   } | null;
+  /** Owner-only, live followers only: the broker account's cash allowances
+   *  (sleeves — migration 083). */
+  liveCash: LiveCashSummary | null;
 }> {
   const portfolio = await resolveVisiblePortfolio(slug);
   if (!portfolio) {
@@ -138,6 +146,7 @@ async function getPortfolioPageData(slug: string): Promise<{
       holdingsCount: 0,
       earnedBadges: [],
       liveFollow: null,
+      liveCash: null,
     };
   }
   const isOwner = await isViewerOwner(portfolio);
@@ -229,6 +238,17 @@ async function getPortfolioPageData(slug: string): Promise<{
       ])
     : [{} as Record<string, Record<string, number>>, {} as Record<string, string>];
 
+  // The broker account's cash allowances (sleeves — migration 083).
+  // Owner-only, live followers only; fail-open to null so a broker hiccup
+  // never breaks the page.
+  const liveCash =
+    isOwner && mode === "live" && ownerUserId
+      ? await getLiveCashSummary(portfolioId, ownerUserId).catch((err) => {
+          console.error("live cash lookup failed for", slug, err);
+          return null;
+        })
+      : null;
+
   return {
     portfolio,
     isOwner,
@@ -244,6 +264,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     holdingsCount,
     earnedBadges,
     liveFollow,
+    liveCash,
   };
 }
 
@@ -268,6 +289,7 @@ export default async function PortfolioPage({ params }: PageParams) {
     holdingsCount,
     earnedBadges,
     liveFollow,
+    liveCash,
   } = await getPortfolioPageData(slug);
   if (!portfolio) notFound();
 
@@ -356,6 +378,7 @@ export default async function PortfolioPage({ params }: PageParams) {
           portfolioId={portfolio.id}
           isOwner={isOwner}
           liveFollow={liveFollow}
+          liveCash={liveCash}
         />
       ) : isOwner ? (
         <section id="team" className="mb-12 sm:mb-14 scroll-mt-20">
@@ -648,6 +671,7 @@ function LiveFollowerNote({
   portfolioId,
   isOwner,
   liveFollow,
+  liveCash,
 }: {
   portfolioId: string;
   isOwner: boolean;
@@ -655,6 +679,7 @@ function LiveFollowerNote({
     currentId: string | null;
     options: { id: string; name: string }[];
   } | null;
+  liveCash: LiveCashSummary | null;
 }) {
   const followedName =
     liveFollow?.options.find((o) => o.id === liveFollow.currentId)?.name ??
@@ -695,6 +720,9 @@ function LiveFollowerNote({
             options={liveFollow.options}
           />
         )}
+        {/* Cash allowances for the broker account this follower trades
+            (sleeves — migration 083). Owner-only. */}
+        {isOwner && liveCash && <LiveCashPanel summary={liveCash} />}
       </div>
     </section>
   );
