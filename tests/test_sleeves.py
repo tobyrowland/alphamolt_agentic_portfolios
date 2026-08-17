@@ -350,6 +350,41 @@ class TestAccountKey(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class TestSharedCredentialFallback(unittest.TestCase):
+    """Sleeves of ONE account must keep working on the bare ALPACA_* env vars.
+
+    The anti-commingle rule is about distinct *accounts*, not the number of live
+    portfolios. Counting portfolios would force an owner with one Alpaca account
+    to invent an ALPACA_ACCOUNTS map purely because they split it into two
+    sleeves — friction with no safety benefit, since both resolve the same
+    credentials anyway.
+    """
+
+    @staticmethod
+    def _distinct_accounts(live):
+        return len({account_key_for_portfolio(p) for p in live})
+
+    def test_two_sleeves_of_one_account_count_as_one(self):
+        live = [
+            _live("l1", "a-live", key="toby-live"),
+            _live("l2", "b-live", key="toby-live"),
+        ]
+        self.assertEqual(self._distinct_accounts(live), 1)
+
+    def test_two_genuinely_different_accounts_count_as_two(self):
+        live = [
+            _live("l1", "a-live", key="toby-live"),
+            _live("l2", "b-live", key="someone-else-live"),
+        ]
+        self.assertEqual(self._distinct_accounts(live), 2)
+
+    def test_unkeyed_portfolios_fall_back_to_distinct_slugs(self):
+        # Pre-083 rows have no key, so they resolve by slug and stay separate —
+        # which is the safe reading when the owner hasn't declared sharing.
+        live = [_live("l1", "a-live"), _live("l2", "b-live")]
+        self.assertEqual(self._distinct_accounts(live), 2)
+
+
 class TestMirrorRefusesOnDrift(unittest.TestCase):
     def _setup(self, broker_positions, a_holdings, b_holdings):
         a = _live("l1", "a-live", key="shared", follows="paper-1")

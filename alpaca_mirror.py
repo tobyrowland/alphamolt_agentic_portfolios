@@ -445,11 +445,14 @@ def _mirror_all_live(
         logger.info("no live portfolios to mirror")
         return 0
 
-    # Each live portfolio trades its OWN broker account, resolved from its
-    # `portfolios.broker` (default alpaca). With more than one live portfolio,
-    # shared-account fallback is refused so one owner's targets can never land
-    # in another's account.
-    single = len(live) == 1
+    # The bare ALPACA_* env vars name ONE account, so falling back to them is
+    # only safe while every live portfolio resolves to that same account. The
+    # test is therefore "one distinct broker_account_key", NOT "one live
+    # portfolio": several sleeves of a single account are unambiguous and keep
+    # using the plain credentials, while two portfolios pointing at genuinely
+    # different accounts are refused so one owner's targets can never land in
+    # another's account.
+    single = len({account_key_for_portfolio(p) for p in live}) == 1
     rc = 0
     for live_pf in live:
         slug = live_pf.get("slug") or live_pf["id"][:8]
