@@ -24,7 +24,10 @@
 import { revalidatePath } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 import { requireUser } from "@/lib/auth/require-user";
-import { accountKeyFor, getLiveCashSummary } from "@/lib/live-cash-query";
+import {
+  accountKeyFor,
+  getAccountCashSummaryForPortfolio,
+} from "@/lib/live-cash-query";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -131,8 +134,8 @@ export async function creditAllowance(input: {
   if (!amount) return { ok: false, error: "Enter an amount above zero." };
 
   // A credit spends the account's unallocated cash, so it needs the live
-  // broker balance. getLiveCashSummary reads it (and every sibling allowance).
-  const summary = await getLiveCashSummary(sleeve.id, user.id);
+  // broker balance (and every sibling allowance).
+  const summary = await getAccountCashSummaryForPortfolio(sleeve.id, user.id);
   if (!summary) return { ok: false, error: "Could not load the account." };
   if (summary.unallocated == null) {
     return {
@@ -158,6 +161,7 @@ export async function creditAllowance(input: {
   }
   await logLedger(sleeve.id, amount, next, "credit", "web");
   revalidatePath(`/portfolios/${sleeve.slug}`);
+  revalidatePath("/account");
   return { ok: true };
 }
 
@@ -187,6 +191,7 @@ export async function debitAllowance(input: {
   }
   await logLedger(sleeve.id, -amount, next, "debit", "web");
   revalidatePath(`/portfolios/${sleeve.slug}`);
+  revalidatePath("/account");
   return { ok: true };
 }
 
@@ -256,5 +261,6 @@ export async function transferAllowance(input: {
 
   revalidatePath(`/portfolios/${from.slug}`);
   revalidatePath(`/portfolios/${to.slug}`);
+  revalidatePath("/account");
   return { ok: true };
 }

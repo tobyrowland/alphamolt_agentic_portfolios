@@ -62,10 +62,11 @@ export interface DashTrade {
 }
 
 export interface DashboardData {
-  /** Paper (arena) books only — the live follower is split out below. */
+  /** Paper (arena) books only — the live followers are split out below. */
   portfolios: DashPortfolio[];
-  /** The private real-money Alpaca follower, if the owner has one. */
-  livePortfolio: DashPortfolio | null;
+  /** The private real-money followers, if the owner has any. Several can
+   *  exist since migration 083 (sleeves of one broker account). */
+  livePortfolios: DashPortfolio[];
   activity: DashTrade[];
   /** Raw SPY closes over the full lookback; the pulse normalises per period. */
   spyValues: DashValuePoint[];
@@ -107,7 +108,7 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
   const ids = portfolios.map((p) => p.id);
 
   if (ids.length === 0) {
-    return { portfolios: [], livePortfolio: null, activity: [], spyValues: [] };
+    return { portfolios: [], livePortfolios: [], activity: [], spyValues: [] };
   }
 
   // Fan out the shared reads. The live-follower lookup is filtered on
@@ -141,19 +142,25 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
       .from("portfolios")
       .select("id, follows_portfolio_id")
       .eq("owner_user_id", userId)
-      .eq("mode", "live")
-      .maybeSingle(),
+      .eq("mode", "live"),
   ]);
 
-  const liveRow = liveRes.data as
-    | { id?: string; follows_portfolio_id?: string | null }
-    | null;
-  const liveId = liveRow?.id ?? null;
-  // Name of the paper book the live follower mirrors — resolved against the
+  // All the owner's live followers — several can exist since migration 083
+  // (sleeves of one broker account), so this must never assume one row.
+  const liveRows = (liveRes.data ?? []) as Array<{
+    id: string;
+    follows_portfolio_id: string | null;
+  }>;
+  const liveIds = new Set(liveRows.map((r) => r.id));
+  // Name of the paper book each live follower mirrors — resolved against the
   // already-fetched portfolios list (owner-only path, no extra query).
-  const followsName =
-    portfolios.find((p) => p.id === liveRow?.follows_portfolio_id)
-      ?.display_name ?? null;
+  const followsNameById = new Map<string, string | null>(
+    liveRows.map((r) => [
+      r.id,
+      portfolios.find((p) => p.id === r.follows_portfolio_id)?.display_name ??
+        null,
+    ]),
+  );
 
   // History grouped by portfolio.
   const histByP = new Map<string, { date: string; value: number; pnl: number | null; pos: number }[]>();
@@ -210,17 +217,17 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
       valueSeries: fullHist.map((h) => ({ date: h.date, value: h.value })),
       hasBuyer: roles.buyer,
       hasReviewer: roles.reviewer,
-      isLive: p.id === liveId,
-      followsName: p.id === liveId ? followsName : null,
+      isLive: liveIds.has(p.id),
+      followsName: followsNameById.get(p.id) ?? null,
     };
   });
 
-  // Split the private live follower out of the paper (arena) books so it
-  // never double-counts in the pulse aggregate / cards / switch chips.
+  // Split the private live followers out of the paper (arena) books so they
+  // never double-count in the pulse aggregate / cards / switch chips.
   const dashPortfolios = dashAll.filter((p) => !p.isLive);
-  const livePortfolio = dashAll.find((p) => p.isLive) ?? null;
+  const livePortfolios = dashAll.filter((p) => p.isLive);
 
-  // Activity feed — arena books only; the live follower's mirror trades are
+  // Activity feed — arena books only; the live followers' mirror trades are
   // real-money plumbing, not swarm decisions, so they stay off this feed.
   const trades = ((tradesRes.data ?? []) as Array<{
     id: number | string;
@@ -232,7 +239,7 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     executed_at: string;
     note: string | null;
     portfolio_id: string;
-  }>).filter((t) => t.portfolio_id !== liveId);
+  }>).filter((t) => !liveIds.has(t.portfolio_id));
   const agentIds = [...new Set(trades.map((t) => t.agent_id))];
   const nameByAgent = new Map<string, string>();
   if (agentIds.length) {
@@ -262,5 +269,5 @@ export async function getDashboardData(userId: string): Promise<DashboardData> {
     };
   });
 
-  return { portfolios: dashPortfolios, livePortfolio, activity, spyValues };
+  return { portfolios: dashPortfolios, livePortfolios, activity, spyValues };
 }

@@ -1,21 +1,22 @@
 import { getSupabase } from "@/lib/supabase";
 
 /**
- * Server reads for the live cash-allowance panel (sleeves — migration 083).
+ * Server reads for the live cash-allowance hub (sleeves — migration 083).
  *
  * The broker holds ONE pot of cash; each live portfolio ("sleeve") on that
  * account holds an allowance (`portfolio_accounts.cash_usd`) — the most it may
  * spend. Cash credited to nobody is "unallocated": dividends, interest, fees
  * and fresh deposits all land there until the owner credits them out. This
- * module assembles that picture for the owner's UI.
+ * module assembles that picture per broker account for the owner's /account
+ * hub (and for the credit action's bound check).
  *
  * Broker cash is a best-effort read of the Alpaca account using the bare
  * `ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY` env vars, when the web server
- * has them. Without them the panel still works — allowances, holdings and
- * transfers don't need the broker — but `brokerCash`/`unallocated` are null and
- * crediting is disabled (a credit is bounded by unallocated cash, which can't
- * be known without the broker balance). Python twin: `live_cash.py` /
- * `sleeves.py`.
+ * has them. Without them the hub still works — allowances, holdings, debits
+ * and transfers don't need the broker — but `brokerCash`/`unallocated` are
+ * null and crediting is disabled (a credit is bounded by unallocated cash,
+ * which can't be known without the broker balance). Python twin:
+ * `live_cash.py` / `sleeves.py`.
  */
 
 export type SleeveCash = {
@@ -26,8 +27,8 @@ export type SleeveCash = {
   allowance: number;
   /** Mark-to-market value of this sleeve's own recorded holdings. */
   holdingsValue: number;
-  /** Whether this row is the portfolio the viewer is looking at. */
-  isCurrent: boolean;
+  /** The paper book this follower mirrors (follows_portfolio_id), if set. */
+  followsPortfolioId: string | null;
 };
 
 export type LedgerEntry = {
@@ -60,6 +61,14 @@ export function accountKeyFor(p: {
   return key || p.slug;
 }
 
+type LivePortfolioRow = {
+  id: string;
+  slug: string;
+  display_name: string;
+  broker_account_key: string | null;
+  follows_portfolio_id: string | null;
+};
+
 /** Best-effort Alpaca cash balance from the bare env credentials. */
 async function fetchBrokerCash(): Promise<number | null> {
   const keyId = process.env.ALPACA_API_KEY_ID;
@@ -88,45 +97,29 @@ async function fetchBrokerCash(): Promise<number | null> {
   }
 }
 
-/**
- * The full cash picture for the broker account this live portfolio uses.
- * Owner-only data — callers must pass a verified owner's userId; every query
- * here re-scopes to it. Returns null when the portfolio isn't the caller's
- * live portfolio.
- */
-export async function getLiveCashSummary(
-  portfolioId: string,
+/** All the owner's live portfolios (the sleeve universe). */
+async function ownedLivePortfolios(
   ownerUserId: string,
-): Promise<LiveCashSummary | null> {
+): Promise<LivePortfolioRow[] | null> {
   const supabase = getSupabase();
-
-  const { data: current, error: curErr } = await supabase
+  const { data, error } = await supabase
     .from("portfolios")
-    .select("id, slug, display_name, broker_account_key")
-    .eq("id", portfolioId)
-    .eq("owner_user_id", ownerUserId)
-    .eq("mode", "live")
-    .maybeSingle();
-  if (curErr || !current) {
-    if (curErr) console.error("live-cash: portfolio lookup failed:", curErr);
-    return null;
-  }
-  const accountKey = accountKeyFor(current);
-
-  // Every live portfolio of this owner; filter to the same account key in JS
-  // because the key is a COALESCE over two columns.
-  const { data: liveRows, error: liveErr } = await supabase
-    .from("portfolios")
-    .select("id, slug, display_name, broker_account_key")
+    .select("id, slug, display_name, broker_account_key, follows_portfolio_id")
     .eq("owner_user_id", ownerUserId)
     .eq("mode", "live");
-  if (liveErr) {
-    console.error("live-cash: live portfolios lookup failed:", liveErr);
+  if (error) {
+    console.error("live-cash: live portfolios lookup failed:", error);
     return null;
   }
-  const sleevePortfolios = (liveRows ?? []).filter(
-    (p) => accountKeyFor(p) === accountKey,
-  );
+  return (data ?? []) as LivePortfolioRow[];
+}
+
+/** Build one account's summary from its sleeve portfolio rows. */
+async function buildAccountSummary(
+  accountKey: string,
+  sleevePortfolios: LivePortfolioRow[],
+): Promise<LiveCashSummary> {
+  const supabase = getSupabase();
   const ids = sleevePortfolios.map((p) => p.id);
 
   const [{ data: accounts }, { data: holdings }, brokerCash] =
@@ -151,8 +144,8 @@ export async function getLiveCashSummary(
   }
 
   // Value each sleeve's holdings at the latest Level 0 price. A ticker missing
-  // a price contributes 0 — the panel is a cash console, not the MTM of
-  // record (portfolio_valuation.py owns that).
+  // a price contributes 0 — the hub is a cash console, not the MTM of record
+  // (portfolio_valuation.py owns that).
   const holdingRows = (holdings ?? []) as {
     portfolio_id: string;
     ticker: string;
@@ -189,7 +182,7 @@ export async function getLiveCashSummary(
       displayName: p.display_name,
       allowance: round2(allowanceById.get(p.id) ?? 0),
       holdingsValue: round2(holdingsValueById.get(p.id) ?? 0),
-      isCurrent: p.id === current.id,
+      followsPortfolioId: p.follows_portfolio_id,
     }))
     .sort((a, b) => a.slug.localeCompare(b.slug));
 
@@ -230,6 +223,49 @@ export async function getLiveCashSummary(
     unallocated,
     ledger,
   };
+}
+
+/**
+ * Every broker account the owner has live portfolios on, each with its full
+ * cash picture — the /account hub's data. Normally one account; sorted by key
+ * for stable rendering. Owner-only data — callers must pass a verified
+ * owner's userId; every query re-scopes to it.
+ */
+export async function getLiveCashOverview(
+  ownerUserId: string,
+): Promise<LiveCashSummary[]> {
+  const live = await ownedLivePortfolios(ownerUserId);
+  if (!live || live.length === 0) return [];
+
+  const byKey = new Map<string, LivePortfolioRow[]>();
+  for (const p of live) {
+    const key = accountKeyFor(p);
+    byKey.set(key, [...(byKey.get(key) ?? []), p]);
+  }
+  return Promise.all(
+    [...byKey.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, rows]) => buildAccountSummary(key, rows)),
+  );
+}
+
+/**
+ * One broker account's summary, anchored by a portfolio on it — the credit
+ * action's bound check (a credit is capped by the account's unallocated
+ * cash). Returns null when the portfolio isn't the caller's live portfolio.
+ */
+export async function getAccountCashSummaryForPortfolio(
+  portfolioId: string,
+  ownerUserId: string,
+): Promise<LiveCashSummary | null> {
+  const live = await ownedLivePortfolios(ownerUserId);
+  const anchor = live?.find((p) => p.id === portfolioId);
+  if (!live || !anchor) return null;
+  const key = accountKeyFor(anchor);
+  return buildAccountSummary(
+    key,
+    live.filter((p) => accountKeyFor(p) === key),
+  );
 }
 
 function round2(n: number): number {
