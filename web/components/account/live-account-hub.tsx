@@ -5,6 +5,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { LiveCashSummary, SleeveCash } from "@/lib/live-cash-query";
 import {
+  createLiveFollower,
   creditAllowance,
   debitAllowance,
   transferAllowance,
@@ -31,6 +32,19 @@ export default function LiveAccountHub({
   paperOptions: { id: string; name: string }[];
 }) {
   if (accounts.length === 0) return null;
+  // Paper books that already have a live follower (across every account) —
+  // the heartbeat pairs one follower per paper book, so these leave the
+  // "Go live" picker.
+  const followedPaperIds = new Set(
+    accounts.flatMap((a) =>
+      a.sleeves
+        .map((s) => s.followsPortfolioId)
+        .filter((id): id is string => id != null),
+    ),
+  );
+  const unfollowedPaper = paperOptions.filter(
+    (p) => !followedPaperIds.has(p.id),
+  );
   return (
     <div className="space-y-6">
       {accounts.map((a) => (
@@ -38,6 +52,7 @@ export default function LiveAccountHub({
           key={a.accountKey}
           account={a}
           paperOptions={paperOptions}
+          unfollowedPaper={unfollowedPaper}
           showKey={accounts.length > 1}
         />
       ))}
@@ -48,10 +63,12 @@ export default function LiveAccountHub({
 function AccountPanel({
   account,
   paperOptions,
+  unfollowedPaper,
   showKey,
 }: {
   account: LiveCashSummary;
   paperOptions: { id: string; name: string }[];
+  unfollowedPaper: { id: string; name: string }[];
   showKey: boolean;
 }) {
   const router = useRouter();
@@ -136,6 +153,37 @@ function AccountPanel({
           />
         ))}
       </div>
+
+      {/* Go live with another strategy: create a follower for an unfollowed
+          paper book as a new sleeve of THIS account, funded from an existing
+          sleeve in the same confirmed step. */}
+      {unfollowedPaper.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-white/[0.08]">
+          <p className="text-[11px] font-mono uppercase tracking-wide text-text-muted mb-2">
+            Go live with another strategy
+          </p>
+          <GoLiveAction
+            disabled={pending}
+            paperOptions={unfollowedPaper}
+            sleeves={account.sleeves.map((s) => ({
+              id: s.portfolioId,
+              name: s.displayName,
+              allowance: s.allowance,
+            }))}
+            onSubmit={(paperId, fromId, amount, done) =>
+              run(
+                () =>
+                  createLiveFollower({
+                    paperPortfolioId: paperId,
+                    fundFromPortfolioId: fromId,
+                    amount,
+                  }),
+                done,
+              )
+            }
+          />
+        </div>
+      )}
 
       {/* Between-sleeves transfer — only meaningful with 2+ */}
       {account.sleeves.length > 1 && (
@@ -366,6 +414,165 @@ function AmountAction({
       </button>
       <span className="text-[11px] text-text-muted">{hint}</span>
     </form>
+  );
+}
+
+function GoLiveAction({
+  disabled,
+  paperOptions,
+  sleeves,
+  onSubmit,
+}: {
+  disabled: boolean;
+  paperOptions: { id: string; name: string }[];
+  sleeves: { id: string; name: string; allowance: number }[];
+  onSubmit: (
+    paperId: string,
+    fromId: string,
+    amount: number,
+    doneMessage: string,
+  ) => void;
+}) {
+  const [paperId, setPaperId] = useState(paperOptions[0]?.id ?? "");
+  const [fromId, setFromId] = useState(sleeves[0]?.id ?? "");
+  const [raw, setRaw] = useState("");
+  const [confirming, setConfirming] = useState(false);
+
+  const amount = Number(raw);
+  const paper = paperOptions.find((p) => p.id === paperId);
+  const from = sleeves.find((s) => s.id === fromId);
+  const valid =
+    Number.isFinite(amount) && amount > 0 && paper != null && from != null;
+  const overdrawn = valid && from != null && amount > from.allowance + 0.01;
+
+  const selectCls =
+    "rounded-lg border border-white/[0.12] bg-transparent px-2 py-1.5 text-[13px] text-text focus:outline-none focus:border-[var(--color-green)]/50 disabled:opacity-50";
+
+  function submit() {
+    if (!valid || !paper || !from) return;
+    onSubmit(
+      paperId,
+      fromId,
+      amount,
+      `${paper.name} (Live) created — $${fmt(amount)} moved from ${from.name}. ` +
+        "Its mirror buys the paper book's shape on the next sync.",
+    );
+    setConfirming(false);
+    setRaw("");
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={paperId}
+          onChange={(e) => {
+            setPaperId(e.target.value);
+            setConfirming(false);
+          }}
+          disabled={disabled}
+          className={selectCls}
+          aria-label="Paper portfolio to take live"
+        >
+          {paperOptions.map((p) => (
+            <option key={p.id} value={p.id} className="bg-black">
+              {p.name}
+            </option>
+          ))}
+        </select>
+        <span className="text-[11px] text-text-muted">funded with</span>
+        <input
+          type="number"
+          min="0.01"
+          step="0.01"
+          inputMode="decimal"
+          placeholder="0.00"
+          value={raw}
+          onChange={(e) => {
+            setRaw(e.target.value);
+            setConfirming(false);
+          }}
+          disabled={disabled}
+          className="w-28 rounded-lg border border-white/[0.12] bg-transparent px-2.5 py-1.5 text-sm font-mono text-text placeholder:text-text-muted focus:outline-none focus:border-[var(--color-green)]/50 disabled:opacity-50"
+          aria-label="Initial allowance"
+        />
+        {sleeves.length > 1 ? (
+          <>
+            <span className="text-[11px] text-text-muted">from</span>
+            <select
+              value={fromId}
+              onChange={(e) => {
+                setFromId(e.target.value);
+                setConfirming(false);
+              }}
+              disabled={disabled}
+              className={selectCls}
+              aria-label="Funding source"
+            >
+              {sleeves.map((s) => (
+                <option key={s.id} value={s.id} className="bg-black">
+                  {s.name} (${fmt(s.allowance)})
+                </option>
+              ))}
+            </select>
+          </>
+        ) : (
+          <span className="text-[11px] text-text-muted">
+            from {from?.name} (${from ? fmt(from.allowance) : "0.00"} spendable)
+          </span>
+        )}
+        {!confirming && (
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            disabled={disabled || !valid || overdrawn}
+            className="inline-flex items-center rounded-lg border border-[var(--color-green)]/40 px-3 py-1.5 text-[13px] font-medium text-[var(--color-green)] hover:bg-[var(--color-green)]/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Go live
+          </button>
+        )}
+      </div>
+
+      {overdrawn && from && (
+        <p className="mt-2 text-xs text-[var(--color-red)] leading-relaxed">
+          {from.name} only has ${fmt(from.allowance)} spendable.
+        </p>
+      )}
+
+      {/* Real-money confirm: creating the follower arms its mirror — on the
+          next sync it buys the paper book's shape with the funded allowance. */}
+      {confirming && valid && paper && from && (
+        <div className="mt-3 rounded-xl border border-[var(--color-red,#FF3333)]/40 bg-[var(--color-red,#FF3333)]/[0.06] px-3.5 py-3">
+          <p className="text-sm text-text leading-relaxed">
+            Create <span className="font-bold">{paper.name} (Live)</span> and
+            move <span className="font-bold">${fmt(amount)}</span> from{" "}
+            <span className="font-bold">{from.name}</span>?
+          </p>
+          <p className="mt-1 text-[11px] font-mono text-text-muted leading-relaxed">
+            From the next sync its mirror will place real orders, buying{" "}
+            {paper.name}&apos;s positions with that allowance.
+          </p>
+          <div className="mt-2.5 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={submit}
+              disabled={disabled}
+              className="px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest rounded border border-[var(--color-red,#FF3333)]/50 text-[var(--color-red,#FF3333)] hover:bg-[var(--color-red,#FF3333)]/10 disabled:opacity-40 transition-colors"
+            >
+              {disabled ? "Creating…" : "Yes — go live"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              disabled={disabled}
+              className="px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest rounded border border-white/15 text-text-muted hover:text-text disabled:opacity-40 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

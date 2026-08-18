@@ -1690,6 +1690,18 @@ unchanged. Migration 083 also lifts the one-live-per-user index, adds
 `portfolio_cash_ledger` (audit of allowance movements) and seeds the
 `live-mirror` house agent that mirror fills are attributed to.
 
+**Creating a sleeve.** The /account hub's **"Go live with another strategy"**
+control (`createLiveFollower` in `web/lib/live-cash-mutations.ts`) creates a
+follower for one of the owner's unfollowed paper books as a new sleeve of the
+existing account — `broker_account_key` set explicitly to the account's key,
+funded in the same confirmed step by an allowance transfer from an existing
+sleeve (which also seeds `starting_cash`, so the P&L baseline is the funded
+amount). Shown only when the user already has ≥1 live portfolio; a user's
+FIRST go-live stays operator-driven (`bootstrap_live_portfolio.py`, whose
+pre-083 one-live-per-user guard is replaced by the real rules: one follower
+per paper book, and `--account-key` — defaulting to the sole existing
+account's key — when other live rows exist).
+
 ### sleeves.py
 Pure sleeve arithmetic — `recorded_positions`, `position_drift`,
 `unallocated_cash`, `plan_credit`, `sleeve_own_positions`. No DB, no broker

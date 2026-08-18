@@ -28,6 +28,7 @@ import {
   accountKeyFor,
   getAccountCashSummaryForPortfolio,
 } from "@/lib/live-cash-query";
+import { uniquePortfolioSlug } from "@/lib/slug";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -263,4 +264,176 @@ export async function transferAllowance(input: {
   revalidatePath(`/portfolios/${to.slug}`);
   revalidatePath("/account");
   return { ok: true };
+}
+
+/** Live followers per user — belt-and-braces cap, mirrors MAX_PAPER_PORTFOLIOS. */
+const MAX_LIVE_PORTFOLIOS = 5;
+
+/**
+ * "Go live": create a live follower for one of the caller's paper books as a
+ * NEW SLEEVE of an existing broker account, funded in the same step.
+ *
+ * The new row's broker_account_key is set explicitly to the funding sleeve's
+ * account key — never left NULL. A NULL key falls back to the new slug, which
+ * would make the account look like TWO distinct broker accounts and (under the
+ * bare ALPACA_* credentials) stop the mirror for every live portfolio.
+ *
+ * One follower per paper book: the heartbeat's live↔paper pairing is keyed by
+ * paper id and refuses duplicates, so this refuses them first, and the UI only
+ * offers unfollowed books.
+ *
+ * Funding reuses the transfer mechanics (allowance debit/credit + ledger) and
+ * also sets the new sleeve's starting_cash to the funded amount, so its P&L
+ * baseline is the real capital it started with — not the $0 it was born with.
+ * If the funding leg fails after creation, the sleeve is kept (unfunded) and
+ * the error says to finish with the Move control; it is never deleted.
+ *
+ * This flow only ADDS a sleeve to an account that already has a live
+ * portfolio. A user's first go-live stays operator-driven
+ * (bootstrap_live_portfolio.py) — deliberate, per migration 083.
+ */
+export async function createLiveFollower(input: {
+  paperPortfolioId: string;
+  fundFromPortfolioId: string;
+  amount: number;
+}): Promise<ActionResult & { slug?: string }> {
+  const { user } = await requireUser();
+  const supabase = getSupabase();
+
+  const amount = parseAmount(input.amount);
+  if (!amount) return { ok: false, error: "Enter an amount above zero." };
+
+  // The paper book to follow — must be the caller's own arena book.
+  const { data: paper, error: paperErr } = await supabase
+    .from("portfolios")
+    .select("id, slug, display_name")
+    .eq("id", input.paperPortfolioId)
+    .eq("owner_user_id", user.id)
+    .eq("mode", "paper")
+    .maybeSingle();
+  if (paperErr || !paper) {
+    if (paperErr) console.error("createLiveFollower paper lookup:", paperErr);
+    return { ok: false, error: "Pick one of your own paper portfolios." };
+  }
+
+  // One follower per paper book (the heartbeat pairing is keyed by paper id).
+  const { data: existingFollower, error: followErr } = await supabase
+    .from("portfolios")
+    .select("slug")
+    .eq("follows_portfolio_id", paper.id)
+    .eq("mode", "live")
+    .maybeSingle();
+  if (followErr) {
+    console.error("createLiveFollower follower check:", followErr);
+    return { ok: false, error: "Could not verify that portfolio. Try again." };
+  }
+  if (existingFollower) {
+    return {
+      ok: false,
+      error: `${paper.display_name} already has a live follower (${existingFollower.slug}).`,
+    };
+  }
+
+  // Funding source — the caller's own existing sleeve; its account key is
+  // what makes the new row a sleeve of the SAME broker account.
+  const source = await resolveOwnedSleeve(input.fundFromPortfolioId, user.id);
+  if (!source) {
+    return { ok: false, error: "The funding source isn't your live portfolio." };
+  }
+
+  const { count: liveCount } = await supabase
+    .from("portfolios")
+    .select("id", { count: "exact", head: true })
+    .eq("owner_user_id", user.id)
+    .eq("mode", "live");
+  if ((liveCount ?? 0) >= MAX_LIVE_PORTFOLIOS) {
+    return {
+      ok: false,
+      error: `Live portfolio limit reached (${MAX_LIVE_PORTFOLIOS}).`,
+    };
+  }
+
+  // Check the source can afford the funding BEFORE creating anything.
+  const sourceAllowance = await readAllowance(source.id);
+  if (sourceAllowance == null) {
+    return { ok: false, error: "Could not load the account." };
+  }
+  if (amount > sourceAllowance + CASH_TOLERANCE) {
+    return {
+      ok: false,
+      error: `${source.slug} has $${sourceAllowance.toFixed(2)} spendable — cannot fund $${amount.toFixed(2)}.`,
+    };
+  }
+
+  // Create the follower row (private by DB CHECK; mode='live'; explicit
+  // account key) + its zero-cash account, matching bootstrap_live_portfolio.py.
+  const slug = await uniquePortfolioSlug(`${paper.display_name} live`);
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: created, error: insertErr } = await supabase
+    .from("portfolios")
+    .insert({
+      slug,
+      display_name: `${paper.display_name} (Live)`,
+      owner_user_id: user.id,
+      owner_agent_id: null,
+      is_public: false,
+      mode: "live",
+      description: null,
+      follows_portfolio_id: paper.id,
+      broker_account_key: source.accountKey,
+    })
+    .select("id")
+    .maybeSingle();
+  if (insertErr || !created) {
+    console.error("createLiveFollower insert failed:", insertErr);
+    return { ok: false, error: "Could not create the live portfolio. Try again." };
+  }
+  const newId = (created as { id: string }).id;
+  const { error: seedErr } = await supabase.from("portfolio_accounts").upsert({
+    portfolio_id: newId,
+    cash_usd: 0,
+    starting_cash: 0,
+    inception_date: today,
+  });
+  if (seedErr) {
+    console.error("createLiveFollower account seed failed:", seedErr);
+    return {
+      ok: false,
+      error:
+        `${paper.display_name} (Live) was created but its cash account ` +
+        "could not be initialised — refresh and fund it with the Move control.",
+    };
+  }
+
+  // Funding leg — transfer semantics (source allowance → new sleeve), plus
+  // starting_cash so the P&L baseline is the funded amount.
+  const sourceNext = Math.round((sourceAllowance - amount) * 100) / 100;
+  const kept =
+    `${paper.display_name} (Live) was created unfunded — ` +
+    "fund it with the Move control once the page refreshes.";
+  if (!(await writeAllowance(source.id, sourceAllowance, sourceNext))) {
+    return { ok: false, error: `${RETRY_MSG} ${kept}` };
+  }
+  await logLedger(source.id, -amount, sourceNext, "transfer-out", `go-live → ${slug}`);
+
+  const { error: fundErr } = await supabase
+    .from("portfolio_accounts")
+    .update({ cash_usd: amount, starting_cash: amount })
+    .eq("portfolio_id", newId)
+    .eq("cash_usd", 0);
+  if (fundErr) {
+    console.error("createLiveFollower funding failed:", fundErr);
+    return {
+      ok: false,
+      error:
+        `Moved $${amount.toFixed(2)} out of ${source.slug}, but crediting the ` +
+        `new sleeve failed — the amount is sitting unallocated. ${kept}`,
+    };
+  }
+  await logLedger(newId, amount, amount, "transfer-in", `go-live ← ${source.slug}`);
+
+  revalidatePath("/account");
+  revalidatePath(`/portfolios/${slug}`);
+  revalidatePath(`/portfolios/${source.slug}`);
+  return { ok: true, slug };
 }
