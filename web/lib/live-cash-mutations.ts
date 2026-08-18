@@ -392,7 +392,10 @@ async function executeInKind(
  */
 async function dispatchRestructure(portfolioId: string): Promise<boolean> {
   try {
-    const res = await syncLivePortfolioToAlpaca({ portfolioId });
+    const res = await syncLivePortfolioToAlpaca({
+      portfolioId,
+      source: "restructure",
+    });
     return res.ok;
   } catch (err) {
     console.error("restructure dispatch failed:", err);
@@ -699,6 +702,15 @@ export async function createFollowerShell(input: {
  */
 export async function applyLiveSplit(input: {
   targets: { portfolioId: string; target: number }[];
+  /**
+   * The pot the caller's targets were typed against. Prices are re-read here,
+   * so the fresh total can differ from the one on screen (a daily price stamp
+   * landing mid-session is enough). When it does, the targets are rescaled to
+   * the fresh pot instead of the whole action failing with a "targets add up
+   * to $X but the portfolios are worth $Y" refusal — which is a split's
+   * proportions surviving a price tick, not a change of intent.
+   */
+  assumedTotal?: number;
 }): Promise<ActionResult & { movesExecuted?: number }> {
   const { user } = await requireUser();
   if (!input.targets || input.targets.length < 2) {
@@ -741,14 +753,33 @@ export async function applyLiveSplit(input: {
   }
 
   const totalCurrent = rows.reduce((s, r) => s + r.current, 0);
-  const totalTarget = rows.reduce((s, r) => s + r.target, 0);
+  let totalTarget = rows.reduce((s, r) => s + r.target, 0);
+
+  // The caller's targets were typed against the pot as it was rendered. If
+  // prices moved since, rescale the targets to the fresh pot (proportions are
+  // the intent; the exact dollars are not) — but only for a small drift, so a
+  // genuinely wrong set of numbers is still refused.
+  const assumed = Number(input.assumedTotal);
+  if (
+    Number.isFinite(assumed) &&
+    assumed > 0 &&
+    totalCurrent > 0 &&
+    Math.abs(totalCurrent - assumed) <= assumed * 0.02 &&
+    Math.abs(totalTarget - assumed) <= Math.max(1, assumed * 0.001)
+  ) {
+    const scale = totalCurrent / assumed;
+    for (const r of rows) r.target = Math.round(r.target * scale * 100) / 100;
+    totalTarget = rows.reduce((s, r) => s + r.target, 0);
+  }
+
   if (Math.abs(totalCurrent - totalTarget) > Math.max(1, totalCurrent * 0.001)) {
     return {
       ok: false,
       error:
         `Targets add up to $${totalTarget.toFixed(2)} but the account's ` +
         `portfolios are worth $${totalCurrent.toFixed(2)} — a split ` +
-        "redistributes the pot, it can't resize it.",
+        "redistributes the pot, it can't resize it. Refresh the page to pick " +
+        "up the current numbers and set the targets again.",
     };
   }
 

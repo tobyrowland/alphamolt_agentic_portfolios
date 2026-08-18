@@ -37,10 +37,18 @@ export type SleeveCash = {
    * an inherited book can never sit unnoticed.
    */
   offBookValue: number;
+  /**
+   * Has real capital EVER been attributed to this sleeve? A follower created
+   * as an empty shell starts at `starting_cash = 0`; funding it (cash or in
+   * kind) sets the baseline. Lets the hub say "never funded" instead of
+   * leaving a $0 row that reads as a stuck transaction.
+   */
+  everFunded: boolean;
 };
 
 export type LedgerEntry = {
   id: number;
+  portfolioId: string;
   portfolioSlug: string;
   deltaUsd: number;
   reason: string;
@@ -134,7 +142,7 @@ async function buildAccountSummary(
     await Promise.all([
       supabase
         .from("portfolio_accounts")
-        .select("portfolio_id, cash_usd")
+        .select("portfolio_id, cash_usd, starting_cash")
         .in("portfolio_id", ids),
       supabase
         .from("portfolio_holdings")
@@ -144,11 +152,14 @@ async function buildAccountSummary(
     ]);
 
   const allowanceById = new Map<string, number>();
+  const startingCashById = new Map<string, number>();
   for (const a of (accounts ?? []) as {
     portfolio_id: string;
     cash_usd: number | string | null;
+    starting_cash: number | string | null;
   }[]) {
     allowanceById.set(a.portfolio_id, Number(a.cash_usd ?? 0));
+    startingCashById.set(a.portfolio_id, Number(a.starting_cash ?? 0));
   }
 
   // Value each sleeve's holdings at the latest Level 0 price. A ticker missing
@@ -222,15 +233,23 @@ async function buildAccountSummary(
   }
 
   const sleeves: SleeveCash[] = sleevePortfolios
-    .map((p) => ({
-      portfolioId: p.id,
-      slug: p.slug,
-      displayName: p.display_name,
-      allowance: round2(allowanceById.get(p.id) ?? 0),
-      holdingsValue: round2(holdingsValueById.get(p.id) ?? 0),
-      followsPortfolioId: p.follows_portfolio_id,
-      offBookValue: round2(offBookById.get(p.id) ?? 0),
-    }))
+    .map((p) => {
+      const allowance = round2(allowanceById.get(p.id) ?? 0);
+      const holdingsValue = round2(holdingsValueById.get(p.id) ?? 0);
+      return {
+        portfolioId: p.id,
+        slug: p.slug,
+        displayName: p.display_name,
+        allowance,
+        holdingsValue,
+        followsPortfolioId: p.follows_portfolio_id,
+        offBookValue: round2(offBookById.get(p.id) ?? 0),
+        everFunded:
+          (startingCashById.get(p.id) ?? 0) > 0 ||
+          allowance > 0 ||
+          holdingsValue > 0,
+      };
+    })
     .sort((a, b) => a.slug.localeCompare(b.slug));
 
   const totalAllowance = sleeves.reduce((s, x) => s + x.allowance, 0);
@@ -256,6 +275,7 @@ async function buildAccountSummary(
     }[]
   ).map((r) => ({
     id: r.id,
+    portfolioId: r.portfolio_id,
     portfolioSlug: slugById.get(r.portfolio_id) ?? "?",
     deltaUsd: Number(r.delta_usd),
     reason: r.reason,

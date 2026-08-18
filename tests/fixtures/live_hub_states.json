@@ -1,0 +1,578 @@
+{
+  "comment": "Fixture for web/lib/live-activity.ts. `helpers` pins the schedule/relative-time maths; `states` pins the exact sentences the live hub shows for each real-world situation — that copy is the contract, so a regression there is a test failure, not a style change.",
+  "helpers": [
+    {
+      "name": "next run later the same weekday",
+      "fn": "nextScheduledRun",
+      "now": "2026-08-18T09:00:00Z",
+      "expect": "Tue 14:00 UTC"
+    },
+    {
+      "name": "after the 14:00 mirror, the 23:00 reconcile is next",
+      "fn": "nextScheduledRun",
+      "now": "2026-08-18T15:00:00Z",
+      "expect": "Tue 23:00 UTC"
+    },
+    {
+      "name": "after Friday's last run, Monday",
+      "fn": "nextScheduledRun",
+      "now": "2026-08-21T23:30:00Z",
+      "expect": "Mon 14:00 UTC"
+    },
+    {
+      "name": "Saturday rolls to Monday",
+      "fn": "nextScheduledRun",
+      "now": "2026-08-22T10:00:00Z",
+      "expect": "Mon 14:00 UTC"
+    },
+    {
+      "name": "Sunday rolls to Monday",
+      "fn": "nextScheduledRun",
+      "now": "2026-08-23T18:00:00Z",
+      "expect": "Mon 14:00 UTC"
+    },
+    {
+      "name": "weekend is outside trading hours",
+      "fn": "definitelyOutsideTradingHours",
+      "now": "2026-08-22T15:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "weekday mid-session is not outside trading hours",
+      "fn": "definitelyOutsideTradingHours",
+      "now": "2026-08-18T15:00:00Z",
+      "expect": false
+    },
+    {
+      "name": "weekday before the open is outside trading hours",
+      "fn": "definitelyOutsideTradingHours",
+      "now": "2026-08-18T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "seconds read as just now",
+      "fn": "relativeTime",
+      "now": "2026-08-18T12:00:00Z",
+      "arg": "2026-08-18T11:59:40Z",
+      "expect": "just now"
+    },
+    {
+      "name": "minutes",
+      "fn": "relativeTime",
+      "now": "2026-08-18T12:00:00Z",
+      "arg": "2026-08-18T11:48:00Z",
+      "expect": "12 min ago"
+    },
+    {
+      "name": "hours",
+      "fn": "relativeTime",
+      "now": "2026-08-18T12:00:00Z",
+      "arg": "2026-08-18T09:00:00Z",
+      "expect": "3h ago"
+    },
+    {
+      "name": "days",
+      "fn": "relativeTime",
+      "now": "2026-08-18T12:00:00Z",
+      "arg": "2026-08-15T12:00:00Z",
+      "expect": "3d ago"
+    }
+  ],
+  "states": [
+    {
+      "name": "never funded — the state that used to read as a stuck transfer",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 27661.42,
+        "sleeves": [
+          {
+            "portfolioId": "house",
+            "displayName": "AlphaMolt House (Live)",
+            "allowance": 944.58,
+            "holdingsValue": 26716.84,
+            "offBookValue": 0,
+            "followsPortfolioId": "house-paper",
+            "everFunded": true
+          },
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 0,
+            "holdingsValue": 0,
+            "offBookValue": 0,
+            "followsPortfolioId": "scrappy-paper",
+            "everFunded": false
+          }
+        ],
+        "ledger": [],
+        "runs": [],
+        "fills": []
+      },
+      "expect": {
+        "headline": "Nothing pending. Scrappy Fightback! (Live) has never been funded — no money has ever moved into it. Set its target below and apply.",
+        "tone": "good",
+        "lines": [],
+        "recentCount": 0,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "quiet — funded, matched, nothing outstanding",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 10,
+        "brokerCash": 27661.42,
+        "sleeves": [
+          {
+            "portfolioId": "house",
+            "displayName": "AlphaMolt House (Live)",
+            "allowance": 500,
+            "holdingsValue": 13000,
+            "offBookValue": 0,
+            "followsPortfolioId": "house-paper",
+            "everFunded": true
+          },
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 200,
+            "holdingsValue": 13800,
+            "offBookValue": 0,
+            "followsPortfolioId": "scrappy-paper",
+            "everFunded": true
+          }
+        ],
+        "ledger": [
+          {
+            "id": 7,
+            "portfolioId": "scrappy",
+            "portfolioSlug": "scrappy-live",
+            "deltaUsd": 14000,
+            "reason": "fund-in-kind-in",
+            "note": null,
+            "createdAt": "2026-08-11T12:00:00Z"
+          }
+        ],
+        "runs": [],
+        "fills": []
+      },
+      "expect": {
+        "headline": "Nothing pending. No money is in transit and no orders are waiting.",
+        "tone": "good",
+        "lines": [],
+        "recentCount": 1,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "restructure owed — positions moved in kind, not yet traded",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 27661.42,
+        "sleeves": [
+          {
+            "portfolioId": "house",
+            "displayName": "AlphaMolt House (Live)",
+            "allowance": 0,
+            "holdingsValue": 13661.42,
+            "offBookValue": 0,
+            "followsPortfolioId": "house-paper",
+            "everFunded": true
+          },
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 944.58,
+            "holdingsValue": 13055.42,
+            "offBookValue": 13055.42,
+            "followsPortfolioId": "scrappy-paper",
+            "everFunded": true
+          }
+        ],
+        "ledger": [
+          {
+            "id": 9,
+            "portfolioId": "scrappy",
+            "portfolioSlug": "scrappy-live",
+            "deltaUsd": 14000,
+            "reason": "fund-in-kind-in",
+            "note": null,
+            "createdAt": "2026-08-18T11:58:00Z"
+          }
+        ],
+        "runs": [],
+        "fills": []
+      },
+      "expect": {
+        "headline": "One thing is still to happen.",
+        "tone": "warn",
+        "lines": [
+          {
+            "id": "offbook-scrappy",
+            "tone": "warn",
+            "text": "$13,055.42 of Scrappy Fightback! (Live)'s holdings aren't its own picks yet — they get traded into them on its next sync.",
+            "short": "$13,055.42 waiting to be traded into its own picks",
+            "offerSync": true
+          }
+        ],
+        "recentCount": 1,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "stuck — inherited positions have outlived a scheduled run",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 27661.42,
+        "sleeves": [
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 0,
+            "holdingsValue": 13055.42,
+            "offBookValue": 13055.42,
+            "followsPortfolioId": "scrappy-paper",
+            "everFunded": true
+          }
+        ],
+        "ledger": [
+          {
+            "id": 9,
+            "portfolioId": "scrappy",
+            "portfolioSlug": "scrappy-live",
+            "deltaUsd": 14000,
+            "reason": "fund-in-kind-in",
+            "note": null,
+            "createdAt": "2026-08-15T12:00:00Z"
+          }
+        ],
+        "runs": [],
+        "fills": []
+      },
+      "expect": {
+        "headline": "Something needs you.",
+        "tone": "danger",
+        "lines": [
+          {
+            "id": "offbook-scrappy",
+            "tone": "danger",
+            "text": "$13,055.42 of Scrappy Fightback! (Live)'s holdings still aren't its own picks, 3d ago. A scheduled run has come and gone, so real-money trading may be switched off — a manual Sync runs regardless.",
+            "short": "$13,055.42 still waiting to be traded into its own picks",
+            "offerSync": true
+          }
+        ],
+        "recentCount": 1,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "sync requested and not yet started",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 27661.42,
+        "sleeves": [
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 500,
+            "holdingsValue": 13000,
+            "offBookValue": 0,
+            "followsPortfolioId": "scrappy-paper",
+            "everFunded": true
+          }
+        ],
+        "ledger": [],
+        "runs": [
+          {
+            "kind": "dispatch",
+            "portfolioId": "scrappy",
+            "slug": "scrappy-live",
+            "status": null,
+            "orders": 0,
+            "placed": 0,
+            "dryRun": false,
+            "createdAt": "2026-08-18T11:58:00Z"
+          }
+        ],
+        "fills": []
+      },
+      "expect": {
+        "headline": "A sync is on its way.",
+        "tone": "working",
+        "lines": [
+          {
+            "id": "dispatch-scrappy",
+            "tone": "working",
+            "text": "Scrappy Fightback! (Live): sync requested 2 min ago — waiting for it to start.",
+            "short": "Sync requested 2 min ago — waiting for it to start"
+          }
+        ],
+        "recentCount": 0,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "a run happened while the market was shut — quiet, not broken",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 27661.42,
+        "sleeves": [
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 500,
+            "holdingsValue": 13000,
+            "offBookValue": 0,
+            "followsPortfolioId": "scrappy-paper",
+            "everFunded": true
+          }
+        ],
+        "ledger": [],
+        "runs": [
+          {
+            "kind": "run",
+            "portfolioId": "scrappy",
+            "slug": "scrappy-live",
+            "status": "market_closed",
+            "orders": 0,
+            "placed": 0,
+            "dryRun": false,
+            "createdAt": "2026-08-18T11:00:00Z"
+          }
+        ],
+        "fills": []
+      },
+      "expect": {
+        "headline": "Nothing pending right now.",
+        "tone": "good",
+        "lines": [
+          {
+            "id": "run-2026-08-18T11:00:00Z",
+            "tone": "muted",
+            "text": "Scrappy Fightback! (Live): a sync ran 1h ago while the US market was shut, so nothing traded."
+          }
+        ],
+        "recentCount": 0,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "a run placed orders",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 27661.42,
+        "sleeves": [
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 500,
+            "holdingsValue": 13000,
+            "offBookValue": 0,
+            "followsPortfolioId": "scrappy-paper",
+            "everFunded": true
+          }
+        ],
+        "ledger": [],
+        "runs": [
+          {
+            "kind": "run",
+            "portfolioId": "scrappy",
+            "slug": "scrappy-live",
+            "status": "ok",
+            "orders": 4,
+            "placed": 3,
+            "dryRun": false,
+            "createdAt": "2026-08-18T11:00:00Z"
+          }
+        ],
+        "fills": [
+          {
+            "id": "f1",
+            "portfolioId": "scrappy",
+            "ticker": "NVDA",
+            "side": "sell",
+            "qty": 4,
+            "price": 180.5,
+            "executedAt": "2026-08-18T11:01:00Z"
+          }
+        ]
+      },
+      "expect": {
+        "headline": "Nothing pending right now.",
+        "tone": "good",
+        "lines": [
+          {
+            "id": "run-2026-08-18T11:00:00Z",
+            "tone": "good",
+            "text": "Scrappy Fightback! (Live): a sync ran 1h ago and placed 3 orders."
+          }
+        ],
+        "recentCount": 1,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "records disagree with the broker — refuses to trade",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 27661.42,
+        "sleeves": [
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 500,
+            "holdingsValue": 13000,
+            "offBookValue": 0,
+            "followsPortfolioId": "scrappy-paper",
+            "everFunded": true
+          }
+        ],
+        "ledger": [],
+        "runs": [
+          {
+            "kind": "run",
+            "portfolioId": "scrappy",
+            "slug": "scrappy-live",
+            "status": "drift_refused",
+            "orders": 0,
+            "placed": 0,
+            "dryRun": false,
+            "createdAt": "2026-08-18T11:00:00Z"
+          }
+        ],
+        "fills": []
+      },
+      "expect": {
+        "headline": "Something needs you.",
+        "tone": "danger",
+        "lines": [
+          {
+            "id": "run-2026-08-18T11:00:00Z",
+            "tone": "danger",
+            "text": "Scrappy Fightback! (Live): the last sync refused to trade 1h ago — our records disagree with the broker. That needs reconciling before it will trade again."
+          }
+        ],
+        "recentCount": 0,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "follower not linked to a strategy book",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 27661.42,
+        "sleeves": [
+          {
+            "portfolioId": "orphan",
+            "displayName": "Orphan (Live)",
+            "allowance": 100,
+            "holdingsValue": 0,
+            "offBookValue": 0,
+            "followsPortfolioId": null,
+            "everFunded": true
+          }
+        ],
+        "ledger": [],
+        "runs": [],
+        "fills": []
+      },
+      "expect": {
+        "headline": "One thing is still to happen.",
+        "tone": "warn",
+        "lines": [
+          {
+            "id": "unlinked-empty-orphan",
+            "tone": "warn",
+            "text": "Orphan (Live) isn't linked to a strategy book, so it will never buy anything. Pick one under Manage.",
+            "short": "Not linked to a strategy — it will never buy anything"
+          }
+        ],
+        "recentCount": 0,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "allowances promise more than the broker holds",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": -250.5,
+        "brokerCash": 1000,
+        "sleeves": [
+          {
+            "portfolioId": "house",
+            "displayName": "AlphaMolt House (Live)",
+            "allowance": 1250.5,
+            "holdingsValue": 0,
+            "offBookValue": 0,
+            "followsPortfolioId": "house-paper",
+            "everFunded": true
+          }
+        ],
+        "ledger": [],
+        "runs": [],
+        "fills": []
+      },
+      "expect": {
+        "headline": "Something needs you.",
+        "tone": "danger",
+        "lines": [
+          {
+            "id": "over-committed",
+            "tone": "danger",
+            "text": "Your strategies are allowed to spend $250.50 more than the broker account holds. Lower a target before an order bounces."
+          }
+        ],
+        "recentCount": 0,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "a dry run is never reported as a real one",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 27661.42,
+        "sleeves": [
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 500,
+            "holdingsValue": 13000,
+            "offBookValue": 0,
+            "followsPortfolioId": "scrappy-paper",
+            "everFunded": true
+          }
+        ],
+        "ledger": [],
+        "runs": [
+          {
+            "kind": "run",
+            "portfolioId": "scrappy",
+            "slug": "scrappy-live",
+            "status": "ok",
+            "orders": 3,
+            "placed": 0,
+            "dryRun": true,
+            "createdAt": "2026-08-18T11:00:00Z"
+          }
+        ],
+        "fills": []
+      },
+      "expect": {
+        "headline": "Nothing pending. No money is in transit and no orders are waiting.",
+        "tone": "good",
+        "lines": [],
+        "recentCount": 0,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    }
+  ]
+}

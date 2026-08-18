@@ -1,41 +1,62 @@
 "use client";
 
-import Link from "next/link";
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { LiveCashSummary, SleeveCash } from "@/lib/live-cash-query";
+import type { LiveActivity } from "@/lib/live-activity-query";
 import {
   applyLiveSplit,
   createFollowerShell,
   creditAllowance,
   debitAllowance,
 } from "@/lib/live-cash-mutations";
+import { syncLivePortfolioToAlpaca } from "@/lib/live-mirror-mutations";
 import { planSplitMoves } from "@/lib/sleeve-funding";
-import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
-import SyncLiveButton from "@/components/portfolio/sync-live-button";
+import {
+  buildHubState,
+  describeLedger,
+  relativeTime,
+  sleeveColor,
+  type HubLine,
+} from "@/lib/live-activity";
+import SplitBar from "@/components/account/split-bar";
+import StrategyCard, {
+  type StrategyMeta,
+} from "@/components/account/strategy-card";
+import WhatsHappening from "@/components/account/whats-happening";
 
 /**
- * The owner's control hub for live (real-money) portfolios, built around ONE
- * question: how much money should each strategy run? Each strategy row shows
- * its current worth and takes a target; a single "Apply split" works out the
- * direction and the cash-vs-shares mechanics (in-kind moves — migration 084)
- * and executes after one plain-words confirmation. "+ Add strategy" brings a
- * new paper book live as a $0 row, funded the same way.
+ * The owner's control room for real money, built around two questions:
+ *
+ *   1. How much should each strategy run?  → the split editor.
+ *   2. Is anything happening right now?    → the "what's happening" panel.
+ *
+ * Question 2 used to have no answer at all. A dispatched sync left no trace, a
+ * $0 strategy looked the same whether a transfer was in flight or had never
+ * been attempted, and money movements were hidden behind an "Advanced" fold —
+ * so the honest state of a real-money account had to be guessed. Now every
+ * strategy is its own colour-keyed card, the pot is drawn as a bar, and the
+ * panel says in a sentence what is (or isn't) outstanding.
  *
  * Nothing in the split editor places an order — moves re-attribute records of
- * the one shared broker account. Sync and the mirrors picker (per-row
- * "Manage" fold-out) DO drive real orders and keep their own confirms.
+ * the one shared broker account. Sync and the "copies" picker (per-card
+ * Manage) DO drive real orders and keep their own confirms.
  */
 export default function LiveAccountHub({
   accounts,
   paperOptions,
+  liveMeta,
+  activity,
 }: {
   accounts: LiveCashSummary[];
   paperOptions: { id: string; name: string }[];
+  /** Per live portfolio id: P&L, position count, the book it copies. */
+  liveMeta?: Record<string, StrategyMeta>;
+  activity?: LiveActivity;
 }) {
   if (accounts.length === 0) return null;
   // Paper books that already have a live follower (across every account)
-  // leave the "+ Add strategy" picker — one follower per paper book.
+  // leave the "bring another strategy live" picker — one follower per book.
   const followedPaperIds = new Set(
     accounts.flatMap((a) =>
       a.sleeves
@@ -54,6 +75,8 @@ export default function LiveAccountHub({
           account={a}
           paperOptions={paperOptions}
           unfollowedPaper={unfollowedPaper}
+          liveMeta={liveMeta ?? {}}
+          activity={activity}
           showKey={accounts.length > 1}
         />
       ))}
@@ -65,11 +88,15 @@ function AccountPanel({
   account,
   paperOptions,
   unfollowedPaper,
+  liveMeta,
+  activity,
   showKey,
 }: {
   account: LiveCashSummary;
   paperOptions: { id: string; name: string }[];
   unfollowedPaper: { id: string; name: string }[];
+  liveMeta: Record<string, StrategyMeta>;
+  activity?: LiveActivity;
   showKey: boolean;
 }) {
   const router = useRouter();
@@ -77,12 +104,71 @@ function AccountPanel({
   const [notice, setNotice] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
-  const totalWorth = account.sleeves.reduce(
-    (s, x) => s + x.allowance + x.holdingsValue,
-    0,
+  const totalWorth =
+    Math.round(
+      account.sleeves.reduce((s, x) => s + x.allowance + x.holdingsValue, 0) *
+        100,
+    ) / 100;
+
+  // The hub's state over time. Rendered on the client so relative times track
+  // the viewer's clock; `nowMs` is fixed per render pass to keep it stable.
+  const sleeveIds = new Set(account.sleeves.map((s) => s.portfolioId));
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const hub = useMemo(
+    () =>
+      buildHubState({
+        sleeves: account.sleeves.map((s) => ({
+          portfolioId: s.portfolioId,
+          displayName: s.displayName,
+          allowance: s.allowance,
+          holdingsValue: s.holdingsValue,
+          offBookValue: s.offBookValue,
+          followsPortfolioId: s.followsPortfolioId,
+          everFunded: s.everFunded,
+        })),
+        ledger: account.ledger.map((l) => ({
+          id: l.id,
+          portfolioId: l.portfolioId,
+          portfolioSlug: l.portfolioSlug,
+          deltaUsd: l.deltaUsd,
+          reason: l.reason,
+          note: l.note,
+          createdAt: l.createdAt,
+        })),
+        runs: (activity?.runs ?? []).filter(
+          (r) => r.portfolioId == null || sleeveIds.has(r.portfolioId),
+        ),
+        fills: (activity?.fills ?? []).filter((f) =>
+          sleeveIds.has(f.portfolioId),
+        ),
+        unallocated: account.unallocated,
+        brokerCash: account.brokerCash,
+        nowMs,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [account, activity, nowMs],
   );
-  const overCommitted =
-    account.unallocated != null && account.unallocated < -0.01;
+
+  // Only tick (and only re-read the server) while something is genuinely in
+  // flight, so a quiet account costs nothing. Stops after 10 minutes — beyond
+  // that the scheduled run is the mechanism, not this page.
+  const inFlight = hub.lines.some(
+    (l) => l.tone === "working" || l.offerSync === true,
+  );
+  useEffect(() => {
+    if (!inFlight) return;
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      if (Date.now() - startedAt > 10 * 60_000) {
+        clearInterval(timer);
+        return;
+      }
+      setNowMs(Date.now());
+      router.refresh();
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [inFlight, router]);
 
   function run(
     action: () => Promise<{ ok: true } | { ok: false; error: string }>,
@@ -97,6 +183,7 @@ function AccountPanel({
         return;
       }
       setNotice(done);
+      setNowMs(Date.now());
       router.refresh();
     });
   }
@@ -107,18 +194,26 @@ function AccountPanel({
     .map((s) => `${s.portfolioId}:${s.allowance}:${s.holdingsValue}`)
     .join("|");
 
+  const segments = account.sleeves.map((s, i) => ({
+    id: s.portfolioId,
+    label: s.displayName,
+    value: Math.round((s.allowance + s.holdingsValue) * 100) / 100,
+    color: sleeveColor(i),
+  }));
+
   return (
-    <div className="rounded-2xl border border-[var(--color-green)]/30 bg-[var(--color-green)]/[0.04] px-4 py-4">
-      {/* Headline: the pot */}
+    <div className="rounded-2xl border border-[var(--color-green,#00FF41)]/30 bg-[var(--color-green,#00FF41)]/[0.04] px-4 py-4">
+      {/* The pot */}
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <p className="text-sm text-text">
           {showKey && (
-            <span className="mr-2 text-[11px] font-mono uppercase tracking-wide text-text-muted">
+            <span className="mr-2 font-mono text-[11px] uppercase tracking-wide text-text-muted">
               {account.accountKey}
             </span>
           )}
           Your strategies run{" "}
-          <span className="font-mono font-semibold">${fmt(totalWorth)}</span>
+          <span className="font-mono font-semibold">${fmt(totalWorth)}</span> of
+          real money
         </p>
         <p className="text-[12px] text-text-dim">
           Broker cash{" "}
@@ -126,18 +221,32 @@ function AccountPanel({
             {account.brokerCash == null ? "—" : `$${fmt(account.brokerCash)}`}
           </span>
           <span className="mx-2 text-text-muted">·</span>
-          Unallocated{" "}
-          <span
-            className={`font-mono ${overCommitted ? "text-[var(--color-red)]" : ""}`}
-          >
+          Not given to a strategy{" "}
+          <span className="font-mono">
             {account.unallocated == null ? "—" : `$${fmt(account.unallocated)}`}
           </span>
         </p>
       </div>
-      {overCommitted && (
-        <p className="mt-2 text-xs text-[var(--color-red)] leading-relaxed">
-          Your strategies are promised more than the broker account holds —
-          lower a target before an order bounces.
+
+      <SplitBar segments={segments} total={totalWorth} />
+
+      <WhatsHappening
+        state={hub}
+        syncing={pending}
+        onSync={(portfolioId) =>
+          run(
+            () => syncLivePortfolioToAlpaca({ portfolioId }),
+            "Sync requested — it shows above until the run reports back.",
+          )
+        }
+      />
+
+      {account.brokerCash == null && (
+        <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
+          The website can&apos;t read your broker balance (no Alpaca keys in
+          this environment), so &quot;not given to a strategy&quot; is unknown
+          and crediting is disabled here. This does not affect the split below —
+          moving money between strategies never needs the broker.
         </p>
       )}
 
@@ -146,11 +255,17 @@ function AccountPanel({
         key={editorKey}
         sleeves={account.sleeves}
         paperOptions={paperOptions}
+        liveMeta={liveMeta}
+        hubLines={hub.lines}
         disabled={pending}
-        onApply={(targets, done) => run(() => applyLiveSplit({ targets }), done)}
+        error={error}
+        notice={notice}
+        onApply={(targets, assumedTotal, done) =>
+          run(() => applyLiveSplit({ targets, assumedTotal }), done)
+        }
       />
 
-      {/* Add a strategy: new follower at $0, funded via the split above */}
+      {/* Bring another paper strategy live, at $0, funded by the split */}
       {unfollowedPaper.length > 0 && account.sleeves.length > 0 && (
         <AddStrategy
           disabled={pending}
@@ -168,40 +283,27 @@ function AccountPanel({
         />
       )}
 
-      {error && (
-        <p className="mt-3 text-xs text-[var(--color-red)] font-mono leading-relaxed">
-          {error}
-        </p>
-      )}
-      {notice && !error && (
-        <p className="mt-3 text-xs text-[var(--color-green)] leading-relaxed">
-          {notice}
-        </p>
-      )}
-
       {/* Rarely-needed plumbing, out of the way */}
-      <details className="mt-4 pt-3 border-t border-white/[0.08]">
-        <summary className="cursor-pointer text-[11px] font-mono uppercase tracking-wide text-text-muted hover:text-text">
-          Advanced — broker cash &amp; history
+      <details className="mt-4 border-t border-white/[0.08] pt-3">
+        <summary className="cursor-pointer font-mono text-[11px] uppercase tracking-wide text-text-muted hover:text-text">
+          Advanced — spare cash &amp; full history
         </summary>
         <div className="mt-3 space-y-4">
           {account.brokerCash == null && (
-            <p className="text-[11px] text-text-muted leading-relaxed">
-              Broker cash isn&apos;t readable from the website (no Alpaca keys
-              in the web environment), so unallocated is unknown and crediting
-              is disabled here. For credits use{" "}
+            <p className="text-[11px] leading-relaxed text-text-muted">
+              For credits use{" "}
               <code className="font-mono">live_cash.py --credit</code>.
             </p>
           )}
           {account.sleeves.map((s) => (
             <div key={s.portfolioId}>
-              <p className="text-[12px] text-text-dim mb-1.5">
+              <p className="mb-1.5 text-[12px] text-text-dim">
                 {s.displayName} — cash ${fmt(s.allowance)}
               </p>
               <div className="flex flex-col gap-2">
                 <AmountAction
                   label="Credit"
-                  hint="unallocated → this portfolio"
+                  hint="spare account cash → this strategy"
                   disabled={pending || account.unallocated == null}
                   onSubmit={(amount) =>
                     run(
@@ -213,7 +315,7 @@ function AccountPanel({
                 />
                 <AmountAction
                   label="Debit"
-                  hint="this portfolio → unallocated"
+                  hint="this strategy → spare account cash"
                   disabled={pending}
                   onSubmit={(amount) =>
                     run(
@@ -228,29 +330,30 @@ function AccountPanel({
           ))}
           {account.ledger.length > 0 && (
             <div>
-              <p className="text-[11px] font-mono uppercase tracking-wide text-text-muted mb-1.5">
-                History
+              <p className="mb-1.5 font-mono text-[11px] uppercase tracking-wide text-text-muted">
+                Every money movement
               </p>
               <ul className="flex flex-col gap-1">
                 {account.ledger.map((l) => (
                   <li
                     key={l.id}
-                    className="flex items-baseline justify-between text-[12px] text-text-dim"
+                    className="flex items-baseline justify-between gap-3 text-[12px] text-text-dim"
                   >
                     <span>
                       <span
                         className={
                           l.deltaUsd >= 0
-                            ? "text-[var(--color-green)] font-mono"
-                            : "text-text font-mono"
+                            ? "font-mono text-[var(--color-green,#00FF41)]"
+                            : "font-mono text-text"
                         }
                       >
-                        {l.deltaUsd >= 0 ? "+" : "−"}${fmt(Math.abs(l.deltaUsd))}
+                        {l.deltaUsd >= 0 ? "+" : "−"}$
+                        {fmt(Math.abs(l.deltaUsd))}
                       </span>{" "}
-                      {l.reason} · {l.portfolioSlug}
+                      {l.portfolioSlug} · {describeLedger(l.reason)}
                     </span>
-                    <span className="text-text-muted font-mono text-[11px]">
-                      {new Date(l.createdAt).toLocaleDateString()}
+                    <span className="whitespace-nowrap font-mono text-[11px] text-text-muted">
+                      {relativeTime(l.createdAt, new Date(nowMs))}
                     </span>
                   </li>
                 ))}
@@ -260,12 +363,11 @@ function AccountPanel({
         </div>
       </details>
 
-      <p className="mt-3 text-[11px] text-text-muted leading-relaxed">
+      <p className="mt-3 text-[11px] leading-relaxed text-text-muted">
         Changing the split re-attributes the shared broker account&apos;s
         records — it never places an order by itself. When a strategy&apos;s
         share can&apos;t be covered by cash, positions move with it and are
-        traded into its own picks on its next sync. Sync and the mirror target
-        (under Manage) DO place real orders and ask you to confirm.
+        traded into its own picks on its next sync.
       </p>
     </div>
   );
@@ -278,14 +380,23 @@ function AccountPanel({
 function SplitEditor({
   sleeves,
   paperOptions,
+  liveMeta,
+  hubLines,
   disabled,
+  error,
+  notice,
   onApply,
 }: {
   sleeves: SleeveCash[];
   paperOptions: { id: string; name: string }[];
+  liveMeta: Record<string, StrategyMeta>;
+  hubLines: HubLine[];
   disabled: boolean;
+  error: string | null;
+  notice: string | null;
   onApply: (
     targets: { portfolioId: string; target: number }[],
+    assumedTotal: number,
     doneMessage: string,
   ) => void;
 }) {
@@ -369,39 +480,41 @@ function SplitEditor({
   }, [moves, currents]);
 
   const dirty = moves.length > 0;
+  // Only lines with a compact form belong on a card — account-wide ones (a
+  // run's outcome, over-commitment) stay in the panel where they apply.
+  const lineFor = (portfolioId: string) =>
+    hubLines.find((l) => l.portfolioId === portfolioId && l.short) ?? null;
 
   return (
     <div className="mt-4">
-      <table className="w-full text-[13px]">
-        <thead>
-          <tr className="text-[11px] font-mono uppercase tracking-wide text-text-muted">
-            <th className="text-left font-medium pb-1.5">Strategy</th>
-            <th className="text-right font-medium pb-1.5">Now</th>
-            <th className="text-right font-medium pb-1.5 pr-1">Target</th>
-          </tr>
-        </thead>
-        <tbody>
-          {currents.map((c, i) => (
-            <SleeveRow
-              key={c.portfolioId}
-              sleeve={c}
-              current={c.current}
-              target={targets[i]}
-              invalid={parsed[i] == null}
-              disabled={disabled}
-              paperOptions={paperOptions}
-              onTarget={(raw) => setTarget(i, raw)}
-            />
-          ))}
-        </tbody>
-      </table>
+      <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.14em] text-text-muted">
+        How much should each strategy run?
+      </p>
+      <div className="flex flex-col gap-2.5">
+        {currents.map((c, i) => (
+          <StrategyCard
+            key={c.portfolioId}
+            sleeve={c}
+            color={sleeveColor(i)}
+            current={c.current}
+            sharePct={total > 0 ? (c.current / total) * 100 : 0}
+            meta={liveMeta[c.portfolioId]}
+            target={targets[i]}
+            invalid={parsed[i] == null}
+            disabled={disabled}
+            paperOptions={paperOptions}
+            statusLine={lineFor(c.portfolioId)}
+            onTarget={(raw) => setTarget(i, raw)}
+          />
+        ))}
+      </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={() => setConfirming(true)}
           disabled={disabled || !dirty || !balanced || confirming}
-          className="inline-flex items-center rounded-lg bg-[var(--color-green)] px-4 py-2 text-sm font-bold text-black hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-[filter]"
+          className="inline-flex items-center rounded-lg bg-[var(--color-green,#00FF41)] px-4 py-2 text-sm font-bold text-black transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Apply split
         </button>
@@ -413,13 +526,13 @@ function SplitEditor({
               setConfirming(false);
             }}
             disabled={disabled}
-            className="text-[12px] text-text-muted hover:text-text transition-colors"
+            className="text-[12px] text-text-muted transition-colors hover:text-text"
           >
             Reset
           </button>
         )}
         {unassigned != null && !balanced && (
-          <span className="text-xs text-[var(--color-red)]">
+          <span className="text-xs text-[var(--color-red,#FF3333)]">
             {unassigned > 0
               ? `$${fmt(unassigned)} unassigned — targets must add up to $${fmt(total)}.`
               : `$${fmt(Math.abs(unassigned))} over — targets must add up to $${fmt(total)}.`}
@@ -432,21 +545,41 @@ function SplitEditor({
         )}
       </div>
 
+      {/* Outcomes render right here, beside the button that caused them — the
+          old layout put them below the whole editor, where a failed apply
+          looked like nothing had happened at all. */}
+      {error && (
+        <p
+          role="alert"
+          className="mt-2 rounded-lg border border-[var(--color-red,#FF3333)]/45 px-3 py-2 font-mono text-xs leading-relaxed text-[var(--color-red,#FF3333)]"
+        >
+          {error}
+        </p>
+      )}
+      {notice && !error && (
+        <p
+          role="status"
+          className="mt-2 text-xs leading-relaxed text-[var(--color-green,#00FF41)]"
+        >
+          {notice}
+        </p>
+      )}
+
       {/* One plain-words confirm for the whole split. */}
       {confirming && dirty && (
         <div className="mt-3 rounded-xl border border-[var(--color-red,#FF3333)]/40 bg-[var(--color-red,#FF3333)]/[0.06] px-3.5 py-3">
-          <p className="text-sm text-text leading-relaxed">Apply this split?</p>
+          <p className="text-sm leading-relaxed text-text">Apply this split?</p>
           <ul className="mt-1.5 flex flex-col gap-1">
             {preview.map((m, i) => (
-              <li key={i} className="text-[13px] text-text leading-relaxed">
+              <li key={i} className="text-[13px] leading-relaxed text-text">
                 <span className="font-bold">${fmt(m.amount)}</span>:{" "}
                 {m.fromName} → {m.toName}
                 {m.sharePart > 0 && (
                   <span className="text-amber-300">
                     {" "}
-                    (${fmt(m.cashPart)} cash + ≈${fmt(m.sharePart)} as
-                    positions — {m.toName} trades them into its own picks on
-                    its next sync)
+                    (${fmt(m.cashPart)} cash + ≈${fmt(m.sharePart)} as positions
+                    — {m.toName} trades them into its own picks on its next
+                    sync)
                   </span>
                 )}
               </li>
@@ -461,12 +594,13 @@ function SplitEditor({
                     portfolioId: c.portfolioId,
                     target: (parsed as number[])[i],
                   })),
-                  "Split applied — the numbers above are live. Any moved positions restructure on the next sync (US market hours).",
+                  total,
+                  "Split applied — the numbers above are live. Any moved positions restructure on the next sync.",
                 );
                 setConfirming(false);
               }}
               disabled={disabled}
-              className="px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest rounded border border-[var(--color-red,#FF3333)]/50 text-[var(--color-red,#FF3333)] hover:bg-[var(--color-red,#FF3333)]/10 disabled:opacity-40 transition-colors"
+              className="rounded border border-[var(--color-red,#FF3333)]/50 px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest text-[var(--color-red,#FF3333)] transition-colors hover:bg-[var(--color-red,#FF3333)]/10 disabled:opacity-40"
             >
               {disabled ? "Applying…" : "Yes — apply"}
             </button>
@@ -474,7 +608,7 @@ function SplitEditor({
               type="button"
               onClick={() => setConfirming(false)}
               disabled={disabled}
-              className="px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest rounded border border-white/15 text-text-muted hover:text-text disabled:opacity-40 transition-colors"
+              className="rounded border border-white/15 px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest text-text-muted transition-colors hover:text-text disabled:opacity-40"
             >
               Cancel
             </button>
@@ -482,105 +616,6 @@ function SplitEditor({
         </div>
       )}
     </div>
-  );
-}
-
-function SleeveRow({
-  sleeve,
-  current,
-  target,
-  invalid,
-  disabled,
-  paperOptions,
-  onTarget,
-}: {
-  sleeve: SleeveCash;
-  current: number;
-  target: string;
-  invalid: boolean;
-  disabled: boolean;
-  paperOptions: { id: string; name: string }[];
-  onTarget: (raw: string) => void;
-}) {
-  const targetNum = Number(target);
-  const drift =
-    Number.isFinite(targetNum) && Math.abs(targetNum - current) > 1
-      ? Math.round((targetNum - current) * 100) / 100
-      : 0;
-  return (
-    <>
-      <tr className="border-t border-white/[0.06] align-baseline">
-        <td className="py-2 pr-2">
-          <Link
-            href={`/portfolios/${sleeve.slug}`}
-            className="text-sm font-semibold text-text hover:text-[var(--color-green)] transition-colors"
-          >
-            {sleeve.displayName}
-          </Link>
-        </td>
-        <td className="py-2 text-right font-mono text-text-dim whitespace-nowrap">
-          ${fmt(current)}
-        </td>
-        <td className="py-2 pl-3 text-right whitespace-nowrap">
-          <span className="inline-flex items-baseline gap-1.5">
-            {drift !== 0 && (
-              <span
-                className={`text-[11px] font-mono ${drift > 0 ? "text-[var(--color-green)]" : "text-text-muted"}`}
-              >
-                {drift > 0 ? "+" : "−"}${fmt(Math.abs(drift))}
-              </span>
-            )}
-            <span className="font-mono text-text">$</span>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              inputMode="decimal"
-              value={target}
-              onChange={(e) => onTarget(e.target.value)}
-              disabled={disabled}
-              className={`w-28 rounded-lg border bg-transparent px-2 py-1 text-right text-sm font-mono text-text focus:outline-none disabled:opacity-50 ${
-                invalid
-                  ? "border-[var(--color-red)]/60"
-                  : "border-white/[0.12] focus:border-[var(--color-green)]/50"
-              }`}
-              aria-label={`Target for ${sleeve.displayName}`}
-            />
-          </span>
-        </td>
-      </tr>
-      <tr>
-        <td colSpan={3} className="pb-2">
-          {sleeve.offBookValue > 1 && (
-            <p className="mb-1.5 rounded-lg border border-amber-400/40 bg-amber-400/[0.07] px-3 py-1.5 text-xs text-amber-300 leading-relaxed">
-              ${fmt(sleeve.offBookValue)} of this strategy&apos;s holdings are
-              outside its own book
-              {sleeve.followsPortfolioId == null
-                ? " — and it isn't linked to a paper book, so nothing will restructure it. Set the mirror target under Manage."
-                : " — they are traded into its own picks on the next sync (or Sync now under Manage)."}
-            </p>
-          )}
-          <details>
-            <summary className="cursor-pointer text-[11px] font-mono uppercase tracking-wide text-text-muted hover:text-text">
-              Manage
-            </summary>
-            <div className="mt-1.5 rounded-lg border border-white/[0.08] px-3 py-2">
-              {/* Real-order controls: converge onto the paper book now, and
-                  which paper book this strategy mirrors. Both keep their own
-                  two-step confirms. */}
-              <SyncLiveButton portfolioId={sleeve.portfolioId} />
-              {paperOptions.length > 0 && (
-                <FollowTargetPicker
-                  portfolioId={sleeve.portfolioId}
-                  currentId={sleeve.followsPortfolioId}
-                  options={paperOptions}
-                />
-              )}
-            </div>
-          </details>
-        </td>
-      </tr>
-    </>
   );
 }
 
@@ -604,7 +639,7 @@ function AddStrategy({
         value={paperId}
         onChange={(e) => setPaperId(e.target.value)}
         disabled={disabled}
-        className="rounded-lg border border-white/[0.12] bg-transparent px-2 py-1.5 text-[13px] text-text focus:outline-none focus:border-[var(--color-green)]/50 disabled:opacity-50"
+        className="rounded-lg border border-white/[0.12] bg-transparent px-2 py-1.5 text-[13px] text-text focus:border-[var(--color-green,#00FF41)]/50 focus:outline-none disabled:opacity-50"
         aria-label="Paper portfolio to take live"
       >
         {options.map((o) => (
@@ -617,7 +652,7 @@ function AddStrategy({
         type="button"
         onClick={() => chosen && onAdd(chosen.id, chosen.name)}
         disabled={disabled || !chosen}
-        className="inline-flex items-center rounded-lg border border-[var(--color-green)]/40 px-3 py-1.5 text-[13px] font-medium text-[var(--color-green)] hover:bg-[var(--color-green)]/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className="inline-flex items-center rounded-lg border border-[var(--color-green,#00FF41)]/40 px-3 py-1.5 text-[13px] font-medium text-[var(--color-green,#00FF41)] transition-colors hover:bg-[var(--color-green,#00FF41)]/10 disabled:cursor-not-allowed disabled:opacity-50"
       >
         Add
       </button>
@@ -661,13 +696,13 @@ function AmountAction({
         value={raw}
         onChange={(e) => setRaw(e.target.value)}
         disabled={disabled}
-        className="w-28 rounded-lg border border-white/[0.12] bg-transparent px-2.5 py-1.5 text-sm font-mono text-text placeholder:text-text-muted focus:outline-none focus:border-[var(--color-green)]/50 disabled:opacity-50"
+        className="w-28 rounded-lg border border-white/[0.12] bg-transparent px-2.5 py-1.5 font-mono text-sm text-text placeholder:text-text-muted focus:border-[var(--color-green,#00FF41)]/50 focus:outline-none disabled:opacity-50"
         aria-label={`${label} amount`}
       />
       <button
         type="submit"
         disabled={disabled || !valid}
-        className="inline-flex items-center rounded-lg border border-white/[0.12] px-3 py-1.5 text-[13px] font-medium text-text-dim hover:text-text hover:border-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className="inline-flex items-center rounded-lg border border-white/[0.12] px-3 py-1.5 text-[13px] font-medium text-text-dim transition-colors hover:border-white/20 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
       >
         {label}
       </button>

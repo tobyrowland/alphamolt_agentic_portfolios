@@ -1722,6 +1722,42 @@ follower) is material; and the daily `--mirror-all-live` cron re-converges
 every sleeve regardless. Plain debits to unallocated stay cash-bounded — 
 freeing cash *out* of all strategies would need real sells (not built).
 
+**The live hub — one card per strategy, and an honest "what's happening".**
+The /account live section is the owner's control room
+(`web/components/account/live-account-hub.tsx` + `split-bar` /
+`strategy-card` / `whats-happening`). The account's money is drawn as a
+**stacked bar**, one colour per strategy (`live-activity.sleeveColor`), and the
+same colour keys that strategy's **card** — value, cash-vs-positions split,
+P&L, the book it copies, its own status, its target box and a collapsed
+*Manage* (Sync + the copies picker). The card's headline $ is the hub's own
+`allowance + holdingsValue`, the number the split arithmetic uses — never the
+daily `agent_portfolio_history` mark, so a card can't disagree with the target
+box under it.
+
+Above the cards, **"what's happening"** always renders — including an explicit
+quiet state, because silence used to be ambiguous: a strategy at $0 looked the
+same whether a transfer was in flight or had never been attempted. Its
+sentences are decided by the pure `buildHubState`
+(`web/lib/live-activity.ts`, pinned case-by-case in `tests/test_live_hub.py`
+via `tests/ts_live_hub_runner.mjs`) over four signals, **no new schema**:
+`portfolio_cash_ledger` (money that moved), `offBookValue` (positions still
+owed a restructure — escalating from amber to red once they outlive a
+scheduled run), `agent_trades` (fills that landed) and a **run journal in
+`run_logs`**: the website writes `live_mirror_dispatch` when it asks GitHub
+for a mirror (the dispatch answers 204 with no run id, so nothing else can be
+correlated to a sleeve) and `alpaca_mirror._journal_run` writes `live_mirror`
+with what the run actually did — including **why it did nothing**
+(`market_closed`, `drift_refused`). Read back by
+`web/lib/live-activity-query.ts`; `activity-query.ts` reads `run_logs` through
+a `script_name` allowlist, so neither row can reach a public surface. The hub
+re-reads on a 30s tick **only** while something is in flight, and stops after
+10 minutes.
+
+`applyLiveSplit` also takes the pot the targets were typed against
+(`assumedTotal`): if prices moved since the page rendered, the targets are
+rescaled to the fresh pot (a split's proportions are the intent) rather than
+the whole apply failing with a "targets add up to $X" refusal.
+
 ### sleeves.py
 Pure sleeve arithmetic — `recorded_positions`, `position_drift`,
 `unallocated_cash`, `plan_credit`, `sleeve_own_positions`. No DB, no broker
@@ -1917,6 +1953,7 @@ pytest tests/test_badges.py                 # pure engine unit tests
 # Broker seam (live execution)
 pytest tests/test_broker.py                 # protocol + shared policy + sync/mirror
 pytest tests/test_sleeves.py                # sleeve isolation + allowances + refusals
+pytest tests/test_live_hub.py               # the live hub's "what's happening" copy
 
 # Live cash allowances (sleeves sharing one broker account)
 python live_cash.py --status                 # broker cash, allowances, unallocated
