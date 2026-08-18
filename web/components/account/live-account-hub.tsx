@@ -415,9 +415,12 @@ function SplitEditor({
     currents.map((c) => c.current.toFixed(2)),
   );
   const [confirming, setConfirming] = useState(false);
+  // The card the owner last typed into — where the apply controls belong.
+  const [editedIndex, setEditedIndex] = useState<number | null>(null);
 
   function setTarget(i: number, raw: string) {
     setConfirming(false);
+    setEditedIndex(i);
     const next = [...targets];
     next[i] = raw;
     // With exactly two strategies the other side is implied — fill it in so
@@ -480,106 +483,87 @@ function SplitEditor({
   }, [moves, currents]);
 
   const dirty = moves.length > 0;
+  // Which cards no longer show what the strategy actually runs. With two
+  // strategies, typing one target auto-fills the other, so both go pending —
+  // but only the card the owner typed into carries the apply controls.
+  const changed = currents.map(
+    (c, i) => parsed[i] == null || Math.abs((parsed[i] as number) - c.current) > 1,
+  );
+  const edited = changed.some(Boolean);
+  const applyIndex =
+    editedIndex != null && changed[editedIndex]
+      ? editedIndex
+      : changed.findIndex(Boolean);
+
   // Only lines with a compact form belong on a card — account-wide ones (a
   // run's outcome, over-commitment) stay in the panel where they apply.
   const lineFor = (portfolioId: string) =>
     hubLines.find((l) => l.portfolioId === portfolioId && l.short) ?? null;
 
-  return (
-    <div className="mt-4">
-      <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.14em] text-text-muted">
-        How much should each strategy run?
-      </p>
-      <div className="flex flex-col gap-2.5">
-        {currents.map((c, i) => (
-          <StrategyCard
-            key={c.portfolioId}
-            sleeve={c}
-            color={sleeveColor(i)}
-            current={c.current}
-            sharePct={total > 0 ? (c.current / total) * 100 : 0}
-            meta={liveMeta[c.portfolioId]}
-            target={targets[i]}
-            invalid={parsed[i] == null}
-            disabled={disabled}
-            paperOptions={paperOptions}
-            statusLine={lineFor(c.portfolioId)}
-            onTarget={(raw) => setTarget(i, raw)}
-          />
-        ))}
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          onClick={() => setConfirming(true)}
-          disabled={disabled || !dirty || !balanced || confirming}
-          className="inline-flex items-center rounded-lg bg-[var(--color-green,#00FF41)] px-4 py-2 text-sm font-bold text-black transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Apply split
-        </button>
-        {dirty && (
-          <button
-            type="button"
-            onClick={() => {
-              setTargets(currents.map((c) => c.current.toFixed(2)));
-              setConfirming(false);
-            }}
-            disabled={disabled}
-            className="text-[12px] text-text-muted transition-colors hover:text-text"
-          >
-            Reset
-          </button>
-        )}
-        {unassigned != null && !balanced && (
-          <span className="text-xs text-[var(--color-red,#FF3333)]">
-            {unassigned > 0
-              ? `$${fmt(unassigned)} unassigned — targets must add up to $${fmt(total)}.`
-              : `$${fmt(Math.abs(unassigned))} over — targets must add up to $${fmt(total)}.`}
-          </span>
-        )}
-        {!dirty && balanced && (
-          <span className="text-[12px] text-text-muted">
-            Change a target to move money between strategies.
-          </span>
-        )}
-      </div>
-
-      {/* Outcomes render right here, beside the button that caused them — the
-          old layout put them below the whole editor, where a failed apply
-          looked like nothing had happened at all. */}
-      {error && (
-        <p
-          role="alert"
-          className="mt-2 rounded-lg border border-[var(--color-red,#FF3333)]/45 px-3 py-2 font-mono text-xs leading-relaxed text-[var(--color-red,#FF3333)]"
-        >
-          {error}
-        </p>
-      )}
-      {notice && !error && (
-        <p
-          role="status"
-          className="mt-2 text-xs leading-relaxed text-[var(--color-green,#00FF41)]"
-        >
-          {notice}
-        </p>
+  /**
+   * The commitment, rendered inside the card that was just edited. It used to
+   * live below every card, which on a tall card meant the owner typed a number
+   * and had nothing on screen telling them it wasn't live yet — or offering to
+   * make it live.
+   */
+  const applyBlock = (
+    <div className="mt-2 rounded-lg border border-amber-400/40 bg-amber-400/[0.05] px-3 py-2">
+      {!confirming && (
+        <>
+          <p className="text-[12px] leading-relaxed text-amber-200">
+            <span className="font-semibold">Not applied yet.</span>{" "}
+            {balanced && dirty
+              ? preview
+                  .map(
+                    (m) =>
+                      `Applying moves $${fmt(m.amount)} from ${m.fromName} to ${m.toName}.`,
+                  )
+                  .join(" ")
+              : unassigned != null && unassigned > 0
+                ? `$${fmt(unassigned)} of the account isn't assigned to a strategy — the targets have to add up to $${fmt(total)}.`
+                : unassigned != null
+                  ? `The targets are $${fmt(Math.abs(unassigned))} over — they have to add up to $${fmt(total)}.`
+                  : "Enter an amount for every strategy."}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirming(true)}
+              disabled={disabled || !dirty || !balanced}
+              className="inline-flex items-center rounded-lg bg-[var(--color-green,#00FF41)] px-3.5 py-1.5 text-[13px] font-bold text-black transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {disabled ? "Applying…" : "Apply split"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTargets(currents.map((c) => c.current.toFixed(2)));
+                setEditedIndex(null);
+                setConfirming(false);
+              }}
+              disabled={disabled}
+              className="rounded-lg border border-white/15 px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:text-text disabled:opacity-40"
+            >
+              Reset
+            </button>
+          </div>
+        </>
       )}
 
-      {/* One plain-words confirm for the whole split. */}
+      {/* One plain-words confirm for the whole split, in place. */}
       {confirming && dirty && (
-        <div className="mt-3 rounded-xl border border-[var(--color-red,#FF3333)]/40 bg-[var(--color-red,#FF3333)]/[0.06] px-3.5 py-3">
+        <div>
           <p className="text-sm leading-relaxed text-text">Apply this split?</p>
           <ul className="mt-1.5 flex flex-col gap-1">
             {preview.map((m, i) => (
               <li key={i} className="text-[13px] leading-relaxed text-text">
-                <span className="font-bold">${fmt(m.amount)}</span>:{" "}
-                {m.fromName} → {m.toName}
+                <span className="font-bold">${fmt(m.amount)}</span>: {m.fromName}{" "}
+                → {m.toName}
                 {m.sharePart > 0 && (
                   <span className="text-amber-300">
                     {" "}
                     (${fmt(m.cashPart)} cash + ≈${fmt(m.sharePart)} as positions
-                    — {m.toName} trades them into its own picks on its next
-                    sync)
+                    — {m.toName} trades them into its own picks on its next sync)
                   </span>
                 )}
               </li>
@@ -614,6 +598,66 @@ function SplitEditor({
             </button>
           </div>
         </div>
+      )}
+
+      {/* Outcomes report where the action was taken. */}
+      <p aria-live="polite" className="empty:hidden">
+        {error && (
+          <span
+            role="alert"
+            className="mt-2 block font-mono text-xs leading-relaxed text-[var(--color-red,#FF3333)]"
+          >
+            {error}
+          </span>
+        )}
+        {notice && !error && (
+          <span className="mt-2 block text-xs leading-relaxed text-[var(--color-green,#00FF41)]">
+            {notice}
+          </span>
+        )}
+      </p>
+    </div>
+  );
+
+  return (
+    <div className="mt-4">
+      <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.14em] text-text-muted">
+        How much should each strategy run?
+      </p>
+      <div className="flex flex-col gap-2.5">
+        {currents.map((c, i) => (
+          <StrategyCard
+            key={c.portfolioId}
+            sleeve={c}
+            color={sleeveColor(i)}
+            current={c.current}
+            sharePct={total > 0 ? (c.current / total) * 100 : 0}
+            meta={liveMeta[c.portfolioId]}
+            target={targets[i]}
+            invalid={parsed[i] == null}
+            disabled={disabled}
+            paperOptions={paperOptions}
+            statusLine={lineFor(c.portfolioId)}
+            pending={changed[i]}
+            applySlot={edited && i === applyIndex ? applyBlock : undefined}
+            onTarget={(raw) => setTarget(i, raw)}
+          />
+        ))}
+      </div>
+
+      {/* Nothing pending: say how to start, with no orphaned button. */}
+      {!edited && (
+        <p className="mt-3 text-[12px] text-text-muted">
+          Change a target to move money between strategies — you&apos;ll get an
+          apply button right there.
+        </p>
+      )}
+
+      {/* The last outcome survives the block disappearing after a success. */}
+      {!edited && notice && !error && (
+        <p className="mt-2 text-xs leading-relaxed text-[var(--color-green,#00FF41)]">
+          {notice}
+        </p>
       )}
     </div>
   );

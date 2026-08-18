@@ -34,6 +34,8 @@ export default function StrategyCard({
   disabled,
   paperOptions,
   statusLine,
+  pending,
+  applySlot,
   onTarget,
 }: {
   sleeve: SleeveCash;
@@ -47,6 +49,15 @@ export default function StrategyCard({
   paperOptions: { id: string; name: string }[];
   /** The "what's happening" line about this strategy, echoed on its card. */
   statusLine?: HubLine | null;
+  /** This card's target differs from what the strategy currently runs. */
+  pending?: boolean;
+  /**
+   * The apply/confirm controls for the split, rendered directly under this
+   * card's target box. Only the card the owner last typed into gets them, so
+   * the commitment sits where the decision was made rather than below every
+   * card — but the split it applies is still the whole account's.
+   */
+  applySlot?: React.ReactNode;
   onTarget: (raw: string) => void;
 }) {
   const targetNum = Number(target);
@@ -175,6 +186,11 @@ export default function StrategyCard({
               {drift > 0 ? "+" : "−"}${fmt(Math.abs(drift))}
             </span>
           )}
+          {pending && (
+            <span className="rounded border border-amber-400/40 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-amber-300">
+              not applied yet
+            </span>
+          )}
           <span className="font-mono text-text">$</span>
           <input
             id={`target-${sleeve.portfolioId}`}
@@ -193,6 +209,8 @@ export default function StrategyCard({
           />
         </span>
       </div>
+
+      {applySlot}
 
       {/* Real-order controls, out of the way until wanted. Both keep their own
           two-step confirms. */}
