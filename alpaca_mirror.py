@@ -192,7 +192,63 @@ def check_account_alignment(
     return sleeves.position_drift(recorded, actual)
 
 
+def _journal_run(db: SupabaseDB, live_pf: dict, result: dict, *, dry_run: bool) -> None:
+    """Record what a mirror run actually did, attributed to its sleeve.
+
+    A mirror legitimately does NOTHING on plenty of runs — the market was shut,
+    nothing had drifted, our records disagreed with the broker — and that reason
+    used to live only in the Actions log. The owner's hub therefore couldn't
+    tell a quiet run from a broken one, which is exactly the ambiguity that
+    makes a real-money page feel untrustworthy. One journal row per run fixes
+    it, and `run_logs` is already the project's "a job ran" table so it needs no
+    migration (the website reads it through an explicit script_name allowlist,
+    so it can't surface publicly).
+
+    Best-effort: a journal failure must never fail a run that placed orders.
+    """
+    try:
+        db.log_run("live_mirror", {
+            "updated": int(result.get("placed") or 0),
+            "details": {
+                "portfolio_id": live_pf.get("id"),
+                "slug": live_pf.get("slug"),
+                "status": result.get("status"),
+                "orders": int(result.get("orders") or 0),
+                "placed": int(result.get("placed") or 0),
+                "dry_run": bool(dry_run),
+                "shared_account": bool(result.get("shared_account") or False),
+            },
+        })
+    except Exception as exc:  # noqa: BLE001 — journaling is never fatal
+        logger.warning(
+            "mirror %s: run journal failed: %s", live_pf.get("slug"), exc,
+        )
+
+
 def mirror_paper_to_broker(
+    db: SupabaseDB,
+    pm: PortfolioManager,
+    executor: BrokerBackend,
+    live_pf: dict,
+    paper_pf: dict,
+    *,
+    threshold: float = DEFAULT_THRESHOLD,
+    dry_run: bool = False,
+) -> dict:
+    """Rebalance one live portfolio to match its paper book, and journal it.
+
+    Thin wrapper over :func:`_mirror_paper_to_broker` that records the outcome
+    (including "did nothing, because…") for the owner's live account panel.
+    """
+    result = _mirror_paper_to_broker(
+        db, pm, executor, live_pf, paper_pf,
+        threshold=threshold, dry_run=dry_run,
+    )
+    _journal_run(db, live_pf, result, dry_run=dry_run)
+    return result
+
+
+def _mirror_paper_to_broker(
     db: SupabaseDB,
     pm: PortfolioManager,
     executor: BrokerBackend,

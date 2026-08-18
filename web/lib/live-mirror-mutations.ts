@@ -20,6 +20,7 @@
 import { revalidatePath } from "next/cache";
 import { getSupabase } from "@/lib/supabase";
 import { requireUser } from "@/lib/auth/require-user";
+import { DISPATCH_SCRIPT } from "@/lib/live-activity-query";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -152,6 +153,9 @@ export async function setLiveFollowTarget(input: {
 
 export async function syncLivePortfolioToAlpaca(input: {
   portfolioId: string;
+  /** Who asked — "web" (the owner clicked Sync) or "restructure" (an
+   *  in-kind funding move auto-dispatched it). Journalled, not acted on. */
+  source?: string;
 }): Promise<ActionResult> {
   const { user } = await requireUser();
 
@@ -170,7 +174,40 @@ export async function syncLivePortfolioToAlpaca(input: {
   });
   if (!result.ok) return result;
 
+  await journalDispatch(input.portfolioId, live.slug, input.source ?? "web");
+
   revalidatePath(`/portfolios/${live.slug}`);
   revalidatePath("/account");
   return { ok: true };
+}
+
+/**
+ * Record that a mirror was ASKED for, attributed to the sleeve that asked.
+ *
+ * GitHub's dispatch endpoint answers 204 with no run id, and the runs list
+ * carries no dispatch inputs, so nothing GitHub returns can ever be tied back
+ * to one sleeve. Without this row the click leaves no trace at all: the "Sync
+ * started" message is component state that the same action's `router.refresh()`
+ * immediately wipes, so a reload made a real request look like it never
+ * happened.
+ *
+ * `run_logs` is the project's existing "a job ran" journal and needs no
+ * migration. `activity-query.ts` reads it through an explicit `script_name`
+ * allowlist, so this row can't surface on a public feed. Best-effort: a
+ * journal failure must never turn a successful dispatch into an error.
+ */
+async function journalDispatch(
+  portfolioId: string,
+  slug: string,
+  source: string,
+): Promise<void> {
+  try {
+    const { error } = await getSupabase().from("run_logs").insert({
+      script_name: DISPATCH_SCRIPT,
+      details: { portfolio_id: portfolioId, slug, action: "mirror", source },
+    });
+    if (error) console.error("live-mirror dispatch journal failed:", error);
+  } catch (err) {
+    console.error("live-mirror dispatch journal threw:", err);
+  }
 }
