@@ -31,6 +31,7 @@ import {
 import { uniquePortfolioSlug } from "@/lib/slug";
 import {
   planInKindFunding,
+  planSplitMoves,
   type InKindPlan,
   type SourceHolding,
 } from "@/lib/sleeve-funding";
@@ -203,6 +204,63 @@ export async function debitAllowance(input: {
 }
 
 /**
+ * The shared sleeve→sleeve mover: cash when the source's spare cash covers
+ * the amount, otherwise cash + an in-kind slice of its positions (migration
+ * 084). Dispatches a restructure for the destination when shares moved.
+ * Ownership/account checks are the caller's job.
+ */
+async function moveBetweenSleeves(
+  from: OwnedSleeve,
+  to: OwnedSleeve,
+  amount: number,
+): Promise<ActionResult> {
+  const fromAllowance = await readAllowance(from.id);
+  if (fromAllowance == null) {
+    return { ok: false, error: "Could not load the account." };
+  }
+
+  if (amount > fromAllowance + CASH_TOLERANCE) {
+    const holdings = await sourceHoldingsWithPrices(from.id);
+    const plan = planInKindFunding(fromAllowance, holdings, amount);
+    if (plan.plannedTotal < amount - 1) {
+      return {
+        ok: false,
+        error:
+          `${from.slug} is worth about $${plan.plannedTotal.toFixed(2)} ` +
+          `(cash + priceable holdings) — cannot move $${amount.toFixed(2)}.`,
+      };
+    }
+    const moved = await executeInKind(from.id, to.id, plan);
+    if (!moved.ok) return moved;
+    if (plan.shareMoves.length > 0) await dispatchRestructure(to.id);
+    return { ok: true };
+  }
+
+  const fromNext = Math.round((fromAllowance - amount) * 100) / 100;
+  if (!(await writeAllowance(from.id, fromAllowance, fromNext))) {
+    return { ok: false, error: RETRY_MSG };
+  }
+  await logLedger(from.id, -amount, fromNext, "transfer-out", `web → ${to.slug}`);
+
+  const toAllowance = await readAllowance(to.id);
+  const toNext = Math.round(((toAllowance ?? 0) + amount) * 100) / 100;
+  if (
+    toAllowance == null ||
+    !(await writeAllowance(to.id, toAllowance, toNext))
+  ) {
+    return {
+      ok: false,
+      error:
+        `Moved $${amount.toFixed(2)} out of ${from.slug}, but crediting ` +
+        `${to.slug} failed — the amount is sitting unallocated. Credit it ` +
+        `from the panel (or live_cash.py) once the page refreshes.`,
+    };
+  }
+  await logLedger(to.id, amount, toNext, "transfer-in", `web ← ${from.slug}`);
+  return { ok: true };
+}
+
+/**
  * Move allowance from one sleeve to another on the SAME broker account.
  * Total allowance is unchanged, so no broker read is needed. Debit runs first;
  * if the credit leg then fails, the amount is parked as unallocated and the
@@ -233,56 +291,8 @@ export async function transferAllowance(input: {
   const amount = parseAmount(input.amount);
   if (!amount) return { ok: false, error: "Enter an amount above zero." };
 
-  const fromAllowance = await readAllowance(from.id);
-  if (fromAllowance == null) {
-    return { ok: false, error: "Could not load the account." };
-  }
-  if (amount > fromAllowance + CASH_TOLERANCE) {
-    // Beyond spare cash: move the difference IN KIND — cash plus a
-    // proportional slice of the source's positions, atomically (migration
-    // 084). The destination's mirror restructures the inherited names on its
-    // next sync; we dispatch one immediately (best-effort) and the hub's
-    // "restructure pending" warning covers the gap.
-    const holdings = await sourceHoldingsWithPrices(from.id);
-    const plan = planInKindFunding(fromAllowance, holdings, amount);
-    if (plan.plannedTotal < amount - 1) {
-      return {
-        ok: false,
-        error:
-          `${from.slug} is worth about $${plan.plannedTotal.toFixed(2)} ` +
-          `(cash + priceable holdings) — cannot move $${amount.toFixed(2)}.`,
-      };
-    }
-    const moved = await executeInKind(from.id, to.id, plan);
-    if (!moved.ok) return moved;
-    if (plan.shareMoves.length > 0) await dispatchRestructure(to.id);
-    revalidatePath(`/portfolios/${from.slug}`);
-    revalidatePath(`/portfolios/${to.slug}`);
-    revalidatePath("/account");
-    return { ok: true };
-  }
-
-  const fromNext = Math.round((fromAllowance - amount) * 100) / 100;
-  if (!(await writeAllowance(from.id, fromAllowance, fromNext))) {
-    return { ok: false, error: RETRY_MSG };
-  }
-  await logLedger(from.id, -amount, fromNext, "transfer-out", `web → ${to.slug}`);
-
-  const toAllowance = await readAllowance(to.id);
-  const toNext = Math.round(((toAllowance ?? 0) + amount) * 100) / 100;
-  if (
-    toAllowance == null ||
-    !(await writeAllowance(to.id, toAllowance, toNext))
-  ) {
-    return {
-      ok: false,
-      error:
-        `Moved $${amount.toFixed(2)} out of ${from.slug}, but crediting ` +
-        `${to.slug} failed — the amount is sitting unallocated. Credit it ` +
-        `from the panel (or live_cash.py) once the page refreshes.`,
-    };
-  }
-  await logLedger(to.id, amount, toNext, "transfer-in", `web ← ${from.slug}`);
+  const moved = await moveBetweenSleeves(from, to, amount);
+  if (!moved.ok) return moved;
 
   revalidatePath(`/portfolios/${from.slug}`);
   revalidatePath(`/portfolios/${to.slug}`);
@@ -593,4 +603,182 @@ export async function createLiveFollower(input: {
   revalidatePath(`/portfolios/${slug}`);
   revalidatePath(`/portfolios/${source.slug}`);
   return { ok: true, slug, movedInKind, restructureDispatched };
+}
+
+/**
+ * "+ Add strategy" for the split editor: create an UNFUNDED live follower for
+ * one of the caller's paper books, as a sleeve of the account that
+ * `accountPortfolioId` (an existing sleeve of the caller's) belongs to. No
+ * money moves — the new row appears in the split editor at $0 and gets funded
+ * by Apply split. Same guards as createLiveFollower.
+ */
+export async function createFollowerShell(input: {
+  paperPortfolioId: string;
+  accountPortfolioId: string;
+}): Promise<ActionResult & { slug?: string; portfolioId?: string }> {
+  const { user } = await requireUser();
+  const supabase = getSupabase();
+
+  const anchor = await resolveOwnedSleeve(input.accountPortfolioId, user.id);
+  if (!anchor) return { ok: false, error: "That isn't your live portfolio." };
+
+  const { data: paper, error: paperErr } = await supabase
+    .from("portfolios")
+    .select("id, slug, display_name")
+    .eq("id", input.paperPortfolioId)
+    .eq("owner_user_id", user.id)
+    .eq("mode", "paper")
+    .maybeSingle();
+  if (paperErr || !paper) {
+    if (paperErr) console.error("createFollowerShell paper lookup:", paperErr);
+    return { ok: false, error: "Pick one of your own paper portfolios." };
+  }
+
+  const { data: existingFollower } = await supabase
+    .from("portfolios")
+    .select("slug")
+    .eq("follows_portfolio_id", paper.id)
+    .eq("mode", "live")
+    .maybeSingle();
+  if (existingFollower) {
+    return {
+      ok: false,
+      error: `${paper.display_name} already has a live follower (${existingFollower.slug}).`,
+    };
+  }
+
+  const { count: liveCount } = await supabase
+    .from("portfolios")
+    .select("id", { count: "exact", head: true })
+    .eq("owner_user_id", user.id)
+    .eq("mode", "live");
+  if ((liveCount ?? 0) >= 5) {
+    return { ok: false, error: "Live portfolio limit reached (5)." };
+  }
+
+  const slug = await uniquePortfolioSlug(`${paper.display_name} live`);
+  const { data: created, error: insertErr } = await supabase
+    .from("portfolios")
+    .insert({
+      slug,
+      display_name: `${paper.display_name} (Live)`,
+      owner_user_id: user.id,
+      owner_agent_id: null,
+      is_public: false,
+      mode: "live",
+      description: null,
+      follows_portfolio_id: paper.id,
+      broker_account_key: anchor.accountKey,
+    })
+    .select("id")
+    .maybeSingle();
+  if (insertErr || !created) {
+    console.error("createFollowerShell insert failed:", insertErr);
+    return { ok: false, error: "Could not create the live portfolio. Try again." };
+  }
+  const newId = (created as { id: string }).id;
+  const { error: seedErr } = await supabase.from("portfolio_accounts").upsert({
+    portfolio_id: newId,
+    cash_usd: 0,
+    starting_cash: 0,
+    inception_date: new Date().toISOString().slice(0, 10),
+  });
+  if (seedErr) console.error("createFollowerShell account seed failed:", seedErr);
+
+  revalidatePath("/account");
+  return { ok: true, slug, portfolioId: newId };
+}
+
+/**
+ * The split editor's Apply: per-sleeve target worths in, the pairwise moves
+ * out, executed via the shared mover (cash when it covers, cash + in-kind
+ * shares when it doesn't — migration 084). One requirement keeps it honest:
+ * the targets must redistribute the pot, not resize it, so they have to sum
+ * to (about) the sleeves' current combined worth. Rows the caller doesn't
+ * change simply arrive with target == current and plan no move.
+ */
+export async function applyLiveSplit(input: {
+  targets: { portfolioId: string; target: number }[];
+}): Promise<ActionResult & { movesExecuted?: number }> {
+  const { user } = await requireUser();
+  if (!input.targets || input.targets.length < 2) {
+    return { ok: false, error: "The split needs at least two portfolios." };
+  }
+
+  // Resolve every row as the caller's own sleeve; all must share one account.
+  const sleeves = await Promise.all(
+    input.targets.map((t) => resolveOwnedSleeve(t.portfolioId, user.id)),
+  );
+  if (sleeves.some((s) => s == null)) {
+    return { ok: false, error: "That isn't your live portfolio." };
+  }
+  const resolved = sleeves as OwnedSleeve[];
+  const keys = new Set(resolved.map((s) => s.accountKey));
+  if (keys.size > 1) {
+    return { ok: false, error: "Those portfolios use different broker accounts." };
+  }
+
+  // Current worth per sleeve = allowance + priceable holdings value.
+  const rows: import("@/lib/sleeve-funding").SplitRow[] = [];
+  for (let i = 0; i < resolved.length; i++) {
+    const s = resolved[i];
+    const allowance = await readAllowance(s.id);
+    if (allowance == null) return { ok: false, error: "Could not load the account." };
+    const holdings = await sourceHoldingsWithPrices(s.id);
+    const held = holdings.reduce(
+      (sum, h) => sum + (h.price != null && h.price > 0 ? h.quantity * h.price : 0),
+      0,
+    );
+    const target = Number(input.targets[i].target);
+    if (!Number.isFinite(target) || target < 0) {
+      return { ok: false, error: "Targets must be zero or above." };
+    }
+    rows.push({
+      portfolioId: s.id,
+      current: Math.round((allowance + held) * 100) / 100,
+      target: Math.round(target * 100) / 100,
+    });
+  }
+
+  const totalCurrent = rows.reduce((s, r) => s + r.current, 0);
+  const totalTarget = rows.reduce((s, r) => s + r.target, 0);
+  if (Math.abs(totalCurrent - totalTarget) > Math.max(1, totalCurrent * 0.001)) {
+    return {
+      ok: false,
+      error:
+        `Targets add up to $${totalTarget.toFixed(2)} but the account's ` +
+        `portfolios are worth $${totalCurrent.toFixed(2)} — a split ` +
+        "redistributes the pot, it can't resize it.",
+    };
+  }
+
+  const moves = planSplitMoves(rows);
+  if (moves.length === 0) {
+    return { ok: false, error: "Targets match the current split — nothing to move." };
+  }
+
+  const byId = new Map(resolved.map((s) => [s.id, s]));
+  let executed = 0;
+  for (const m of moves) {
+    const from = byId.get(m.fromPortfolioId);
+    const to = byId.get(m.toPortfolioId);
+    if (!from || !to) continue;
+    const result = await moveBetweenSleeves(from, to, m.amount);
+    if (!result.ok) {
+      return {
+        ok: false,
+        error:
+          executed > 0
+            ? `${result.error} (${executed} of ${moves.length} moves completed — ` +
+              "the numbers on screen are correct; adjust targets and Apply again.)"
+            : result.error,
+        movesExecuted: executed,
+      };
+    }
+    executed++;
+  }
+
+  revalidatePath("/account");
+  for (const s of resolved) revalidatePath(`/portfolios/${s.slug}`);
+  return { ok: true, movesExecuted: executed };
 }

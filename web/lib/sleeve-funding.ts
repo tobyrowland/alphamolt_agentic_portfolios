@@ -83,3 +83,53 @@ export function planInKindFunding(
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
+
+// ---------------------------------------------------------------------------
+// Split planning — "how much should each strategy run?" → concrete moves
+// ---------------------------------------------------------------------------
+
+export type SplitRow = {
+  portfolioId: string;
+  /** Current worth: cash allowance + holdings value. */
+  current: number;
+  /** Owner-entered target worth. */
+  target: number;
+};
+
+export type SplitMove = { fromPortfolioId: string; toPortfolioId: string; amount: number };
+
+/**
+ * Turn per-sleeve targets into pairwise moves: sleeves over target give,
+ * sleeves under target receive, matched greedily largest-first. Deltas under
+ * $1 are ignored as noise. Pure; targets are assumed to sum to (about) the
+ * same total as `current` — the caller validates that before planning.
+ */
+export function planSplitMoves(rows: SplitRow[]): SplitMove[] {
+  const givers = rows
+    .map((r) => ({ id: r.portfolioId, amt: round2(r.current - r.target) }))
+    .filter((g) => g.amt > 1)
+    .sort((a, b) => b.amt - a.amt);
+  const takers = rows
+    .map((r) => ({ id: r.portfolioId, amt: round2(r.target - r.current) }))
+    .filter((t) => t.amt > 1)
+    .sort((a, b) => b.amt - a.amt);
+
+  const moves: SplitMove[] = [];
+  let gi = 0;
+  let ti = 0;
+  while (gi < givers.length && ti < takers.length) {
+    const step = round2(Math.min(givers[gi].amt, takers[ti].amt));
+    if (step > 1) {
+      moves.push({
+        fromPortfolioId: givers[gi].id,
+        toPortfolioId: takers[ti].id,
+        amount: step,
+      });
+    }
+    givers[gi].amt = round2(givers[gi].amt - step);
+    takers[ti].amt = round2(takers[ti].amt - step);
+    if (givers[gi].amt <= 1) gi++;
+    if (takers[ti].amt <= 1) ti++;
+  }
+  return moves;
+}
