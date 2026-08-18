@@ -29,6 +29,14 @@ export type SleeveCash = {
   holdingsValue: number;
   /** The paper book this follower mirrors (follows_portfolio_id), if set. */
   followsPortfolioId: string | null;
+  /**
+   * Value of this sleeve's holdings in tickers its own paper book does NOT
+   * hold — e.g. positions inherited through an in-kind funding move that the
+   * mirror hasn't restructured yet, or everything when the follower is
+   * unlinked. The hub shows a persistent warning while this is material, so
+   * an inherited book can never sit unnoticed.
+   */
+  offBookValue: number;
 };
 
 export type LedgerEntry = {
@@ -175,6 +183,44 @@ async function buildAccountSummary(
     );
   }
 
+  // Each followed paper book's ticker set — what the sleeve SHOULD hold.
+  // Anything else it holds is "off book" (inherited via in-kind funding, or a
+  // stale position) and gets flagged until the mirror restructures it.
+  const followIds = [
+    ...new Set(
+      sleevePortfolios
+        .map((p) => p.follows_portfolio_id)
+        .filter((id): id is string => id != null),
+    ),
+  ];
+  const paperTickersById = new Map<string, Set<string>>();
+  if (followIds.length > 0) {
+    const { data: paperRows } = await supabase
+      .from("portfolio_holdings")
+      .select("portfolio_id, ticker")
+      .in("portfolio_id", followIds);
+    for (const r of (paperRows ?? []) as {
+      portfolio_id: string;
+      ticker: string;
+    }[]) {
+      const set = paperTickersById.get(r.portfolio_id) ?? new Set<string>();
+      set.add(r.ticker);
+      paperTickersById.set(r.portfolio_id, set);
+    }
+  }
+  const offBookById = new Map<string, number>();
+  for (const p of sleevePortfolios) {
+    const allowed = p.follows_portfolio_id
+      ? (paperTickersById.get(p.follows_portfolio_id) ?? new Set<string>())
+      : new Set<string>();
+    let off = 0;
+    for (const h of holdingRows) {
+      if (h.portfolio_id !== p.id || allowed.has(h.ticker)) continue;
+      off += Number(h.quantity) * (priceByTicker.get(h.ticker) ?? 0);
+    }
+    offBookById.set(p.id, off);
+  }
+
   const sleeves: SleeveCash[] = sleevePortfolios
     .map((p) => ({
       portfolioId: p.id,
@@ -183,6 +229,7 @@ async function buildAccountSummary(
       allowance: round2(allowanceById.get(p.id) ?? 0),
       holdingsValue: round2(holdingsValueById.get(p.id) ?? 0),
       followsPortfolioId: p.follows_portfolio_id,
+      offBookValue: round2(offBookById.get(p.id) ?? 0),
     }))
     .sort((a, b) => a.slug.localeCompare(b.slug));
 

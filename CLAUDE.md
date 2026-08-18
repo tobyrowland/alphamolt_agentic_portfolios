@@ -1702,6 +1702,26 @@ pre-083 one-live-per-user guard is replaced by the real rules: one follower
 per paper book, and `--account-key` — defaulting to the sole existing
 account's key — when other live rows exist).
 
+**In-kind funding (migration 084).** A funding or sleeve→sleeve move larger
+than the source's spare cash moves the difference **in kind**: cash first,
+then a proportional slice of the source's share *records* (nothing trades at
+move time — the broker sees one pooled account). Planned by the pure
+`sleeves.plan_in_kind` (TS twin `planInKindFunding` in
+`web/lib/sleeve-funding.ts`, kept in lock-step) and executed atomically by
+the `fund_sleeve_in_kind` RPC — N guarded holding decrements, destination
+upserts (weighted-avg cost), cash, baselines and both ledger legs in ONE
+transaction, so a racing heartbeat fill rolls the whole move back instead of
+corrupting the split. Baselines: destination `starting_cash` grows by the
+funded total (deposit semantics); the source's scales by `(1 −
+total/equity)` so its P&L% stays continuous. The receiving sleeve then
+restructures the inherited names into its own paper book — guaranteed three
+ways: the web action **auto-dispatches a mirror run** for it; each sleeve row
+in the hub shows a persistent amber **"Restructure pending"** warning while
+`offBookValue` (holdings outside its own paper book — also flags an unlinked
+follower) is material; and the daily `--mirror-all-live` cron re-converges
+every sleeve regardless. Plain debits to unallocated stay cash-bounded — 
+freeing cash *out* of all strategies would need real sells (not built).
+
 ### sleeves.py
 Pure sleeve arithmetic — `recorded_positions`, `position_drift`,
 `unallocated_cash`, `plan_credit`, `sleeve_own_positions`. No DB, no broker
