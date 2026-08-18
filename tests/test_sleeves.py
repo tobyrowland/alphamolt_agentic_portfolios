@@ -524,5 +524,64 @@ class TestSyncRefusesSharedAccount(unittest.TestCase):
             self.assertNotIsInstance(exc, AlpacaError)
 
 
+class TestPlanInKind(unittest.TestCase):
+    """Funding a sleeve from a sibling: cash first, proportional shares after."""
+
+    H = [
+        {"ticker": "NVDA", "quantity": 10.0, "avg_cost_usd": 80.0, "price": 100.0},
+        {"ticker": "AAPL", "quantity": 20.0, "avg_cost_usd": 40.0, "price": 50.0},
+    ]  # holdings value = 1000 + 1000 = 2000
+
+    def test_cash_covers_it_all(self):
+        plan = sleeves.plan_in_kind(500.0, self.H, 300.0)
+        self.assertEqual(plan.cash_move, 300.0)
+        self.assertEqual(plan.share_moves, ())
+        self.assertEqual(plan.planned_total, 300.0)
+
+    def test_shares_cover_the_remainder_proportionally(self):
+        # 100 cash + 1000 from shares = half of each position.
+        plan = sleeves.plan_in_kind(100.0, self.H, 1100.0)
+        self.assertEqual(plan.cash_move, 100.0)
+        by = {m.ticker: m for m in plan.share_moves}
+        self.assertAlmostEqual(by["NVDA"].qty, 5.0, places=4)
+        self.assertAlmostEqual(by["AAPL"].qty, 10.0, places=4)
+        self.assertEqual(by["NVDA"].avg_cost, 80.0)
+        self.assertAlmostEqual(plan.planned_total, 1100.0, places=2)
+
+    def test_fraction_caps_at_full_liquidation(self):
+        # Asking for more than cash+holdings: plan moves everything it has,
+        # planned_total reports the shortfall for the caller to refuse on.
+        plan = sleeves.plan_in_kind(100.0, self.H, 5000.0)
+        by = {m.ticker: m for m in plan.share_moves}
+        self.assertAlmostEqual(by["NVDA"].qty, 10.0, places=4)
+        self.assertAlmostEqual(by["AAPL"].qty, 20.0, places=4)
+        self.assertAlmostEqual(plan.planned_total, 2100.0, places=2)
+        self.assertLess(plan.planned_total, 5000.0)
+
+    def test_dust_legs_are_dropped(self):
+        holdings = self.H + [
+            {"ticker": "TINY", "quantity": 0.01, "avg_cost_usd": 1.0, "price": 2.0},
+        ]
+        plan = sleeves.plan_in_kind(0.0, holdings, 1000.0)
+        self.assertNotIn("TINY", {m.ticker for m in plan.share_moves})
+
+    def test_unpriced_holdings_are_skipped(self):
+        holdings = self.H + [
+            {"ticker": "NOPX", "quantity": 5.0, "avg_cost_usd": 10.0, "price": 0},
+        ]
+        plan = sleeves.plan_in_kind(0.0, holdings, 500.0)
+        self.assertNotIn("NOPX", {m.ticker for m in plan.share_moves})
+
+    def test_negative_source_cash_treated_as_zero(self):
+        plan = sleeves.plan_in_kind(-50.0, self.H, 200.0)
+        self.assertEqual(plan.cash_move, 0.0)
+        self.assertGreater(len(plan.share_moves), 0)
+
+    def test_missing_avg_cost_falls_back_to_price(self):
+        holdings = [{"ticker": "X", "quantity": 4.0, "avg_cost_usd": None, "price": 25.0}]
+        plan = sleeves.plan_in_kind(0.0, holdings, 50.0)
+        self.assertEqual(plan.share_moves[0].avg_cost, 25.0)
+
+
 if __name__ == "__main__":
     unittest.main()

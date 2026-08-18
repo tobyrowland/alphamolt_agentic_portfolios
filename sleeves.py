@@ -199,3 +199,86 @@ def sleeve_own_positions(book: dict) -> dict[str, float]:
         for h in book.get("holdings", [])
         if abs(float(h.get("quantity") or 0)) > QTY_TOLERANCE
     }
+
+
+@dataclass(frozen=True)
+class InKindMove:
+    """One share leg of an in-kind funding plan."""
+
+    ticker: str
+    qty: float
+    avg_cost: float
+    approx_value: float   # qty × current price at plan time — informational
+
+
+@dataclass(frozen=True)
+class InKindPlan:
+    """How to fund ``total`` from a source sleeve: cash first, then shares.
+
+    ``cash_move`` comes out of the source's allowance; ``share_moves`` are
+    proportional slices of its positions. ``planned_total`` can fall short of
+    the request when the source simply doesn't hold enough value — callers
+    refuse in that case rather than partially funding by surprise.
+    """
+
+    cash_move: float
+    share_moves: tuple[InKindMove, ...]
+    planned_total: float
+
+    @property
+    def share_value(self) -> float:
+        return round(sum(m.approx_value for m in self.share_moves), 2)
+
+
+def plan_in_kind(
+    source_cash: float,
+    holdings: list[dict],
+    total: float,
+    *,
+    min_leg_usd: float = 1.0,
+) -> InKindPlan:
+    """Plan funding ``total`` from a sleeve: spare cash first, shares for the rest.
+
+    ``holdings`` rows carry ``ticker``, ``quantity``, ``avg_cost_usd`` and
+    ``price`` (current). The share legs take the same fraction of every
+    priced position — proportional, so the source's shape is preserved and
+    its mirror stays at rest. Legs under ``min_leg_usd`` are dropped (dust);
+    the shortfall that creates is made up by scaling the remaining legs is
+    NOT attempted — the plan simply reports what it moves via
+    ``planned_total`` and callers compare against the request.
+
+    Pure: no DB, no broker (mirrored in TS as ``planInKindFunding`` —
+    web/lib/live-cash-mutations.ts — keep the two in lock-step).
+    """
+    total = round(float(total), 2)
+    cash_move = round(min(max(float(source_cash), 0.0), total), 2)
+    remainder = round(total - cash_move, 2)
+    if remainder <= 0:
+        return InKindPlan(cash_move, (), cash_move)
+
+    priced = [
+        h for h in holdings
+        if float(h.get("quantity") or 0) > 0 and float(h.get("price") or 0) > 0
+    ]
+    holdings_value = sum(
+        float(h["quantity"]) * float(h["price"]) for h in priced
+    )
+    if holdings_value <= 0:
+        return InKindPlan(cash_move, (), cash_move)
+
+    fraction = min(remainder / holdings_value, 1.0)
+    moves: list[InKindMove] = []
+    for h in sorted(priced, key=lambda h: h["ticker"]):
+        qty = round(float(h["quantity"]) * fraction, 4)
+        value = round(qty * float(h["price"]), 2)
+        if qty <= 0 or value < min_leg_usd:
+            continue
+        moves.append(InKindMove(
+            ticker=h["ticker"],
+            qty=qty,
+            avg_cost=round(float(h.get("avg_cost_usd") or h["price"]), 4),
+            approx_value=value,
+        ))
+
+    planned = round(cash_move + sum(m.approx_value for m in moves), 2)
+    return InKindPlan(cash_move, tuple(moves), planned)

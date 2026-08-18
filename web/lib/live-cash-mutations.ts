@@ -29,6 +29,12 @@ import {
   getAccountCashSummaryForPortfolio,
 } from "@/lib/live-cash-query";
 import { uniquePortfolioSlug } from "@/lib/slug";
+import {
+  planInKindFunding,
+  type InKindPlan,
+  type SourceHolding,
+} from "@/lib/sleeve-funding";
+import { syncLivePortfolioToAlpaca } from "@/lib/live-mirror-mutations";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -232,10 +238,28 @@ export async function transferAllowance(input: {
     return { ok: false, error: "Could not load the account." };
   }
   if (amount > fromAllowance + CASH_TOLERANCE) {
-    return {
-      ok: false,
-      error: `${from.slug} has $${fromAllowance.toFixed(2)} — cannot move $${amount.toFixed(2)}.`,
-    };
+    // Beyond spare cash: move the difference IN KIND — cash plus a
+    // proportional slice of the source's positions, atomically (migration
+    // 084). The destination's mirror restructures the inherited names on its
+    // next sync; we dispatch one immediately (best-effort) and the hub's
+    // "restructure pending" warning covers the gap.
+    const holdings = await sourceHoldingsWithPrices(from.id);
+    const plan = planInKindFunding(fromAllowance, holdings, amount);
+    if (plan.plannedTotal < amount - 1) {
+      return {
+        ok: false,
+        error:
+          `${from.slug} is worth about $${plan.plannedTotal.toFixed(2)} ` +
+          `(cash + priceable holdings) — cannot move $${amount.toFixed(2)}.`,
+      };
+    }
+    const moved = await executeInKind(from.id, to.id, plan);
+    if (!moved.ok) return moved;
+    if (plan.shareMoves.length > 0) await dispatchRestructure(to.id);
+    revalidatePath(`/portfolios/${from.slug}`);
+    revalidatePath(`/portfolios/${to.slug}`);
+    revalidatePath("/account");
+    return { ok: true };
   }
 
   const fromNext = Math.round((fromAllowance - amount) * 100) / 100;
@@ -264,6 +288,106 @@ export async function transferAllowance(input: {
   revalidatePath(`/portfolios/${to.slug}`);
   revalidatePath("/account");
   return { ok: true };
+}
+
+/**
+ * The source sleeve's positions with current Level 0 prices — the input to
+ * the in-kind planner. Unpriced names come back with price null and are
+ * skipped by the planner (they stay with the source).
+ */
+async function sourceHoldingsWithPrices(
+  portfolioId: string,
+): Promise<SourceHolding[]> {
+  const supabase = getSupabase();
+  const { data: rows, error } = await supabase
+    .from("portfolio_holdings")
+    .select("ticker, quantity, avg_cost_usd")
+    .eq("portfolio_id", portfolioId);
+  if (error) {
+    console.error("sourceHoldingsWithPrices failed:", error);
+    return [];
+  }
+  const holdings = (rows ?? []) as {
+    ticker: string;
+    quantity: number | string;
+    avg_cost_usd: number | string | null;
+  }[];
+  const tickers = holdings.map((h) => h.ticker);
+  const priceByTicker = new Map<string, number>();
+  if (tickers.length > 0) {
+    const { data: secs } = await supabase
+      .from("securities")
+      .select("ticker, price")
+      .in("ticker", tickers);
+    for (const s of (secs ?? []) as {
+      ticker: string;
+      price: number | string | null;
+    }[]) {
+      const px = s.price == null ? NaN : Number(s.price);
+      if (Number.isFinite(px) && px > 0) priceByTicker.set(s.ticker, px);
+    }
+  }
+  return holdings.map((h) => ({
+    ticker: h.ticker,
+    quantity: Number(h.quantity) || 0,
+    avgCost: h.avg_cost_usd == null ? null : Number(h.avg_cost_usd),
+    price: priceByTicker.get(h.ticker) ?? null,
+  }));
+}
+
+/**
+ * Execute an in-kind plan atomically via the fund_sleeve_in_kind RPC
+ * (migration 084): N guarded holding decrements, destination upserts, cash,
+ * baselines and both ledger legs in ONE transaction — a racing heartbeat fill
+ * rolls the whole move back rather than corrupting the split.
+ */
+async function executeInKind(
+  fromPortfolioId: string,
+  toPortfolioId: string,
+  plan: InKindPlan,
+): Promise<ActionResult> {
+  const supabase = getSupabase();
+  const { error } = await supabase.rpc("fund_sleeve_in_kind", {
+    p_from_portfolio: fromPortfolioId,
+    p_to_portfolio: toPortfolioId,
+    p_moves: plan.shareMoves.map((m) => ({
+      ticker: m.ticker,
+      qty: m.qty,
+      avg_cost: m.avgCost,
+    })),
+    p_cash: plan.cashMove,
+    p_total: plan.plannedTotal,
+  });
+  if (error) {
+    console.error("fund_sleeve_in_kind failed:", error);
+    const retry = /retry/i.test(error.message ?? "");
+    return {
+      ok: false,
+      error: retry
+        ? RETRY_MSG
+        : `The in-kind move failed and nothing was moved: ${error.message}. ` +
+          "Is migration 084 applied?",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Fire the mirror for a freshly funded sleeve so inherited positions are
+ * restructured into its own paper book as soon as the market allows — the
+ * first of the guarantees that an in-kind-funded sleeve can't just sit on
+ * another strategy's shares. Best-effort: a dispatch failure is reported in
+ * the notice, and the hub's "restructure pending" warning + the daily mirror
+ * cron remain the backstops.
+ */
+async function dispatchRestructure(portfolioId: string): Promise<boolean> {
+  try {
+    const res = await syncLivePortfolioToAlpaca({ portfolioId });
+    return res.ok;
+  } catch (err) {
+    console.error("restructure dispatch failed:", err);
+    return false;
+  }
 }
 
 /** Live followers per user — belt-and-braces cap, mirrors MAX_PAPER_PORTFOLIOS. */
@@ -296,7 +420,9 @@ export async function createLiveFollower(input: {
   paperPortfolioId: string;
   fundFromPortfolioId: string;
   amount: number;
-}): Promise<ActionResult & { slug?: string }> {
+}): Promise<
+  ActionResult & { slug?: string; movedInKind?: boolean; restructureDispatched?: boolean }
+> {
   const { user } = await requireUser();
   const supabase = getSupabase();
 
@@ -353,16 +479,27 @@ export async function createLiveFollower(input: {
     };
   }
 
-  // Check the source can afford the funding BEFORE creating anything.
+  // Work out HOW the source can afford the funding BEFORE creating anything:
+  // spare cash alone when it covers the amount, otherwise cash + an in-kind
+  // slice of the source's positions (migration 084). Refuse only when even a
+  // full in-kind plan falls materially short — the source isn't worth it.
   const sourceAllowance = await readAllowance(source.id);
   if (sourceAllowance == null) {
     return { ok: false, error: "Could not load the account." };
   }
-  if (amount > sourceAllowance + CASH_TOLERANCE) {
-    return {
-      ok: false,
-      error: `${source.slug} has $${sourceAllowance.toFixed(2)} spendable — cannot fund $${amount.toFixed(2)}.`,
-    };
+  const cashOnly = amount <= sourceAllowance + CASH_TOLERANCE;
+  let inKindPlan: InKindPlan | null = null;
+  if (!cashOnly) {
+    const holdings = await sourceHoldingsWithPrices(source.id);
+    inKindPlan = planInKindFunding(sourceAllowance, holdings, amount);
+    if (inKindPlan.plannedTotal < amount - 1) {
+      return {
+        ok: false,
+        error:
+          `${source.slug} is worth about $${inKindPlan.plannedTotal.toFixed(2)} ` +
+          `(cash + priceable holdings) — cannot fund $${amount.toFixed(2)}.`,
+      };
+    }
   }
 
   // Create the follower row (private by DB CHECK; mode='live'; explicit
@@ -405,35 +542,55 @@ export async function createLiveFollower(input: {
     };
   }
 
-  // Funding leg — transfer semantics (source allowance → new sleeve), plus
-  // starting_cash so the P&L baseline is the funded amount.
-  const sourceNext = Math.round((sourceAllowance - amount) * 100) / 100;
   const kept =
     `${paper.display_name} (Live) was created unfunded — ` +
     "fund it with the Move control once the page refreshes.";
-  if (!(await writeAllowance(source.id, sourceAllowance, sourceNext))) {
-    return { ok: false, error: `${RETRY_MSG} ${kept}` };
-  }
-  await logLedger(source.id, -amount, sourceNext, "transfer-out", `go-live → ${slug}`);
 
-  const { error: fundErr } = await supabase
-    .from("portfolio_accounts")
-    .update({ cash_usd: amount, starting_cash: amount })
-    .eq("portfolio_id", newId)
-    .eq("cash_usd", 0);
-  if (fundErr) {
-    console.error("createLiveFollower funding failed:", fundErr);
-    return {
-      ok: false,
-      error:
-        `Moved $${amount.toFixed(2)} out of ${source.slug}, but crediting the ` +
-        `new sleeve failed — the amount is sitting unallocated. ${kept}`,
-    };
+  if (cashOnly) {
+    // Funding leg — transfer semantics (source allowance → new sleeve), plus
+    // starting_cash so the P&L baseline is the funded amount.
+    const sourceNext = Math.round((sourceAllowance - amount) * 100) / 100;
+    if (!(await writeAllowance(source.id, sourceAllowance, sourceNext))) {
+      return { ok: false, error: `${RETRY_MSG} ${kept}` };
+    }
+    await logLedger(source.id, -amount, sourceNext, "transfer-out", `go-live → ${slug}`);
+
+    const { error: fundErr } = await supabase
+      .from("portfolio_accounts")
+      .update({ cash_usd: amount, starting_cash: amount })
+      .eq("portfolio_id", newId)
+      .eq("cash_usd", 0);
+    if (fundErr) {
+      console.error("createLiveFollower funding failed:", fundErr);
+      return {
+        ok: false,
+        error:
+          `Moved $${amount.toFixed(2)} out of ${source.slug}, but crediting the ` +
+          `new sleeve failed — the amount is sitting unallocated. ${kept}`,
+      };
+    }
+    await logLedger(newId, amount, amount, "transfer-in", `go-live ← ${source.slug}`);
+  } else if (inKindPlan) {
+    // In-kind funding: cash + a proportional slice of the source's shares,
+    // atomically (migration 084). On failure nothing moved — the sleeve
+    // stays unfunded and the Move control finishes the job.
+    const moved = await executeInKind(source.id, newId, inKindPlan);
+    if (!moved.ok) {
+      return { ok: false, error: `${moved.error} ${kept}` };
+    }
   }
-  await logLedger(newId, amount, amount, "transfer-in", `go-live ← ${source.slug}`);
+
+  // Guarantee 1: restructure the inherited positions into the new sleeve's
+  // own paper book as soon as the market allows. Best-effort — the hub's
+  // "restructure pending" warning + the daily mirror cron are the backstops.
+  const movedInKind =
+    !cashOnly && !!inKindPlan && inKindPlan.shareMoves.length > 0;
+  const restructureDispatched = movedInKind
+    ? await dispatchRestructure(newId)
+    : false;
 
   revalidatePath("/account");
   revalidatePath(`/portfolios/${slug}`);
   revalidatePath(`/portfolios/${source.slug}`);
-  return { ok: true, slug };
+  return { ok: true, slug, movedInKind, restructureDispatched };
 }
