@@ -91,8 +91,24 @@ export type HubInput = {
 
 export type HubTone = "good" | "working" | "warn" | "danger" | "muted";
 
+/**
+ * What a line IS, independent of how it reads. The execution timeline sorts
+ * lines into past / present / future and must not do that by pattern-matching
+ * the copy — the sentences are a tested contract and are free to change.
+ */
+export type HubLineKind =
+  | "dispatch"       // we asked for a run; it hasn't reported back
+  | "offbook"        // positions still owed a restructure
+  | "unlinked"       // follower with no paper book to copy
+  | "over-committed" // allowances promise more than the broker holds
+  | "no-baseline"    // its return has nothing meaningful to measure against
+  | "run"            // what the last run actually did
+  | "ledger"         // money that already moved between strategies
+  | "fill";          // an order that already executed
+
 export type HubLine = {
   id: string;
+  kind: HubLineKind;
   tone: HubTone;
   text: string;
   /**
@@ -239,15 +255,19 @@ export function describeLedger(reason: string): string {
 
 /**
  * The colour that identifies a strategy everywhere it appears — bar segment,
- * legend chip, card border and card dot all read this, so they can never
- * drift apart. Red is excluded: it means danger, never "a strategy".
+ * legend swatch and row dot all read this, so they can never drift apart.
+ *
+ * Deliberately excludes BOTH green and red. Those two carry meaning on this
+ * page — green is a gain, red is a loss or a refusal — and a palette that
+ * spends them on identity makes "the green strategy" and "up" the same colour.
+ * Identity is carried by the cool/warm accents only.
  */
 const SLEEVE_COLORS = [
-  "var(--color-green, #00FF41)",
   "var(--color-cyan, #00F2FF)",
   "var(--color-yellow, #FFD700)",
-  "var(--color-orange, #FF9900)",
   "#B388FF",
+  "var(--color-orange, #FF9900)",
+  "#5B8CFF",
 ];
 
 export function sleeveColor(index: number): string {
@@ -296,6 +316,7 @@ export function buildHubState(input: HubInput): HubState {
     if (ranSince) continue;
     lines.push({
       id: `dispatch-${s.portfolioId}`,
+      kind: "dispatch",
       tone: "working",
       portfolioId: s.portfolioId,
       short: `Sync requested ${relativeTime(dispatch.createdAt, now)} — waiting for it to start`,
@@ -311,6 +332,7 @@ export function buildHubState(input: HubInput): HubState {
     if (s.followsPortfolioId == null) {
       lines.push({
         id: `unlinked-${s.portfolioId}`,
+        kind: "unlinked",
         tone: "danger",
         portfolioId: s.portfolioId,
         short: `Holds ${usd(s.offBookValue)} but isn't linked to a strategy — nothing will trade`,
@@ -334,6 +356,7 @@ export function buildHubState(input: HubInput): HubState {
     );
     lines.push({
       id: `offbook-${s.portfolioId}`,
+      kind: "offbook",
       tone: stuck ? "danger" : "warn",
       portfolioId: s.portfolioId,
       offerSync: true,
@@ -358,6 +381,7 @@ export function buildHubState(input: HubInput): HubState {
     if (s.followsPortfolioId != null || s.offBookValue > MATERIAL_USD) continue;
     lines.push({
       id: `unlinked-empty-${s.portfolioId}`,
+      kind: "unlinked",
       tone: "warn",
       portfolioId: s.portfolioId,
       short: "Not linked to a strategy — it will never buy anything",
@@ -374,6 +398,7 @@ export function buildHubState(input: HubInput): HubState {
     if (s.startingCash != null && s.startingCash <= 0 && s.allowance + s.holdingsValue > 1) {
       lines.push({
         id: `no-baseline-${s.portfolioId}`,
+        kind: "no-baseline",
         tone: "warn",
         portfolioId: s.portfolioId,
         short: "No return baseline — its % is meaningless until one is set",
@@ -389,6 +414,7 @@ export function buildHubState(input: HubInput): HubState {
   if (input.unallocated != null && input.unallocated < -0.01) {
     lines.push({
       id: "over-committed",
+      kind: "over-committed",
       tone: "danger",
       text:
         `Your strategies are allowed to spend ${usd(input.unallocated)} more than ` +
@@ -408,6 +434,7 @@ export function buildHubState(input: HubInput): HubState {
     if (lastRun.status === "drift_refused") {
       lines.push({
         id: `run-${lastRun.createdAt}`,
+        kind: "run",
         tone: "danger",
         portfolioId: lastRun.portfolioId ?? undefined,
         text:
@@ -417,6 +444,7 @@ export function buildHubState(input: HubInput): HubState {
     } else if (lastRun.status === "market_closed") {
       lines.push({
         id: `run-${lastRun.createdAt}`,
+        kind: "run",
         tone: "muted",
         portfolioId: lastRun.portfolioId ?? undefined,
         text: `${who}: a sync ran ${when} while the US market was shut, so nothing traded.`,
@@ -424,6 +452,7 @@ export function buildHubState(input: HubInput): HubState {
     } else if (lastRun.status === "ok" && lastRun.placed === 0 && lastRun.orders === 0) {
       lines.push({
         id: `run-${lastRun.createdAt}`,
+        kind: "run",
         tone: "muted",
         portfolioId: lastRun.portfolioId ?? undefined,
         text: `${who}: a sync ran ${when} — nothing to do, the live book already matched.`,
@@ -431,6 +460,7 @@ export function buildHubState(input: HubInput): HubState {
     } else if (lastRun.status === "ok") {
       lines.push({
         id: `run-${lastRun.createdAt}`,
+        kind: "run",
         tone: "good",
         portfolioId: lastRun.portfolioId ?? undefined,
         text: `${who}: a sync ran ${when} and placed ${lastRun.placed} order${lastRun.placed === 1 ? "" : "s"}.`,
@@ -444,6 +474,7 @@ export function buildHubState(input: HubInput): HubState {
     const sign = l.deltaUsd >= 0 ? "+" : "−";
     recent.push({
       id: `ledger-${l.id}`,
+      kind: "ledger",
       tone: "muted",
       portfolioId: l.portfolioId,
       text:
@@ -454,6 +485,7 @@ export function buildHubState(input: HubInput): HubState {
   for (const f of input.fills.slice(0, 3)) {
     recent.push({
       id: `fill-${f.id}`,
+      kind: "fill",
       tone: "muted",
       portfolioId: f.portfolioId,
       text:
