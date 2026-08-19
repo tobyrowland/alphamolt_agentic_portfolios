@@ -120,7 +120,12 @@ export default function StrategyCard({
             >
               {down ? "▼" : "▲"} {Math.abs(meta.pnlPct).toFixed(2)}%
             </span>{" "}
-            since it started
+            <span
+              title="Measured against the money paid into this strategy. Deposits and transfers move that baseline, so they don't read as profit. Check it with live_cash.py --baselines."
+              className="underline decoration-dotted underline-offset-2"
+            >
+              since it started
+            </span>
           </>
         )}
       </p>

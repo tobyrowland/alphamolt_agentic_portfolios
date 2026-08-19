@@ -1764,12 +1764,57 @@ Pure sleeve arithmetic — `recorded_positions`, `position_drift`,
 (`tests/test_sleeves.py`).
 
 ### live_cash.py (operator, on-demand)
-Moves allowances between the unallocated pot and each sleeve. `--status`
-(broker cash, per-sleeve allowance + holdings, unallocated), `--credit SLUG AMT`,
-`--debit SLUG AMT`, `--transfer FROM TO AMT`, `--note`, `--dry-run`. Refuses to
-credit beyond unallocated or debit below zero, and writes every movement to
-`portfolio_cash_ledger`. Reads the broker for the cash balance only — never
-places an order.
+Moves allowances between the unallocated pot and each sleeve, and owns the P&L
+**baselines**. `--status` (broker cash, per-sleeve allowance + holdings,
+unallocated), `--credit SLUG AMT`, `--debit SLUG AMT`, `--transfer FROM TO AMT`,
+`--baselines`, `--fix-baselines`, `--set-baseline SLUG AMT`, `--note`,
+`--dry-run`. Refuses to credit beyond unallocated or debit below zero, and
+writes every movement to `portfolio_cash_ledger`. Reads the broker for the cash
+balance and (for baselines) its deposit/withdrawal history — never places an
+order.
+
+**Baselines — what "+X% since it started" is measured against.** A sleeve's
+return is `(value − portfolio_accounts.starting_cash) / starting_cash`, so the
+baseline has to mean *the capital put into that sleeve*. Every owner-initiated
+movement therefore moves it, by one of two rules (pure, shared:
+`sleeves.baseline_after_deposit` / `baseline_after_withdrawal`, TS twins
+`baselineAfterDeposit` / `baselineAfterWithdrawal` in
+`web/lib/sleeve-funding.ts`):
+
+- **value in** → `starting_cash += amount` — new capital starts flat, it is not
+  profit;
+- **value out** → `starting_cash × (1 − amount/equity)` — the sleeve's return %
+  is untouched, a withdrawal is not a loss.
+
+`equity` must be **market** value (allowance + holdings at current prices),
+measured on the same ruler as the amount. Migration 084 divided a market-value
+numerator by a **cost-basis** denominator, which over-cut the source baseline
+and inflated the remaining sleeve's return (a $10k move out of a $27,661 sleeve
+reported 110.41% instead of the correct, unchanged 106.03%); **migration 085**
+fixes it by taking the caller's market equity as `p_src_equity`, with cost
+basis only as the fallback. Before this, `credit` / `debit` / cash `transfer`
+legs and the cash-only go-live funding moved value without moving the baseline
+at all — so a deposit credited to a strategy was booked as pure profit.
+
+Deposits themselves are recorded nowhere in our schema (`portfolio_cash_ledger`
+covers attribution of cash already at the broker, never its arrival), so
+`--baselines` reads the broker's own transfer feed
+(`AlpacaClient.get_cash_transfers` → `/v2/account/activities`, `CSD`/`CSW`/
+`JNLC`), reports each sleeve's baseline against what was actually paid in, and
+`--fix-baselines` rebuilds them pro-rata by current value. Pro-rata is a choice,
+not a derivation — per-sleeve contribution history doesn't exist, since deposits
+land in one pooled account — so it makes the ACCOUNT-level return exactly right
+and every sleeve's equal to it at the moment of the reset. Every correction
+writes a `baseline-reset` ledger row. A sleeve with `starting_cash <= 0` gets a
+"no return baseline" line in the hub, because `portfolio.py` renders 0.0% for
+it, which reads as "flat" rather than "unknown".
+
+*Known simplification:* unallocated cash mixes deposits with dividends and
+interest the sleeves' own positions earned, and nothing tells them apart (by
+design — migration 083 chose not to attribute them). Treating every credit as a
+deposit understates return by the dividend amount, which that design already
+calls immaterial on a growth-equity book, and it removes the far worse error of
+a wire transfer reading as profit.
 
 The per-decision routing below (`ctx.buy/sell` → Alpaca) is the alternative
 mechanism for a live portfolio that runs *its own* agents; a follower has none,
@@ -1961,6 +2006,9 @@ python live_cash.py --status --account toby-live
 python live_cash.py --credit scrappy-live 2500
 python live_cash.py --debit scrappy-live 500
 python live_cash.py --transfer scrappy-live other-live 1000 --dry-run
+python live_cash.py --baselines               # what each return is measured against
+python live_cash.py --fix-baselines --dry-run # rebuild from the broker's deposits
+python live_cash.py --set-baseline scrappy-live 10000
 
 # Lifecycle emails (welcome sequence)
 python lifecycle_emails.py                  # send A1 welcome to eligible new signups

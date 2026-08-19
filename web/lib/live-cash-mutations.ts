@@ -30,6 +30,8 @@ import {
 } from "@/lib/live-cash-query";
 import { uniquePortfolioSlug } from "@/lib/slug";
 import {
+  baselineAfterDeposit,
+  baselineAfterWithdrawal,
   planInKindFunding,
   planSplitMoves,
   type InKindPlan,
@@ -66,17 +68,54 @@ async function resolveOwnedSleeve(
 
 /** Current allowance for a portfolio (0 when no account row exists yet). */
 async function readAllowance(portfolioId: string): Promise<number | null> {
+  const account = await readAccount(portfolioId);
+  return account?.cash ?? null;
+}
+
+/**
+ * Allowance + P&L baseline. Both are needed together now: a sleeve's return is
+ * measured against `starting_cash`, so any movement of real value has to move
+ * the baseline in the same write or the movement is booked as performance.
+ */
+async function readAccount(
+  portfolioId: string,
+): Promise<{ cash: number; startingCash: number } | null> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("portfolio_accounts")
-    .select("cash_usd")
+    .select("cash_usd, starting_cash")
     .eq("portfolio_id", portfolioId)
     .maybeSingle();
   if (error) {
-    console.error("readAllowance failed:", error);
+    console.error("readAccount failed:", error);
     return null;
   }
-  return Number((data as { cash_usd: number | string | null } | null)?.cash_usd ?? 0);
+  const row = data as {
+    cash_usd: number | string | null;
+    starting_cash: number | string | null;
+  } | null;
+  return {
+    cash: Number(row?.cash_usd ?? 0),
+    startingCash: Number(row?.starting_cash ?? 0),
+  };
+}
+
+/**
+ * A sleeve's MARKET equity: its allowance plus its holdings at current prices.
+ * The denominator for every baseline rescale — it must be measured the same
+ * way as the amount leaving, which is why it prices the book rather than
+ * summing cost basis.
+ */
+async function sleeveEquity(
+  portfolioId: string,
+  allowance: number,
+): Promise<number> {
+  const holdings = await sourceHoldingsWithPrices(portfolioId);
+  const held = holdings.reduce(
+    (sum, h) => sum + (h.price != null && h.price > 0 ? h.quantity * h.price : 0),
+    0,
+  );
+  return Math.round((allowance + held) * 100) / 100;
 }
 
 /**
@@ -87,11 +126,14 @@ async function writeAllowance(
   portfolioId: string,
   expectedCurrent: number,
   next: number,
+  nextBaseline?: number,
 ): Promise<boolean> {
   const supabase = getSupabase();
+  const patch: { cash_usd: number; starting_cash?: number } = { cash_usd: next };
+  if (nextBaseline != null) patch.starting_cash = nextBaseline;
   const { data, error } = await supabase
     .from("portfolio_accounts")
-    .update({ cash_usd: next })
+    .update(patch)
     .eq("portfolio_id", portfolioId)
     .eq("cash_usd", expectedCurrent)
     .select("portfolio_id");
@@ -163,8 +205,14 @@ export async function creditAllowance(input: {
 
   const current = summary.sleeves.find((s) => s.portfolioId === sleeve.id);
   if (!current) return { ok: false, error: "Could not load the account." };
+  const account = await readAccount(sleeve.id);
+  if (!account) return { ok: false, error: "Could not load the account." };
   const next = Math.round((current.allowance + amount) * 100) / 100;
-  if (!(await writeAllowance(sleeve.id, current.allowance, next))) {
+  // Unallocated cash reaching a strategy is capital arriving, so the baseline
+  // grows with it. Without this a deposit wired into the broker and credited
+  // out reads as pure profit on that strategy's return.
+  const baseline = baselineAfterDeposit(account.startingCash, amount);
+  if (!(await writeAllowance(sleeve.id, current.allowance, next, baseline))) {
     return { ok: false, error: RETRY_MSG };
   }
   await logLedger(sleeve.id, amount, next, "credit", "web");
@@ -184,8 +232,9 @@ export async function debitAllowance(input: {
   const amount = parseAmount(input.amount);
   if (!amount) return { ok: false, error: "Enter an amount above zero." };
 
-  const allowance = await readAllowance(sleeve.id);
-  if (allowance == null) return { ok: false, error: "Could not load the account." };
+  const account = await readAccount(sleeve.id);
+  if (account == null) return { ok: false, error: "Could not load the account." };
+  const allowance = account.cash;
   if (amount > allowance + CASH_TOLERANCE) {
     return {
       ok: false,
@@ -194,7 +243,14 @@ export async function debitAllowance(input: {
   }
 
   const next = Math.round((allowance - amount) * 100) / 100;
-  if (!(await writeAllowance(sleeve.id, allowance, next))) {
+  // Capital leaving scales the baseline down, so the withdrawal itself doesn't
+  // read as a loss on this strategy's return.
+  const baseline = baselineAfterWithdrawal(
+    account.startingCash,
+    amount,
+    await sleeveEquity(sleeve.id, allowance),
+  );
+  if (!(await writeAllowance(sleeve.id, allowance, next, baseline))) {
     return { ok: false, error: RETRY_MSG };
   }
   await logLedger(sleeve.id, -amount, next, "debit", "web");
@@ -214,10 +270,11 @@ async function moveBetweenSleeves(
   to: OwnedSleeve,
   amount: number,
 ): Promise<ActionResult> {
-  const fromAllowance = await readAllowance(from.id);
-  if (fromAllowance == null) {
+  const fromAccount = await readAccount(from.id);
+  if (fromAccount == null) {
     return { ok: false, error: "Could not load the account." };
   }
+  const fromAllowance = fromAccount.cash;
 
   if (amount > fromAllowance + CASH_TOLERANCE) {
     const holdings = await sourceHoldingsWithPrices(from.id);
@@ -230,23 +287,36 @@ async function moveBetweenSleeves(
           `(cash + priceable holdings) — cannot move $${amount.toFixed(2)}.`,
       };
     }
-    const moved = await executeInKind(from.id, to.id, plan);
+    // The RPC rescales the source's baseline against this — it must be market
+    // value, the same ruler `plannedTotal` is measured on (migration 085).
+    const srcEquity = await sleeveEquity(from.id, fromAllowance);
+    const moved = await executeInKind(from.id, to.id, plan, srcEquity);
     if (!moved.ok) return moved;
     if (plan.shareMoves.length > 0) await dispatchRestructure(to.id);
     return { ok: true };
   }
 
   const fromNext = Math.round((fromAllowance - amount) * 100) / 100;
-  if (!(await writeAllowance(from.id, fromAllowance, fromNext))) {
+  // Both baselines move with the money: the source scales down so losing the
+  // cash isn't booked as a loss, the destination grows so gaining it isn't
+  // booked as profit. Only the in-kind branch used to do this.
+  const fromBaseline = baselineAfterWithdrawal(
+    fromAccount.startingCash,
+    amount,
+    await sleeveEquity(from.id, fromAllowance),
+  );
+  if (!(await writeAllowance(from.id, fromAllowance, fromNext, fromBaseline))) {
     return { ok: false, error: RETRY_MSG };
   }
   await logLedger(from.id, -amount, fromNext, "transfer-out", `web → ${to.slug}`);
 
-  const toAllowance = await readAllowance(to.id);
+  const toAccount = await readAccount(to.id);
+  const toAllowance = toAccount?.cash ?? null;
   const toNext = Math.round(((toAllowance ?? 0) + amount) * 100) / 100;
+  const toBaseline = baselineAfterDeposit(toAccount?.startingCash ?? 0, amount);
   if (
     toAllowance == null ||
-    !(await writeAllowance(to.id, toAllowance, toNext))
+    !(await writeAllowance(to.id, toAllowance, toNext, toBaseline))
   ) {
     return {
       ok: false,
@@ -355,6 +425,7 @@ async function executeInKind(
   fromPortfolioId: string,
   toPortfolioId: string,
   plan: InKindPlan,
+  sourceEquity?: number,
 ): Promise<ActionResult> {
   const supabase = getSupabase();
   const { error } = await supabase.rpc("fund_sleeve_in_kind", {
@@ -367,6 +438,7 @@ async function executeInKind(
     })),
     p_cash: plan.cashMove,
     p_total: plan.plannedTotal,
+    p_src_equity: sourceEquity ?? null,
   });
   if (error) {
     console.error("fund_sleeve_in_kind failed:", error);
@@ -496,10 +568,12 @@ export async function createLiveFollower(input: {
   // spare cash alone when it covers the amount, otherwise cash + an in-kind
   // slice of the source's positions (migration 084). Refuse only when even a
   // full in-kind plan falls materially short — the source isn't worth it.
-  const sourceAllowance = await readAllowance(source.id);
-  if (sourceAllowance == null) {
+  const sourceAccount = await readAccount(source.id);
+  if (sourceAccount == null) {
     return { ok: false, error: "Could not load the account." };
   }
+  const sourceAllowance = sourceAccount.cash;
+  const sourceEquity = await sleeveEquity(source.id, sourceAllowance);
   const cashOnly = amount <= sourceAllowance + CASH_TOLERANCE;
   let inKindPlan: InKindPlan | null = null;
   if (!cashOnly) {
@@ -563,7 +637,18 @@ export async function createLiveFollower(input: {
     // Funding leg — transfer semantics (source allowance → new sleeve), plus
     // starting_cash so the P&L baseline is the funded amount.
     const sourceNext = Math.round((sourceAllowance - amount) * 100) / 100;
-    if (!(await writeAllowance(source.id, sourceAllowance, sourceNext))) {
+    // The source funds the new sleeve out of its own capital, so its baseline
+    // scales down — otherwise funding a sibling reads as a loss on the funder.
+    const sourceBaseline = baselineAfterWithdrawal(
+      sourceAccount.startingCash,
+      amount,
+      sourceEquity,
+    );
+    if (
+      !(await writeAllowance(
+        source.id, sourceAllowance, sourceNext, sourceBaseline,
+      ))
+    ) {
       return { ok: false, error: `${RETRY_MSG} ${kept}` };
     }
     await logLedger(source.id, -amount, sourceNext, "transfer-out", `go-live → ${slug}`);
@@ -587,7 +672,9 @@ export async function createLiveFollower(input: {
     // In-kind funding: cash + a proportional slice of the source's shares,
     // atomically (migration 084). On failure nothing moved — the sleeve
     // stays unfunded and the Move control finishes the job.
-    const moved = await executeInKind(source.id, newId, inKindPlan);
+    const moved = await executeInKind(
+      source.id, newId, inKindPlan, sourceEquity,
+    );
     if (!moved.ok) {
       return { ok: false, error: `${moved.error} ${kept}` };
     }
