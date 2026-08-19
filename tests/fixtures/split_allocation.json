@@ -1,0 +1,133 @@
+{
+  "_comment": "Expectations are hand-derived, not captured from the implementation. Each case states what the allocation SHOULD do; see tests/test_split_allocation.py.",
+  "cases": [
+    {
+      "name": "current shares of a two-strategy account",
+      "fn": "currentAllocation",
+      "args": [[16900, 7418.44]],
+      "expect": [69.49, 30.51]
+    },
+    {
+      "name": "an empty account has no shares",
+      "fn": "currentAllocation",
+      "args": [[0, 0]],
+      "expect": [0, 0]
+    },
+    {
+      "name": "raising one share shrinks the others pro rata",
+      "fn": "rebalanceAllocation",
+      "args": [[50, 30, 20], 0, 70],
+      "expect": [70, 18, 12]
+    },
+    {
+      "name": "lowering one share grows the others pro rata",
+      "fn": "rebalanceAllocation",
+      "args": [[70, 18, 12], 0, 50],
+      "expect": [50, 30, 20]
+    },
+    {
+      "name": "when every other strategy is at zero the remainder is shared equally",
+      "fn": "rebalanceAllocation",
+      "args": [[100, 0, 0], 0, 40],
+      "expect": [40, 30, 30]
+    },
+    {
+      "name": "taking the whole account empties the others",
+      "fn": "rebalanceAllocation",
+      "args": [[50, 30, 20], 0, 100],
+      "expect": [100, 0, 0]
+    },
+    {
+      "name": "over 100 is clamped, not accepted",
+      "fn": "rebalanceAllocation",
+      "args": [[50, 50], 0, 150],
+      "expect": [100, 0]
+    },
+    {
+      "name": "below zero is clamped, not accepted",
+      "fn": "rebalanceAllocation",
+      "args": [[50, 50], 0, -10],
+      "expect": [0, 100]
+    },
+    {
+      "name": "a single strategy always runs the whole account",
+      "fn": "rebalanceAllocation",
+      "args": [[100], 0, 40],
+      "expect": [100]
+    },
+    {
+      "name": "shares become dollars",
+      "fn": "allocationToTargets",
+      "args": [[70, 18, 12], 10000],
+      "expect": [7000, 1800, 1200]
+    },
+    {
+      "name": "thirds of an odd pot still add up to the pot",
+      "fn": "allocationToTargetsSum",
+      "args": [[33.33, 33.33, 33.34], 1000.01],
+      "expect": 1000.01
+    },
+    {
+      "name": "an awkward split still adds up to the pot",
+      "fn": "allocationToTargetsSum",
+      "args": [[69.49, 30.51], 24318.44],
+      "expect": 24318.44
+    },
+    {
+      "name": "spare cash leaves a source before any of its shares do",
+      "fn": "splitImpact",
+      "args": [
+        [
+          { "portfolioId": "a", "current": 16900, "target": 12000, "allowance": 1042.18 },
+          { "portfolioId": "b", "current": 7418.44, "target": 9318.44, "allowance": 2150.2 },
+          { "portfolioId": "c", "current": 0, "target": 3000, "allowance": 0 }
+        ]
+      ],
+      "expect": {
+        "legs": [
+          { "from": "a", "to": "c", "amount": 3000, "cash": 1042.18, "positions": 1957.82 },
+          { "from": "a", "to": "b", "amount": 1900, "cash": 0, "positions": 1900 }
+        ],
+        "impacts": [
+          { "portfolioId": "a", "delta": -4900, "cash": -1042.18, "positions": -3857.82 },
+          { "portfolioId": "b", "delta": 1900, "cash": 0, "positions": 1900 },
+          { "portfolioId": "c", "delta": 3000, "cash": 1042.18, "positions": 1957.82 }
+        ]
+      }
+    },
+    {
+      "name": "a fully-funded move travels entirely as cash",
+      "fn": "splitImpact",
+      "args": [
+        [
+          { "portfolioId": "a", "current": 5000, "target": 4000, "allowance": 3000 },
+          { "portfolioId": "b", "current": 5000, "target": 6000, "allowance": 0 }
+        ]
+      ],
+      "expect": {
+        "legs": [{ "from": "a", "to": "b", "amount": 1000, "cash": 1000, "positions": 0 }],
+        "impacts": [
+          { "portfolioId": "a", "delta": -1000, "cash": -1000, "positions": 0 },
+          { "portfolioId": "b", "delta": 1000, "cash": 1000, "positions": 0 }
+        ]
+      }
+    },
+    {
+      "name": "sub-dollar drift is noise, not a move",
+      "fn": "splitImpact",
+      "args": [
+        [
+          { "portfolioId": "a", "current": 1000, "target": 1000.5, "allowance": 500 },
+          { "portfolioId": "b", "current": 1000, "target": 999.5, "allowance": 500 }
+        ]
+      ],
+      "expect": {
+        "legs": [],
+        "impacts": [
+          { "portfolioId": "a", "delta": 0, "cash": 0, "positions": 0 },
+          { "portfolioId": "b", "delta": 0, "cash": 0, "positions": 0 }
+        ]
+      }
+    }
+  ]
+}

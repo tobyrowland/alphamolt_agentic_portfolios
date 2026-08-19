@@ -21,7 +21,7 @@ import {
   EMPTY_LIVE_ACTIVITY,
   type LiveActivity,
 } from "@/lib/live-activity-query";
-import type { StrategyMeta } from "@/components/account/strategy-card";
+import type { StrategyMeta } from "@/components/account/strategy-row";
 import {
   getDashboardData,
   type DashPortfolio,

@@ -133,3 +133,157 @@ export function planSplitMoves(rows: SplitRow[]): SplitMove[] {
   }
   return moves;
 }
+
+// ---------------------------------------------------------------------------
+// Allocation — the split expressed as proportions
+// ---------------------------------------------------------------------------
+
+/**
+ * The owner's intent is a proportion ("this strategy runs a third of the
+ * account"), not a dollar figure, and typing dollars made them do the
+ * balancing arithmetic by hand — workable with two strategies, hopeless with
+ * five. These helpers hold the invariant instead: the allocation always sums
+ * to 100%, so there is no such thing as an unbalanced edit to refuse.
+ *
+ * Pure and rounding-exact; `tests/test_split_allocation.py` pins them.
+ */
+
+/** Percentages the current worths represent. Sums to 100 (0 when empty). */
+export function currentAllocation(currents: number[]): number[] {
+  const total = currents.reduce((s, c) => s + c, 0);
+  if (total <= 0) return currents.map(() => 0);
+  return normalize(currents.map((c) => (c / total) * 100));
+}
+
+/**
+ * Set one strategy's share and let the others absorb the difference pro rata,
+ * so the total stays exactly 100%. The edited index keeps precisely the number
+ * that was typed — any rounding residual is pushed onto the largest of the
+ * others, never onto the field under the cursor.
+ */
+export function rebalanceAllocation(
+  pcts: number[],
+  index: number,
+  next: number,
+): number[] {
+  if (pcts.length === 0) return [];
+  const target = clamp(next, 0, 100);
+  if (pcts.length === 1) return [100];
+
+  const out = pcts.slice();
+  out[index] = target;
+  const remaining = 100 - target;
+  const otherIdx = pcts.map((_, i) => i).filter((i) => i !== index);
+  const othersSum = otherIdx.reduce((s, i) => s + Math.max(pcts[i], 0), 0);
+
+  if (othersSum <= 0) {
+    // Everything else is at zero — nothing to scale, so share the remainder
+    // out equally rather than leaving the allocation short of 100%.
+    const each = remaining / otherIdx.length;
+    for (const i of otherIdx) out[i] = each;
+  } else {
+    for (const i of otherIdx) {
+      out[i] = (Math.max(pcts[i], 0) / othersSum) * remaining;
+    }
+  }
+  return normalize(out, index);
+}
+
+/**
+ * Percentages → dollar targets against the pot. The residual from rounding to
+ * cents lands on the largest target, so the targets sum to `total` exactly and
+ * the server's "a split redistributes the pot, it can't resize it" check can
+ * never trip on our own rounding.
+ */
+export function allocationToTargets(pcts: number[], total: number): number[] {
+  const targets = pcts.map((p) => round2((p / 100) * total));
+  if (targets.length === 0) return targets;
+  const residual = round2(total - targets.reduce((s, t) => s + t, 0));
+  if (residual !== 0) {
+    let biggest = 0;
+    for (let i = 1; i < targets.length; i++) {
+      if (targets[i] > targets[biggest]) biggest = i;
+    }
+    targets[biggest] = round2(targets[biggest] + residual);
+  }
+  return targets;
+}
+
+export type SleeveImpact = {
+  portfolioId: string;
+  /** Signed change in what this strategy runs. */
+  delta: number;
+  /** How much of that travels as cash (always ≤ |delta|). */
+  cash: number;
+  /** The remainder, which travels as share records and owes a restructure. */
+  positions: number;
+};
+
+/**
+ * What a set of targets actually does to each strategy, in the two currencies
+ * the owner cares about: cash, and positions that will have to be traded into
+ * the receiving strategy's own picks. Mirrors the execution order — spare cash
+ * leaves a source before any of its shares do.
+ */
+export type SplitLeg = SplitMove & {
+  /** Part of the move covered by the source's spare cash. */
+  cash: number;
+  /** Part that travels as share records, and owes a restructure. */
+  positions: number;
+};
+
+export function splitImpact(
+  rows: (SplitRow & { allowance: number })[],
+): { legs: SplitLeg[]; impacts: Map<string, SleeveImpact> } {
+  const moves = planSplitMoves(rows);
+  const legs: SplitLeg[] = [];
+  const impacts = new Map<string, SleeveImpact>(
+    rows.map((r) => [
+      r.portfolioId,
+      { portfolioId: r.portfolioId, delta: 0, cash: 0, positions: 0 },
+    ]),
+  );
+  const spare = new Map(rows.map((r) => [r.portfolioId, Math.max(r.allowance, 0)]));
+
+  for (const m of moves) {
+    const available = spare.get(m.fromPortfolioId) ?? 0;
+    const cash = round2(Math.min(available, m.amount));
+    const positions = round2(m.amount - cash);
+    spare.set(m.fromPortfolioId, round2(available - cash));
+    legs.push({ ...m, cash, positions });
+
+    const from = impacts.get(m.fromPortfolioId);
+    if (from) {
+      from.delta = round2(from.delta - m.amount);
+      from.cash = round2(from.cash - cash);
+      from.positions = round2(from.positions - positions);
+    }
+    const to = impacts.get(m.toPortfolioId);
+    if (to) {
+      to.delta = round2(to.delta + m.amount);
+      to.cash = round2(to.cash + cash);
+      to.positions = round2(to.positions + positions);
+    }
+  }
+  return { legs, impacts };
+}
+
+/** Round to 2dp and force the set to sum to exactly 100, sparing `keep`. */
+function normalize(pcts: number[], keep = -1): number[] {
+  const out = pcts.map((p) => Math.round(clamp(p, 0, 100) * 100) / 100);
+  const residual = Math.round((100 - out.reduce((s, p) => s + p, 0)) * 100) / 100;
+  if (residual === 0 || out.length === 0) return out;
+  let target = -1;
+  for (let i = 0; i < out.length; i++) {
+    if (i === keep) continue;
+    if (target === -1 || out[i] > out[target]) target = i;
+  }
+  if (target === -1) target = 0;
+  out[target] = Math.round(clamp(out[target] + residual, 0, 100) * 100) / 100;
+  return out;
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  if (!Number.isFinite(n)) return lo;
+  return Math.min(hi, Math.max(lo, n));
+}
