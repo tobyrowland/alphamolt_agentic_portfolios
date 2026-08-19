@@ -325,6 +325,7 @@ function AccountPanel({
             meta={liveMeta[s.portfolioId]}
             statusLine={lineFor(s.portfolioId)}
             disabled={pending}
+            editable={sleeves.length > 1 && total > 0}
             paperOptions={paperOptions}
             unallocated={account.unallocated}
             onPct={(value) => setPct(i, value)}
@@ -348,8 +349,11 @@ function AccountPanel({
 
       {!dirty && (
         <p className="mt-2 text-[11.5px] text-text-muted">
-          Change a percentage to move money between strategies — the others
-          adjust to keep the account at 100%.
+          {total <= 0
+            ? "Nothing to allocate yet — this account holds no attributed money."
+            : sleeves.length < 2
+              ? "One strategy runs the whole account. Bring another live to split it."
+              : "Change a percentage to move money between strategies — the others adjust to keep the account at 100%."}
         </p>
       )}
 

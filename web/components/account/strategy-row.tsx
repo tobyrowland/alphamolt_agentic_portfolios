@@ -68,6 +68,7 @@ export default function StrategyRow({
   meta,
   statusLine,
   disabled,
+  editable,
   paperOptions,
   unallocated,
   onPct,
@@ -86,6 +87,12 @@ export default function StrategyRow({
   impact: SleeveImpact | null;
   pending: boolean;
   meta?: StrategyMeta;
+  /**
+   * Can this share actually be changed? False for a sole strategy on the
+   * account: it runs 100% by definition, so a stepper there is a control that
+   * silently refuses every input.
+   */
+  editable: boolean;
   /** The timeline's line about this strategy — reduced here to a health dot. */
   statusLine?: HubLine | null;
   disabled: boolean;
@@ -149,9 +156,18 @@ export default function StrategyRow({
           <span className="font-mono text-[14px] font-semibold tabular-nums text-text">
             ${fmt(current)}
           </span>
-          <span className="ml-1.5 font-mono text-[11px] tabular-nums text-text-muted">
-            {sharePct.toFixed(0)}%
-          </span>
+          {/* A bare $0 reads as a transfer that got stuck somewhere, so an
+              empty strategy always says which kind of empty it is. The full
+              sentence stays in the timeline; this is the two-word version. */}
+          {current < 0.01 ? (
+            <span className="ml-1.5 text-[10.5px] text-text-muted">
+              {sleeve.everFunded ? "empty" : "never funded"}
+            </span>
+          ) : (
+            <span className="ml-1.5 font-mono text-[11px] tabular-nums text-text-muted">
+              {sharePct.toFixed(0)}%
+            </span>
+          )}
         </Cell>
 
         <Cell label="Cash">
@@ -182,6 +198,14 @@ export default function StrategyRow({
           <span className="font-mono text-[9.5px] uppercase tracking-wider text-text-muted sm:hidden">
             Should run
           </span>
+          {!editable ? (
+            <span
+              className="font-mono text-[13px] tabular-nums text-text-muted"
+              title="The only strategy on this account runs all of it"
+            >
+              100%
+            </span>
+          ) : (
           <span className="inline-flex items-center gap-1">
             <Stepper label={`Decrease ${sleeve.displayName}`} disabled={disabled} onClick={() => nudge(-1)}>
               −
@@ -211,6 +235,7 @@ export default function StrategyRow({
               +
             </Stepper>
           </span>
+          )}
         </div>
 
         <div className="flex justify-end">
