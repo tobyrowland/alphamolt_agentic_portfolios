@@ -1,7 +1,7 @@
 <title>The Live Account Console</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,300;1,6..72,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,300;1,6..72,400&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
 
 <style>
 /* ---------------------------------------------------------------------------
@@ -371,6 +371,35 @@ td strong { color: var(--ink); font-weight: 600; }
   padding-top: 5px;
 }
 .flow b { color: var(--ink); font-weight: 600; }
+
+/* --- Print / PDF ---------------------------------------------------------
+   The document keeps its dark identity on paper (the exhibits are only
+   truthful in it), so backgrounds are forced rather than dropped. The rail is
+   screen-only navigation and the horizontal scrollers become plain blocks. */
+@media print {
+  /* The canvas background comes from the root element, which Chrome paints
+     across the whole sheet INCLUDING the page margins — the only way a dark
+     document doesn't print with white gutters. */
+  @page { size: A4; margin: 15mm 14mm; }
+  html { background: var(--ground); }
+  body { background: transparent; font-size: 10.5pt; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rail { display: none; }
+  .wrap { display: block; max-width: none; padding: 0; }
+  .doc { padding-top: 0; }
+  .masthead { padding-bottom: 26px; margin-bottom: 34px; }
+  h1 { font-size: 34pt; }
+  h2 { font-size: 19pt; }
+  h3 { font-size: 13pt; }
+  section { margin-bottom: 34px; }
+  h1, h2, h3, h4 { break-after: avoid; page-break-after: avoid; }
+  /* Only things SHORTER than a page get break-inside: avoid — applying it to a
+     tall exhibit or table just leaves half a page blank and overflows anyway. */
+  .q, .callout, .g-row, .flow li, .sec-head, .ui-card, tr { break-inside: avoid; page-break-inside: avoid; }
+  .exhibit, .scroll, .exhibit-frame { break-inside: auto; overflow: visible; }
+  table, .ui { min-width: 0; }
+  a { color: var(--cyan); text-decoration: none; }
+}
 
 @media (prefers-reduced-motion: no-preference) {
   .pulse { animation: p 2s ease-in-out infinite; }
