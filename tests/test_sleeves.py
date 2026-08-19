@@ -585,3 +585,64 @@ class TestPlanInKind(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBaselineArithmetic(unittest.TestCase):
+    """P&L baselines have to move with the money (sleeves.baseline_after_*).
+
+    A sleeve's return is (value - starting_cash) / starting_cash. If capital
+    can arrive or leave without the baseline moving, the movement itself is
+    booked as performance — a deposit reads as profit, a withdrawal as a loss.
+    """
+
+    def test_deposit_grows_the_baseline_by_the_amount(self):
+        """New capital starts flat: it is not profit."""
+        self.assertEqual(sleeves.baseline_after_deposit(1000.0, 500.0), 1500.0)
+
+    def test_deposit_ignores_non_positive_amounts(self):
+        self.assertEqual(sleeves.baseline_after_deposit(1000.0, 0.0), 1000.0)
+        self.assertEqual(sleeves.baseline_after_deposit(1000.0, -5.0), 1000.0)
+
+    def test_withdrawal_leaves_the_return_percentage_unchanged(self):
+        """The whole point: taking money out is not a loss."""
+        starting, equity, out = 5000.0, 10000.0, 4000.0
+        before = (equity - starting) / starting
+        after_baseline = sleeves.baseline_after_withdrawal(starting, out, equity)
+        after = (equity - out - after_baseline) / after_baseline
+        self.assertAlmostEqual(before, after, places=6)
+
+    def test_the_production_regression_market_vs_cost_basis(self):
+        """The bug migration 085 fixes, in numbers.
+
+        $10,000 left a sleeve worth $27,661.42 at market whose cost basis was
+        ~$26,684. Rescaling against market keeps the return at 106.03%;
+        rescaling against cost basis inflates it to ~110.4% — which is exactly
+        what the live account reported.
+        """
+        starting, market, cost, out = 13425.6, 27661.42, 26684.0, 10000.0
+        remaining = market - out
+
+        correct = sleeves.baseline_after_withdrawal(starting, out, market)
+        self.assertAlmostEqual((remaining / correct - 1) * 100, 106.03, places=1)
+
+        wrong = sleeves.baseline_after_withdrawal(starting, out, cost)
+        self.assertGreater((remaining / wrong - 1) * 100, 109.0)
+
+    def test_withdrawal_refuses_to_rescale_on_unusable_equity(self):
+        """A wrong rescale is worse than none."""
+        self.assertEqual(sleeves.baseline_after_withdrawal(1000.0, 100.0, 0.0), 1000.0)
+        self.assertEqual(sleeves.baseline_after_withdrawal(1000.0, 500.0, 400.0), 1000.0)
+        self.assertEqual(sleeves.baseline_after_withdrawal(0.0, 100.0, 5000.0), 0.0)
+
+    def test_a_round_trip_out_and_back_restores_the_baseline(self):
+        """Move value out of a sleeve and put the same value back."""
+        starting, equity = 8000.0, 20000.0
+        out = 5000.0
+        after_out = sleeves.baseline_after_withdrawal(starting, out, equity)
+        after_in = sleeves.baseline_after_deposit(after_out, out)
+        # Not identical — the withdrawal scaled by the sleeve's gain — but the
+        # return after the round trip is what it should be: the sleeve is worth
+        # what it started with, against a baseline that grew by the returned
+        # capital rather than pretending the trip was profit.
+        self.assertLess(after_in, starting + out)
+        self.assertGreater(after_in, starting)

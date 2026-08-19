@@ -93,7 +93,8 @@
             "holdingsValue": 26716.84,
             "offBookValue": 0,
             "followsPortfolioId": "house-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 27661.42
           },
           {
             "portfolioId": "scrappy",
@@ -102,7 +103,8 @@
             "holdingsValue": 0,
             "offBookValue": 0,
             "followsPortfolioId": "scrappy-paper",
-            "everFunded": false
+            "everFunded": false,
+            "startingCash": 0
           }
         ],
         "ledger": [],
@@ -131,7 +133,8 @@
             "holdingsValue": 13000,
             "offBookValue": 0,
             "followsPortfolioId": "house-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 13500
           },
           {
             "portfolioId": "scrappy",
@@ -140,7 +143,8 @@
             "holdingsValue": 13800,
             "offBookValue": 0,
             "followsPortfolioId": "scrappy-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 14000
           }
         ],
         "ledger": [
@@ -179,7 +183,8 @@
             "holdingsValue": 13661.42,
             "offBookValue": 0,
             "followsPortfolioId": "house-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 13661.42
           },
           {
             "portfolioId": "scrappy",
@@ -188,7 +193,8 @@
             "holdingsValue": 13055.42,
             "offBookValue": 13055.42,
             "followsPortfolioId": "scrappy-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 14000.0
           }
         ],
         "ledger": [
@@ -235,7 +241,8 @@
             "holdingsValue": 13055.42,
             "offBookValue": 13055.42,
             "followsPortfolioId": "scrappy-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 13055.42
           }
         ],
         "ledger": [
@@ -282,7 +289,8 @@
             "holdingsValue": 13000,
             "offBookValue": 0,
             "followsPortfolioId": "scrappy-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 13500
           }
         ],
         "ledger": [],
@@ -329,7 +337,8 @@
             "holdingsValue": 13000,
             "offBookValue": 0,
             "followsPortfolioId": "scrappy-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 13500
           }
         ],
         "ledger": [],
@@ -375,7 +384,8 @@
             "holdingsValue": 13000,
             "offBookValue": 0,
             "followsPortfolioId": "scrappy-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 13500
           }
         ],
         "ledger": [],
@@ -431,7 +441,8 @@
             "holdingsValue": 13000,
             "offBookValue": 0,
             "followsPortfolioId": "scrappy-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 13500
           }
         ],
         "ledger": [],
@@ -477,7 +488,8 @@
             "holdingsValue": 0,
             "offBookValue": 0,
             "followsPortfolioId": null,
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 100
           }
         ],
         "ledger": [],
@@ -513,7 +525,8 @@
             "holdingsValue": 0,
             "offBookValue": 0,
             "followsPortfolioId": "house-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 1250.5
           }
         ],
         "ledger": [],
@@ -548,7 +561,8 @@
             "holdingsValue": 13000,
             "offBookValue": 0,
             "followsPortfolioId": "scrappy-paper",
-            "everFunded": true
+            "everFunded": true,
+            "startingCash": 13500
           }
         ],
         "ledger": [],
@@ -570,6 +584,43 @@
         "headline": "Nothing pending. No money is in transit and no orders are waiting.",
         "tone": "good",
         "lines": [],
+        "recentCount": 0,
+        "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
+      }
+    },
+    {
+      "name": "a sleeve with no baseline can't report a return",
+      "input": {
+        "now": "2026-08-18T12:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 20000,
+        "sleeves": [
+          {
+            "portfolioId": "house",
+            "displayName": "AlphaMolt House (Live)",
+            "allowance": 500,
+            "holdingsValue": 17161.45,
+            "offBookValue": 0,
+            "followsPortfolioId": "house-paper",
+            "everFunded": true,
+            "startingCash": 0
+          }
+        ],
+        "ledger": [],
+        "runs": [],
+        "fills": []
+      },
+      "expect": {
+        "headline": "One thing is still to happen.",
+        "tone": "warn",
+        "lines": [
+          {
+            "id": "no-baseline-house",
+            "tone": "warn",
+            "text": "AlphaMolt House (Live) has no record of what was paid into it, so its return percentage is meaningless. Set one with `live_cash.py --baselines`.",
+            "short": "No return baseline — its % is meaningless until one is set"
+          }
+        ],
         "recentCount": 0,
         "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
       }

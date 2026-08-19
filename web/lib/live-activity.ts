@@ -30,6 +30,11 @@ export type HubSleeve = {
   followsPortfolioId: string | null;
   /** Has any real capital ever been attributed to it? */
   everFunded: boolean;
+  /**
+   * What its return is measured against (`portfolio_accounts.starting_cash`).
+   * Zero or missing means the percentage on its card can't mean anything.
+   */
+  startingCash?: number | null;
 };
 
 export type HubLedgerEntry = {
@@ -96,6 +101,7 @@ export type HubLineKind =
   | "offbook"        // positions still owed a restructure
   | "unlinked"       // follower with no paper book to copy
   | "over-committed" // allowances promise more than the broker holds
+  | "no-baseline"    // its return has nothing meaningful to measure against
   | "run"            // what the last run actually did
   | "ledger"         // money that already moved between strategies
   | "fill";          // an order that already executed
@@ -240,6 +246,8 @@ export function describeLedger(reason: string): string {
       return "moved out as cash + positions";
     case "fund-in-kind-in":
       return "moved in as cash + positions";
+    case "baseline-reset":
+      return "return baseline corrected";
     default:
       return reason;
   }
@@ -383,7 +391,26 @@ export function buildHubState(input: HubInput): HubState {
     });
   }
 
-  // 4. Over-committed: allowances promise more than the broker holds.
+  // 4. A sleeve whose baseline was never set can't report a return at all —
+  //    portfolio.py renders 0.0% for it, which reads as "flat" rather than
+  //    "unknown".
+  for (const s of input.sleeves) {
+    if (s.startingCash != null && s.startingCash <= 0 && s.allowance + s.holdingsValue > 1) {
+      lines.push({
+        id: `no-baseline-${s.portfolioId}`,
+        kind: "no-baseline",
+        tone: "warn",
+        portfolioId: s.portfolioId,
+        short: "No return baseline — its % is meaningless until one is set",
+        text:
+          `${s.displayName} has no record of what was paid into it, so its ` +
+          "return percentage is meaningless. Set one with " +
+          "`live_cash.py --baselines`.",
+      });
+    }
+  }
+
+  // 5. Over-committed: allowances promise more than the broker holds.
   if (input.unallocated != null && input.unallocated < -0.01) {
     lines.push({
       id: "over-committed",
@@ -395,7 +422,7 @@ export function buildHubState(input: HubInput): HubState {
     });
   }
 
-  // 5. What the mirror actually did, most recent first.
+  // 6. What the mirror actually did, most recent first.
   const lastRun = realRuns.find(
     (r) => r.kind === "run" && input.nowMs - Date.parse(r.createdAt) < RUN_WINDOW_MS,
   );

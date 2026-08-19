@@ -282,3 +282,50 @@ def plan_in_kind(
 
     planned = round(cash_move + sum(m.approx_value for m in moves), 2)
     return InKindPlan(cash_move, tuple(moves), planned)
+
+
+# ---------------------------------------------------------------------------
+# P&L baselines — keeping "since it started" honest when money moves
+# ---------------------------------------------------------------------------
+#
+# A sleeve's return is (value − starting_cash) / starting_cash, so the baseline
+# has to mean "the money put into this sleeve". Every owner-initiated movement
+# therefore has to move the baseline too, or the movement itself is booked as
+# performance: a deposit credited to a strategy shows up as pure profit, and a
+# withdrawal as a loss. Two rules cover every path:
+#
+#   money IN  -> baseline += amount        the new money starts flat
+#   money OUT -> baseline *= 1 − amount/equity   the sleeve's % is untouched
+#
+# The asymmetry is deliberate. Adding capital should not move the return you
+# have earned so far, and removing capital should not either — scaling is the
+# only way to take money out without booking a phantom loss. `equity` must be
+# the sleeve's MARKET value (cash + holdings at current prices), measured the
+# same way as `amount`; mixing market value with cost basis is precisely the
+# bug migration 085 fixes.
+
+
+def baseline_after_deposit(starting_cash: float, amount: float) -> float:
+    """Baseline after `amount` of new capital arrives in a sleeve."""
+    if amount <= 0:
+        return round(float(starting_cash or 0), 2)
+    return round(float(starting_cash or 0) + float(amount), 2)
+
+
+def baseline_after_withdrawal(
+    starting_cash: float, amount: float, equity: float,
+) -> float:
+    """Baseline after `amount` of value leaves a sleeve worth `equity`.
+
+    Scales proportionally, so the sleeve's return percentage is unchanged by
+    the withdrawal itself. Falls back to leaving the baseline alone when the
+    equity isn't usable (zero/negative, or smaller than the amount leaving) —
+    a wrong rescale is worse than none, and those cases mean our records
+    disagree with reality anyway.
+    """
+    starting = float(starting_cash or 0)
+    equity = float(equity or 0)
+    amount = float(amount or 0)
+    if starting <= 0 or amount <= 0 or equity <= 0 or equity <= amount:
+        return round(starting, 2)
+    return round(starting * (1.0 - amount / equity), 2)

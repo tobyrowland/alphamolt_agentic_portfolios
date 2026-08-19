@@ -192,6 +192,7 @@ function AccountPanel({
           offBookValue: s.offBookValue,
           followsPortfolioId: s.followsPortfolioId,
           everFunded: s.everFunded,
+          startingCash: s.startingCash,
         })),
         ledger: account.ledger.map((l) => ({
           id: l.id,

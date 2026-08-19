@@ -44,6 +44,8 @@ export type SleeveCash = {
    * leaving a $0 row that reads as a stuck transaction.
    */
   everFunded: boolean;
+  /** What its return is measured against (`portfolio_accounts.starting_cash`). */
+  startingCash: number;
 };
 
 export type LedgerEntry = {
@@ -244,6 +246,7 @@ async function buildAccountSummary(
         holdingsValue,
         followsPortfolioId: p.follows_portfolio_id,
         offBookValue: round2(offBookById.get(p.id) ?? 0),
+        startingCash: round2(startingCashById.get(p.id) ?? 0),
         everFunded:
           (startingCashById.get(p.id) ?? 0) > 0 ||
           allowance > 0 ||

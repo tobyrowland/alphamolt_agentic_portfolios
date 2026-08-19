@@ -135,6 +135,49 @@ export function planSplitMoves(rows: SplitRow[]): SplitMove[] {
 }
 
 // ---------------------------------------------------------------------------
+// P&L baselines — the TS twin of `sleeves.baseline_after_*` (keep in lock-step)
+// ---------------------------------------------------------------------------
+//
+// A sleeve's return is (value − startingCash) / startingCash, so the baseline
+// has to mean "the money put into this sleeve". Every owner-initiated movement
+// must move the baseline too, or the movement is booked as performance: a
+// deposit credited to a strategy reads as pure profit, a withdrawal as a loss.
+//
+//   money IN  -> baseline += amount              the new money starts flat
+//   money OUT -> baseline *= 1 − amount/equity   the sleeve's % is untouched
+//
+// `equity` must be the sleeve's MARKET value (allowance + holdings at current
+// prices), measured the same way as `amount` — mixing market value with cost
+// basis is exactly the bug migration 085 fixes.
+
+/** Baseline after `amount` of new capital arrives in a sleeve. */
+export function baselineAfterDeposit(
+  startingCash: number,
+  amount: number,
+): number {
+  if (!(amount > 0)) return round2(startingCash || 0);
+  return round2((startingCash || 0) + amount);
+}
+
+/**
+ * Baseline after `amount` of value leaves a sleeve worth `equity`. Scales
+ * proportionally so the withdrawal itself doesn't change the sleeve's return.
+ * Leaves the baseline alone when the equity isn't usable — a wrong rescale is
+ * worse than none.
+ */
+export function baselineAfterWithdrawal(
+  startingCash: number,
+  amount: number,
+  equity: number,
+): number {
+  const starting = startingCash || 0;
+  if (!(starting > 0) || !(amount > 0) || !(equity > 0) || equity <= amount) {
+    return round2(starting);
+  }
+  return round2(starting * (1 - amount / equity));
+}
+
+// ---------------------------------------------------------------------------
 // Allocation — the split expressed as proportions
 // ---------------------------------------------------------------------------
 

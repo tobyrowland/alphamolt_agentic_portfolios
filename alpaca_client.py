@@ -142,6 +142,32 @@ class AlpacaClient:
         """Market clock — is_open, next_open, next_close."""
         return self._request("GET", "/v2/clock")
 
+    def get_cash_transfers(self, *, limit: int = 500) -> list[dict]:
+        """Cash movements in and out of the account — deposits, withdrawals.
+
+        The only authoritative record of *what you actually paid in*. Nothing
+        in AlphaMolt's own schema has it: `portfolio_cash_ledger` records how
+        cash already at the broker was attributed to a strategy, never how it
+        arrived. Without this, a deposit credited to a sleeve is indistinguish-
+        able from that sleeve making money, and its return says so.
+
+        Returns the raw activity rows (`CSD` deposit, `CSW` withdrawal, `JNLC`
+        cash journal), newest first. Best-effort and never raises: a paper
+        account, a missing entitlement or a network blip returns an empty list,
+        and the caller reports "couldn't read it" rather than writing a wrong
+        baseline off a partial answer.
+        """
+        try:
+            rows = self._request(
+                "GET",
+                "/v2/account/activities"
+                f"?activity_types=CSD,CSW,JNLC&page_size={int(limit)}",
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort by contract
+            logger.warning("could not read cash transfers: %s", exc)
+            return []
+        return rows if isinstance(rows, list) else []
+
     def get_asset(self, symbol: str) -> dict:
         """Asset metadata — tradable, fractionable, exchange, status."""
         return self._request("GET", f"/v2/assets/{symbol}")

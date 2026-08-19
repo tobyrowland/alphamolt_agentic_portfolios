@@ -181,7 +181,8 @@ export default function StrategyRow({
             <span className="font-mono text-[13px] text-text-muted">—</span>
           ) : (
             <span
-              className="inline-flex items-baseline rounded px-1.5 py-0.5 font-mono text-[12.5px] font-semibold tabular-nums"
+              title="Measured against the money paid into this strategy. Deposits and transfers move that baseline, so they don't read as profit. Check it with live_cash.py --baselines."
+              className="inline-flex cursor-help items-baseline rounded px-1.5 py-0.5 font-mono text-[12.5px] font-semibold tabular-nums"
               style={{
                 color: down ? "var(--color-red,#FF3333)" : "var(--color-green,#00FF41)",
                 background: down ? "rgba(255,51,51,0.10)" : "rgba(0,255,65,0.10)",
