@@ -372,6 +372,43 @@ td strong { color: var(--ink); font-weight: 600; }
 }
 .flow b { color: var(--ink); font-weight: 600; }
 
+/* --- Exhibit B: the shipped build ---------------------------------------- */
+.ui-panel { border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.02); border-radius: 12px; padding: 16px; }
+.ui-ghost { display: flex; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.04); overflow: hidden; margin-top: 4px; }
+.ui-spine { margin-top: 16px; border-top: 1px solid rgba(255,255,255,0.07); padding-top: 12px; }
+.ui-spine > p.h { font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: #A1A1AA; margin: 0; }
+.ui-step { display: grid; grid-template-columns: 10px 1fr; column-gap: 12px; }
+.ui-step .rail { display: flex; flex-direction: column; align-items: center; }
+.ui-step .mark { width: 8px; height: 8px; border-radius: 999px; margin-top: 7px; flex: none; }
+.ui-step .line { width: 1px; flex: 1; background: rgba(255,255,255,0.09); }
+.ui-step .body { padding-bottom: 12px; }
+.ui-step .when { font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #A1A1AA; margin: 0 0 3px; }
+.ui-step .txt { font-size: 12px; line-height: 1.55; color: #D4D4D8; margin: 0; }
+.ui-step .sub { font-size: 11px; color: #A1A1AA; margin: 4px 0 0; line-height: 1.5; }
+.ui-item { border-left: 2px solid rgba(255,194,77,0.45); background: rgba(255,255,255,0.02); border-radius: 4px; padding: 3px 8px 4px 10px; }
+.ui-item .txt { color: #FFD9A0; }
+.ui-table { margin-top: 16px; border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; }
+.ui-tr { display: grid; grid-template-columns: minmax(0,1fr) 6.5rem 6rem 5rem 8rem 1.2rem; column-gap: 14px; align-items: center; padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,0.07); }
+.ui-tr:last-child { border-bottom: 0; }
+.ui-th { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: #A1A1AA; padding-bottom: 5px; }
+.ui-th span:not(:first-child) { text-align: right; display: block; }
+.ui-name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 700; }
+.ui-name .dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
+.ui-name .health { width: 6px; height: 6px; border-radius: 999px; background: #FBBF24; }
+.ui-copies { font-size: 11px; color: #A1A1AA; margin: 2px 0 0 16px; }
+.ui-num { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; color: #D4D4D8; }
+.ui-num b { color: #EDEDED; font-size: 13.5px; }
+.ui-num .share { color: #A1A1AA; font-size: 10.5px; margin-left: 4px; }
+.ui-pnl { display: inline-block; border-radius: 3px; padding: 1px 5px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ui-alloc { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.ui-step-btn { width: 22px; height: 22px; border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; color: #A1A1AA; font-size: 12px; text-align: center; line-height: 20px; }
+.ui-input { border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; padding: 3px 6px; width: 66px; text-align: right; font-variant-numeric: tabular-nums; font-size: 12.5px; color: #EDEDED; }
+.ui-impact { grid-column: 1 / -1; font-size: 11px; color: #FFD9A0; margin: 5px 0 0; line-height: 1.5; }
+.ui-impact .muted { color: #A1A1AA; }
+.ui-sticky { margin: 12px -16px -16px; border-top: 1px solid rgba(255,194,77,0.30); background: rgba(10,10,10,0.95); padding: 10px 16px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; border-radius: 0 0 12px 12px; }
+.ui-sticky p { margin: 0; font-size: 12px; color: #FFD9A0; }
+.ui-amber { border: 1px solid rgba(255,194,77,0.50); background: rgba(255,194,77,0.10); color: #FFD9A0; border-radius: 8px; padding: 4px 12px; font-size: 12px; font-weight: 600; }
+
 /* --- Print / PDF ---------------------------------------------------------
    The document keeps its dark identity on paper (the exhibits are only
    truthful in it), so backgrounds are forced rather than dropped. The rail is
@@ -417,12 +454,12 @@ td strong { color: var(--ink); font-weight: 600; }
     <li><a href="#jobs">3 &nbsp;Owner &amp; jobs</a></li>
     <li><a href="#model">4 &nbsp;Domain model</a></li>
     <li><a href="#constraints">5 &nbsp;Constraints</a></li>
-    <li><a href="#current">6 &nbsp;Current version</a></li>
+    <li><a href="#current">6 &nbsp;Before / after</a></li>
     <li><a href="#states">7 &nbsp;State machine</a></li>
     <li><a href="#flows">8 &nbsp;Flows</a></li>
     <li><a href="#history">9 &nbsp;What we tried</a></li>
-    <li><a href="#weak">10 &nbsp;Weaknesses</a></li>
-    <li><a href="#questions">11 &nbsp;Questions</a></li>
+    <li><a href="#weak">10 &nbsp;What changed</a></li>
+    <li><a href="#questions">11 &nbsp;Still open</a></li>
     <li><a href="#appendix">Appendix</a></li>
   </ol>
 </nav>
@@ -432,18 +469,23 @@ td strong { color: var(--ink); font-weight: 600; }
 <header class="masthead">
   <p class="eyebrow">AlphaMolt · Design specification · August 2026</p>
   <h1>The live account <em>console</em></h1>
-  <p class="lede">A private control room where a handful of AI trading strategies share one real brokerage account. This document describes what it is for, what it must express, and exactly what exists today — so a second designer can judge whether the current interface is the elegant answer.</p>
+  <p class="lede">A private control desk where a handful of AI trading strategies share one real brokerage account. This document describes what it is for, what it must express, and what it looks like — before an outside design review, and after the rebuild that review produced.</p>
   <p class="mono" style="font-size:11.5px;color:var(--ink-muted);margin-top:26px;max-width:none;">
     SURFACE <span style="color:var(--ink-dim)">/account → “Live account”</span> &nbsp;·&nbsp;
     CODE <span style="color:var(--ink-dim)">web/components/account/*, web/lib/live-*.ts</span> &nbsp;·&nbsp;
-    STATUS <span style="color:var(--phosphor)">shipped, in use, real money</span>
+    STATUS <span style="color:var(--phosphor)">shipped, in use, real money</span> &nbsp;·&nbsp;
+    REV <span style="color:var(--ink-dim)">2 — reviewed, rebuilt 19 Aug 2026</span>
   </p>
 </header>
 
 <section id="brief">
   <div class="sec-head"><h2>The brief for the reader</h2></div>
   <p>This is not a request to tidy up spacing. The live console is the one surface in AlphaMolt where a mistake costs real money, and it has been rebuilt four times in as many weeks — each time to fix a genuine comprehension failure, each time arriving somewhere more honest but not obviously more <em>elegant</em>. It now says everything true. It may say it in too many words, in too many boxes, at too flat a hierarchy.</p>
-  <p>What we want back: a point of view on the <strong>information architecture and interaction model</strong>, not a re-skin. Sections 1–5 give you the world the interface has to be true to. Section 6 is the current version, reproduced faithfully. Sections 10–11 are where we think it is weak and what we would most like an argument about.</p>
+  <p>What we asked for: a point of view on the <strong>information architecture and interaction model</strong>, not a re-skin. Sections 1–5 give the world the interface has to be true to. Section 6 shows the build that was reviewed and the build that replaced it.</p>
+  <div class="callout key">
+    <span class="label">Revision 2 — what happened next</span>
+    <p>The review came back and was acted on. The console now has a single execution timeline instead of three places that said the same thing, an allocation set in <em>percentages</em> instead of dollar targets that had to sum, one sticky command bar instead of a confirm inside whichever card was last touched, dense aligned rows instead of stacked cards, and a palette where green means a gain and nothing else. Section 10 records what changed and section 11 what is still open.</p>
+  </div>
 </section>
 
 <section id="background">
@@ -557,16 +599,16 @@ td strong { color: var(--ink); font-weight: 600; }
 </section>
 
 <section id="current">
-  <div class="sec-head"><span class="sec-num">06</span><div><h2>The current version</h2><p class="sec-sub">Shipped August 2026. Reproduced below exactly as it renders.</p></div></div>
+  <div class="sec-head"><span class="sec-num">06</span><div><h2>The console, before and after</h2><p class="sec-sub">Both builds reproduced exactly as they render. Rev 2 is what is live today.</p></div></div>
 
   <h3>Where it lives</h3>
   <p>The console is a section of <code>/account</code>, the owner's private dashboard, sitting below their paper portfolio cards. It renders only for users who actually have a live Alpaca-backed portfolio provisioned. It is headed by a status chip — <span class="ui" style="display:inline-block"><span class="ui-chip"><span class="dot"></span>Private · real money</span></span> — and followed by a risk acknowledgement modal shown once per browser.</p>
   <p>One console renders per broker account (an owner can in principle have more than one set of Alpaca credentials; almost nobody does, so the account key is hidden when there is only one). Inside it: the pot, the bar, the status panel, one card per strategy, and two folds of rarely-needed plumbing.</p>
 
-  <h3>The whole thing</h3>
+  <h3>The build that was reviewed</h3>
 
   <div class="exhibit">
-    <p class="exhibit-cap">Exhibit A <span class="tag">current build</span> <span style="color:var(--ink-muted);letter-spacing:0;text-transform:none;font-size:11px">two strategies, one mid-edit, one owing a restructure</span></p>
+    <p class="exhibit-cap">Exhibit A <span class="tag">rev 1 — reviewed</span> <span style="color:var(--ink-muted);letter-spacing:0;text-transform:none;font-size:11px">two strategies, one mid-edit, one owing a restructure</span></p>
     <div class="exhibit-frame">
     <div class="ui">
       <div class="ui-account">
@@ -656,20 +698,127 @@ td strong { color: var(--ink); font-weight: 600; }
       </div>
     </div>
     </div>
-    <p class="exhibit-note">Reproduced from <code>live-account-hub.tsx</code>, <code>split-bar.tsx</code>, <code>strategy-card.tsx</code> and <code>whats-happening.tsx</code>. Colours, copy and ordering are as shipped; the numbers are representative.</p>
+    <p class="exhibit-note">The build the review was written against. Note what it costs: the restructure is stated twice (panel and card), five facts run together on one middot line, the commitment sits inside one card, and green is doing duty as both brand and gain.</p>
+  </div>
+
+
+  <h3>The build that replaced it</h3>
+  <p>Same account, same moment, same facts. The differences are structural: time is one spine, the allocation is a proportion, the commitment is one bar, and the strategies are rows that can be compared down a column.</p>
+
+  <div class="exhibit">
+    <p class="exhibit-cap">Exhibit B <span class="tag">rev 2 — shipped</span> <span style="color:var(--ink-muted);letter-spacing:0;text-transform:none;font-size:11px">Momentum trimmed from 70% to 62%, not yet applied</span></p>
+    <div class="exhibit-frame">
+    <div class="ui">
+      <div class="ui-panel">
+
+        <div class="ui-top">
+          <div class="lhs sans">Your strategies run <b class="num">$24,318.44</b> of real money</div>
+          <div class="rhs">broker cash <span class="num" style="color:#D4D4D8">$3,204.10</span> &nbsp;·&nbsp; unassigned <span class="num" style="color:#D4D4D8">$312.55</span></div>
+        </div>
+
+        <div class="ui-bar" style="height:10px">
+          <i style="width:62%;background:#00F2FF"></i>
+          <i style="width:38%;background:#FFD700"></i>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="ui-ghost" style="flex:1">
+            <i style="display:block;width:69.5%;height:100%;background:#00F2FF;opacity:0.3"></i>
+            <i style="display:block;width:30.5%;height:100%;background:#FFD700;opacity:0.3"></i>
+          </div>
+          <span style="font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:#A1A1AA">now</span>
+        </div>
+        <div class="ui-legend">
+          <span><span class="dot" style="background:#00F2FF"></span>Momentum Swarm<span class="pct num">70% <span style="color:#71717A">→</span> <span style="color:#FFD9A0">62%</span></span></span>
+          <span><span class="dot" style="background:#FFD700"></span>Turnaround Book<span class="pct num">30% <span style="color:#71717A">→</span> <span style="color:#FFD9A0">38%</span></span></span>
+        </div>
+
+        <div class="ui-spine">
+          <p class="h">Execution</p>
+          <div style="margin-top:10px">
+            <div class="ui-step">
+              <div class="rail"><span class="mark" style="background:#A1A1AA"></span><span class="line"></span></div>
+              <div class="body">
+                <p class="when">Last run</p>
+                <p class="txt sans">Momentum Swarm: a sync ran 3h ago — nothing to do, the live book already matched.</p>
+                <p class="sub sans">−$4,500.00 Momentum Swarm · moved out as cash + positions · 5h ago<br>Bought 12 NVDA at $178.40 · Momentum Swarm · 1d ago</p>
+              </div>
+            </div>
+            <div class="ui-step">
+              <div class="rail"><span class="mark pulse" style="background:#FBBF24"></span><span class="line"></span></div>
+              <div class="body">
+                <p class="when">Now</p>
+                <div class="ui-item">
+                  <p class="txt sans">$4,180.00 of Turnaround Book&#39;s holdings aren&#39;t its own picks yet — they get traded into them on its next sync.</p>
+                  <span class="ui-btn" style="margin:4px 0 0;display:inline-block;border-color:rgba(255,255,255,0.20);color:#D4D4D8">Sync now</span>
+                </div>
+              </div>
+            </div>
+            <div class="ui-step">
+              <div class="rail"><span class="mark" style="background:rgba(255,255,255,0.15)"></span></div>
+              <div class="body" style="padding-bottom:2px">
+                <p class="when">Next run</p>
+                <p class="txt sans" style="color:#A1A1AA">Tue 14:00 UTC (in 18h) · trades whatever the swarm changed overnight</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ui-table">
+          <div class="ui-tr ui-th" style="padding-bottom:6px">
+            <span>Strategy</span><span>Worth</span><span>Cash</span><span>P&amp;L</span><span>Should run</span><span></span>
+          </div>
+
+          <div class="ui-tr">
+            <div>
+              <div class="ui-name sans"><span class="dot" style="background:#00F2FF"></span>Momentum Swarm</div>
+              <p class="ui-copies sans">copies Momentum Swarm</p>
+            </div>
+            <div class="ui-num"><b>$16,900.00</b><span class="share">70%</span></div>
+            <div class="ui-num">$1,042.18</div>
+            <div class="ui-num"><span class="ui-pnl" style="color:#00FF41;background:rgba(0,255,65,0.10)">+6.42%</span></div>
+            <div class="ui-alloc"><span class="ui-step-btn">−</span><span class="ui-input">62 %</span><span class="ui-step-btn">+</span></div>
+            <div style="text-align:right;color:#A1A1AA">▸</div>
+            <p class="ui-impact sans"><span class="num">→ $15,077.43</span> <span class="muted">·</span> <span class="num">−$1,822.57</span> <span class="muted">($1,042.18 cash + $780.39 as positions)</span></p>
+          </div>
+
+          <div class="ui-tr">
+            <div>
+              <div class="ui-name sans"><span class="dot" style="background:#FFD700"></span>Turnaround Book<span class="health" title="$4,180.00 waiting to be traded into its own picks"></span></div>
+              <p class="ui-copies sans">copies Turnaround Book</p>
+            </div>
+            <div class="ui-num"><b>$7,418.44</b><span class="share">30%</span></div>
+            <div class="ui-num">$2,150.20</div>
+            <div class="ui-num"><span class="ui-pnl" style="color:#FF3333;background:rgba(255,51,51,0.10)">−2.10%</span></div>
+            <div class="ui-alloc"><span class="ui-step-btn">−</span><span class="ui-input">38 %</span><span class="ui-step-btn">+</span></div>
+            <div style="text-align:right;color:#A1A1AA">▸</div>
+            <p class="ui-impact sans"><span class="num">→ $9,241.01</span> <span class="muted">·</span> <span class="num">+$1,822.57</span> <span class="muted">($1,042.18 cash + $780.39 as positions, traded into its own picks on its next sync)</span></p>
+          </div>
+        </div>
+
+        <div class="ui-sticky">
+          <p class="sans"><b>Not applied yet.</b> <span class="num">$1,822.57</span> moves between 2 strategies.</p>
+          <span style="display:flex;align-items:center;gap:8px">
+            <span style="border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:4px 11px;font-size:12px;color:#A1A1AA">Reset</span>
+            <span class="ui-amber sans">Review &amp; apply split</span>
+          </span>
+        </div>
+      </div>
+    </div>
+    </div>
+    <p class="exhibit-note">Reproduced from <code>live-account-hub.tsx</code>, <code>split-bar.tsx</code>, <code>execution-timeline.tsx</code>, <code>strategy-row.tsx</code> and <code>split-command-bar.tsx</code>. On a phone the row&#39;s columns become labelled stacked cells; the sticky bar pins to the viewport.</p>
   </div>
 
   <h3>Anatomy, top to bottom</h3>
   <div class="scroll"><table>
     <thead><tr><th>Region</th><th>Answers</th><th>Notes</th></tr></thead>
     <tbody>
-      <tr><td><strong>The pot</strong></td><td>“How much real money is at work?”</td><td>Total worth of every strategy, with broker cash and unallocated as a quieter right-hand pair. Both show “—” when the broker is unreadable.</td></tr>
-      <tr><td><strong>The split bar</strong></td><td>“In what proportion?”</td><td>One 12px segment per strategy. Proportion is a shape, so it is drawn rather than tabulated. Colour here is the strategy's identity everywhere else. A $0 strategy has no width, so the legend always lists every strategy by name and figure.</td></tr>
-      <tr><td><strong>What's happening</strong></td><td>“Is anything pending?”</td><td>Always renders. Headline sentence + tone dot, then one line per outstanding item, then “Already happened”, then the next scheduled run. A line whose fix is a sync carries a <em>Do it now</em> button with its own confirm.</td></tr>
-      <tr><td><strong>Strategy cards</strong></td><td>“What is each one, and what should it run?”</td><td>Colour-keyed left border. Identity, worth, composition, P&amp;L, which paper book it copies, its own outstanding line, and the target input. Real-order controls live in a per-card <em>Manage</em> fold.</td></tr>
-      <tr><td><strong>The apply block</strong></td><td>“What will happen if I commit?”</td><td>Amber, and rendered <em>inside the card just edited</em> rather than under the whole list. Names each move in words; a second click swaps it for a per-move confirm that separates the cash part from the in-kind part.</td></tr>
-      <tr><td><strong>Add strategy</strong></td><td>“Can I bring another one live?”</td><td>Creates a follower at $0 for any paper book that doesn't have one. Funding it is then just a split edit.</td></tr>
-      <tr><td><strong>Advanced fold</strong></td><td>“Where's the plumbing?”</td><td>Per-strategy credit/debit against unallocated, plus the complete cash ledger.</td></tr>
+      <tr><td><strong>The pot</strong></td><td>“How much real money is at work?”</td><td>Total worth of every strategy, with broker cash and unassigned as a quieter monospaced pair. Both show “—” when the broker is unreadable, and the console keeps working without them.</td></tr>
+      <tr><td><strong>The split bar</strong></td><td>“In what proportion — and what would it become?”</td><td>One segment per strategy. While an edit is live the bar draws the <em>proposal</em>, with today as a thin ghost beneath it and the legend reading “70% → 62%”, so the change is visible rather than held in the head.</td></tr>
+      <tr><td><strong>Execution timeline</strong></td><td>“What happened, what&#39;s outstanding, when next?”</td><td>One spine, three tenses: last run, now, next run. Outstanding items carry the <em>Sync now</em> button that fixes them. Replaced a status panel plus a warning repeated on every affected card.</td></tr>
+      <tr><td><strong>Strategy rows</strong></td><td>“What is each one, and what should it run?”</td><td>Aligned columns — worth, cash, P&amp;L pill, share — comparable down the account. What the timeline says about a strategy reduces here to a health dot. Sync, re-pointing and cash moves sit behind one disclosure per row.</td></tr>
+      <tr><td><strong>The share control</strong></td><td>“How much of the account?”</td><td>A percentage with steppers. Raising one share shrinks the others pro rata, so the allocation is always exactly 100% and there is no unbalanced state to refuse. The dollars it implies appear under the row, split into cash and positions.</td></tr>
+      <tr><td><strong>Command bar</strong></td><td>“What will happen if I commit?”</td><td>Sticky, appears only while an edit is live, names the total that moves. <em>Review &amp; apply</em> opens a dialog describing each leg; the second, explicit confirm lives there.</td></tr>
+      <tr><td><strong>Add strategy</strong></td><td>“Can I bring another one live?”</td><td>Creates a follower at $0 for any paper book that doesn&#39;t have one. Funding it is then just a share.</td></tr>
     </tbody>
   </table></div>
 
@@ -780,6 +929,7 @@ td strong { color: var(--ink); font-weight: 600; }
       <tr><td><strong>Reframed as one question</strong></td><td>Owners didn't think in credits and debits; they thought “how much should each strategy run?”</td><td>Targets, not transfers. The transfer forms became the plumbing behind a split editor.</td></tr>
       <tr><td><strong>Cards + honest status</strong></td><td>Two bare table rows separated by a hairline — no visual answer to where one strategy ended. And silence was ambiguous: a $0 strategy looked identical whether a transfer was in flight or had never been attempted.</td><td>One bordered card per strategy, colour-keyed to a split bar; “what's happening” always renders, quiet state included.</td></tr>
       <tr><td><strong>Confirm relocated</strong></td><td>On a tall card, the owner typed a number and nothing on screen said it wasn't live yet, or offered to make it so.</td><td>The apply block moved inside the card just edited.</td></tr>
+      <tr><td><strong>Control desk (rev 2)</strong></td><td>The outside review: three regions saying the same thing, four-deep rounded boxes, dollar targets that made the owner do the balancing, a confirm inside one of several changed cards, and colour doing double duty as identity and meaning.</td><td>One execution timeline, percentages held at 100% by construction, one sticky command bar, dense aligned rows, and green reserved for gains.</td></tr>
     </tbody>
   </table></div>
   <div class="callout key">
@@ -789,58 +939,72 @@ td strong { color: var(--ink); font-weight: 600; }
 </section>
 
 <section id="weak">
-  <div class="sec-head"><span class="sec-num">10</span><div><h2>Where we think it's weak</h2><p class="sec-sub">Our own read. Disagree freely.</p></div></div>
-  <ul>
-    <li><strong>Three things say the same thing.</strong> A restructure that's owed appears as a panel line, as a compressed line on the card, and implicitly in the footnote. Correct, redundant, and it flattens the hierarchy.</li>
-    <li><strong>Everything is a rounded box on a rounded box.</strong> Account panel → status panel → card → status line → apply block, nesting four deep at similar radii and near-identical border weights. Depth is expressed by repetition rather than by any real hierarchy.</li>
-    <li><strong>The bar is decorative more than it is operative.</strong> It shows the current split beautifully and plays no part in changing it. The editing model is numeric-only: type a dollar amount in a box. Nobody drags the thing they're looking at.</li>
-    <li><strong>Dollars, when the intent is proportion.</strong> Targets are absolute amounts that must sum to the pot; the apply block spends most of its words policing arithmetic the owner shouldn't have to do. The auto-fill only rescues the two-strategy case.</li>
-    <li><strong>Time is stated, not shown.</strong> “3h ago”, “in 18h”, “Next scheduled run: Tue 14:00 UTC” — an interface whose subject is asynchrony has no timeline in it at all.</li>
-    <li><strong>P&amp;L is a footnote.</strong> The number an owner of real money probably cares most about is a fragment at the end of a metadata line, in the same size as everything else.</li>
-    <li><strong>The colour system is carrying two jobs.</strong> Green/cyan/yellow/orange/violet identify strategies; green/amber/red/cyan carry severity. Green means both “this strategy” and “fine”, and cyan means both “strategy #2” and “working”.</li>
-    <li><strong>Two folds hide things of different importance.</strong> “Manage” hides the sync button — a primary action; “Advanced” hides the ledger — genuinely rare. They look identical.</li>
-    <li><strong>Density on a phone.</strong> The card's composition line is five facts separated by middots, which wraps into an unreadable ribbon on a narrow screen.</li>
-  </ul>
+  <div class="sec-head"><span class="sec-num">10</span><div><h2>What the review changed</h2><p class="sec-sub">Each weakness we named, and what rev 2 did about it.</p></div></div>
+  <div class="scroll"><table>
+    <thead><tr><th>Weakness in rev 1</th><th>What shipped</th></tr></thead>
+    <tbody>
+      <tr><td>Three regions said the same thing — panel line, card line, footnote.</td><td>One execution timeline. A strategy's own row keeps only a health dot, with the sentence as its label.</td></tr>
+      <tr><td>Rounded boxes nested four deep at near-identical borders; depth by repetition.</td><td>One panel, one rule-separated table, hairline borders. The only boxed thing left is the review dialog, which is meant to interrupt.</td></tr>
+      <tr><td>The bar showed the split beautifully and played no part in changing it.</td><td>It draws the proposal while editing, with today as a ghost beneath — the readout the share controls drive.</td></tr>
+      <tr><td>Dollar targets that had to sum to the pot; most of the apply block policed arithmetic.</td><td>Percentages. Raising one share shrinks the others pro rata, so an unbalanced allocation cannot be expressed, let alone refused.</td></tr>
+      <tr><td>Time was stated in three places and drawn nowhere.</td><td>A spine with three tenses. Not a chart — still sentences, but in sequence.</td></tr>
+      <tr><td>P&amp;L was a fragment at the end of a metadata line.</td><td>Its own column, as a tinted monospace pill.</td></tr>
+      <tr><td>Colour carried identity and severity at once — green meant both “strategy #1” and “fine”.</td><td>Green is a gain, red is a loss or a refusal. Identity is cyan / gold / violet / orange / blue; outstanding work is amber; in-flight is a neutral pulse.</td></tr>
+      <tr><td>Two folds hid things of very different importance behind identical affordances.</td><td>One disclosure per row holds everything situational; the account-wide ledger is the only remaining fold.</td></tr>
+      <tr><td>Five middot-separated facts wrapped into a ribbon on a phone.</td><td>Columns that stack into individually labelled cells below the <code>sm</code> breakpoint.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout key">
+    <span class="label">Held throughout</span>
+    <p>The copy contract is untouched — <code>buildHubState</code> still writes every sentence and its fixture test passes unmodified; the timeline sorts by a new <code>kind</code> tag rather than by matching text. Changing the allocation still places no orders. Sync keeps its two-step confirm. The console still works with the broker unreadable. And the new allocation maths has its own hand-derived fixture: an allocation always totals 100%, targets always total the pot exactly, and a move takes the source's spare cash before any of its shares.</p>
+  </div>
 </section>
 
 <section id="questions">
-  <div class="sec-head"><span class="sec-num">11</span><div><h2>What we'd like an argument about</h2></div></div>
+  <div class="sec-head"><span class="sec-num">11</span><div><h2>Answered, and still open</h2></div></div>
+
+  <p>The six questions rev 1 posed, and where they landed.</p>
 
   <div class="q">
-    <h4>Q1 · The editing model</h4>
-    <p>Should the split be edited as <em>proportions</em> (percentages, or a draggable bar) rather than dollar targets that must sum? Proportion matches the intent and removes the balancing problem — but in-kind funding means a 10-point shift can move a five-figure basket of shares, and percentages hide that magnitude.</p>
-    <p class="ask">Is there a control that reads as proportion and commits as dollars?</p>
+    <h4>Q1 · The editing model <span style="color:var(--phosphor)">— answered</span></h4>
+    <p>Proportions won. Shares are set as percentages with steppers; the others absorb the difference pro rata so the allocation is always exactly 100%.</p>
+    <p>The objection — that percentages hide the magnitude of an in-kind move — is handled by showing the dollars as a <em>consequence</em> rather than an input: each edited row states what it would move, split into cash and positions-that-owe-a-restructure, and the review dialog repeats it leg by leg.</p>
   </div>
 
   <div class="q">
-    <h4>Q2 · Summary vs detail</h4>
-    <p>Today every strategy is fully expanded, always. With five sleeves this is a very long column. Should a strategy collapse to a single dense row until it needs attention or is being edited — and if so, what is the minimum a row must carry to remain trustworthy?</p>
-    <p class="ask">What does a real-money row have to show before an owner will accept not seeing the rest?</p>
+    <h4>Q2 · Summary vs detail <span style="color:var(--phosphor)">— answered</span></h4>
+    <p>Rows, not collapsing cards. A strategy always shows worth, share, cash, P&amp;L, the book it copies and a health dot; everything situational is behind one disclosure. Nothing collapses to less than that, because a real-money row that hides its cash or its P&amp;L is a row the owner has to open anyway.</p>
   </div>
 
   <div class="q">
-    <h4>Q3 · Making asynchrony visible</h4>
-    <p>The subject is a queue of intentions resolving over hours: asked at 09:12, will run at 14:00, filled at 14:06. We render this as prose in three separate places. Would a timeline — a single spine carrying requests, scheduled runs, fills and money moves — replace the status panel and the “already happened” list entirely?</p>
-    <p class="ask">Or is a timeline a chart where the owner wants a sentence?</p>
+    <h4>Q3 · Making asynchrony visible <span style="color:var(--phosphor)">— answered, partly</span></h4>
+    <p>A spine, not a chart. Past / now / next, with the fix on the item that needs it. It sequences what was already there rather than adding a new visual language.</p>
+    <p class="ask">Still open: whether a true time axis — with the 07:00 decision and the 14:00 execution actually spaced apart — would teach the two-clock model better than three labelled rows do.</p>
   </div>
 
   <div class="q">
-    <h4>Q4 · Where the confirm belongs</h4>
-    <p>The apply block currently lives inside the edited card, after moving there from below the list. With three or more strategies edited in one pass this is arguably wrong again — one commitment, rendered inside one of several changed things.</p>
-    <p class="ask">Sticky action bar, modal, or in-place? Which survives five sleeves and a phone?</p>
+    <h4>Q4 · Where the confirm belongs <span style="color:var(--phosphor)">— answered</span></h4>
+    <p>A sticky bottom bar naming the total that moves, and a native <code>&lt;dialog&gt;</code> for the review — so focus trapping and Escape are the platform&#39;s job. One commitment, one place, whether one strategy changed or five.</p>
   </div>
 
   <div class="q">
-    <h4>Q5 · Severity without alarm</h4>
-    <p>A strategy holding inherited positions is <em>normal</em> for a few hours and <em>wrong</em> after three days. We express that as amber→red on the same sentence. Is escalating colour on identical copy the right instrument, or should the interface change shape as work goes stale?</p>
-    <p class="ask">How do you say “this is fine, for now” and later “this is not fine” without crying wolf the first time?</p>
+    <h4>Q5 · Severity without alarm <span style="color:var(--ink-muted)">— unchanged</span></h4>
+    <p>Still amber → red on the same sentence after 48 hours, now shown once instead of twice. The underlying question stands: escalating colour on identical copy may be the wrong instrument, and the interface arguably ought to change <em>shape</em> when work goes stale rather than just temperature.</p>
+    <p class="ask">Worth a second opinion on its own.</p>
   </div>
 
   <div class="q">
-    <h4>Q6 · The identity of the whole</h4>
-    <p>The console currently reads as a form with a status panel attached. Real money managed by autonomous agents might justify a different metaphor entirely — an instrument panel, a ledger, a control desk.</p>
-    <p class="ask">What should this <em>feel</em> like, and what would that change about its structure?</p>
+    <h4>Q6 · The identity of the whole <span style="color:var(--phosphor)">— answered</span></h4>
+    <p>A control desk. Aligned columns, one spine, one commitment bar, colour that means exactly one thing. The page reads as an instrument now rather than a form with a status panel attached.</p>
   </div>
+
+  <h3>What we&#39;d still like an argument about</h3>
+  <ul>
+    <li><strong>The health dot.</strong> One strategy&#39;s outstanding work is now a coloured dot on its row plus a sentence in the timeline. That removed the duplication — but a dot is a weak signal for “$4,180 of this is not what you think it is”.</li>
+    <li><strong>Five sleeves.</strong> The rows were designed against two and tested against three. At five the timeline may be the thing that gets long, not the table.</li>
+    <li><strong>The sticky bar on a phone.</strong> It pins above the fold on a surface that also scrolls a table sideways-free. Whether it reads as “pending” or as furniture is a question only real use answers.</li>
+    <li><strong>Steppers vs dragging.</strong> The bar shows the proposal but still isn&#39;t draggable. Dragging a segment is the most direct expression of “this much” — and the least precise, on a page where precision is money.</li>
+  </ul>
 </section>
 
 <section id="appendix">
@@ -866,16 +1030,18 @@ td strong { color: var(--ink); font-weight: 600; }
   <div class="scroll"><table>
     <tbody>
       <tr><td class="mono">web/components/account/live-account-hub.tsx</td><td>The console: pot, split editor, add-strategy, advanced fold</td></tr>
-      <tr><td class="mono">web/components/account/strategy-card.tsx</td><td>One strategy</td></tr>
-      <tr><td class="mono">web/components/account/split-bar.tsx</td><td>The proportion bar + legend</td></tr>
-      <tr><td class="mono">web/components/account/whats-happening.tsx</td><td>Status panel (paint only)</td></tr>
+      <tr><td class="mono">web/components/account/strategy-row.tsx</td><td>One strategy, as a row</td></tr>
+      <tr><td class="mono">web/components/account/split-bar.tsx</td><td>The proportion bar + legend, current and proposed</td></tr>
+      <tr><td class="mono">web/components/account/execution-timeline.tsx</td><td>Past / now / next (paint only)</td></tr>
+      <tr><td class="mono">web/components/account/split-command-bar.tsx</td><td>Sticky commitment + review dialog</td></tr>
       <tr><td class="mono">web/lib/live-activity.ts</td><td>buildHubState — the copy contract, pure</td></tr>
       <tr><td class="mono">web/lib/live-cash-query.ts</td><td>Sleeves, allowances, broker cash, off-book value</td></tr>
       <tr><td class="mono">web/lib/live-activity-query.ts</td><td>Run journal + fills</td></tr>
       <tr><td class="mono">web/lib/live-cash-mutations.ts</td><td>applyLiveSplit, credit, debit, createFollowerShell</td></tr>
-      <tr><td class="mono">web/lib/sleeve-funding.ts</td><td>planSplitMoves, planInKindFunding (Python twins in sleeves.py)</td></tr>
+      <tr><td class="mono">web/lib/sleeve-funding.ts</td><td>planSplitMoves, planInKindFunding (Python twins in sleeves.py) + the allocation maths</td></tr>
       <tr><td class="mono">alpaca_mirror.py</td><td>The run: plan, trade, journal</td></tr>
       <tr><td class="mono">tests/test_live_hub.py</td><td>Pins every sentence the console can say</td></tr>
+      <tr><td class="mono">tests/test_split_allocation.py</td><td>Pins the allocation maths: 100%, exact totals, cash before shares</td></tr>
     </tbody>
   </table></div>
 
@@ -889,7 +1055,7 @@ td strong { color: var(--ink); font-weight: 600; }
     </tbody>
   </table></div>
 
-  <p style="margin-top:40px;color:var(--ink-muted);font-size:14.5px;font-style:italic;">Everything described here is shipped and running against a real brokerage account. Proposals that change the model — not just the surface — are welcome, provided the invariants in §1 and the constraints in §5 survive.</p>
+  <p style="margin-top:40px;color:var(--ink-muted);font-size:14.5px;font-style:italic;">Everything described here is shipped and running against a real brokerage account. Revision 2 came from taking an outside review seriously; the same invitation stands for a third. Proposals that change the model — not just the surface — are welcome, provided the invariants in §1 and the constraints in §5 survive.</p>
 </section>
 
 </main>
