@@ -242,7 +242,14 @@ def record_thesis(
     # configure. Comparing the snapshot against ITSELF is exactly the
     # buy-moment evaluation: change_pct_* signals see a zero delta and so are
     # structurally immune, which is why they survive here by construction.
-    break_signals, born_broken = _drop_already_true(break_signals, snapshot)
+    #
+    # Only rewritten when signals were actually supplied: a snapshot-only buy
+    # passes None and must STORE None, not an empty array, or a `source='auto'`
+    # row stops being distinguishable from an agent row that authored no
+    # surviving signals.
+    born_broken: list[dict] = []
+    if break_signals is not None:
+        break_signals, born_broken = _drop_already_true(break_signals, snapshot)
     if born_broken:
         logger.warning(
             "%s: dropped %d break signal(s) already true at buy: %s",

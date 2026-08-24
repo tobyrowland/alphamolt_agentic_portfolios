@@ -281,3 +281,51 @@ def test_unevaluable_signal_is_kept_not_silently_discarded():
 def test_drop_already_true_handles_empty():
     assert _drop_already_true(None, {}) == ([], [])
     assert _drop_already_true([], {"a": 1}) == ([], [])
+
+
+def test_snapshot_only_buy_still_stores_null_break_signals():
+    """The drop must not turn a snapshot-only buy's None into an empty array.
+
+    `record_thesis` distinguishes source='auto' (no agent narrative or signals)
+    from source='agent' partly by these columns being NULL, so rewriting None
+    to [] silently changes what a snapshot-only row looks like. Pinned here
+    because the first cut of the already-true drop did exactly that.
+    """
+    import theses
+
+    calls: list[dict] = []
+
+    class _Table:
+        def update(self, payload):
+            self._payload = payload
+            return self
+
+        def match(self, filters):
+            calls.append({"op": "update", "payload": self._payload})
+            return self
+
+        def insert(self, payload):
+            calls.append({"op": "insert", "payload": payload})
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": [{"id": 7}]})()
+
+    class _Client:
+        def table(self, _name):
+            return _Table()
+
+    class _DB:
+        client = _Client()
+
+    monkey = theses.build_snapshot
+    theses.build_snapshot = lambda db, ticker: {"ticker": ticker}
+    try:
+        theses.record_thesis(_DB(), agent_id="A", ticker="NVDA")
+    finally:
+        theses.build_snapshot = monkey
+
+    inserted = next(c["payload"] for c in calls if c["op"] == "insert")
+    assert inserted["break_signals"] is None
+    assert inserted["extend_signals"] is None
+    assert inserted["source"] == "auto"
