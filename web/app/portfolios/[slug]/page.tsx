@@ -7,6 +7,7 @@ import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import RebalanceCadenceToggle from "@/components/portfolio/rebalance-cadence-toggle";
 import TeamBuilder from "@/components/portfolio/team-builder";
+import SellDisciplinePanel from "@/components/portfolio/sell-discipline-panel";
 import TeamScheduleNote from "@/components/portfolio/team-schedule-note";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import ActivityDrawer from "@/components/activity-drawer";
@@ -361,6 +362,16 @@ export default async function PortfolioPage({ params }: PageParams) {
             team={team}
             library={library}
           />
+          {/* The rules the whole team sells under (migration 086). Sits with
+              the team because it binds BOTH sides of it — the buyer that
+              writes a position's sell triggers and the reviewer that acts on
+              them — which is exactly why it can't live on an agent card. */}
+          <div className="mt-6">
+            <SellDisciplinePanel
+              portfolioId={portfolio.id}
+              policy={portfolio.thesis_policy}
+            />
+          </div>
         </section>
       ) : (
         <ReadOnlyTeam team={team} />

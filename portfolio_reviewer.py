@@ -19,6 +19,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any
 
+import thesis_policy as _policy
 from agent_strategies import RebalanceContext, RebalanceResult
 from llm_picker import _mandate_block, _parse_with_retry
 from llm_providers import LLMProviderError, call_llm
@@ -60,6 +61,12 @@ Your job per call: look at ONE position the portfolio currently holds and decide
 Render a verdict: HOLD (do nothing) or SELL (close the position at the next available price).
 
 Your job is NOT to apply your own opinion of when to sell. Apply the OWNER'S mandate. If the mandate is loose, be conservative. If it's vigilant, be more willing to exit. If the mandate is silent on selling, lean toward HOLD unless the recorded buy thesis is materially broken.
+
+What counts as a broken thesis:
+- A BREAK signal is firing. That is the evidence. The machine-check below tells you which ones, if any.
+- An EXTEND signal that has NOT yet been satisfied is NOT a break. Extend signals are what would CONFIRM the thesis in time; their absence means "not proven yet", not "disproven". A thesis that has not yet been confirmed is still a live thesis.
+- "The market hasn't re-rated it yet" is not a break either. A stock still lagging the market is the SITUATION THE PORTFOLIO DELIBERATELY BOUGHT INTO, not news. Relative price performance over a trailing twelve-month window barely moves within a normal holding period, so it cannot tell you whether the business thesis is working. Judge the BUSINESS: growth, margins, cash conversion, balance sheet.
+- Ask "what has deteriorated SINCE WE BOUGHT?" — not "is this stock still cheap/lagging/unloved?" The second question is always yes; it is why the position exists.
 
 Conviction 1-5 only meaningful when verdict="SELL":
   5 = the mandate's exit criteria are unambiguously triggered; no judgement call
@@ -389,10 +396,17 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
     fact_rows = {t: fact_map[t] for t in held_tickers if t in fact_map}
     by_ticker_data = build_candidate_data(ctx.db, fact_rows, held_tickers)
 
+    # Owner sell discipline (migration 086). Portfolio-level, so the buyer that
+    # AUTHORS break signals and this reviewer that ENFORCES them read the same
+    # rules — a per-agent knob could bind only one of the two.
+    policy = _policy.policy_for_portfolio(ctx.db, ctx.portfolio_id)
+    result.notes["thesis_policy"] = policy
+
     # Per-position context bundles.
     work: list[dict] = []
     missing_facts: list[str] = []
     missing_price: list[str] = []
+    in_grace: list[str] = []
     for h in holdings:
         ticker = str(h.get("ticker") or "").upper()
         if not ticker:
@@ -412,6 +426,20 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
         current_data = by_ticker_data.get(ticker)
         if not current_data:
             missing_facts.append(ticker)
+            continue
+
+        # Owner grace period (migration 086) — a position younger than
+        # `grace_period_days` is not reviewed at all. A turnaround thesis
+        # cannot be confirmed or refuted in a week, and the swarm runs buyers
+        # BEFORE reviewers over the shared book, so without this a name bought
+        # seconds ago is already in scope (three positions were bought and sold
+        # inside 90 seconds in production). The owner's manual Sell button on
+        # the portfolio page remains the escape hatch for a genuine blow-up.
+        if _policy.within_grace_period(first_bought_at, policy):
+            held = _policy.days_held(first_bought_at)
+            in_grace.append(
+                f"{ticker} ({held:.1f}d)" if held is not None else ticker
+            )
             continue
 
         thesis = active_theses.get(ticker)
@@ -442,9 +470,18 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
         result.notes["unpriced"] = missing_price
     if missing_facts:
         result.notes["missing_facts"] = missing_facts
+    if in_grace:
+        result.notes["skipped_in_grace_period"] = in_grace
+        logger.info(
+            "%s: %d position(s) inside the %d-day grace period, not reviewed",
+            handle, len(in_grace), int(policy["grace_period_days"]),
+        )
 
     if not work:
-        result.notes["reason"] = "no priceable positions with Level 0 facts"
+        result.notes["reason"] = (
+            "all positions inside the grace period"
+            if in_grace else "no priceable positions with Level 0 facts"
+        )
         return result
 
     concurrency = max(1, int(params["concurrency"]))
@@ -511,8 +548,10 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
     # Journal every verdict for transparency, sell only those that clear
     # the conviction gate.
     threshold = int(params["sell_conviction_threshold"])
+    thesis_by_ticker = {item["ticker"]: item for item in work}
     sells: list[dict] = []
     holds: list[dict] = []
+    blocked: list[dict] = []
     for ev in evaluations:
         record = {
             "ticker": ev["ticker"],
@@ -522,7 +561,23 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
             "what_changed": ev["what_changed"],
         }
         if ev["verdict"] == "SELL" and ev["conviction"] >= threshold:
-            sells.append({**record, "_thesis_id": ev.get("_thesis_id")})
+            # Owner policy (migration 086): a SELL needs a break signal that is
+            # ACTUALLY FIRING, not an unsatisfied extend signal or a narrative
+            # "the re-rating hasn't happened yet". In production the reviewer
+            # twice sold while its own note said no break signal had fired.
+            # The rule self-disables where there is nothing to check (no
+            # thesis, no signals, failed check) so a position can never become
+            # unsellable — see thesis_policy.sell_is_permitted.
+            item = thesis_by_ticker.get(ev["ticker"]) or {}
+            permitted, why = _policy.sell_is_permitted(
+                policy,
+                thesis=item.get("thesis"),
+                signal_check=item.get("signal_check"),
+            )
+            if permitted:
+                sells.append({**record, "_thesis_id": ev.get("_thesis_id")})
+            else:
+                blocked.append({**record, "blocked_because": why})
         else:
             holds.append(record)
 
@@ -530,9 +585,21 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
         "sell_qualifying": sells,
         "hold_or_subthreshold": holds,
     }
+    if blocked:
+        # Surfaced separately so the owner can SEE the discipline biting —
+        # a suppressed sell is a decision, and silently folding it into the
+        # HOLD list would hide exactly the behaviour this policy exists to fix.
+        result.notes["verdicts"]["sell_blocked_by_policy"] = blocked
+        logger.info(
+            "%s: %d SELL verdict(s) blocked — no break signal firing",
+            handle, len(blocked),
+        )
 
     if not sells:
-        result.notes["reason"] = "no positions met the sell threshold"
+        result.notes["reason"] = (
+            "sell verdicts blocked — no break signal firing"
+            if blocked else "no positions met the sell threshold"
+        )
         return result
 
     # Map ticker -> qty for the sell loop.

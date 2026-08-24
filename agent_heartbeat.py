@@ -42,6 +42,7 @@ from broker import (
     live_execution_enabled,
     resolve_backend_for_portfolio,
 )
+import thesis_policy as _thesis_policy
 from db import SupabaseDB
 from portfolio import PortfolioManager
 
@@ -441,6 +442,11 @@ def _llm_swarm_convictions(
     if not eval_pool:
         return {}, {}, max_per, gate
 
+    # Owner sell discipline (migration 086) — shapes which break/extend signals
+    # the buyer may record. Portfolio-level, because the reviewer that enforces
+    # these signals reads the SAME policy; a per-agent knob could not bind both.
+    policy = _thesis_policy.policy_for_portfolio(db, pid)
+
     key = (bp["provider"], bp["model"], mandate_m or "")
     evals_list = eval_cache.get(key)
     if evals_list is None:
@@ -454,6 +460,7 @@ def _llm_swarm_convictions(
                 portfolio=book,
                 portfolio_mandate=mandate_m,
                 params=bp,
+                policy=policy,
                 label=label,
             )
         except Exception as exc:  # noqa: BLE001 — a dead provider buys nothing, never mechanically

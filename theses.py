@@ -169,6 +169,29 @@ def build_snapshot(db, ticker: str) -> dict:
     return snapshot
 
 
+def _drop_already_true(
+    break_signals: Optional[list[dict]], snapshot: dict,
+) -> tuple[list[dict], list[dict]]:
+    """Split break signals into ``(kept, already_true_at_buy)``.
+
+    Evaluates each signal with the snapshot as BOTH the frozen and the current
+    state — i.e. exactly as ``check_thesis`` would evaluate it the moment the
+    position opened. ``_evaluate_signal`` is total (an unevaluable signal
+    returns False), so a signal on a field the snapshot could not populate is
+    kept rather than silently discarded.
+    """
+    kept: list[dict] = []
+    already: list[dict] = []
+    for signal in break_signals or []:
+        if not isinstance(signal, dict):
+            continue
+        if _evaluate_signal(signal, snapshot, snapshot):
+            already.append(signal)
+        else:
+            kept.append(signal)
+    return kept, already
+
+
 def record_thesis(
     db,
     *,
@@ -205,6 +228,30 @@ def record_thesis(
     db.client.table("investment_theses").update(
         {"status": "superseded", "status_changed_at": "now()"}
     ).match(supersede_match).execute()
+
+    # Drop any break signal that is ALREADY TRUE against the buy-time snapshot.
+    # A tripwire that is tripped the instant the position opens is not a
+    # falsification test — it is a guaranteed sell on the reviewer's next run.
+    # This happened in production: a portfolio whose screen filters on
+    # `perf_52w_vs_spy < -20` had its buyer author `perf_52w_vs_spy < -20` as a
+    # break signal, so every candidate arrived pre-broken (see
+    # docs/case-studies/scrappy-fightback-trading-record.md).
+    #
+    # Unconditional, NOT policy-gated (thesis_policy.py) — no portfolio wants a
+    # position whose exit trigger is already met, so there is nothing to
+    # configure. Comparing the snapshot against ITSELF is exactly the
+    # buy-moment evaluation: change_pct_* signals see a zero delta and so are
+    # structurally immune, which is why they survive here by construction.
+    break_signals, born_broken = _drop_already_true(break_signals, snapshot)
+    if born_broken:
+        logger.warning(
+            "%s: dropped %d break signal(s) already true at buy: %s",
+            ticker, len(born_broken),
+            ", ".join(
+                f"{s.get('field')} {s.get('op')} {s.get('value')}"
+                for s in born_broken
+            ),
+        )
 
     source = "agent" if (
         thesis_text or extend_signals or break_signals

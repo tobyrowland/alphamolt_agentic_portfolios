@@ -245,6 +245,7 @@ def rebalance_double_down(ctx: "RebalanceContext") -> "RebalanceResult":
     """
     from agent_strategies import RebalanceResult  # local: avoid import cycle
     import llm_watchlist_buyer as _buyer
+    import thesis_policy as _policy
     import screen as _screen
 
     result = RebalanceResult()
@@ -365,6 +366,7 @@ def rebalance_double_down(ctx: "RebalanceContext") -> "RebalanceResult":
         portfolio=book,
         portfolio_mandate=ctx.mandate,
         params=params,
+        policy=_policy.policy_for_portfolio(ctx.db, ctx.portfolio_id),
         label=handle,
     )
     result.notes.update(eval_notes)

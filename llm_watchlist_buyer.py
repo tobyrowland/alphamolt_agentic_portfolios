@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any
 
 from agent_strategies import RebalanceContext, RebalanceResult
+import thesis_policy as _policy
 from db import SupabaseDB
 from llm_picker import (
     _mandate_block,
@@ -203,6 +204,9 @@ Thesis discipline (BUY only):
 - field MUST be one of the allowed numeric fields listed below; signals on unknown fields will be dropped.
 - op MUST be one of: >, >=, <, <=, ==, !=, change_pct_lt, change_pct_gt.
 - value MUST be a number (e.g. 40, -3.5). Never a string with "%" or "pp".
+- A break signal must be FALSE TODAY. It is a tripwire for what would have to CHANGE for you to be wrong — not a description of the situation you are buying into. A signal that is already true at purchase is dropped, and the thesis is recorded without it.
+- PRICE-RELATIVE fields (perf_52w_vs_spy, price_pct_of_52w_high, price, ps_now, composite_score) may ONLY be used with change_pct_lt / change_pct_gt — never a static threshold. "Down 20% vs the market" describes where the stock already IS (and on a mandate that buys fallen names, it is true of everything you will ever see). "Lost a FURTHER 15 points vs the market since we bought" is a real deterioration signal. Static thresholds on these fields are dropped.
+- Extend signals must be reachable within a normal holding period. "perf_52w_vs_spy > 0" on a name currently at -30 needs a 30-point swing in a trailing-twelve-month number — that is not a confirmation signal, it is a wish. Prefer operating evidence (growth re-accelerating, margins expanding, cash conversion improving) over price outcomes.
 
 IMPORTANT — change_pct_* semantics. These compare the CURRENT value against the VALUE AT BUY (snapshot), as a PERCENTAGE-POINT DELTA (not a relative percent). Example:
   {"field": "gross_margin_pct", "op": "change_pct_lt", "value": -3, "description": "Margin dropped >3pp"}
@@ -424,9 +428,14 @@ def _evaluate_ticker(
     max_tokens: int,
     temperature: float,
     max_signals: int,
+    policy: dict,
 ) -> dict:
     """Call the LLM for one ticker. Returns either the parsed verdict dict
     or a dict with ``error`` set (never raises).
+
+    ``policy`` is the resolved owner sell discipline (``thesis_policy``); it
+    shapes the prompt's signal guidance and filters the signals the model
+    returns.
     """
     bull_eval = (equity_data.get("narrative") or {}).get("bull_eval") or "—"
     bear_eval = (equity_data.get("narrative") or {}).get("bear_eval") or "—"
@@ -497,6 +506,18 @@ def _evaluate_ticker(
         # Inherit the shared card's base break signals so every holding carries a
         # consistent set for the reviewer, even if the buyer authored none.
         break_signals = _merge_break_signals(break_signals, research, max_count=max_signals + 5)
+    extend_signals = _validate_signals(parsed.get("extend_signals"), max_count=max_signals)
+
+    # Owner policy (migration 086): price-relative fields may only carry
+    # change-since-buy operators. A STATIC threshold on such a field says where
+    # the stock IS, which on a screen that selects beaten-down names is often
+    # already true at purchase — the born-broken thesis. Applied AFTER the card
+    # merge so inherited signals are policed too, and to extend signals as well,
+    # since an unsatisfiable extend ("beat the market over 12 months") is what
+    # the reviewer reached for when no break signal had fired.
+    break_signals, dropped_breaks = _policy.filter_signals(break_signals, policy)
+    extend_signals, dropped_extends = _policy.filter_signals(extend_signals, policy)
+    dropped = dropped_breaks + dropped_extends
 
     return {
         "ticker": ticker,
@@ -504,8 +525,9 @@ def _evaluate_ticker(
         "conviction": conviction,
         "rationale": str(parsed.get("rationale") or "").strip(),
         "thesis_text": str(parsed.get("thesis_text") or "").strip(),
-        "extend_signals": _validate_signals(parsed.get("extend_signals"), max_count=max_signals),
+        "extend_signals": extend_signals,
         "break_signals": break_signals,
+        "policy_dropped_signals": _policy.describe_dropped(dropped),
         "input_tokens": resp.input_tokens,
         "output_tokens": resp.output_tokens,
     }
@@ -731,6 +753,7 @@ def evaluate_candidates(
     portfolio: dict,
     portfolio_mandate: str | None,
     params: dict,
+    policy: dict | None = None,
     label: str = "buyer",
 ) -> tuple[list[dict], dict]:
     """Phase-1 per-ticker BUY/PASS evaluation, run in parallel.
@@ -749,6 +772,9 @@ def evaluate_candidates(
     max_tokens = int(params["max_tokens"])
     temperature = float(params["temperature"])
     max_signals = int(params["max_signals_per_kind"])
+    # Callers that know the portfolio pass its resolved policy; the rest get
+    # DEFAULTS, so the discipline applies even on paths that predate 086.
+    policy = _policy.resolve_policy(policy if policy is not None else {})
 
     evaluations: list[dict] = []
     parse_failures: dict[str, str] = {}
@@ -773,6 +799,7 @@ def evaluate_candidates(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 max_signals=max_signals,
+                policy=policy,
             ): ticker
             for ticker in candidates
             if ticker in by_ticker_data

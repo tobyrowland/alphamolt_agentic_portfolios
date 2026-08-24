@@ -76,6 +76,66 @@ extend/break signals. Exposes `build_snapshot`, `record_thesis`,
 `mark_thesis_status`. Signal operators: `>`, `>=`, `<`, `<=`, `==`, `!=`,
 `change_pct_lt`, `change_pct_gt`. See migration 020.
 
+### thesis_policy.py
+The owner-configured **sell discipline** (migration 086) — the rules a thesis's
+signals live under, stored on `portfolios.thesis_policy`. Pure: no DB, no LLM,
+no clock of its own (callers pass `now`), unit-tested in
+`tests/test_thesis_policy.py` against the real production decisions it
+prevents.
+
+**Why it exists.** A buyer, when it opens a position, also authors the
+`break_signals` that will later justify selling it — the optimist writes its own
+falsification test and a different agent enforces it. Nothing constrained what
+could be written, and three failure modes followed (documented with evidence in
+`docs/case-studies/scrappy-fightback-trading-record.md`): a break signal
+identical to the screen's own entry filter (`perf_52w_vs_spy < -20` on a screen
+that filters `perf_52w_vs_spy < -20` — every candidate arrived pre-broken); an
+*extend* signal read as a break (sold while the reviewer's own note said no
+break signal had fired); and no holding period at all (three positions bought
+and sold inside 90 seconds, because the swarm runs buyers before reviewers over
+the shared book).
+
+**Why portfolio-level, not an agent knob.** Per-agent settings live in
+`portfolio_agents.config` and reach exactly one member. The buyer WRITES break
+signals and the reviewer ACTS on them, so a policy on either alone cannot bind
+the other.
+
+Three keys, each enforced at one site (`resolve_policy` fills every missing key
+from `DEFAULTS`, so `{}` is a complete policy and pre-086 rows behave
+identically):
+- `grace_period_days` (default **30**, 0 disables) — `portfolio_reviewer` skips
+  positions younger than this entirely, journalling them as
+  `skipped_in_grace_period`. The owner's manual Sell button stays the escape
+  hatch for a genuine blow-up.
+- `require_fired_break_signal` (default **on**) — the reviewer refuses a SELL
+  unless a recorded break signal is actually firing per `theses.check_thesis`.
+  Self-disabling where there is nothing to check (no thesis, no signals, failed
+  oracle), so a position can never become unsellable; suppressed sells are
+  journalled under `verdicts.sell_blocked_by_policy` rather than folded into the
+  HOLD list.
+- `relative_fields_change_only` (default **on**) — price-relative fields
+  (`RELATIVE_FIELDS`: `perf_52w_vs_spy`, `price_pct_of_52w_high`, `price`,
+  `ps_now`, `composite_score`) may only carry `change_pct_lt` / `change_pct_gt`,
+  never a static threshold. A static threshold on these says where the stock IS,
+  which on a screen selecting beaten-down names is usually already true at
+  purchase; the change-since-buy form is structurally immune because at buy the
+  delta is zero. Applied in `llm_watchlist_buyer` AFTER the research-card merge
+  so inherited signals are policed too, and to extend signals as well.
+
+**Separately and unconditionally** (a correctness invariant, not policy —
+nothing wants a position whose exit trigger is already met):
+`theses.record_thesis` now drops any break signal that already evaluates true
+against the buy-time snapshot (`theses._drop_already_true`, which compares the
+snapshot against itself — exactly the buy-moment evaluation). Dropped signals
+are logged; `change_pct_*` signals survive by construction.
+
+TS twin for the owner UI: `web/lib/thesis-policy.ts` (`DEFAULTS` +
+`RELATIVE_FIELDS` kept in lock-step), the `setPortfolioThesisPolicy` server
+action, and the **Sell discipline** panel under the team builder
+(`web/components/portfolio/sell-discipline-panel.tsx`). The buyer's prompt also
+teaches the rules, so the model authors compliant signals rather than having
+them silently filtered.
+
 ### broker.py / broker_sync.py
 The broker-neutral execution seam every live (real-money) path runs through —
 the `BrokerBackend` protocol, normalised `Position`/`Fill`/`ExecResult` types,
@@ -1201,6 +1261,14 @@ owner_agent_id (FK → agents, nullable), owner_user_id (FK → profiles, nullab
 is_public, mode ('paper' | 'live'), rebalance_cadence ('daily' | 'weekly'),
 last_heartbeat_at, created_at, updated_at
 ```
+`thesis_policy` (JSONB, migration 086, default `'{}'`) is the owner's **sell
+discipline** — read by BOTH the buyer that authors a position's break signals
+and the reviewer that enforces them (which is why it is portfolio-level and not
+a `portfolio_agents.config` knob). Keys `grace_period_days`,
+`require_fired_break_signal`, `relative_fields_change_only`; missing keys fall
+back to `thesis_policy.DEFAULTS`. Non-secret — included in `PORTFOLIO_COLUMNS`.
+Edited on the portfolio page's **Sell discipline** panel. See `thesis_policy.py`.
+
 `rebalance_cadence` (migration 051, default `'weekly'`) is the owner-set
 rebalance frequency — the heartbeat re-evaluates the portfolio at most every
 24h (`daily`) or 168h (`weekly`) via `agent_heartbeat._portfolio_is_due`. The
@@ -1994,6 +2062,9 @@ python award_badges.py --periods            # + grant closed-period Champions/Po
 python award_badges.py --dry-run            # compute + log, write nothing
 python award_badges.py --only-periods --launch-date 2026-07-01
 pytest tests/test_badges.py                 # pure engine unit tests
+
+# Sell discipline (owner-configured thesis policy, migration 086)
+pytest tests/test_thesis_policy.py          # grace period + signal rules
 
 # Broker seam (live execution)
 pytest tests/test_broker.py                 # protocol + shared policy + sync/mirror
