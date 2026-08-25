@@ -379,7 +379,28 @@ def rebalance_double_down(ctx: "RebalanceContext") -> "RebalanceResult":
     ]
     result.notes["qualifying"] = len(qualifying)
     if not qualifying:
-        result.notes.setdefault("reason", "no held name met the conviction gate to add")
+        # Distinguish "evaluated every name, none qualified" from "evaluated
+        # nothing because every call failed". Both used to journal the same
+        # sentence, so a total outage read as a considered decision: this agent
+        # reported "no held name met the conviction gate" for three consecutive
+        # runs while `phase1_evaluations` was 0 and every ticker carried an SDK
+        # error. Any monitoring reading `reason` would have called it healthy.
+        evaluated = len(evaluations)
+        errored = len(eval_notes.get("per_ticker_errors") or {})
+        if evaluated == 0 and errored:
+            result.notes["reason"] = (
+                f"evaluation FAILED for all {errored} held name(s) — nothing was "
+                f"assessed; see per_ticker_errors"
+            )
+            result.errors.append(
+                f"double_down evaluated 0 of {errored} held names (all calls failed)"
+            )
+        else:
+            result.notes.setdefault(
+                "reason",
+                f"no held name met the conviction gate to add "
+                f"({evaluated} evaluated)",
+            )
         return result
 
     # 4. Size the adds (pure planner) and execute.

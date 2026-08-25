@@ -231,3 +231,57 @@ class TestRebalanceDoubleDown(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFailureIsNotJournalledAsADecision(TestRebalanceDoubleDown):
+    """A total evaluation outage must not read as "nothing qualified".
+
+    Production: three consecutive runs journalled "no held name met the
+    conviction gate" while `phase1_evaluations` was 0 and every held ticker
+    carried an SDK error. Monitoring reading `reason` would call that healthy.
+    Inherits the offline harness and overrides only the evaluator.
+    """
+
+    def test_every_call_failing_is_reported_as_a_failure(self):
+        self._buyer.evaluate_candidates = lambda **kw: (
+            [],  # nothing evaluated
+            {"per_ticker_errors": {
+                "NVDA": "unexpected: Streaming is required for operations ...",
+                "AAPL": "unexpected: Streaming is required for operations ...",
+            }},
+        )
+        book = _book(96_000, [
+            {"ticker": "NVDA", "quantity": 20, "price": 100.0},
+            {"ticker": "AAPL", "quantity": 20, "price": 100.0},
+        ])
+        pm = FakePM({"NVDA": 100.0, "AAPL": 100.0}, book)
+        res = rebalance_double_down(self._ctx(pm, FakeDB()))
+
+        self.assertIn("evaluation FAILED", res.notes["reason"])
+        self.assertIn("2", res.notes["reason"])
+        # And it must surface as an error, not only a note.
+        self.assertTrue(res.errors, "a total outage must populate result.errors")
+        self.assertEqual(pm.buys, [], "nothing should trade")
+
+    def test_genuine_no_qualifiers_still_reads_as_a_decision(self):
+        self._buyer.evaluate_candidates = lambda **kw: (
+            [
+                {"ticker": "NVDA", "verdict": "PASS", "conviction": 1,
+                 "rationale": "rich", "thesis_text": "",
+                 "extend_signals": [], "break_signals": []},
+                {"ticker": "AAPL", "verdict": "PASS", "conviction": 1,
+                 "rationale": "rich", "thesis_text": "",
+                 "extend_signals": [], "break_signals": []},
+            ],
+            {},
+        )
+        book = _book(96_000, [
+            {"ticker": "NVDA", "quantity": 20, "price": 100.0},
+            {"ticker": "AAPL", "quantity": 20, "price": 100.0},
+        ])
+        pm = FakePM({"NVDA": 100.0, "AAPL": 100.0}, book)
+        res = rebalance_double_down(self._ctx(pm, FakeDB()))
+
+        self.assertIn("no held name met the conviction gate", res.notes["reason"])
+        self.assertNotIn("FAILED", res.notes["reason"])
+        self.assertEqual(res.errors, [], "a real decision is not an error")
