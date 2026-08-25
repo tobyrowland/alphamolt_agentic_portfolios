@@ -40,6 +40,12 @@ export interface Portfolio {
   screen_config: Record<string, unknown> | null;
   /** How often the heartbeat re-evaluates this portfolio (migration 051). */
   rebalance_cadence: "daily" | "weekly";
+  /**
+   * Owner sell discipline (migration 086) — read by the buyer that authors
+   * break signals AND the reviewer that enforces them. Non-secret. `{}` or
+   * null means "all defaults" (see lib/thesis-policy.resolvePolicy).
+   */
+  thesis_policy: Record<string, unknown> | null;
 }
 
 /**
@@ -49,7 +55,7 @@ export interface Portfolio {
  * server serializes to the browser. Read `mode` only via `getPortfolioMode`.
  */
 const PORTFOLIO_COLUMNS =
-  "id, slug, display_name, description, owner_agent_id, owner_user_id, is_public, created_at, updated_at, screen_config, rebalance_cadence";
+  "id, slug, display_name, description, owner_agent_id, owner_user_id, is_public, created_at, updated_at, screen_config, rebalance_cadence, thesis_policy";
 
 /**
  * The owner-only paper/live mode of a portfolio (migration 036). Gated on a

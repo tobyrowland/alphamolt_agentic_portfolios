@@ -22,6 +22,7 @@ import {
   screenFilterLabel,
 } from "@/lib/screen/config";
 import { MAX_PAPER_PORTFOLIOS } from "@/lib/portfolios-query";
+import { resolvePolicy, type ThesisPolicy } from "@/lib/thesis-policy";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -496,6 +497,41 @@ export async function setPortfolioRebalanceCadence(input: {
   if (error) {
     console.error("setPortfolioRebalanceCadence failed:", error);
     return { ok: false, error: "Could not update rebalance cadence. Try again." };
+  }
+  if (!data) return { ok: false, error: NOT_FOUND_ERROR };
+
+  revalidate(data.slug);
+  return { ok: true };
+}
+
+/**
+ * Save the portfolio's sell discipline (migration 086).
+ *
+ * Portfolio-level, not per-agent: the buyer AUTHORS break signals and the
+ * reviewer ENFORCES them, so a knob on either alone could not bind both.
+ * Values are re-resolved server-side through `resolvePolicy`, so an
+ * out-of-range or wrong-typed field lands as its default rather than being
+ * written through to the heartbeat.
+ */
+export async function setPortfolioThesisPolicy(input: {
+  portfolioId: string;
+  policy: Partial<ThesisPolicy>;
+}): Promise<ActionResult> {
+  const { user } = await requireUser();
+  const policy = resolvePolicy(input.policy);
+
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("portfolios")
+    .update({ thesis_policy: policy })
+    .eq("id", input.portfolioId)
+    .eq("owner_user_id", user.id)
+    .select("slug")
+    .maybeSingle();
+
+  if (error) {
+    console.error("setPortfolioThesisPolicy failed:", error);
+    return { ok: false, error: "Could not save the sell discipline. Try again." };
   }
   if (!data) return { ok: false, error: NOT_FOUND_ERROR };
 
