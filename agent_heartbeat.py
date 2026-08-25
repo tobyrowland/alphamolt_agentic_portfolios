@@ -616,9 +616,7 @@ def _run_portfolio_swarm(
     fact_rows = {str(r.get("ticker") or "").upper(): r for r in candidate_rows}
     book = pm.get_portfolio_book(pid)
     held = {str(h.get("ticker") or "").upper() for h in (book.get("holdings") or [])}
-    recently_sold = {
-        str(t).upper() for t in db.get_recently_sold_tickers(pid, days=90)
-    }
+    recently_sold = _thesis_policy.recently_sold_for_cooldown(db, pid)
     prices: dict[str, float] = {}
     for t in cand_map:
         if t in held or t in recently_sold:

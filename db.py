@@ -1017,6 +1017,7 @@ class SupabaseDB:
 
     def get_recently_sold_tickers(
         self, portfolio_id: str, *, days: int = 90,
+        ignore_before: "datetime | None" = None,
     ) -> set[str]:
         """Tickers a portfolio has sold within the last ``days`` days.
 
@@ -1024,9 +1025,18 @@ class SupabaseDB:
         enforce a re-buy cooldown: once the owner or the reviewer agent
         has exited a position, the buyer is not allowed to immediately
         re-establish it. Default 90 days mirrors the user-facing rule.
+
+        ``ignore_before`` raises the cutoff: sells executed strictly before it
+        are not counted. Callers pass the owner's exemption instant via
+        ``thesis_policy.cooldown_cutoff`` — see that module for why an
+        exemption exists at all. A value EARLIER than the natural cutoff is
+        ignored, so this can only ever shorten the lookback, never extend it.
         """
         from datetime import datetime, timedelta, timezone
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        natural = datetime.now(timezone.utc) - timedelta(days=days)
+        if ignore_before is not None and ignore_before > natural:
+            natural = ignore_before
+        cutoff = natural.isoformat()
         resp = (
             self.client.table("agent_trades")
             .select("ticker")

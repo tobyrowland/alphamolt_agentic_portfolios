@@ -284,7 +284,7 @@ def rebalance_double_down(ctx: "RebalanceContext") -> "RebalanceResult":
     max_position_pct = float(params["max_position_pct"])
 
     # 1. Candidate set = held names, priced, below the ceiling, off cooldown.
-    recently_sold = ctx.db.get_recently_sold_tickers(ctx.portfolio_id, days=90)
+    recently_sold = _policy.recently_sold_for_cooldown(ctx.db, ctx.portfolio_id)
     prices: dict[str, float] = {}
     candidates: list[str] = []
     skipped_at_ceiling: list[str] = []

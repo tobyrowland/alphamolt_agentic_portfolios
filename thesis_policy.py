@@ -56,6 +56,24 @@ DEFAULTS: dict[str, Any] = {
     "require_fired_break_signal": True,
     # Price-relative fields may only carry change-since-buy operators.
     "relative_fields_change_only": True,
+    # Sells executed BEFORE this instant do not count toward the 90-day re-buy
+    # cooldown (db.get_recently_sold_tickers). None — the default — means every
+    # sell counts, i.e. exactly the pre-086 behaviour.
+    #
+    # WHY this exists. The cooldown is derived from `agent_trades`, which is an
+    # immutable journal: there is no "restore" flag and editing it to undo an
+    # exclusion would falsify the audit record. But a sell made by a process we
+    # have since ruled invalid should not go on excluding a name for 90 days.
+    # On the "Scrappy Fightback!" book every one of the nine sells landed INSIDE
+    # what is now a 30-day grace period (five at 6 days, one at 8, three inside
+    # 90 seconds) and eight of the nine fired no break signal at all — none of
+    # them could happen under today's policy, yet all nine names stayed locked
+    # out. A dated exemption states that fact once, scoped to one portfolio,
+    # without weakening the standing rule for anything sold afterwards.
+    #
+    # It also expires on its own: once every pre-cutoff sell has aged past the
+    # cooldown window the key is inert, so leaving it set costs nothing.
+    "rebuy_cooldown_ignores_sells_before": None,
 }
 
 # Bounds — a policy read from the DB is untrusted input (owner-edited JSON).
@@ -102,6 +120,21 @@ def resolve_policy(raw: Any) -> dict[str, Any]:
         value = raw.get(key)
         if isinstance(value, bool):
             policy[key] = value
+
+    # A timestamp, or anything coercible to one. A value in the FUTURE is
+    # rejected rather than honoured: it would exempt every sell and so disable
+    # the cooldown outright, which is far more likely to be a mistyped year
+    # than an intention. Failing back to None keeps the rule at full strength —
+    # the conservative direction for a misconfiguration.
+    exempt = _parse_ts(raw.get("rebuy_cooldown_ignores_sells_before"))
+    if exempt is not None:
+        if exempt > datetime.now(timezone.utc):
+            logger.warning(
+                "thesis_policy: rebuy_cooldown_ignores_sells_before=%s is in the "
+                "future — ignoring it and keeping the full cooldown", exempt,
+            )
+        else:
+            policy["rebuy_cooldown_ignores_sells_before"] = exempt
 
     return policy
 
@@ -232,6 +265,71 @@ def describe_dropped(dropped: Iterable[dict]) -> list[str]:
         for s in dropped
         if isinstance(s, dict)
     ]
+
+
+# ---------------------------------------------------------------------------
+# Rule 4 — post-sell re-buy cooldown exemption
+# ---------------------------------------------------------------------------
+
+
+def cooldown_ignore_before(policy: dict[str, Any]) -> Optional[datetime]:
+    """The instant before which sells are exempt from the re-buy cooldown.
+
+    ``None`` (the default) means no exemption — every sell in the window counts,
+    which is exactly the behaviour that predates this key.
+    """
+    value = (policy or {}).get("rebuy_cooldown_ignores_sells_before")
+    return value if isinstance(value, datetime) else None
+
+
+def cooldown_cutoff(
+    policy: dict[str, Any],
+    *,
+    days: int = 90,
+    now: Optional[datetime] = None,
+) -> datetime:
+    """The effective "sold since" cutoff for the re-buy cooldown.
+
+    Normally ``now - days``. When the portfolio carries an exemption instant,
+    the cutoff is raised to whichever is LATER — so the exemption can only ever
+    SHORTEN the lookback (un-exclude older sells), never lengthen it. A stale
+    exemption therefore becomes inert on its own once every sell before it has
+    aged past ``days``, rather than quietly extending anyone's cooldown.
+    """
+    moment = now or datetime.now(timezone.utc)
+    cutoff = moment - timedelta(days=max(0, int(days)))
+    exempt = cooldown_ignore_before(policy)
+    return max(cutoff, exempt) if exempt is not None else cutoff
+
+
+def recently_sold_for_cooldown(
+    db,
+    portfolio_id: Optional[str],
+    *,
+    days: int = 90,
+    now: Optional[datetime] = None,
+) -> set[str]:
+    """Tickers under an active re-buy cooldown, honouring the owner's exemption.
+
+    The single seam every buyer calls, so the exemption cannot apply on some
+    buy paths and not others — the failure mode that matters here is an
+    inconsistent one, where a name is draftable by one agent and invisible to
+    another in the same heartbeat.
+
+    Defensive: any failure resolving the policy or reading the tape degrades to
+    the plain cooldown (or, if the read itself fails, to "nothing on cooldown"
+    — the same behaviour the callers had before, since they never guarded it).
+    """
+    if not portfolio_id:
+        return set()
+    policy = policy_for_portfolio(db, portfolio_id)
+    cutoff = cooldown_cutoff(policy, days=days, now=now)
+    return {
+        str(t).upper()
+        for t in db.get_recently_sold_tickers(
+            portfolio_id, days=days, ignore_before=cutoff,
+        )
+    }
 
 
 # ---------------------------------------------------------------------------

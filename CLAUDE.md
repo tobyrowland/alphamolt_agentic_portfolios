@@ -122,6 +122,28 @@ identically):
   delta is zero. Applied in `llm_watchlist_buyer` AFTER the research-card merge
   so inherited signals are policed too, and to extend signals as well.
 
+- `rebuy_cooldown_ignores_sells_before` (default **None** = no exemption) —
+  sells executed before this instant do not count toward the 90-day post-sell
+  re-buy cooldown (`db.get_recently_sold_tickers`). The cooldown derives from
+  the immutable `agent_trades` tape: there is no restore flag, and editing the
+  tape to undo an exclusion would falsify the audit record. But a sell made by
+  a process since ruled invalid should not go on excluding a name — on the
+  Scrappy Fightback book all nine sells landed inside what is now a 30-day
+  grace period and eight fired no break signal, yet all nine names stayed
+  locked out while seven still passed every screen filter. A dated exemption
+  states that once, scoped to one portfolio, leaving the standing rule at full
+  strength for anything sold afterwards; it can only ever SHORTEN the lookback
+  (`thesis_policy.cooldown_cutoff` takes the later of the two cutoffs), a
+  future date is rejected rather than honoured (it would disable the cooldown
+  outright), and it goes inert on its own once every pre-cutoff sell ages past
+  90 days. Every buyer reads it through the single seam
+  `thesis_policy.recently_sold_for_cooldown`, so it cannot apply on one buy
+  path and not another. NOT rendered in the Sell discipline panel — it is an
+  operator-set correction, not a standing preference — but it IS carried by
+  `web/lib/thesis-policy.ts`, because `setPortfolioThesisPolicy` writes the
+  whole resolved object and a key the TS twin didn't know would be silently
+  deleted on the owner's next save (pinned by `tests/ts_thesis_policy_runner.mjs`).
+
 **Separately and unconditionally** (a correctness invariant, not policy —
 nothing wants a position whose exit trigger is already met):
 `theses.record_thesis` now drops any break signal that already evaluates true
