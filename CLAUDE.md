@@ -114,8 +114,11 @@ identically):
   journalled under `verdicts.sell_blocked_by_policy` rather than folded into the
   HOLD list.
 - `relative_fields_change_only` (default **on**) — price-relative fields
-  (`RELATIVE_FIELDS`: `perf_52w_vs_spy`, `price_pct_of_52w_high`, `price`,
-  `ps_now`, `composite_score`) may only carry `change_pct_lt` / `change_pct_gt`,
+  (`RELATIVE_FIELDS`: `perf_52w_vs_spy`, `price_pct_of_52w_high`, `ps_now`,
+  `composite_score` — `price` is deliberately EXCLUDED: `change_pct_*` compares
+  an absolute difference, so on a raw share price the same number means a 9.6%
+  stop on a $52 name and 0.28% on an $1,800 one; banning the static form would
+  outlaw the only sane price stop and permit one that silently misbehaves) may only carry `change_pct_lt` / `change_pct_gt`,
   never a static threshold. A static threshold on these says where the stock IS,
   which on a screen selecting beaten-down names is usually already true at
   purchase; the change-since-buy form is structurally immune because at buy the

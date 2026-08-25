@@ -516,3 +516,43 @@ def test_ts_round_trip_preserves_the_cooldown_exemption():
         == "2026-08-25T00:00:00Z"
     )
     assert ts["round_trip"]["grace_period_days"] == 45
+
+
+# ---------------------------------------------------------------------------
+# `price` is NOT a relative field
+#
+# The change-since-buy operators compare an ABSOLUTE difference, which is
+# meaningful for a field already in percentage points and meaningless on a raw
+# share price. Banning the static form on `price` outlawed the only sane way to
+# write a price stop and permitted one that silently misbehaves — the same
+# number meaning a 9.6% stop on FNF and a 0.28% stop on MELI.
+# ---------------------------------------------------------------------------
+
+
+def test_price_is_not_a_relative_field():
+    assert "price" not in tp.RELATIVE_FIELDS
+
+
+def test_a_static_price_stop_below_entry_is_permitted():
+    """FNF's real signal: bought at $51.90, stop at $45. Well-formed, not a bug."""
+    policy = tp.resolve_policy({})
+    signal = {"field": "price", "op": "<", "value": 45}
+    assert tp.signal_permitted(signal, policy)
+
+
+def test_a_static_price_stop_already_true_at_buy_is_still_dropped():
+    """The case that actually matters is handled by the buy-time invariant."""
+    kept, already = _drop_already_true(
+        [{"field": "price", "op": "<", "value": 60}], {"price": 51.90},
+    )
+    assert kept == []
+    assert len(already) == 1
+
+
+def test_the_genuinely_relative_fields_still_reject_static_ops():
+    policy = tp.resolve_policy({})
+    for field in ("perf_52w_vs_spy", "price_pct_of_52w_high", "ps_now",
+                  "composite_score"):
+        assert not tp.signal_permitted(
+            {"field": field, "op": "<", "value": -20}, policy
+        ), field

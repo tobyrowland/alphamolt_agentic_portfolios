@@ -86,10 +86,19 @@ _MAX_GRACE_DAYS = 365
 # true the moment the position opens, and on a screen that selects for
 # beaten-down names it usually is. The change-since-buy form is always safe:
 # at buy time the delta is zero by construction.
+# NOTE `price` is deliberately NOT in this set. The change-since-buy operators
+# compare an ABSOLUTE difference (theses._evaluate_signal: current - snapshot),
+# which is meaningful for a field already denominated in percentage points but
+# not for a raw share price: `{price, change_pct_lt, -5}` reads as "more than
+# $5 below what we paid" — a 9.6% stop on FNF at $51.90 and a 0.28% stop on
+# MELI at $1,813.91, from the same number. Banning the static form here would
+# therefore outlaw the only sane way to write a price stop and permit one that
+# silently misbehaves. A static price level set below the entry price is a
+# well-formed signal; `theses._drop_already_true` already rejects the case that
+# actually matters — a threshold that is true the moment the position opens.
 RELATIVE_FIELDS: frozenset[str] = frozenset({
     "perf_52w_vs_spy",        # the observed offender — mirrors the screen filter
     "price_pct_of_52w_high",
-    "price",
     "ps_now",
     "composite_score",
 })

@@ -42,10 +42,13 @@ export const DEFAULTS: ThesisPolicy = {
 export const MAX_GRACE_DAYS = 365;
 
 /** Fields whose value is a function of the share price. Mirrors Python. */
+// `price` is deliberately absent — see the note in thesis_policy.py. The
+// change-since-buy operators compare an absolute difference, which is
+// meaningless on a raw share price, so banning the static form would outlaw the
+// only sane way to write a price stop.
 export const RELATIVE_FIELDS = [
   "perf_52w_vs_spy",
   "price_pct_of_52w_high",
-  "price",
   "ps_now",
   "composite_score",
 ] as const;

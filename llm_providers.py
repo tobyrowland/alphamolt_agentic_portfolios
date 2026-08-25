@@ -149,7 +149,23 @@ def _call_anthropic(
             }
             if send_temperature:
                 kwargs["temperature"] = temperature
-            resp = client.messages.create(**kwargs)
+            # ALWAYS stream, even though we only want the final message.
+            #
+            # The SDK refuses a non-streaming request whose `max_tokens` implies
+            # a completion that could exceed the 10-minute HTTP limit:
+            #   "Streaming is required for operations that may take longer than
+            #    10 minutes"
+            # Every caller inheriting the buyer defaults sends max_tokens=65536,
+            # so `messages.create` failed on EVERY ticker of EVERY run. That is
+            # how `double_down` came to report "no held name met the conviction
+            # gate" for weeks while evaluating precisely nothing — and
+            # `buyer-claude` would have done the same for anyone who hired it.
+            #
+            # Streaming unconditionally (rather than only above some max_tokens
+            # threshold) keeps one code path: there is no size at which this is
+            # worse, and a threshold is just a second thing to get wrong.
+            with client.messages.stream(**kwargs) as stream:
+                resp = stream.get_final_message()
             text = "".join(
                 block.text  # type: ignore[attr-defined]
                 for block in resp.content
