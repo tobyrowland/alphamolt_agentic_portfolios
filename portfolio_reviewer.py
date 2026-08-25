@@ -400,7 +400,7 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
     # AUTHORS break signals and this reviewer that ENFORCES them read the same
     # rules — a per-agent knob could bind only one of the two.
     policy = _policy.policy_for_portfolio(ctx.db, ctx.portfolio_id)
-    result.notes["thesis_policy"] = policy
+    result.notes["thesis_policy"] = _policy.json_safe(policy)
 
     # Per-position context bundles.
     work: list[dict] = []

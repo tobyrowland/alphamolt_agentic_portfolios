@@ -397,6 +397,38 @@ def test_exemption_raises_the_cutoff():
     )
 
 
+def test_json_safe_serializes_the_exemption_datetime():
+    """A resolved policy with an active exemption must be JSON-dumpable.
+
+    ``portfolio_reviewer`` journals the resolved policy into a heartbeat run's
+    ``notes`` (JSONB), which is serialized with the stdlib ``json`` encoder —
+    the live case this repros is agent_heartbeat.py's ``_journal`` raising
+    ``TypeError: Object of type datetime is not JSON serializable`` the first
+    time a portfolio actually set this key.
+    """
+    import json
+
+    policy = tp.resolve_policy(
+        {"rebuy_cooldown_ignores_sells_before": "2026-08-24"}
+    )
+    assert isinstance(policy["rebuy_cooldown_ignores_sells_before"], datetime)
+
+    safe = tp.json_safe(policy)
+    json.dumps(safe)  # must not raise
+    assert safe["rebuy_cooldown_ignores_sells_before"] == "2026-08-24T00:00:00+00:00"
+    # The original (used for cooldown comparisons) is untouched.
+    assert isinstance(policy["rebuy_cooldown_ignores_sells_before"], datetime)
+
+
+def test_json_safe_is_a_noop_without_an_exemption():
+    import json
+
+    policy = tp.resolve_policy({})
+    safe = tp.json_safe(policy)
+    json.dumps(safe)  # must not raise
+    assert safe == policy
+
+
 def test_exemption_can_only_shorten_never_extend_the_lookback():
     """An exemption older than the natural cutoff must be inert.
 
