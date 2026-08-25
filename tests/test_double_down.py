@@ -125,10 +125,17 @@ class FakePM:
 
 
 class FakeDB:
-    def __init__(self, recently_sold=None):
+    def __init__(self, recently_sold=None, thesis_policy=None):
         self._recently_sold = set(recently_sold or [])
+        self._thesis_policy = thesis_policy
 
-    def get_recently_sold_tickers(self, pid, days=90):
+    def get_portfolio_by_id(self, _pid):
+        # The cooldown now runs through thesis_policy.recently_sold_for_cooldown,
+        # which resolves the portfolio's sell discipline first. Default `{}` =
+        # DEFAULTS = no cooldown exemption, i.e. the behaviour these tests assert.
+        return {"thesis_policy": self._thesis_policy}
+
+    def get_recently_sold_tickers(self, pid, *, days=90, ignore_before=None):
         return self._recently_sold
 
 

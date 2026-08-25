@@ -329,3 +329,190 @@ def test_snapshot_only_buy_still_stores_null_break_signals():
     assert inserted["break_signals"] is None
     assert inserted["extend_signals"] is None
     assert inserted["source"] == "auto"
+
+
+# ---------------------------------------------------------------------------
+# Rule 4 — post-sell re-buy cooldown exemption
+#
+# The nine "Scrappy Fightback!" sells all landed INSIDE what is now a 30-day
+# grace period, and eight of the nine fired no break signal. None could happen
+# under today's policy — but the 90-day cooldown they created kept excluding
+# those names anyway, and seven of them still pass every screen filter. The
+# cooldown is derived from the immutable `agent_trades` tape, so the exemption
+# is a dated policy key rather than an edit to the record.
+# ---------------------------------------------------------------------------
+
+
+SELL_DATES = {  # ticker -> the sell that created its cooldown
+    "BL": datetime(2026, 7, 26, tzinfo=timezone.utc),
+    "FICO": datetime(2026, 7, 26, tzinfo=timezone.utc),
+    "ADMA": datetime(2026, 7, 26, tzinfo=timezone.utc),
+    "CRM": datetime(2026, 7, 26, tzinfo=timezone.utc),
+    "CDW": datetime(2026, 7, 26, tzinfo=timezone.utc),
+    "ALLE": datetime(2026, 8, 3, tzinfo=timezone.utc),
+    "EXLS": datetime(2026, 8, 3, tzinfo=timezone.utc),
+    "SPSC": datetime(2026, 8, 11, tzinfo=timezone.utc),
+    "NVO": datetime(2026, 8, 19, tzinfo=timezone.utc),
+}
+
+
+class _CooldownDB:
+    """Minimal stand-in: records the cutoff it was asked for and filters by it."""
+
+    def __init__(self, sells=None, policy=None, raise_on_policy=False):
+        self.sells = dict(sells if sells is not None else SELL_DATES)
+        self._policy = policy
+        self._raise_on_policy = raise_on_policy
+        self.seen_cutoff = None
+
+    def get_portfolio_by_id(self, _pid):
+        if self._raise_on_policy:
+            raise RuntimeError("policy read exploded")
+        return {"thesis_policy": self._policy}
+
+    def get_recently_sold_tickers(self, _pid, *, days=90, ignore_before=None):
+        natural = NOW - timedelta(days=days)
+        cutoff = max(natural, ignore_before) if ignore_before else natural
+        self.seen_cutoff = cutoff
+        return {t for t, sold in self.sells.items() if sold >= cutoff}
+
+
+def test_default_policy_carries_no_exemption():
+    assert tp.DEFAULTS["rebuy_cooldown_ignores_sells_before"] is None
+    assert tp.cooldown_ignore_before(tp.resolve_policy({})) is None
+
+
+def test_cutoff_without_exemption_is_the_plain_window():
+    assert tp.cooldown_cutoff(tp.resolve_policy({}), days=90, now=NOW) == (
+        NOW - timedelta(days=90)
+    )
+
+
+def test_exemption_raises_the_cutoff():
+    policy = tp.resolve_policy(
+        {"rebuy_cooldown_ignores_sells_before": "2026-08-24"}
+    )
+    assert tp.cooldown_cutoff(policy, days=90, now=NOW) == datetime(
+        2026, 8, 24, tzinfo=timezone.utc
+    )
+
+
+def test_exemption_can_only_shorten_never_extend_the_lookback():
+    """An exemption older than the natural cutoff must be inert.
+
+    Otherwise a stale key would quietly EXTEND everyone's cooldown — the exact
+    opposite of what it is for.
+    """
+    policy = tp.resolve_policy(
+        {"rebuy_cooldown_ignores_sells_before": "2020-01-01"}
+    )
+    assert tp.cooldown_cutoff(policy, days=90, now=NOW) == NOW - timedelta(days=90)
+
+
+def test_future_exemption_is_rejected_not_honoured():
+    """A mistyped year would exempt every sell, disabling the cooldown outright."""
+    policy = tp.resolve_policy(
+        {"rebuy_cooldown_ignores_sells_before": "2099-01-01"}
+    )
+    assert policy["rebuy_cooldown_ignores_sells_before"] is None
+    assert tp.cooldown_cutoff(policy, days=90, now=NOW) == NOW - timedelta(days=90)
+
+
+@pytest.mark.parametrize("bad", [None, "", "not-a-date", 42, True, {}, []])
+def test_malformed_exemption_degrades_to_full_cooldown(bad):
+    policy = tp.resolve_policy({"rebuy_cooldown_ignores_sells_before": bad})
+    assert policy["rebuy_cooldown_ignores_sells_before"] is None
+
+
+def test_all_nine_sells_are_locked_out_without_the_exemption():
+    """The production state: every name the reviewer exited is still excluded."""
+    db = _CooldownDB(policy={})
+    blocked = tp.recently_sold_for_cooldown(db, "pid", now=NOW)
+    assert blocked == set(SELL_DATES)
+
+
+def test_exemption_frees_every_pre_cutoff_sell():
+    db = _CooldownDB(
+        policy={"rebuy_cooldown_ignores_sells_before": "2026-08-24"}
+    )
+    assert tp.recently_sold_for_cooldown(db, "pid", now=NOW) == set()
+
+
+def test_sells_after_the_exemption_still_count():
+    """The standing rule keeps full strength for anything sold afterwards."""
+    db = _CooldownDB(
+        sells={
+            "CRM": datetime(2026, 7, 26, tzinfo=timezone.utc),  # before
+            "LATER": datetime(2026, 8, 24, 18, 0, tzinfo=timezone.utc),  # after
+        },
+        policy={"rebuy_cooldown_ignores_sells_before": "2026-08-24T12:00:00Z"},
+    )
+    assert tp.recently_sold_for_cooldown(db, "pid", now=NOW) == {"LATER"}
+
+
+def test_tickers_are_upper_cased():
+    db = _CooldownDB(sells={"crm": NOW - timedelta(days=1)}, policy={})
+    assert tp.recently_sold_for_cooldown(db, "pid", now=NOW) == {"CRM"}
+
+
+def test_no_portfolio_id_means_nothing_on_cooldown():
+    assert tp.recently_sold_for_cooldown(_CooldownDB(), None, now=NOW) == set()
+
+
+def test_policy_read_failure_degrades_to_the_plain_cooldown():
+    """A broken policy read must not silently free every name."""
+    db = _CooldownDB(raise_on_policy=True)
+    assert tp.recently_sold_for_cooldown(db, "pid", now=NOW) == set(SELL_DATES)
+
+
+# ---------------------------------------------------------------------------
+# Cross-language parity — web/lib/thesis-policy.ts is the twin of this module,
+# and the save action writes whatever its resolvePolicy() returns. A key the TS
+# side does not carry is therefore DELETED the moment the owner saves the panel.
+# ---------------------------------------------------------------------------
+
+
+def _run_ts_twin():
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    root = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [node, "--experimental-strip-types",
+         str(root / "tests" / "ts_thesis_policy_runner.mjs")],
+        capture_output=True, text=True, cwd=str(root),
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"ts runner unavailable: {proc.stderr[-300:]}")
+    return json.loads(proc.stdout)
+
+
+def test_ts_and_python_defaults_have_the_same_keys():
+    """Lock-step on KEYS, which is what the drop-on-save bug turns on."""
+    ts = _run_ts_twin()
+    assert set(ts["defaults"]) == set(tp.DEFAULTS)
+
+
+def test_ts_and_python_defaults_have_the_same_values():
+    ts = _run_ts_twin()
+    for key, expected in tp.DEFAULTS.items():
+        assert ts["defaults"][key] == expected, key
+
+
+def test_ts_relative_fields_match_python():
+    ts = _run_ts_twin()
+    assert set(ts["relative_fields"]) == set(tp.RELATIVE_FIELDS)
+
+
+def test_ts_round_trip_preserves_the_cooldown_exemption():
+    """The regression itself: saving the panel must not drop the exemption."""
+    ts = _run_ts_twin()
+    assert (
+        ts["round_trip"]["rebuy_cooldown_ignores_sells_before"]
+        == "2026-08-25T00:00:00Z"
+    )
+    assert ts["round_trip"]["grace_period_days"] == 45
