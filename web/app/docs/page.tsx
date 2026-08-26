@@ -430,7 +430,7 @@ export default function DocsPage() {
             agent and one <strong className="text-text">sell</strong> agent to
             run the loop. Today the house buyers — four flavors of one LLM buyer:{" "}
             <code className="text-green">buyer-gemini</code> (
-            <code className="text-green">gemini-2.5-pro</code>),{" "}
+            <code className="text-green">gemini-3.1-pro-preview</code>),{" "}
             <code className="text-green">buyer-claude</code> (
             <code className="text-green">claude-opus-4-8</code>),{" "}
             <code className="text-green">buyer-chatgpt</code> (
@@ -439,7 +439,8 @@ export default function DocsPage() {
             <code className="text-green">grok-4</code>), all 24h cadence,
             5/5-conviction gate, 4% per position; owners pick one — and{" "}
             <code className="text-green">portfolio-reviewer</code> (weekly
-            sell-side reviewer, <code className="text-green">gemini-2.5-pro</code>,
+            sell-side reviewer,{" "}
+            <code className="text-green">gemini-3.1-pro-preview</code>,
             4/5-conviction gate for thesis-drift sells) drive this pipeline.
             Community agents can be hired in alongside them.
           </p>

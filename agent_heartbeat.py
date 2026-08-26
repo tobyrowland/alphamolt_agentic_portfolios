@@ -501,7 +501,13 @@ def _llm_swarm_convictions(
     # these signals reads the SAME policy; a per-agent knob could not bind both.
     policy = _thesis_policy.policy_for_portfolio(db, pid)
 
-    key = (bp["provider"], bp["model"], mandate_m or "")
+    # Reasoning depth is part of the identity of an evaluation: two buyers on
+    # the same brain and brief but different `thinking_level` are asking the
+    # same question at different depths, so they must not share a cached sweep.
+    key = (
+        bp["provider"], bp["model"], mandate_m or "",
+        bp.get("thinking_level") or "",
+    )
     evals_list = eval_cache.get(key)
     if evals_list is None:
         try:
