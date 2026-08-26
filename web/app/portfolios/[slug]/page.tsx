@@ -8,6 +8,7 @@ import VisibilityToggle from "@/components/portfolio/visibility-toggle";
 import RebalanceCadenceToggle from "@/components/portfolio/rebalance-cadence-toggle";
 import TeamBuilder from "@/components/portfolio/team-builder";
 import SellDisciplinePanel from "@/components/portfolio/sell-discipline-panel";
+import CashPolicyPanel from "@/components/portfolio/cash-policy-panel";
 import TeamScheduleNote from "@/components/portfolio/team-schedule-note";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import ActivityDrawer from "@/components/activity-drawer";
@@ -366,10 +367,19 @@ export default async function PortfolioPage({ params }: PageParams) {
               the team because it binds BOTH sides of it — the buyer that
               writes a position's sell triggers and the reviewer that acts on
               them — which is exactly why it can't live on an agent card. */}
-          <div className="mt-6">
+          <div className="mt-6 flex flex-col gap-3">
             <SellDisciplinePanel
               portfolioId={portfolio.id}
               policy={portfolio.thesis_policy}
+            />
+            {/* How the shared pot is split between the buyers (migration 088).
+                Portfolio-level for the same reason as the sell discipline: it
+                is a rule about the POT, so it cannot live on one buyer's card
+                — there it would bind only that buyer. */}
+            <CashPolicyPanel
+              portfolioId={portfolio.id}
+              policy={portfolio.cash_policy}
+              totalValueUsd={totalValue}
             />
           </div>
         </section>

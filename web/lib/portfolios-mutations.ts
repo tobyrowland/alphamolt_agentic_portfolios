@@ -23,6 +23,10 @@ import {
 } from "@/lib/screen/config";
 import { MAX_PAPER_PORTFOLIOS } from "@/lib/portfolios-query";
 import { resolvePolicy, type ThesisPolicy } from "@/lib/thesis-policy";
+import {
+  resolvePolicy as resolveCashPolicy,
+  type CashPolicy,
+} from "@/lib/cash-policy";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -532,6 +536,39 @@ export async function setPortfolioThesisPolicy(input: {
   if (error) {
     console.error("setPortfolioThesisPolicy failed:", error);
     return { ok: false, error: "Could not save the sell discipline. Try again." };
+  }
+  if (!data) return { ok: false, error: NOT_FOUND_ERROR };
+
+  revalidate(data.slug);
+  return { ok: true };
+}
+
+/**
+ * Owner-only: set the portfolio's CASH POLICY (migration 088) — how much of the
+ * shared pot the screen draft leaves behind for the buyers that run before it.
+ *
+ * Writes the whole resolved object, exactly like the thesis policy, so the twin
+ * in web/lib/cash-policy.ts must know every key Python defines.
+ */
+export async function setPortfolioCashPolicy(input: {
+  portfolioId: string;
+  policy: Partial<CashPolicy>;
+}): Promise<ActionResult> {
+  const { user } = await requireUser();
+  const policy = resolveCashPolicy(input.policy);
+
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("portfolios")
+    .update({ cash_policy: policy })
+    .eq("id", input.portfolioId)
+    .eq("owner_user_id", user.id)
+    .select("slug")
+    .maybeSingle();
+
+  if (error) {
+    console.error("setPortfolioCashPolicy failed:", error);
+    return { ok: false, error: "Could not save the cash policy. Try again." };
   }
   if (!data) return { ok: false, error: NOT_FOUND_ERROR };
 
