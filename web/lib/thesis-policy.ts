@@ -79,6 +79,46 @@ export function resolvePolicy(raw: unknown): ThesisPolicy {
   return policy;
 }
 
+/**
+ * One line describing the policy in force, for the panel's collapsed header,
+ * plus whether the owner has moved anything off the defaults.
+ *
+ * The panel collapses by default because most owners never touch these rules —
+ * but collapsing must not HIDE a rule that is actively governing their agents.
+ * So the header carries the state whether it is open or not, and a policy off
+ * the defaults is marked.
+ *
+ * Scoped to the three settings the panel RENDERS, which is why this is not
+ * `isDefault`. `rebuy_cooldown_ignores_sells_before` is an operator-set
+ * correction with no control in the UI (see thesis_policy.py), so counting it
+ * would badge a portfolio "customised" for a change its owner can neither see
+ * here nor undo.
+ *
+ * Each setting reads BOTH ways rather than being dropped when off: an off
+ * toggle is the permissive state, and silence about it would understate what
+ * the agents are allowed to do.
+ */
+export function describeSellDiscipline(policy: ThesisPolicy): {
+  summary: string;
+  customised: boolean;
+} {
+  const days = policy.grace_period_days;
+  const parts = [
+    days > 0 ? `${days}-day grace period` : "no grace period",
+    policy.require_fired_break_signal
+      ? "fired tripwire required"
+      : "fired tripwire not required",
+    policy.relative_fields_change_only
+      ? "loss tripwires change-only"
+      : "static loss tripwires allowed",
+  ];
+  const customised =
+    days !== DEFAULTS.grace_period_days ||
+    policy.require_fired_break_signal !== DEFAULTS.require_fired_break_signal ||
+    policy.relative_fields_change_only !== DEFAULTS.relative_fields_change_only;
+  return { summary: parts.join(" · "), customised };
+}
+
 /** True when the policy is exactly the defaults (used to render a "default" hint). */
 export function isDefault(policy: ThesisPolicy): boolean {
   return (

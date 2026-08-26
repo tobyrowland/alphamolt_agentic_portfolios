@@ -693,3 +693,66 @@ def test_the_exemption_survives_a_json_round_trip():
     assert tp.cooldown_cutoff(reloaded, days=90, now=NOW) == datetime(
         2026, 8, 24, tzinfo=timezone.utc
     )
+
+
+# ---------------------------------------------------------------------------
+# The collapsed panel header
+#
+# The Sell discipline panel is collapsed by default — most owners never touch
+# these rules, and three settings with a paragraph each is a lot of page for
+# something they will leave alone. But the rules govern every sell the team
+# makes, so collapsing must not make them invisible: the header states what is
+# in force whether it is open or shut. That one line is all most owners will
+# ever see of it, which is why it is pinned.
+# ---------------------------------------------------------------------------
+
+
+def test_the_default_header_reads_as_the_defaults():
+    ts = _run_ts_twin()
+    assert ts["headers"]["defaults"] == {
+        "summary": "30-day grace period · fired tripwire required · "
+                   "loss tripwires change-only",
+        "customised": False,
+    }
+
+
+def test_an_off_toggle_is_stated_not_omitted():
+    """Off is the PERMISSIVE state — silence about it understates the risk."""
+    ts = _run_ts_twin()
+    assert ts["headers"]["both_toggles_off"] == {
+        "summary": "30-day grace period · fired tripwire not required · "
+                   "static loss tripwires allowed",
+        "customised": True,
+    }
+
+
+def test_a_zero_grace_period_reads_as_words_not_as_zero():
+    ts = _run_ts_twin()
+    header = ts["headers"]["no_grace"]
+    assert header["summary"].startswith("no grace period")
+    assert header["customised"] is True
+
+
+def test_a_changed_grace_period_is_marked_customised():
+    ts = _run_ts_twin()
+    header = ts["headers"]["longer_grace"]
+    assert header["summary"].startswith("45-day grace period")
+    assert header["customised"] is True
+
+
+def test_the_operator_exemption_alone_is_not_owner_customisation():
+    """It has no control in the panel — badging it would blame the owner for a
+    change they can neither see there nor undo."""
+    ts = _run_ts_twin()
+    assert ts["headers"]["operator_exemption_only"]["customised"] is False
+    assert (
+        ts["headers"]["operator_exemption_only"]["summary"]
+        == ts["headers"]["defaults"]["summary"]
+    )
+
+
+def test_every_header_names_all_three_owner_settings():
+    """A summary that silently drops a setting is worse than no summary."""
+    ts = _run_ts_twin()
+    for name, header in ts["headers"].items():
+        assert header["summary"].count(" · ") == 2, (name, header["summary"])

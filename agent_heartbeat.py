@@ -43,6 +43,7 @@ from broker import (
     live_execution_enabled,
     resolve_backend_for_portfolio,
 )
+import cash_policy as _cash_policy
 import thesis_policy as _thesis_policy
 from db import SupabaseDB
 from portfolio import PortfolioManager
@@ -812,8 +813,21 @@ def _run_portfolio_swarm(
                 slug, cap_pct, max_sector_value,
             )
 
+    # Owner cash policy (migration 088). The draft is the LAST buyer to run and
+    # the greedy one, so where it stops is what the buyers that run before it
+    # find next heartbeat. Left at its own 2% default, it consumed everything
+    # and `double_down` (which runs first) never had anything to spend — 0
+    # trades in its entire life. `reserve_fraction` is the one place the
+    # owner's PERCENT becomes the fraction this call wants.
+    cash_policy = _cash_policy.policy_for_portfolio(db, pid)
+    reserve_pct = _cash_policy.reserve_fraction(cash_policy)
+    logger.info(
+        "  portfolio %-22s cash reserve: %.1f%% ($%.0f held back for other agents)",
+        slug, reserve_pct * 100, total_value * reserve_pct,
+    )
     plan = _swarm.snake_draft_plan(
         sw_buyers, draftable, prices, total_value, cash,
+        cash_reserve_pct=reserve_pct,
         min_order_value=total_value * MIN_DRAFT_POSITION_PCT,
         convictions=convictions,
         sector_of=sector_of,

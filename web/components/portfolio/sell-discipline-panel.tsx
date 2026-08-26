@@ -6,6 +6,7 @@ import { setPortfolioThesisPolicy } from "@/lib/portfolios-mutations";
 import {
   DEFAULTS,
   MAX_GRACE_DAYS,
+  describeSellDiscipline,
   resolvePolicy,
   type ThesisPolicy,
 } from "@/lib/thesis-policy";
@@ -24,6 +25,15 @@ import {
  * Deliberately three switches and not a rule editor. Hand-authored tripwires
  * are a bigger build and should wait until we can see whether these already
  * fix the churn.
+ *
+ * COLLAPSED BY DEFAULT: most owners never touch these rules, and three settings
+ * with a paragraph of explanation each is a lot of page for something they will
+ * leave alone. Collapsing must not make the rules invisible, though — they
+ * govern every sell the team makes — so the header states what is in force
+ * whether it is open or shut, and flags a policy that has been moved off the
+ * defaults. It also refuses to collapse over an unsaved edit, since the Save
+ * button lives inside: otherwise a toggle flipped, the panel shut and the page
+ * left would lose the change with no warning.
  */
 export default function SellDisciplinePanel({
   portfolioId,
@@ -43,6 +53,11 @@ export default function SellDisciplinePanel({
     draft.grace_period_days !== saved.grace_period_days ||
     draft.require_fired_break_signal !== saved.require_fired_break_signal ||
     draft.relative_fields_change_only !== saved.relative_fields_change_only;
+
+  // Shut unless the owner opened it — or is mid-edit, in which case shutting it
+  // would hide the Save button and lose the change silently.
+  const [open, setOpen] = useState(false);
+  const expanded = open || dirty;
 
   function update(patch: Partial<ThesisPolicy>) {
     setSaved(false);
@@ -64,13 +79,37 @@ export default function SellDisciplinePanel({
     });
   }
 
+  const { summary, customised } = describeSellDiscipline(draft);
+
   return (
-    <section className="rounded-lg border border-white/10 bg-white/[0.02] p-4 sm:p-5">
-      <header className="mb-1">
-        <h3 className="font-mono text-[11px] uppercase tracking-[0.14em] text-text-muted">
+    <details
+      open={expanded}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+      className="group rounded-lg border border-white/10 bg-white/[0.02] [&_summary::-webkit-details-marker]:hidden"
+    >
+      <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-3 gap-y-1 p-4 sm:p-5">
+        <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-text-muted">
+          <span aria-hidden className="mr-2 inline-block transition-transform group-open:rotate-90">
+            &#9656;
+          </span>
           Sell discipline
-        </h3>
-      </header>
+        </span>
+        <span className="min-w-0 font-mono text-[11px] text-text-muted/80">
+          {summary}
+        </span>
+        {customised && (
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--color-cyan)]">
+            Customised
+          </span>
+        )}
+        {dirty && (
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--color-orange)]">
+            Unsaved
+          </span>
+        )}
+      </summary>
+
+      <div className="px-4 pb-4 sm:px-5 sm:pb-5">
       <p className="mb-4 max-w-prose text-sm text-text-muted">
         Rules your whole team works under — the buyer when it writes a
         position&rsquo;s sell triggers, and the reviewer when it acts on them.
@@ -137,7 +176,8 @@ export default function SellDisciplinePanel({
           <span className="font-mono text-xs text-[var(--color-red)]">{error}</span>
         )}
       </div>
-    </section>
+      </div>
+    </details>
   );
 }
 

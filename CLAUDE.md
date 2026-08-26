@@ -236,6 +236,49 @@ action, and the **Sell discipline** panel under the team builder
 teaches the rules, so the model authors compliant signals rather than having
 them silently filtered.
 
+### cash_policy.py
+The owner-configured **cash policy** for a portfolio's shared pot (migration
+088) — stored on `portfolios.cash_policy`. Pure: no DB, no LLM, no clock
+(`tests/test_cash_policy.py`).
+
+**Why it exists.** A portfolio's buyers share one cash pool and nothing
+allocated it between them. `agent_heartbeat._run_portfolio_swarm` runs
+self-sourced buyers (`double_down`) BEFORE the snake draft, and the draft then
+buys until cash reaches its floor — so the draft always left ~2% and the
+Double-Down Buyer always arrived to find ~2%. It made **zero** trades in its
+entire life while the screen buyer made 25 on the same book.
+`swarm.snake_draft_plan` has always accepted a `cash_reserve_pct`; the heartbeat
+never passed one. This is the missing half — somewhere for the OWNER to set it.
+
+**Why portfolio-level, not an agent knob** — the same argument as
+`thesis_policy`: per-agent settings live in `portfolio_agents.config` and reach
+exactly one member, but "leave room for the other agents" is a rule about the
+SHARED POT. On one buyer's config it would bind only that buyer, be silently
+ignored the day a second screen-buyer is hired, and read as one buyer's setting
+for how much everyone *else* gets. Not inside `thesis_policy` either: that
+column is named and documented as the SELL discipline and its panel/TS twin
+carry a fixed key set, so a cash key there would be a naming lie.
+
+One key, `reserve_pct` (default **2.0**, percent of NAV, clamped 0–50) — where
+the screen draft stops buying, leaving the difference for the buyers that run
+before it. The default is exactly `snake_draft_plan`'s own pre-088 default, so
+`{}` is behaviour-identical to pre-088. `reserve_pct` is a PERCENT and
+`snake_draft_plan` wants a FRACTION, so `reserve_fraction()` is the single
+conversion site — a percent passed where a fraction is expected is a 50x sizing
+error no type checker would catch, and `HeartbeatWiringTests` pins that the one
+call site uses the fraction helper.
+
+**What a reserve is NOT.** A TRANSFER of budget from the screen draft to the
+buyers that run before it — not a renewable supply. Only sells (and deposits)
+create cash; on a book that rarely sells, raising the reserve funds an
+occasional extra add rather than a continuous stream.
+
+TS twin: `web/lib/cash-policy.ts` (`DEFAULTS` kept in lock-step —
+`setPortfolioCashPolicy` writes the whole resolved object, so a key the twin
+doesn't know is silently deleted on the owner's next save), the
+`setPortfolioCashPolicy` server action, and the collapsed **Cash reserve** panel
+(`web/components/portfolio/cash-policy-panel.tsx`) under the team builder.
+
 ### broker.py / broker_sync.py
 The broker-neutral execution seam every live (real-money) path runs through —
 the `BrokerBackend` protocol, normalised `Position`/`Fill`/`ExecResult` types,
@@ -1024,7 +1067,17 @@ shared buyer thinking core (`llm_watchlist_buyer.evaluate_candidates`, Claude
 brain) — the SAME per-name LLM eval, research-card + Level 0 fact inputs and
 thesis discipline the other buyers use, pointed at held names with an "add to
 the winner" framing; only `verdict="BUY"` at/above `min_conviction` (default
-5/5) triggers an add. Idempotent modulo price drift — a name at the ceiling has
+5/5) triggers an add. **Funding is a dollar question, not a percentage one**:
+the run gate and `plan_double_down` both ask "is there enough to make one
+worthwhile add?" (`spendable >= min_add_usd`, spendable = cash less a small
+rounding buffer `cash_reserve_pct` **of the cash**). It used to ask whether cash
+was ≥ `min_cash_pct` of NAV and size against `cash - total_value *
+cash_reserve_pct` — on a fully-invested book that is a wall, not a buffer (2% of
+a $1.05M portfolio is $21k), so Scrappy Fightback's real $18,594 computed
+NEGATIVE spendable and the agent skipped every name on every run from the day it
+was hired: **0 trades, ever**. `min_cash_pct` is retired (a stored config still
+carrying it is ignored); `tests/test_double_down.py` pins the real book.
+Idempotent modulo price drift — a name at the ceiling has
 nothing to add, so a re-run on an unchanged book is a no-op (the ceiling is what
 stops a runaway "keep adding forever" loop). Respects the 90-day post-sell
 cooldown (won't fight a recent exit/trim) and records a fresh thesis per add
@@ -1372,6 +1425,13 @@ a `portfolio_agents.config` knob). Keys `grace_period_days`,
 `require_fired_break_signal`, `relative_fields_change_only`; missing keys fall
 back to `thesis_policy.DEFAULTS`. Non-secret — included in `PORTFOLIO_COLUMNS`.
 Edited on the portfolio page's **Sell discipline** panel. See `thesis_policy.py`.
+
+`cash_policy` (JSONB, migration 088, default `'{}'`) is the owner's **cash
+policy** for the shared pot — one key, `reserve_pct`, read by the swarm draft
+(`agent_heartbeat` passes it to `swarm.snake_draft_plan`). Portfolio-level for
+the same reason as `thesis_policy`: it is a rule about the POT, so it cannot
+bind from one buyer's config. Non-secret — included in `PORTFOLIO_COLUMNS`.
+Edited on the portfolio page's **Cash reserve** panel. See `cash_policy.py`.
 
 `rebalance_cadence` (migration 051, default `'weekly'`) is the owner-set
 rebalance frequency — the heartbeat re-evaluates the portfolio at most every
@@ -2169,6 +2229,9 @@ pytest tests/test_badges.py                 # pure engine unit tests
 
 # Sell discipline (owner-configured thesis policy, migration 086)
 pytest tests/test_thesis_policy.py          # grace period + signal rules
+
+# Cash policy (how the shared pot is split between buyers, migration 088)
+pytest tests/test_cash_policy.py            # reserve, unit conversion, wiring
 
 # Gemini reasoning depth / model fallback (migration 087)
 pytest tests/test_llm_providers_gemini.py   # thinking_level, temp floor, cost, fallback
