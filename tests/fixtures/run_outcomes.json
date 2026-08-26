@@ -1,0 +1,63 @@
+{
+  "cases": [
+    {
+      "name": "reviewer_clean_run",
+      "why": "The reported bug: a Portfolio Review Agent finished with nothing to sell and the panel said '0 buys, 0 passes' — two counts for work a sell-only agent cannot do.",
+      "elapsed": "1:53",
+      "counts": {"buys": 0, "sells": 0, "passes": 0},
+      "sentence": "Run complete in 1:53 — no changes.",
+      "chips": []
+    },
+    {
+      "name": "reviewer_sold_one",
+      "why": "A real sale must not be flanked by '0 bought' and '0 passed'.",
+      "elapsed": "2:04",
+      "counts": {"buys": 0, "sells": 1, "passes": 0},
+      "sentence": "Run complete in 2:04 — 1 sell.",
+      "chips": [{"chip": "1 sold", "tone": "negative"}]
+    },
+    {
+      "name": "buyer_bought_and_passed",
+      "why": "The ordinary buyer run still reads the way it always did.",
+      "elapsed": "4:12",
+      "counts": {"buys": 2, "sells": 0, "passes": 38},
+      "sentence": "Run complete in 4:12 — 2 buys, 38 passes.",
+      "chips": [
+        {"chip": "2 bought", "tone": "positive"},
+        {"chip": "38 passed", "tone": "neutral"}
+      ]
+    },
+    {
+      "name": "buyer_passed_on_everything",
+      "why": "A buyer that evaluated names and wanted none reports the passes, not a phantom '0 buys'.",
+      "elapsed": "3:30",
+      "counts": {"buys": 0, "sells": 0, "passes": 12},
+      "sentence": "Run complete in 3:30 — 12 passes.",
+      "chips": [{"chip": "12 passed", "tone": "neutral"}]
+    },
+    {
+      "name": "swarm_all_three",
+      "why": "A full swarm round — order is always buy, sell, pass.",
+      "elapsed": "6:47",
+      "counts": {"buys": 3, "sells": 2, "passes": 21},
+      "sentence": "Run complete in 6:47 — 3 buys, 2 sells, 21 passes.",
+      "chips": [
+        {"chip": "3 bought", "tone": "positive"},
+        {"chip": "2 sold", "tone": "negative"},
+        {"chip": "21 passed", "tone": "neutral"}
+      ]
+    },
+    {
+      "name": "singulars",
+      "why": "One of each — every noun and chip must be singular.",
+      "elapsed": "0:58",
+      "counts": {"buys": 1, "sells": 1, "passes": 1},
+      "sentence": "Run complete in 0:58 — 1 buy, 1 sell, 1 pass.",
+      "chips": [
+        {"chip": "1 bought", "tone": "positive"},
+        {"chip": "1 sold", "tone": "negative"},
+        {"chip": "1 passed", "tone": "neutral"}
+      ]
+    }
+  ]
+}
