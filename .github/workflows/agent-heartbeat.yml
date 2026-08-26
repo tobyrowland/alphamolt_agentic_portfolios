@@ -38,10 +38,14 @@ on:
 jobs:
   heartbeat:
     runs-on: ubuntu-latest
-    # Bumped from 15m. The llm_pick strategy can run 4+ LLM agents
-    # × 2 stages × ~30s API calls; deterministic strategies finish in
-    # seconds. 30m gives comfortable headroom for slow providers.
-    timeout-minutes: 30
+    # Bumped from 15m, then 30m. Deterministic strategies finish in seconds;
+    # the LLM ones dominate. Since the Gemini buyer/reviewer moved to
+    # thinking-level reasoning (Gemini 3.1 Pro), a single per-name call can
+    # take 1-3 min instead of ~30s, and the buyer makes up to 40 of them per
+    # portfolio at concurrency 5. 60m keeps a slow provider from getting the
+    # job KILLED mid-swarm — which would leave portfolios silently
+    # un-rebalanced with no error to read.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
