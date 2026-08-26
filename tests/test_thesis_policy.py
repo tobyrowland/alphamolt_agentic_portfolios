@@ -182,28 +182,34 @@ def test_ficos_break_signal_is_rejected():
     """`perf_52w_vs_spy < -20` mirrors the screen's own entry filter."""
     policy = tp.resolve_policy({})
     signal = {"field": "perf_52w_vs_spy", "op": "<", "value": -20}
-    assert tp.signal_permitted(signal, policy) is False
+    assert tp.signal_permitted(signal, policy, kind="break") is False
 
 
 def test_the_change_since_buy_form_of_the_same_idea_is_allowed():
     policy = tp.resolve_policy({})
     signal = {"field": "perf_52w_vs_spy", "op": "change_pct_lt", "value": -15}
-    assert tp.signal_permitted(signal, policy) is True
+    assert tp.signal_permitted(signal, policy, kind="break") is True
 
 
 def test_unsatisfiable_extend_signal_is_rejected():
     """`perf_52w_vs_spy > 0` on a name the screen guarantees is below -20."""
     policy = tp.resolve_policy({})
     assert tp.signal_permitted(
-        {"field": "perf_52w_vs_spy", "op": ">", "value": 0}, policy) is False
+        {"field": "perf_52w_vs_spy", "op": ">", "value": 0},
+        policy, kind="extend") is False
 
 
 @pytest.mark.parametrize("field", sorted(tp.RELATIVE_FIELDS))
-def test_every_relative_field_rejects_static_ops(field):
+@pytest.mark.parametrize("kind", ["break", "extend"])
+def test_every_relative_field_rejects_static_downside_ops(field, kind):
     policy = tp.resolve_policy({})
-    assert tp.signal_permitted({"field": field, "op": "<", "value": 1}, policy) is False
+    for op in ("<", "<="):
+        assert tp.signal_permitted(
+            {"field": field, "op": op, "value": 1}, policy, kind=kind
+        ) is False, (field, kind, op)
     assert tp.signal_permitted(
-        {"field": field, "op": "change_pct_lt", "value": -1}, policy) is True
+        {"field": field, "op": "change_pct_lt", "value": -1},
+        policy, kind=kind) is True
 
 
 def test_fundamental_fields_are_untouched():
@@ -211,13 +217,15 @@ def test_fundamental_fields_are_untouched():
     policy = tp.resolve_policy({})
     for field in ("rev_growth_ttm_pct", "gross_margin_pct", "fcf_margin_pct",
                   "operating_margin_pct", "rule_of_40"):
-        assert tp.signal_permitted({"field": field, "op": "<", "value": 10}, policy) is True
+        assert tp.signal_permitted(
+            {"field": field, "op": "<", "value": 10}, policy, kind="break") is True
 
 
 def test_rule_off_permits_static_relative_signals():
     policy = tp.resolve_policy({"relative_fields_change_only": False})
     assert tp.signal_permitted(
-        {"field": "perf_52w_vs_spy", "op": "<", "value": -20}, policy) is True
+        {"field": "perf_52w_vs_spy", "op": "<", "value": -20},
+        policy, kind="break") is True
 
 
 def test_filter_signals_splits_and_describes():
@@ -226,15 +234,93 @@ def test_filter_signals_splits_and_describes():
         {"field": "rev_growth_ttm_pct", "op": "<", "value": 5},
         {"field": "perf_52w_vs_spy", "op": "<", "value": -20},
         {"field": "price", "op": "change_pct_lt", "value": -10},
-    ], policy)
+    ], policy, kind="break")
     assert [s["field"] for s in kept] == ["rev_growth_ttm_pct", "price"]
     assert tp.describe_dropped(dropped) == ["perf_52w_vs_spy < -20"]
 
 
 def test_filter_signals_handles_empty_and_none():
     policy = tp.resolve_policy({})
-    assert tp.filter_signals(None, policy) == ([], [])
-    assert tp.filter_signals([], policy) == ([], [])
+    assert tp.filter_signals(None, policy, kind="break") == ([], [])
+    assert tp.filter_signals([], policy, kind="break") == ([], [])
+
+
+# ---------------------------------------------------------------------------
+# A take-profit is not the bug this rule was built for
+#
+# The born-broken thesis came from a DOWNSIDE static threshold on a screen that
+# selects beaten-down, cheap names — the stock was already there on day one.
+# An UPSIDE one on the same screen sits far above where the name is: it is a
+# take-profit ("sell if the multiple re-rates past 15"), and banning it was
+# collateral damage. The same threshold as an EXTEND signal is the unreachable
+# wish, so the exemption is deliberately kind-specific.
+# ---------------------------------------------------------------------------
+
+
+def test_a_valuation_ceiling_is_allowed_as_a_break_signal():
+    """`ps_now > 15` — the take-profit the blanket rule used to swallow."""
+    policy = tp.resolve_policy({})
+    assert tp.signal_permitted(
+        {"field": "ps_now", "op": ">", "value": 15}, policy, kind="break")
+
+
+@pytest.mark.parametrize("field", sorted(tp.RELATIVE_FIELDS))
+@pytest.mark.parametrize("op", sorted(tp.TAKE_PROFIT_OPS))
+def test_every_relative_field_allows_an_upside_break_threshold(field, op):
+    policy = tp.resolve_policy({})
+    assert tp.signal_permitted(
+        {"field": field, "op": op, "value": 50}, policy, kind="break"
+    ), (field, op)
+
+
+@pytest.mark.parametrize("field", sorted(tp.RELATIVE_FIELDS))
+@pytest.mark.parametrize("op", sorted(tp.TAKE_PROFIT_OPS))
+def test_the_same_threshold_is_still_refused_as_an_extend_signal(field, op):
+    """Direction alone is not enough — the kinds fail in opposite directions."""
+    policy = tp.resolve_policy({})
+    assert not tp.signal_permitted(
+        {"field": field, "op": op, "value": 50}, policy, kind="extend"
+    ), (field, op)
+
+
+def test_a_take_profit_that_is_somehow_already_true_is_still_dropped():
+    """The upside exemption does not weaken the buy-time invariant."""
+    kept, already = _drop_already_true(
+        [{"field": "ps_now", "op": ">", "value": 3}], {"ps_now": 4.2},
+    )
+    assert kept == []
+    assert len(already) == 1
+
+
+def test_equality_operators_stay_banned_on_relative_fields():
+    policy = tp.resolve_policy({})
+    for op in ("==", "!="):
+        for kind in ("break", "extend"):
+            assert not tp.signal_permitted(
+                {"field": "ps_now", "op": op, "value": 15}, policy, kind=kind
+            ), (op, kind)
+
+
+def test_filter_signals_keeps_a_take_profit_and_drops_the_stop():
+    """One realistic break-signal set, filtered as the buyer filters it."""
+    policy = tp.resolve_policy({})
+    kept, dropped = tp.filter_signals([
+        {"field": "ps_now", "op": ">", "value": 15},              # take-profit
+        {"field": "perf_52w_vs_spy", "op": "<", "value": -20},    # born broken
+        {"field": "gross_margin_pct", "op": "change_pct_lt", "value": -3},
+    ], policy, kind="break")
+    assert [s["field"] for s in kept] == ["ps_now", "gross_margin_pct"]
+    assert tp.describe_dropped(dropped) == ["perf_52w_vs_spy < -20"]
+
+
+@pytest.mark.parametrize("kind", ["", "breaks", "Break", None, 1])
+def test_an_unknown_kind_is_an_error_not_a_silent_default(kind):
+    """Either default would be wrong for the other kind — so there is none."""
+    with pytest.raises(ValueError):
+        tp.signal_permitted(
+            {"field": "ps_now", "op": ">", "value": 15},
+            tp.resolve_policy({}), kind=kind,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +624,7 @@ def test_a_static_price_stop_below_entry_is_permitted():
     """FNF's real signal: bought at $51.90, stop at $45. Well-formed, not a bug."""
     policy = tp.resolve_policy({})
     signal = {"field": "price", "op": "<", "value": 45}
-    assert tp.signal_permitted(signal, policy)
+    assert tp.signal_permitted(signal, policy, kind="break")
 
 
 def test_a_static_price_stop_already_true_at_buy_is_still_dropped():
@@ -555,7 +641,7 @@ def test_the_genuinely_relative_fields_still_reject_static_ops():
     for field in ("perf_52w_vs_spy", "price_pct_of_52w_high", "ps_now",
                   "composite_score"):
         assert not tp.signal_permitted(
-            {"field": field, "op": "<", "value": -20}, policy
+            {"field": field, "op": "<", "value": -20}, policy, kind="break"
         ), field
 
 

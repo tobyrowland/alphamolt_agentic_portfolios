@@ -224,8 +224,9 @@ Thesis discipline (BUY only):
 - op MUST be one of: >, >=, <, <=, ==, !=, change_pct_lt, change_pct_gt.
 - value MUST be a number (e.g. 40, -3.5). Never a string with "%" or "pp".
 - A break signal must be FALSE TODAY. It is a tripwire for what would have to CHANGE for you to be wrong — not a description of the situation you are buying into. A signal that is already true at purchase is dropped, and the thesis is recorded without it.
-- PRICE-RELATIVE fields (perf_52w_vs_spy, price_pct_of_52w_high, price, ps_now, composite_score) may ONLY be used with change_pct_lt / change_pct_gt — never a static threshold. "Down 20% vs the market" describes where the stock already IS (and on a mandate that buys fallen names, it is true of everything you will ever see). "Lost a FURTHER 15 points vs the market since we bought" is a real deterioration signal. Static thresholds on these fields are dropped.
-- Extend signals must be reachable within a normal holding period. "perf_52w_vs_spy > 0" on a name currently at -30 needs a 30-point swing in a trailing-twelve-month number — that is not a confirmation signal, it is a wish. Prefer operating evidence (growth re-accelerating, margins expanding, cash conversion improving) over price outcomes.
+- PRICE-RELATIVE fields (perf_52w_vs_spy, price_pct_of_52w_high, ps_now, composite_score) may NOT carry a static DOWNSIDE threshold (<, <=). "Down 20% vs the market" describes where the stock already IS (and on a mandate that buys fallen names, it is true of everything you will ever see). Write the deterioration as change_pct_lt instead — "lost a FURTHER 15 points vs the market since we bought" is a real signal. A static UPSIDE threshold on these fields (>, >=) IS allowed on a break signal, because that is a take-profit: "ps_now > 15" means sell if the multiple re-rates that far, which cannot already be true on a name you are buying cheap. Downside static thresholds on these fields are dropped.
+- `price` is NOT in that set: a static price stop below your entry ("price < 45" on a $52 name) is the correct way to write a price stop, and is allowed. Do NOT use change_pct_* on `price` — those operators compare an ABSOLUTE dollar difference, so the same number is a 9.6% stop on a $52 name and 0.28% on an $1,800 one.
+- Extend signals must be reachable within a normal holding period, and take NO static threshold on a price-relative field — not even an upside one. "perf_52w_vs_spy > 0" on a name currently at -30 needs a 30-point swing in a trailing-twelve-month number — that is not a confirmation signal, it is a wish, and it is dropped. Prefer operating evidence (growth re-accelerating, margins expanding, cash conversion improving) over price outcomes.
 
 IMPORTANT — change_pct_* semantics. These compare the CURRENT value against the VALUE AT BUY (snapshot), as a PERCENTAGE-POINT DELTA (not a relative percent). Example:
   {"field": "gross_margin_pct", "op": "change_pct_lt", "value": -3, "description": "Margin dropped >3pp"}
@@ -533,14 +534,19 @@ def _evaluate_ticker(
     extend_signals = _validate_signals(parsed.get("extend_signals"), max_count=max_signals)
 
     # Owner policy (migration 086): price-relative fields may only carry
-    # change-since-buy operators. A STATIC threshold on such a field says where
-    # the stock IS, which on a screen that selects beaten-down names is often
-    # already true at purchase — the born-broken thesis. Applied AFTER the card
-    # merge so inherited signals are policed too, and to extend signals as well,
-    # since an unsatisfiable extend ("beat the market over 12 months") is what
-    # the reviewer reached for when no break signal had fired.
-    break_signals, dropped_breaks = _policy.filter_signals(break_signals, policy)
-    extend_signals, dropped_extends = _policy.filter_signals(extend_signals, policy)
+    # change-since-buy operators. A DOWNSIDE static threshold on such a field
+    # says where the stock IS, which on a screen that selects beaten-down names
+    # is often already true at purchase — the born-broken thesis. Applied AFTER
+    # the card merge so inherited signals are policed too, and to extend signals
+    # as well, since an unsatisfiable extend ("beat the market over 12 months")
+    # is what the reviewer reached for when no break signal had fired. The two
+    # kinds are filtered under different rules — an upside threshold is a
+    # take-profit on a break signal and the unreachable wish on an extend one,
+    # so `kind` is passed explicitly at both sites.
+    break_signals, dropped_breaks = _policy.filter_signals(
+        break_signals, policy, kind="break")
+    extend_signals, dropped_extends = _policy.filter_signals(
+        extend_signals, policy, kind="extend")
     dropped = dropped_breaks + dropped_extends
 
     return {
