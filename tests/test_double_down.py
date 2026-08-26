@@ -76,11 +76,12 @@ class TestPlanDoubleDown(unittest.TestCase):
         self.assertIn("not currently held", plan.skips[0]["reason"])
 
     def test_highest_conviction_filled_first_when_cash_short(self):
-        # $100k NAV: a big FILL holding sizes NAV so the two candidates sit at 2%
-        # (below the 8% ceiling) while cash is genuinely short. Spendable after
-        # the 2% reserve is only $3k — under one $4k step — so the 5/5 name is
-        # filled and the 4/5 name gets nothing.
-        book = _book(5_000, [
+        # ~$99k NAV: a big FILL holding sizes NAV so the two candidates sit just
+        # under 2% (below the 8% ceiling) while cash is genuinely short.
+        # Spendable is $4,214 (the 2% reserve is on the CASH) against a ~$3,972
+        # step, so the 5/5 name is filled and the ~$300 left over cannot clear
+        # min_add_usd — the 4/5 name gets nothing.
+        book = _book(4_300, [
             {"ticker": "FILL", "quantity": 910, "price": 100.0},  # $91k, not a candidate
             {"ticker": "AAA", "quantity": 20, "price": 100.0},    # 2% weight
             {"ticker": "BBB", "quantity": 20, "price": 100.0},    # 2% weight
@@ -93,8 +94,58 @@ class TestPlanDoubleDown(unittest.TestCase):
         self.assertIn("BBB", bought)          # conviction 5 filled first
         self.assertNotIn("AAA", bought)       # cash exhausted before the 4/5 name
 
-    def test_reserve_blocks_when_no_spendable_cash(self):
-        # Book is fully invested (tiny cash < reserve) → nothing addable.
+    def test_the_real_scrappy_fightback_book_can_fund_an_add(self):
+        """The production case: 0 trades in the agent's entire life.
+
+        Scrappy Fightback on 2026-08-26 — $18,594.65 cash against $1,053,760.86
+        NAV, 16 names at 5.4-8.3% under a 9% ceiling. Real, deployable money,
+        37x the agent's own $500 floor for a worthwhile add. The old reserve
+        took a slice of NAV rather than of cash (2% of $1.05M = $21,075), so
+        spendable came out NEGATIVE and every name was skipped "insufficient
+        cash to add" on every run since the agent was hired.
+        """
+        book = _book(18_594.65, [
+            {"ticker": "GEN", "quantity": 1000, "price": 71.223},   # 6.76%
+            {"ticker": "JBI", "quantity": 1000, "price": 60.787},   # 5.77%
+        ] + [
+            # Filler so NAV matches the real book without listing all 16.
+            {"ticker": "FILL", "quantity": 1000, "price": 903.156},
+        ])
+        self.assertAlmostEqual(book["total_value_usd"], 1_053_760.65, places=0)
+
+        plan = plan_double_down(
+            [{"ticker": "GEN", "conviction": 5}],
+            book, {"GEN": 71.223, "JBI": 60.787},
+            add_position_pct=1.5, max_position_pct=9.0,
+            cash_reserve_pct=0.02, min_add_usd=500.0,
+        )
+        self.assertTrue(plan.buys, plan.skips)
+        self.assertEqual(plan.buys[0]["ticker"], "GEN")
+        # It deploys what is actually there, not a NAV-sized fiction.
+        spent = plan.buys[0]["qty"] * 71.223
+        self.assertGreater(spent, 15_000)
+        self.assertLessEqual(spent, 18_594.65)
+
+    def test_the_reserve_is_a_buffer_on_cash_not_a_slice_of_nav(self):
+        """A fully-invested book must still be able to spend the cash it has."""
+        # 1% cash on a $1M book: under the old basis (cash - 2% of NAV) this is
+        # -$10,000 spendable. The reserve is a rounding buffer, so it can only
+        # ever hold back a sliver of the cash itself.
+        book = _book(10_000, [
+            {"ticker": "FILL", "quantity": 8900, "price": 100.0},   # 89%
+            {"ticker": "NVDA", "quantity": 1000, "price": 100.0},   # 10%
+        ])
+        plan = plan_double_down(
+            [{"ticker": "NVDA", "conviction": 5}], book, {"NVDA": 100.0},
+            add_position_pct=4.0, max_position_pct=20.0,
+            cash_reserve_pct=0.02, min_add_usd=500.0,
+        )
+        self.assertTrue(plan.buys, plan.skips)
+        self.assertLessEqual(plan.buys[0]["qty"] * 100.0, 10_000 * 0.98)
+
+    def test_no_adds_when_the_cash_cannot_fund_a_worthwhile_one(self):
+        # Book is fully invested — what little cash there is cannot clear
+        # min_add_usd, so no name is added to.
         book = _book(100, [{"ticker": "NVDA", "quantity": 10, "price": 100.0}])
         plan = plan_double_down([{"ticker": "NVDA", "conviction": 5}], book,
                                 {"NVDA": 100.0}, **self.KW)

@@ -1024,7 +1024,17 @@ shared buyer thinking core (`llm_watchlist_buyer.evaluate_candidates`, Claude
 brain) — the SAME per-name LLM eval, research-card + Level 0 fact inputs and
 thesis discipline the other buyers use, pointed at held names with an "add to
 the winner" framing; only `verdict="BUY"` at/above `min_conviction` (default
-5/5) triggers an add. Idempotent modulo price drift — a name at the ceiling has
+5/5) triggers an add. **Funding is a dollar question, not a percentage one**:
+the run gate and `plan_double_down` both ask "is there enough to make one
+worthwhile add?" (`spendable >= min_add_usd`, spendable = cash less a small
+rounding buffer `cash_reserve_pct` **of the cash**). It used to ask whether cash
+was ≥ `min_cash_pct` of NAV and size against `cash - total_value *
+cash_reserve_pct` — on a fully-invested book that is a wall, not a buffer (2% of
+a $1.05M portfolio is $21k), so Scrappy Fightback's real $18,594 computed
+NEGATIVE spendable and the agent skipped every name on every run from the day it
+was hired: **0 trades, ever**. `min_cash_pct` is retired (a stored config still
+carrying it is ignored); `tests/test_double_down.py` pins the real book.
+Idempotent modulo price drift — a name at the ceiling has
 nothing to add, so a re-run on an unchanged book is a no-op (the ceiling is what
 stops a runaway "keep adding forever" loop). Respects the 90-day post-sell
 cooldown (won't fight a recent exit/trim) and records a fresh thesis per add

@@ -65,8 +65,11 @@ DOUBLE_DOWN_DEFAULTS = {
     "max_position_pct": 8.0,      # ceiling: never let a doubled-down name exceed this weight
     "add_position_pct": 4.0,      # size of each top-up step (toward the ceiling)
     # --- guards -----------------------------------------------------------
-    "min_cash_pct": 2.0,          # below this, no adds (nothing to deploy)
-    "cash_reserve_pct": 0.02,     # keep a little cash for rounding / drift
+    # No min_cash_pct: "have I got enough to make a worthwhile add?" is a dollar
+    # question (min_add_usd), and asking it as a percentage of NAV made the
+    # agent refuse real money on a fully-invested book. A stored config still
+    # carrying the old key is harmlessly ignored.
+    "cash_reserve_pct": 0.02,     # rounding/drift buffer, as a share of CASH
     "min_add_usd": 500.0,         # ignore sub-noise add notionals
     # --- LLM eval plumbing (mirrors llm_watchlist_buyer) ------------------
     "concurrency": 5,
@@ -146,7 +149,14 @@ def plan_double_down(
 
     ceiling_usd = total_value * float(max_position_pct) / 100.0
     step_usd = total_value * float(add_position_pct) / 100.0
-    spendable = cash - total_value * float(cash_reserve_pct)
+    # The reserve is a rounding/drift buffer on the cash being SPENT, which is
+    # what it was always documented to be. It used to be a slice of NAV
+    # (`cash - total_value * pct`), and on a fully-invested book that is not a
+    # buffer, it is a wall: 2% of a $1.05M portfolio is $21k, so a book holding
+    # $18.6k in cash computed NEGATIVE spendable and this agent skipped every
+    # name, every run, for its entire life (0 trades). Cash is the thing being
+    # protected from rounding, so cash is what the percentage applies to.
+    spendable = cash * (1.0 - float(cash_reserve_pct))
 
     held_value = {
         str(h.get("ticker") or "").upper(): float(h.get("market_value_usd") or 0)
@@ -269,11 +279,21 @@ def rebalance_double_down(ctx: "RebalanceContext") -> "RebalanceResult":
     if total_value <= 0:
         result.errors.append(f"total_value_usd <= 0 for {handle}")
         return result
-    cash_pct = cash_usd / total_value * 100.0
-    min_cash_pct = float(params["min_cash_pct"])
-    if cash_pct < min_cash_pct:
+    # Can we fund even one worthwhile add? That is the only question worth
+    # asking before spending money on LLM calls — and it is a DOLLAR question.
+    # The old gate asked a percentage one ("is cash >= 2% of NAV"), which on a
+    # fully-invested book answers no while real, deployable money sits there:
+    # $18,594 was refused for being 1.76%, though the agent's own floor for a
+    # worthwhile add is $500. Same arithmetic as `plan_double_down`, so the
+    # gate and the plan can never disagree about whether a run is affordable.
+    min_add_usd = float(params["min_add_usd"])
+    spendable = cash_usd * (1.0 - float(params["cash_reserve_pct"]))
+    if spendable < min_add_usd:
         result.notes["reason"] = "insufficient cash to add"
-        result.notes["cash_pct"] = round(cash_pct, 2)
+        result.notes["cash_usd"] = round(cash_usd, 2)
+        result.notes["spendable_usd"] = round(spendable, 2)
+        result.notes["min_add_usd"] = min_add_usd
+        result.notes["cash_pct"] = round(cash_usd / total_value * 100.0, 2)
         return result
 
     holdings = book.get("holdings") or []
@@ -419,7 +439,8 @@ def rebalance_double_down(ctx: "RebalanceContext") -> "RebalanceResult":
             "skips": plan.skips,
             "max_position_pct": max_position_pct,
             "add_position_pct": params["add_position_pct"],
-            "cash_pct": round(cash_pct, 2),
+            "cash_usd": round(cash_usd, 2),
+            "spendable_usd": round(spendable, 2),
         }
         logger.info(
             "[dry-run] %s: %d double-down add(s), %d candidate(s) evaluated",
