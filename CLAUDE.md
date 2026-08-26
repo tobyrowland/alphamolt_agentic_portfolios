@@ -111,6 +111,26 @@ each config row:
   sums both — reporting only `candidates_token_count` under-states a
   deep-thinking run by an order of magnitude.
 
+**Anthropic and `temperature`.** The adapter asks the installed SDK's
+`messages.stream` whether it takes a `temperature` kwarg and only sends it if
+so (`_accepts_temperature`). anthropic **1.0.0 removed `temperature` and
+`top_p` outright** — no `**kwargs`, so passing it is a `TypeError` raised
+*before* any HTTP request, which is not an `APIError` and so slipped past the
+existing drop-and-retry path. `requirements.txt` pins `anthropic>=0.40.0`, so
+the day a runner resolved 1.0.0 every SDK-based Claude call died with
+"Messages.stream() got an unexpected keyword argument 'temperature'":
+`double_down` evaluated 0 of 16 held names and `buyer-claude` would have done
+the same. (`bull_evaluation` was untouched — it calls the REST API over curl,
+not the SDK, which is why bull verdicts kept landing throughout.) The probe
+reads the bound method rather than a version string or an import path, so it
+survives upgrades in both directions, and treats an unreadable signature or one
+with `**kwargs` as accepting — the API-level fallback still covers a model that
+rejects the parameter at request time. Pinned by
+`tests/test_llm_providers_anthropic.py`, whose stub now carries the real 1.0.0
+`__signature__`: the previous stub took `**kwargs` and so was more permissive
+than the SDK it stood in for, which is exactly how the failure reached
+production through a green suite.
+
 SDK: **`google-genai`** (`from google import genai`). The legacy
 `google-generativeai` was deprecated Nov 2025 and cannot reach the Gemini 3
 family or `thinking_level` at all; it survives as a fallback for pinned 2.5
