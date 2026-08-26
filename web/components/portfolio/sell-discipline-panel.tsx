@@ -94,8 +94,8 @@ export default function SellDisciplinePanel({
         />
 
         <ToggleRow
-          label="Price tripwires must measure change since you bought"
-          hint="“Down 20% vs the market” describes where a stock already is — on a mandate that buys fallen names it's true of everything. “Lost a further 15 points since we bought” is a real warning. Applies to price, P/S, and performance-vs-market."
+          label="Loss tripwires must measure change since you bought"
+          hint="“Down 20% vs the market” describes where a stock already is — on a mandate that buys fallen names it's true of everything. “Lost a further 15 points since we bought” is a real warning. Applies to P/S, performance-vs-market, % of 52-week high and the composite score. Take-profit tripwires (“sell if P/S climbs past 15”) are unaffected, and so are plain price stops."
           checked={draft.relative_fields_change_only}
           onChange={(v) => update({ relative_fields_change_only: v })}
           disabled={pending}

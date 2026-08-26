@@ -84,8 +84,10 @@ _MAX_GRACE_DAYS = 365
 # price relative to the market / to its own history). A STATIC threshold on
 # one of these says where the stock IS, not what has CHANGED — so it can be
 # true the moment the position opens, and on a screen that selects for
-# beaten-down names it usually is. The change-since-buy form is always safe:
-# at buy time the delta is zero by construction.
+# beaten-down names a DOWNSIDE one usually is. The change-since-buy form is
+# always safe: at buy time the delta is zero by construction. An upside static
+# threshold is a take-profit and is permitted on break signals only — see
+# `TAKE_PROFIT_OPS` and `signal_permitted`.
 # NOTE `price` is deliberately NOT in this set. The change-since-buy operators
 # compare an ABSOLUTE difference (theses._evaluate_signal: current - snapshot),
 # which is meaningful for a field already denominated in percentage points but
@@ -105,6 +107,26 @@ RELATIVE_FIELDS: frozenset[str] = frozenset({
 
 # Operators that compare current vs the value frozen at buy (theses._evaluate_signal).
 CHANGE_OPS: frozenset[str] = frozenset({"change_pct_lt", "change_pct_gt"})
+
+# Static operators pointing UP. On a relative field these express a
+# take-profit — "sell if the multiple re-rates past 15", "sell once we are back
+# at the 52-week high" — which is the structural OPPOSITE of the failure this
+# rule exists to stop. The born-broken thesis came from a DOWNSIDE static
+# threshold on a screen that selects beaten-down, cheap names: the stock was
+# already there on day one. An upside threshold on that same screen sits far
+# above where the name is, so it cannot be true at purchase, and if it somehow
+# is, `theses._drop_already_true` rejects it against the real buy snapshot.
+#
+# Direction is not enough on its own, which is why this only applies to BREAK
+# signals. The same `perf_52w_vs_spy > 0` that is a sane take-profit as a break
+# signal is, as an EXTEND signal, the unreachable wish the reviewer reached for
+# when nothing had actually fired — a 30-point swing in a trailing-twelve-month
+# number, on a name the screen guarantees is below -20. See `signal_permitted`.
+TAKE_PROFIT_OPS: frozenset[str] = frozenset({">", ">="})
+
+# The two kinds of signal a thesis carries. They fail in opposite directions,
+# so the rule below reads them differently.
+SIGNAL_KINDS: frozenset[str] = frozenset({"break", "extend"})
 
 
 def resolve_policy(raw: Any) -> dict[str, Any]:
@@ -245,31 +267,60 @@ def sell_is_permitted(
 # ---------------------------------------------------------------------------
 
 
-def signal_permitted(signal: Any, policy: dict[str, Any]) -> bool:
-    """May this ``{field, op, value}`` signal be recorded?
+def signal_permitted(
+    signal: Any, policy: dict[str, Any], *, kind: str,
+) -> bool:
+    """May this ``{field, op, value}`` signal be recorded? ``kind`` is required.
 
     Rejects a static threshold on a price-relative field when
-    ``relative_fields_change_only`` is on. A malformed signal is left alone —
-    schema validation is ``llm_watchlist_buyer._validate_signals``' job, and
-    double-filtering here would silently swallow shape bugs.
+    ``relative_fields_change_only`` is on — but which static thresholds are
+    wrong depends on the signal's kind, because the two kinds fail in opposite
+    directions:
+
+    * a BREAK signal fails by being **already true at purchase** (the screen
+      filters `perf_52w_vs_spy < -20`, the buyer writes `perf_52w_vs_spy < -20`
+      as its exit trigger, and every candidate arrives pre-broken). That is a
+      DOWNSIDE threshold. An upside one — `ps_now > 15`, "sell if the multiple
+      re-rates past 15" — is a take-profit: on a screen selecting cheap,
+      beaten-down names it sits far above where the stock is, so it cannot be
+      the born-broken failure. Those are permitted.
+    * an EXTEND signal fails by being **unreachable** — `perf_52w_vs_spy > 0`
+      on a name the screen guarantees is below -20 needs a 30-point swing in a
+      trailing-twelve-month number. That is the same UPSIDE threshold. So
+      extends keep the change-since-buy-only rule in full.
+
+    ``kind`` is a required keyword rather than a defaulted one on purpose:
+    either default would silently be wrong for the other kind — permitting the
+    wish, or outlawing the take-profit.
+
+    A malformed signal is left alone — schema validation is
+    ``llm_watchlist_buyer._validate_signals``' job, and double-filtering here
+    would silently swallow shape bugs.
     """
+    if kind not in SIGNAL_KINDS:
+        raise ValueError(f"kind must be one of {sorted(SIGNAL_KINDS)}, got {kind!r}")
     if not policy.get("relative_fields_change_only"):
         return True
     if not isinstance(signal, dict):
         return True
     if signal.get("field") not in RELATIVE_FIELDS:
         return True
-    return signal.get("op") in CHANGE_OPS
+    allowed = CHANGE_OPS | TAKE_PROFIT_OPS if kind == "break" else CHANGE_OPS
+    return signal.get("op") in allowed
 
 
 def filter_signals(
-    signals: Optional[Iterable[dict]], policy: dict[str, Any],
+    signals: Optional[Iterable[dict]], policy: dict[str, Any], *, kind: str,
 ) -> tuple[list[dict], list[dict]]:
-    """Split ``signals`` into ``(kept, dropped)`` under the policy."""
+    """Split ``signals`` into ``(kept, dropped)`` under the policy.
+
+    ``kind`` is ``"break"`` or ``"extend"`` — see :func:`signal_permitted`.
+    """
     kept: list[dict] = []
     dropped: list[dict] = []
     for signal in signals or []:
-        (kept if signal_permitted(signal, policy) else dropped).append(signal)
+        target = kept if signal_permitted(signal, policy, kind=kind) else dropped
+        target.append(signal)
     return kept, dropped
 
 

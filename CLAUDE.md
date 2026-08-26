@@ -118,12 +118,27 @@ identically):
   `composite_score` — `price` is deliberately EXCLUDED: `change_pct_*` compares
   an absolute difference, so on a raw share price the same number means a 9.6%
   stop on a $52 name and 0.28% on an $1,800 one; banning the static form would
-  outlaw the only sane price stop and permit one that silently misbehaves) may only carry `change_pct_lt` / `change_pct_gt`,
-  never a static threshold. A static threshold on these says where the stock IS,
-  which on a screen selecting beaten-down names is usually already true at
-  purchase; the change-since-buy form is structurally immune because at buy the
-  delta is zero. Applied in `llm_watchlist_buyer` AFTER the research-card merge
-  so inherited signals are policed too, and to extend signals as well.
+  outlaw the only sane price stop and permit one that silently misbehaves) may not
+  carry a static DOWNSIDE threshold (`<`, `<=`). Such a threshold says where the
+  stock IS, which on a screen selecting beaten-down names is usually already true
+  at purchase; the change-since-buy form (`change_pct_lt` / `change_pct_gt`) is
+  structurally immune because at buy the delta is zero. Applied in
+  `llm_watchlist_buyer` AFTER the research-card merge so inherited signals are
+  policed too, and to extend signals as well.
+  **The rule is kind-specific** (`signal_permitted(signal, policy, *, kind=)` —
+  `kind` is a REQUIRED keyword, because either default would be silently wrong
+  for the other kind), since break and extend signals fail in opposite
+  directions. A static UPSIDE threshold (`TAKE_PROFIT_OPS`: `>`, `>=`) is
+  permitted on a **break** signal: `ps_now > 15` is a take-profit, and on a
+  screen selecting cheap beaten-down names it sits far above where the stock is,
+  so it cannot be the born-broken failure (and `theses._drop_already_true` still
+  rejects it against the real buy snapshot if it somehow is). The SAME threshold
+  on an **extend** signal is the unreachable wish the reviewer reached for when
+  nothing had fired — `perf_52w_vs_spy > 0` on a name the screen guarantees is
+  below -20 — so extends keep change-ops-only. `==` / `!=` stay banned on both.
+  The buyer's prompt teaches all of this; `tests/test_buyer_signal_policy.py`
+  pins the WIRING (that each call site passes the right `kind`, and that the
+  prompt and `RELATIVE_FIELDS` agree), which no test of the pure function can.
 
 - `rebuy_cooldown_ignores_sells_before` (default **None** = no exemption) —
   sells executed before this instant do not count toward the 90-day post-sell
