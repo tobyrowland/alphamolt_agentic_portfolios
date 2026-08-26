@@ -1,4 +1,5 @@
 import { getSupabase } from "@/lib/supabase";
+import type { BrokerCashStatus } from "@/lib/live-cash-status";
 
 /**
  * Server reads for the live cash-allowance hub (sleeves — migration 083).
@@ -62,8 +63,10 @@ export type LiveCashSummary = {
   /** The shared broker-account label (broker_account_key ?? slug). */
   accountKey: string;
   sleeves: SleeveCash[];
-  /** Real cash at the broker, or null when the web env has no Alpaca keys. */
+  /** Real cash at the broker, or null when it could not be read. */
   brokerCash: number | null;
+  /** WHY brokerCash is null — see web/lib/live-cash-status.ts. */
+  brokerCashStatus: BrokerCashStatus;
   /** brokerCash − Σ allowances, or null when brokerCash is unknown. */
   unallocated: number | null;
   /** Most recent allowance movements across the account's sleeves. */
@@ -88,10 +91,21 @@ type LivePortfolioRow = {
 };
 
 /** Best-effort Alpaca cash balance from the bare env credentials. */
-async function fetchBrokerCash(): Promise<number | null> {
+/**
+ * Read the broker's cash, reporting WHY when it cannot.
+ *
+ * Every failure path used to collapse to `null` with no log on a non-OK
+ * response, so a rejected key looked exactly like an unconfigured server —
+ * see web/lib/live-cash-status.ts. The status is now returned alongside the
+ * value, and a refusal is logged with its HTTP code (never the key itself).
+ */
+async function fetchBrokerCash(): Promise<{
+  cash: number | null;
+  status: BrokerCashStatus;
+}> {
   const keyId = process.env.ALPACA_API_KEY_ID;
   const secret = process.env.ALPACA_API_SECRET_KEY;
-  if (!keyId || !secret) return null;
+  if (!keyId || !secret) return { cash: null, status: "not_configured" };
   const base = (
     process.env.ALPACA_BASE_URL || "https://paper-api.alpaca.markets"
   ).replace(/\/$/, "");
@@ -105,13 +119,26 @@ async function fetchBrokerCash(): Promise<number | null> {
       cache: "no-store",
       signal: AbortSignal.timeout(5000),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // 401/403 is the credentials; anything else is the endpoint or Alpaca.
+      const status: BrokerCashStatus =
+        res.status === 401 || res.status === 403 ? "rejected" : "unreachable";
+      console.error(
+        `live-cash: Alpaca account read returned ${res.status} from ${base} ` +
+          `(${status}) — keys and ALPACA_BASE_URL must be the same account.`,
+      );
+      return { cash: null, status };
+    }
     const body = (await res.json()) as { cash?: string | number | null };
     const cash = body.cash == null ? NaN : Number(body.cash);
-    return Number.isFinite(cash) ? cash : null;
+    if (!Number.isFinite(cash)) {
+      console.error("live-cash: Alpaca account read had no usable cash field.");
+      return { cash: null, status: "unreachable" };
+    }
+    return { cash, status: "ok" };
   } catch (err) {
     console.error("live-cash: Alpaca account read failed:", err);
-    return null;
+    return { cash: null, status: "unreachable" };
   }
 }
 
@@ -140,7 +167,7 @@ async function buildAccountSummary(
   const supabase = getSupabase();
   const ids = sleevePortfolios.map((p) => p.id);
 
-  const [{ data: accounts }, { data: holdings }, brokerCash] =
+  const [{ data: accounts }, { data: holdings }, broker] =
     await Promise.all([
       supabase
         .from("portfolio_accounts")
@@ -152,6 +179,7 @@ async function buildAccountSummary(
         .in("portfolio_id", ids),
       fetchBrokerCash(),
     ]);
+  const brokerCash = broker.cash;
 
   const allowanceById = new Map<string, number>();
   const startingCashById = new Map<string, number>();
@@ -290,6 +318,7 @@ async function buildAccountSummary(
     accountKey,
     sleeves,
     brokerCash: brokerCash == null ? null : round2(brokerCash),
+    brokerCashStatus: broker.status,
     unallocated,
     ledger,
   };

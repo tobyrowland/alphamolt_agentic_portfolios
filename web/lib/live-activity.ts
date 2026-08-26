@@ -288,6 +288,25 @@ const RUN_WINDOW_MS = 24 * HOUR;
 const STUCK_MS = 48 * HOUR;
 /** Below this, an off-book remainder is rounding, not work. */
 const MATERIAL_USD = 1;
+/**
+ * The mirror's own drift threshold (`alpaca_mirror.DEFAULT_THRESHOLD`): it does
+ * not trade a position whose weight is within this much of target.
+ *
+ * The hub must not report as OUTSTANDING work the mirror has decided is not
+ * worth doing. Flagging every dollar meant a sleeve that had converged as far
+ * as it ever would — $35.84 off-book on $10,132, 0.35% — sat in red
+ * indefinitely, telling its owner real-money trading might be switched off
+ * while the run journal recorded successful runs placing real orders.
+ */
+const MIRROR_DRIFT_THRESHOLD = 0.01;
+
+/** Is this off-book remainder something the mirror would actually trade? */
+function isTradeableOffBook(sleeve: HubSleeve): boolean {
+  if (sleeve.offBookValue <= MATERIAL_USD) return false;
+  const equity = sleeve.allowance + sleeve.holdingsValue;
+  if (equity <= 0) return sleeve.offBookValue > MATERIAL_USD;
+  return sleeve.offBookValue / equity > MIRROR_DRIFT_THRESHOLD;
+}
 
 export function buildHubState(input: HubInput): HubState {
   const now = new Date(input.nowMs);
@@ -328,7 +347,7 @@ export function buildHubState(input: HubInput): HubState {
 
   // 2. Positions that still owe a restructure.
   for (const s of input.sleeves) {
-    if (s.offBookValue <= MATERIAL_USD) continue;
+    if (!isTradeableOffBook(s)) continue;
     if (s.followsPortfolioId == null) {
       lines.push({
         id: `unlinked-${s.portfolioId}`,
@@ -345,8 +364,9 @@ export function buildHubState(input: HubInput): HubState {
     const inherited = input.ledger.find(
       (l) => l.portfolioId === s.portfolioId && l.reason === "fund-in-kind-in",
     );
-    const stuck =
-      inherited != null && input.nowMs - Date.parse(inherited.createdAt) > STUCK_MS;
+    // Escalate only when the move is old AND nothing has run since. A run that
+    // completed and chose not to trade this remainder is the system working;
+    // calling that "trading may be switched off" contradicts our own journal.
     const ranSinceMove = realRuns.some(
       (r) =>
         r.kind === "run" &&
@@ -354,6 +374,10 @@ export function buildHubState(input: HubInput): HubState {
         r.status === "ok" &&
         (!inherited || Date.parse(r.createdAt) > Date.parse(inherited.createdAt)),
     );
+    const stuck =
+      inherited != null &&
+      input.nowMs - Date.parse(inherited.createdAt) > STUCK_MS &&
+      !ranSinceMove;
     lines.push({
       id: `offbook-${s.portfolioId}`,
       kind: "offbook",
@@ -378,7 +402,7 @@ export function buildHubState(input: HubInput): HubState {
 
   // 3. Unlinked follower with nothing off-book — still broken, quieter.
   for (const s of input.sleeves) {
-    if (s.followsPortfolioId != null || s.offBookValue > MATERIAL_USD) continue;
+    if (s.followsPortfolioId != null || isTradeableOffBook(s)) continue;
     lines.push({
       id: `unlinked-empty-${s.portfolioId}`,
       kind: "unlinked",

@@ -84,3 +84,39 @@ class TestLiveHubState(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_a_remainder_the_mirror_would_not_trade_is_not_reported(self):
+        """Converged is not stuck.
+
+        `alpaca_mirror` leaves a position alone once its weight is within 1% of
+        target. The hub used to flag every dollar, so a sleeve that had
+        converged as far as it ever would — $35.84 on $10,132 — sat in RED
+        telling its owner real-money trading might be switched off, while the
+        run journal recorded successful runs placing real orders. A warning
+        that can never be cleared trains its reader to ignore the panel.
+        """
+        actual = self.states["dust the mirror will never trade — converged, not stuck"]
+        self.assertEqual(actual["tone"], "good")
+        for line in actual["lines"]:
+            self.assertNotIn("offbook", line["id"])
+            self.assertNotIn("switched off", line["text"])
+
+    def test_escalation_needs_silence_from_the_runner_not_just_time(self):
+        """Red claims trading may be off — it must not contradict the journal."""
+        actual = self.states[
+            "a real remainder that runs have been chipping at — amber, never red"
+        ]
+        offbook = [ln for ln in actual["lines"] if ln["id"].startswith("offbook")]
+        self.assertEqual(len(offbook), 1)
+        self.assertEqual(offbook[0]["tone"], "warn")
+        self.assertNotIn("switched off", offbook[0]["text"])
+
+    def test_the_stuck_case_still_escalates_when_nothing_has_run(self):
+        """The guard must not have silenced a genuine stall."""
+        actual = self.states[
+            "stuck — inherited positions have outlived a scheduled run"
+        ]
+        offbook = [ln for ln in actual["lines"] if ln["id"].startswith("offbook")]
+        self.assertEqual(len(offbook), 1)
+        self.assertEqual(offbook[0]["tone"], "danger")
+        self.assertIn("switched off", offbook[0]["text"])
