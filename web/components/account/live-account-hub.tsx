@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
+import { brokerCashNote } from "@/lib/live-cash-status";
 import { useRouter } from "next/navigation";
 import type { LiveCashSummary } from "@/lib/live-cash-query";
 import type { LiveActivity } from "@/lib/live-activity-query";
@@ -456,13 +457,8 @@ function AccountPanel({
         records — it never places an order by itself. When a strategy&apos;s
         share can&apos;t be covered by cash, positions move with it and are
         traded into its own picks on its next sync.
-        {account.brokerCash == null && (
-          <>
-            {" "}
-            This server can&apos;t read your broker balance, so
-            &quot;unassigned&quot; is unknown and crediting is disabled —
-            moving money between strategies never needs the broker.
-          </>
+        {brokerCashNote(account.brokerCashStatus) && (
+          <> {brokerCashNote(account.brokerCashStatus)}</>
         )}
       </p>
     </div>

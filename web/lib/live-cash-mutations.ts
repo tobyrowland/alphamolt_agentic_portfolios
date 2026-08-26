@@ -28,6 +28,7 @@ import {
   accountKeyFor,
   getAccountCashSummaryForPortfolio,
 } from "@/lib/live-cash-query";
+import { creditBlockedReason } from "@/lib/live-cash-status";
 import { uniquePortfolioSlug } from "@/lib/slug";
 import {
   baselineAfterDeposit,
@@ -188,13 +189,9 @@ export async function creditAllowance(input: {
   const summary = await getAccountCashSummaryForPortfolio(sleeve.id, user.id);
   if (!summary) return { ok: false, error: "Could not load the account." };
   if (summary.unallocated == null) {
-    return {
-      ok: false,
-      error:
-        "The broker balance isn't readable from the website (no Alpaca keys " +
-        "in the web environment), so credits are disabled here. Use " +
-        "live_cash.py --credit instead.",
-    };
+    // Name what actually happened — "no keys" was asserted for every failure,
+    // including a rejected key, and sent an investigation the wrong way.
+    return { ok: false, error: creditBlockedReason(summary.brokerCashStatus) };
   }
   if (amount > summary.unallocated + CASH_TOLERANCE) {
     return {
