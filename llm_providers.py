@@ -22,6 +22,7 @@ ignores it, so the knob is safe to set on any agent config.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -206,6 +207,36 @@ def _dispatch(
 # stop sending it after the first 400 instead of paying the retry tax per call.
 _NO_TEMPERATURE_MODELS: set[str] = set()
 
+def _accepts_temperature(stream_fn) -> bool:
+    """Does this SDK's `messages.stream` take a `temperature` kwarg?
+
+    anthropic **1.0.0 removed `temperature` (and `top_p`) from
+    `Messages.create` and `Messages.stream` entirely** — no `**kwargs`, so
+    passing it raises `TypeError` *before* any HTTP request. That is not an
+    `APIError`, so the drop-and-retry path below never saw it, and every
+    Anthropic call died the same way:
+
+        Messages.stream() got an unexpected keyword argument 'temperature'
+
+    requirements.txt pins `anthropic>=0.40.0`, so a runner resolving 1.0.0 took
+    out every Anthropic caller at once — `double_down` evaluated 0 of 16 held
+    names, and `buyer-claude` / the bull evaluator fail identically.
+
+    Asking the bound method we are ABOUT TO CALL — rather than the version
+    string, an import path, or a per-model allowlist — keeps one rule that
+    survives SDK upgrades in both directions and makes no assumption about the
+    package layout. A signature we cannot read, or one with `**kwargs`, is
+    treated as accepting it: the API-level fallback below still covers a model
+    that rejects it at request time.
+    """
+    try:
+        params = inspect.signature(stream_fn).parameters
+    except (TypeError, ValueError):  # builtins / C-implemented callables
+        return True
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return True
+    return "temperature" in params
+
 
 def _call_anthropic(
     model: str,
@@ -228,7 +259,10 @@ def _call_anthropic(
     # with it first, drop it on a temperature error, and REMEMBER that for the
     # model so every later call this process skips it from the start (a buyer
     # run is ~40 calls — without the cache each one pays a 400-then-retry tax).
-    send_temperature = model not in _NO_TEMPERATURE_MODELS
+    send_temperature = (
+        _accepts_temperature(client.messages.stream)
+        and model not in _NO_TEMPERATURE_MODELS
+    )
     for attempt in range(2):
         try:
             kwargs = {
@@ -269,6 +303,16 @@ def _call_anthropic(
                 input_tokens=getattr(usage, "input_tokens", None) if usage else None,
                 output_tokens=getattr(usage, "output_tokens", None) if usage else None,
             )
+        except TypeError as exc:
+            # The SDK rejected a kwarg before any request went out. Only the
+            # temperature case is recoverable (drop it and retry); anything
+            # else is a real bug and must surface rather than be retried.
+            if "temperature" not in str(exc) or not send_temperature:
+                raise
+            last_err = exc
+            send_temperature = False
+            _NO_TEMPERATURE_MODELS.add(model)
+            continue
         except APIError as exc:  # type: ignore[misc]
             last_err = exc
             logger.warning("anthropic call attempt %d failed: %s", attempt + 1, exc)
