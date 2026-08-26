@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
-import { brokerCashNote } from "@/lib/live-cash-status";
+import { brokerCashNote, brokerCashTag } from "@/lib/live-cash-status";
 import { useRouter } from "next/navigation";
 import type { LiveCashSummary } from "@/lib/live-cash-query";
 import type { LiveActivity } from "@/lib/live-activity-query";
@@ -292,6 +292,16 @@ function AccountPanel({
           <span className="text-text-dim">
             {account.unallocated == null ? "—" : `$${fmt(account.unallocated)}`}
           </span>
+          {/* The reason belongs beside the missing number, not in small print
+              at the foot of the panel — that is where the eye already is. */}
+          {brokerCashTag(account.brokerCashStatus) && (
+            <span
+              className="ml-2 rounded border border-[var(--color-orange)]/40 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-[var(--color-orange)]"
+              title={brokerCashNote(account.brokerCashStatus) ?? undefined}
+            >
+              {brokerCashTag(account.brokerCashStatus)}
+            </span>
+          )}
         </p>
       </div>
 

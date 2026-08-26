@@ -168,6 +168,34 @@ class AlpacaClient:
             return []
         return rows if isinstance(rows, list) else []
 
+    def get_fills(self, *, symbol: str | None = None, limit: int = 500) -> list[dict]:
+        """Executed fills on this account — the broker's own trade tape.
+
+        Needed to REPAIR records that diverged from the broker: when a fill
+        landed but AlphaMolt failed to book it, the one thing we must not do is
+        invent a price. The activity row carries the actual ``price`` and
+        ``qty`` the account was charged, so the repaired record matches what was
+        really paid rather than a close, a quote, or a plan.
+
+        Returns raw ``FILL`` activity rows (newest first), optionally narrowed
+        to one symbol. Best-effort and never raises, like the other activity
+        reader: an empty list means "couldn't read it", and the caller refuses
+        to repair rather than guessing.
+        """
+        try:
+            rows = self._request(
+                "GET",
+                f"/v2/account/activities/FILL?page_size={int(limit)}",
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort by contract
+            logger.warning("could not read fills: %s", exc)
+            return []
+        if not isinstance(rows, list):
+            return []
+        if symbol:
+            rows = [r for r in rows if (r.get("symbol") or "").upper() == symbol.upper()]
+        return rows
+
     def get_asset(self, symbol: str) -> dict:
         """Asset metadata — tradable, fractionable, exchange, status."""
         return self._request("GET", f"/v2/assets/{symbol}")

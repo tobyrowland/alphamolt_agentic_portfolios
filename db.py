@@ -1051,6 +1051,26 @@ class SupabaseDB:
             if r.get("ticker")
         }
 
+    def get_portfolio_trade_notes(
+        self, portfolio_id: str, *, limit: int = 1000,
+    ) -> list[str]:
+        """The ``note`` of every recent trade in a portfolio, newest first.
+
+        Narrow on purpose: the only caller (``broker_sync.repair``) needs the
+        broker order ids embedded in mirror notes so it can tell a fill that WAS
+        booked from one that wasn't. Selecting one column keeps a 1000-row read
+        cheap and makes it obvious the repair never reasons over trade values.
+        """
+        resp = (
+            self.client.table("agent_trades")
+            .select("note")
+            .eq("portfolio_id", portfolio_id)
+            .order("executed_at", desc=True)
+            .limit(int(limit))
+            .execute()
+        )
+        return [str(r.get("note") or "") for r in (resp.data or [])]
+
     def get_agent_sold_tickers(
         self, portfolio_id: str, agent_id: str,
     ) -> set[str]:

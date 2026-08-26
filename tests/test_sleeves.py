@@ -427,12 +427,19 @@ class TestMirrorRefusesOnDrift(unittest.TestCase):
             {"NVDA": 3.0}, [("NVDA", 1, 100.0)], [("NVDA", 2, 100.0)],
         )
         mirror_paper_to_broker(db, pm, be, a, paper)
-        # A's equity = 100 (1 share) + 200 cash = 300 -> target 3 shares -> buy 2
+        # A's equity = 100 (1 share) + 200 cash = 300 -> target 3 shares -> buy 2.
+        # The order is then trimmed to what A's $200 allowance can actually pay
+        # for at the marketable limit ($103 = $100 + the 3% band): 1.9417 sh.
+        # Sizing off the $100 reference price instead would let a fill land
+        # anywhere up to $103, and the RPC would refuse it AFTER the broker had
+        # taken the shares — which is exactly the divergence that halted the
+        # real account on 2026-08-26.
         self.assertEqual(len(pm.buys), 1)
         pid, ticker, qty, price = pm.buys[0]
         self.assertEqual(pid, "l1")
         self.assertEqual(ticker, "NVDA")
-        self.assertAlmostEqual(qty, 2.0, places=4)
+        self.assertLessEqual(qty * 103.0, 200.0, "never orders past the allowance")
+        self.assertAlmostEqual(qty, 1.9417, places=4)
         self.assertEqual(price, 100.0, "books the actual fill price")
 
     def test_market_closed_short_circuits_before_any_drift_read(self):
@@ -646,3 +653,201 @@ class TestBaselineArithmetic(unittest.TestCase):
         # capital rather than pretending the trip was profit.
         self.assertLess(after_in, starting + out)
         self.assertGreater(after_in, starting)
+
+
+class TestAffordableBuyQty(unittest.TestCase):
+    """A sleeve may only order what its own allowance can pay for.
+
+    The broker's pooled cash is bigger than any one sleeve's allowance, so the
+    broker fills an order the DB then refuses — which is how 2026-08-26's halt
+    started. The check must therefore run BEFORE the order is placed, and
+    against the limit price rather than the reference price, because a
+    marketable limit can fill anywhere up to the band.
+    """
+
+    def test_an_affordable_order_passes_through_untouched(self):
+        self.assertEqual(sleeves.affordable_buy_qty(10.0, 100.0, 5_000.0), 10.0)
+
+    def test_an_exactly_affordable_order_is_not_trimmed(self):
+        self.assertEqual(sleeves.affordable_buy_qty(10.0, 100.0, 1_000.0), 10.0)
+
+    def test_a_short_allowance_trims_rather_than_skips(self):
+        """Skipping would stall: the same shortfall recurs on every run."""
+        qty = sleeves.affordable_buy_qty(10.0, 100.0, 640.0)
+        self.assertGreater(qty, 0)
+        self.assertLess(qty, 10.0)
+        self.assertLessEqual(qty * 100.0, 640.0)
+
+    def test_the_trim_rounds_down_never_up(self):
+        """Rounding to nearest can round back over the allowance."""
+        # 1360.48 / 360.11 = 3.77796...; rounding UP at 4dp would exceed it.
+        qty = sleeves.affordable_buy_qty(3.9892, 360.11, 1360.48)
+        self.assertLessEqual(qty * 360.11, 1360.48)
+
+    def test_the_real_failure_would_have_been_trimmed(self):
+        """2026-08-26: buy ZBRA 3.9892 against a $1,360.48 allowance.
+
+        The order cost ~$1,437 at the fill price. It filled at the broker, the
+        RPC refused to book it, and every subsequent run refused to trade.
+        """
+        qty = sleeves.affordable_buy_qty(3.9892, 360.11, 1360.48)
+        self.assertLess(qty, 3.9892)
+        self.assertLessEqual(qty * 360.11, 1360.48)
+
+    def test_no_allowance_means_no_order(self):
+        self.assertEqual(sleeves.affordable_buy_qty(10.0, 100.0, 0.0), 0.0)
+        self.assertEqual(sleeves.affordable_buy_qty(10.0, 100.0, -50.0), 0.0)
+
+    def test_a_trim_down_to_dust_is_dropped(self):
+        """A $3 order costs a round trip and leaves a dust position."""
+        self.assertEqual(sleeves.affordable_buy_qty(10.0, 100.0, 3.0), 0.0)
+
+    def test_an_unusable_price_or_quantity_orders_nothing(self):
+        self.assertEqual(sleeves.affordable_buy_qty(10.0, 0.0, 5_000.0), 0.0)
+        self.assertEqual(sleeves.affordable_buy_qty(0.0, 100.0, 5_000.0), 0.0)
+
+
+def _drift(ticker, recorded, actual):
+    return sleeves.PositionDrift(ticker, recorded, actual)
+
+
+def _fill(symbol, side, qty, price, order_id):
+    return {
+        "symbol": symbol, "side": side, "qty": str(qty),
+        "price": str(price), "order_id": order_id,
+    }
+
+
+class TestPlanRepair(unittest.TestCase):
+    """Booking the fills our records are missing — at the broker's own prices.
+
+    ``sync_to_db`` reconciles a sole-occupant account by overwriting the book
+    from the broker. On a shared account that is forbidden, so nothing repaired
+    a missed fill and the alignment gate halted trading indefinitely. This is
+    the narrow, attributed alternative.
+    """
+
+    def test_an_unrecorded_buy_is_booked_at_the_broker_price(self):
+        plan = sleeves.plan_repair(
+            [_drift("ZBRA", 2.3718, 6.3610)],
+            [_fill("ZBRA", "buy", 3.9892, 360.11, "ord-1")],
+            recorded_order_ids=set(),
+            allowance=5_000.0,
+            unallocated=0.0,
+        )
+        self.assertEqual(len(plan.legs), 1)
+        leg = plan.legs[0]
+        self.assertEqual(leg.side, "buy")
+        self.assertEqual(leg.ticker, "ZBRA")
+        self.assertAlmostEqual(leg.qty, 3.9892, places=4)
+        self.assertEqual(leg.price, 360.11)
+        self.assertEqual(plan.refusals, ())
+        self.assertEqual(plan.topup, 0.0)
+
+    def test_a_short_allowance_is_topped_up_from_unallocated(self):
+        """The buy was paid for out of pooled cash, so the sleeve is short."""
+        plan = sleeves.plan_repair(
+            [_drift("ZBRA", 2.3718, 6.3610)],
+            [_fill("ZBRA", "buy", 3.9892, 360.11, "ord-1")],
+            recorded_order_ids=set(),
+            allowance=1360.48,
+            unallocated=12_149.18,
+        )
+        self.assertEqual(len(plan.legs), 1)
+        self.assertGreater(plan.topup, 0)
+        self.assertAlmostEqual(
+            plan.topup, round(plan.legs[0].value - 1360.48, 2), places=2,
+        )
+
+    def test_it_refuses_when_unallocated_cannot_cover_the_topup(self):
+        plan = sleeves.plan_repair(
+            [_drift("ZBRA", 2.3718, 6.3610)],
+            [_fill("ZBRA", "buy", 3.9892, 360.11, "ord-1")],
+            recorded_order_ids=set(),
+            allowance=0.0,
+            unallocated=10.0,
+        )
+        self.assertEqual(plan.legs, ())
+        self.assertTrue(any("unallocated" in r for r in plan.refusals))
+
+    def test_a_difference_with_no_broker_fill_is_refused_not_guessed(self):
+        """A guessed cost basis is a permanent, silent error in every return."""
+        plan = sleeves.plan_repair(
+            [_drift("ZBRA", 2.0, 6.0)],
+            [],
+            recorded_order_ids=set(),
+            allowance=100_000.0,
+            unallocated=0.0,
+        )
+        self.assertEqual(plan.legs, ())
+        self.assertEqual(len(plan.refusals), 1)
+
+    def test_a_fill_we_already_booked_is_not_booked_twice(self):
+        """Re-booking a recorded order would double a real position."""
+        plan = sleeves.plan_repair(
+            [_drift("ZBRA", 2.3718, 6.3610)],
+            [_fill("ZBRA", "buy", 3.9892, 360.11, "ord-1")],
+            recorded_order_ids={"ord-1"},
+            allowance=100_000.0,
+            unallocated=0.0,
+        )
+        self.assertEqual(plan.legs, ())
+        self.assertEqual(len(plan.refusals), 1)
+
+    def test_an_unrecorded_sell_credits_rather_than_costs(self):
+        plan = sleeves.plan_repair(
+            [_drift("AAA", 10.0, 4.0)],
+            [_fill("AAA", "sell", 6.0, 50.0, "ord-2")],
+            recorded_order_ids=set(),
+            allowance=0.0,
+            unallocated=0.0,
+        )
+        self.assertEqual(len(plan.legs), 1)
+        self.assertEqual(plan.legs[0].side, "sell")
+        self.assertEqual(plan.topup, 0.0)
+        self.assertEqual(plan.net_cash, 300.0)
+
+    def test_sells_are_booked_before_buys_so_proceeds_fund_them(self):
+        plan = sleeves.plan_repair(
+            [_drift("AAA", 10.0, 4.0), _drift("ZBRA", 2.0, 6.0)],
+            [
+                _fill("AAA", "sell", 6.0, 100.0, "ord-2"),
+                _fill("ZBRA", "buy", 4.0, 100.0, "ord-1"),
+            ],
+            recorded_order_ids=set(),
+            allowance=0.0,
+            unallocated=0.0,
+        )
+        self.assertEqual([leg.side for leg in plan.legs], ["sell", "buy"])
+        # $600 of proceeds covers the $400 buy, so nothing has to be credited.
+        self.assertEqual(plan.topup, 0.0)
+
+    def test_a_price_the_broker_cannot_supply_is_refused(self):
+        plan = sleeves.plan_repair(
+            [_drift("ZBRA", 2.0, 6.0)],
+            [{"symbol": "ZBRA", "side": "buy", "qty": "4", "price": None,
+              "order_id": "ord-1"}],
+            recorded_order_ids=set(),
+            allowance=100_000.0,
+            unallocated=0.0,
+        )
+        self.assertEqual(plan.legs, ())
+        self.assertTrue(any("price" in r for r in plan.refusals))
+
+    def test_it_never_nets_one_symbol_against_another(self):
+        """Two differences produce two legs, not one combined adjustment."""
+        plan = sleeves.plan_repair(
+            [_drift("AAA", 0.0, 2.0), _drift("BBB", 0.0, 3.0)],
+            [
+                _fill("AAA", "buy", 2.0, 10.0, "o1"),
+                _fill("BBB", "buy", 3.0, 10.0, "o2"),
+            ],
+            recorded_order_ids=set(),
+            allowance=100_000.0,
+            unallocated=0.0,
+        )
+        self.assertEqual({leg.ticker for leg in plan.legs}, {"AAA", "BBB"})
+
+
+if __name__ == "__main__":
+    unittest.main()

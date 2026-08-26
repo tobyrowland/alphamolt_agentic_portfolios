@@ -43,6 +43,7 @@ class BrokerCashStatusCopyTests(unittest.TestCase):
             raise unittest.SkipTest(f"node cannot strip types: {proc.stderr[:300]}")
         out = json.loads(proc.stdout)
         cls.notes = out["notes"]
+        cls.tags = out["tags"]
         cls.credit = out["creditBlocked"]
 
     def test_a_successful_read_explains_nothing(self):
@@ -91,3 +92,45 @@ class BrokerCashStatusCopyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BrokerCashTagTests(unittest.TestCase):
+    """The tag that sits where the missing number is.
+
+    The full note shipped as 11px grey text at the foot of the panel, while the
+    symptom — "broker cash —" — sat at the top in its own row. The answer was
+    on the page and still invisible: the owner reloaded, looked at the dash,
+    and reported seeing nothing. A diagnostic nobody's eye lands on is not a
+    diagnostic, so the reason now sits beside the dash and the note is its
+    tooltip.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        BrokerCashStatusCopyTests.setUpClass()
+        cls.tags = BrokerCashStatusCopyTests.tags
+        cls.notes = BrokerCashStatusCopyTests.notes
+
+    def test_a_successful_read_shows_no_tag(self):
+        self.assertIsNone(self.tags["ok"])
+
+    def test_every_failure_is_tagged(self):
+        for status in ("not_configured", "rejected", "unreachable"):
+            with self.subTest(status):
+                self.assertTrue(self.tags[status])
+
+    def test_the_tags_are_distinct(self):
+        failures = [self.tags[s] for s in
+                    ("not_configured", "rejected", "unreachable")]
+        self.assertEqual(len(set(failures)), 3, failures)
+
+    def test_a_tag_is_short_enough_to_sit_on_one_line(self):
+        """It shares a row with two figures — a sentence would wrap it."""
+        for status, tag in self.tags.items():
+            if tag is None:
+                continue
+            with self.subTest(status):
+                self.assertLessEqual(len(tag), 16, tag)
+
+    def test_the_rejected_tag_says_rejected_not_missing(self):
+        self.assertIn("reject", self.tags["rejected"].lower())

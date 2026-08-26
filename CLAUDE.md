@@ -1935,6 +1935,45 @@ hand one sleeve every position in the account); and `_pair_live_followers`
 silently dropping one. A sole-occupant account keeps its pre-083 behaviour
 exactly — sync still owns reconciliation, and drift only warns.
 
+**Repairing a shared account — `--repair`.** The alignment refusal is correct
+but it used to be a dead end: `sync_to_db` is the only reconciler and it
+refuses on a shared account, so a single fill that reached the broker but not
+the DB halted **all** real-money trading on that account with no way to clear
+it. `broker_sync.repair` (CLI `alpaca_execution.py --repair SLUG`, Actions
+`live-mirror.yml` action `repair`) is the narrow alternative: it books each
+missing trade against the **one sleeve named on the command line** — the
+attribution is the human's call, because the broker's pooled view cannot know
+whose order it was — taking quantities from the drift and **prices from the
+broker's own fill tape** (`AlpacaClient.get_fills` → `/v2/account/activities/
+FILL`). It never invents a price: a difference with no matching unrecorded fill
+is REFUSED, since a guessed cost basis is a permanent, silent error in every
+return the sleeve reports afterwards. An unrecorded buy was paid for out of
+pooled cash, so the sleeve's allowance is topped up from unallocated first
+(`reason='repair-topup'`) — a real transfer of capital in, so it moves the
+baseline like any other credit. Already-booked orders are skipped by matching
+the order id embedded in mirror trade notes, so a repair can never double a
+real position. Planned by the pure `sleeves.plan_repair`
+(`tests/test_sleeves.py`); run `repair` with `dry_run` on first, then `mirror`.
+
+**Two bugs made this necessary, both fixed (2026-08-26).** A 40-order rebalance
+placed a final `buy ZBRA 3.9892`; it filled at the broker; the atomic RPC
+refused to book it (the sleeve's allowance was ~$77 short after slippage on the
+sells); and the run still reported `placed: 40`. Real shares existed that no
+sleeve owned, and every subsequent run refused to trade.
+- `buy_portfolio_atomic` / `sell_portfolio_atomic` **return** a rejection
+  rather than raising it, so `alpaca_mirror._record_fill`'s try/except never
+  saw it. It now checks `status == "ok"` as well as catching exceptions —
+  a fill the DB refused is never counted as recorded.
+- The mirror sizes orders against a sleeve's **equity** but pays for them out
+  of its **allowance**, and the broker's pooled cash is far larger, so the
+  broker fills orders the DB then refuses. Every buy is now checked against the
+  running allowance before it is placed (`sleeves.affordable_buy_qty`) and
+  **trimmed** to fit — against the *limit* price, not the reference price,
+  because a marketable limit can fill anywhere up to the band. Trimming rather
+  than skipping is what keeps the book converging: a skipped name would be
+  re-planned and re-skipped at the same shortfall on every run. A trim below
+  `MIN_TRIMMED_ORDER_USD` ($25) is dropped as dust.
+
 `portfolios.broker_account_key` declares which credentials entry a live
 portfolio uses (key into `ALPACA_ACCOUNTS`); two live rows with the same key are
 sleeves of one account. NULL falls back to the slug, so pre-083 rows are
@@ -2277,6 +2316,11 @@ python live_cash.py --transfer scrappy-live other-live 1000 --dry-run
 python live_cash.py --baselines               # what each return is measured against
 python live_cash.py --fix-baselines --dry-run # rebuild from the broker's deposits
 python live_cash.py --set-baseline scrappy-live 10000
+
+# Repairing a shared broker account after a "REFUSING to trade" halt
+python alpaca_execution.py --reconcile scrappy-live          # what differs (read-only)
+python alpaca_execution.py --repair scrappy-live --dry-run   # what it would book
+python alpaca_execution.py --repair scrappy-live             # book it, then re-run mirror
 
 # Lifecycle emails (welcome sequence)
 python lifecycle_emails.py                  # send A1 welcome to eligible new signups

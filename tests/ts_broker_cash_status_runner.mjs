@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const { brokerCashNote, creditBlockedReason } = await import(
+const { brokerCashNote, brokerCashTag, creditBlockedReason } = await import(
   join(here, "..", "web", "lib", "live-cash-status.ts")
 );
 
@@ -23,6 +23,7 @@ const STATUSES = ["ok", "not_configured", "rejected", "unreachable"];
 process.stdout.write(
   JSON.stringify({
     notes: Object.fromEntries(STATUSES.map((s) => [s, brokerCashNote(s)])),
+    tags: Object.fromEntries(STATUSES.map((s) => [s, brokerCashTag(s)])),
     creditBlocked: Object.fromEntries(
       STATUSES.map((s) => [s, creditBlockedReason(s)]),
     ),

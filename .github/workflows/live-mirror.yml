@@ -9,13 +9,18 @@ name: Live Portfolio (Alpaca)
 #                 (drift threshold 0 — buys everything in the paper book, not
 #                 just changes; trims anything not in it)
 #   - sync      : mirror Alpaca state -> DB (drift reconciler: dividends,
-#                 manual trades, queued fills)
+#                 manual trades, queued fills). Sole-occupant accounts only.
+#   - repair    : book fills the broker made but our records are missing, at
+#                 their real fill prices. This is the one that clears a
+#                 "REFUSING to trade — records disagree with the broker"
+#                 halt on a SHARED account, where sync deliberately refuses.
 #
 # Real orders only fire when the portfolio is mode='live' AND
 # ALPACA_LIVE_EXECUTION_ENABLED is set (secret). Use dry_run to preview.
 # The routine "mirror after rebalance" path runs inside agent-heartbeat;
 # this workflow is for one-off / manual operation plus a daily sync reconcile.
 # Lifecycle: create -> go-live -> replicate (or mirror) -> (daily sync).
+# When a mirror reports drift_refused: repair (dry_run first), then mirror.
 
 on:
   workflow_dispatch:
@@ -24,7 +29,7 @@ on:
         description: "What to run"
         required: true
         type: choice
-        options: [create, go-live, mirror, replicate, sync]
+        options: [create, go-live, mirror, replicate, sync, repair]
         default: mirror
       slug:
         description: "create: your PAPER/arena slug. Others: the LIVE slug (e.g. my-arena-live)."
@@ -100,6 +105,7 @@ jobs:
             mirror)    python alpaca_mirror.py --slug "${SLUG}" ${DRY[@]+"${DRY[@]}"} ;;
             replicate) python alpaca_mirror.py --slug "${SLUG}" --threshold 0 ${DRY[@]+"${DRY[@]}"} ;;
             sync)      python alpaca_execution.py --sync "${SLUG}" ${DRY[@]+"${DRY[@]}"} ;;
+            repair)    python alpaca_execution.py --repair "${SLUG}" ${DRY[@]+"${DRY[@]}"} ;;
             *) echo "::error::unknown action '${ACTION}'"; exit 1 ;;
           esac
 
