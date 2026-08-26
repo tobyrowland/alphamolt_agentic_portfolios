@@ -146,6 +146,16 @@ identically):
   `web/lib/thesis-policy.ts`, because `setPortfolioThesisPolicy` writes the
   whole resolved object and a key the TS twin didn't know would be silently
   deleted on the owner's next save (pinned by `tests/ts_thesis_policy_runner.mjs`).
+  Stored and resolved as a **normalised ISO-8601 string**, never a `datetime`:
+  the resolved policy is JSON — the reviewer journals it whole into
+  `agent_heartbeats.notes` and the TS twin types this key `string | null` —
+  and a `datetime` in it killed the entire heartbeat at the journal write
+  (`thesis_policy.cooldown_ignore_before` parses on use). `agent_heartbeat.
+  _json_safe` now coerces the whole free-form notes bag before the insert, and
+  a journal write that fails anyway is retried with a minimal payload rather
+  than propagating — the journal row is what the run-now panel waits on, and
+  losing it stranded every portfolio queued behind the failing one. See
+  `tests/test_heartbeat_journal.py`.
 
 **Separately and unconditionally** (a correctness invariant, not policy —
 nothing wants a position whose exit trigger is already met):
