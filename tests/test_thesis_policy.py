@@ -8,6 +8,7 @@ regression names the trade it would have repeated.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -556,3 +557,53 @@ def test_the_genuinely_relative_fields_still_reject_static_ops():
         assert not tp.signal_permitted(
             {"field": field, "op": "<", "value": -20}, policy
         ), field
+
+
+# ---------------------------------------------------------------------------
+# The resolved policy must be JSON
+#
+# `resolve_policy` used to parse the exemption into a `datetime` and leave it
+# in the returned dict. That dict is not a private in-memory value: the
+# reviewer journals it whole into `agent_heartbeats.notes` (JSONB), and
+# `web/lib/thesis-policy.ts` types the key `string | null` and writes the whole
+# object back on the owner's next save. In production the datetime raised
+# `TypeError: Object of type datetime is not JSON serializable` inside the
+# journal insert and killed the entire heartbeat process — see
+# tests/test_heartbeat_journal.py for the downstream damage.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw", [
+    {},
+    {"grace_period_days": 45, "require_fired_break_signal": False},
+    {"rebuy_cooldown_ignores_sells_before": "2026-08-25T00:00:00Z"},
+    {"rebuy_cooldown_ignores_sells_before": datetime(
+        2026, 8, 25, tzinfo=timezone.utc)},
+    {"rebuy_cooldown_ignores_sells_before": "2099-01-01"},   # rejected → None
+    {"rebuy_cooldown_ignores_sells_before": "nonsense"},     # unparsed → None
+])
+def test_the_resolved_policy_is_always_json_serialisable(raw):
+    json.dumps(tp.resolve_policy(raw))
+
+
+def test_the_exemption_is_normalised_to_an_iso_string():
+    """Whatever the owner typed, the stored form is one canonical string."""
+    for raw in ("2026-08-25", "2026-08-25T00:00:00Z", "2026-08-25 00:00:00+00",
+                datetime(2026, 8, 25, tzinfo=timezone.utc)):
+        policy = tp.resolve_policy(
+            {"rebuy_cooldown_ignores_sells_before": raw}
+        )
+        value = policy["rebuy_cooldown_ignores_sells_before"]
+        assert isinstance(value, str), raw
+        assert value == "2026-08-25T00:00:00+00:00", raw
+
+
+def test_the_exemption_survives_a_json_round_trip():
+    """The policy is stored as JSONB and read back — it must still bind."""
+    policy = tp.resolve_policy(
+        {"rebuy_cooldown_ignores_sells_before": "2026-08-24"}
+    )
+    reloaded = tp.resolve_policy(json.loads(json.dumps(policy)))
+    assert tp.cooldown_cutoff(reloaded, days=90, now=NOW) == datetime(
+        2026, 8, 24, tzinfo=timezone.utc
+    )

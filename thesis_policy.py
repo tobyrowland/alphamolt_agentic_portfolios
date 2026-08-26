@@ -135,6 +135,12 @@ def resolve_policy(raw: Any) -> dict[str, Any]:
     # the cooldown outright, which is far more likely to be a mistyped year
     # than an intention. Failing back to None keeps the rule at full strength —
     # the conservative direction for a misconfiguration.
+    # Stored back as a normalised ISO-8601 STRING, never as a datetime. The
+    # resolved policy is JSON — it is journalled into `agent_heartbeats.notes`
+    # by the reviewer, and `web/lib/thesis-policy.ts` (which types this key
+    # `string | null`) writes the whole object back on the owner's next save.
+    # A datetime here is not JSON-serialisable and took the whole heartbeat
+    # down at the journal write; `cooldown_ignore_before` parses on use.
     exempt = _parse_ts(raw.get("rebuy_cooldown_ignores_sells_before"))
     if exempt is not None:
         if exempt > datetime.now(timezone.utc):
@@ -143,7 +149,7 @@ def resolve_policy(raw: Any) -> dict[str, Any]:
                 "future — ignoring it and keeping the full cooldown", exempt,
             )
         else:
-            policy["rebuy_cooldown_ignores_sells_before"] = exempt
+            policy["rebuy_cooldown_ignores_sells_before"] = exempt.isoformat()
 
     return policy
 
@@ -287,8 +293,10 @@ def cooldown_ignore_before(policy: dict[str, Any]) -> Optional[datetime]:
     ``None`` (the default) means no exemption — every sell in the window counts,
     which is exactly the behaviour that predates this key.
     """
-    value = (policy or {}).get("rebuy_cooldown_ignores_sells_before")
-    return value if isinstance(value, datetime) else None
+    # `resolve_policy` normalises the key to an ISO-8601 string (the policy
+    # dict has to stay JSON-serialisable), but a policy dict assembled in
+    # memory may still carry a real datetime — `_parse_ts` accepts both.
+    return _parse_ts((policy or {}).get("rebuy_cooldown_ignores_sells_before"))
 
 
 def cooldown_cutoff(

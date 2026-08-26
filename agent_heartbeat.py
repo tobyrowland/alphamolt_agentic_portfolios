@@ -32,7 +32,8 @@ import re
 import sys
 import time
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 from dotenv import load_dotenv
 
@@ -202,6 +203,34 @@ def _is_due(agent: dict, now: datetime) -> bool:
     return now >= due_at
 
 
+def _json_safe(value):
+    """Return ``value`` with every non-JSON-serialisable leaf coerced to text.
+
+    `RebalanceResult.notes` is a free-form bag any strategy may write into, and
+    it is persisted whole into the `agent_heartbeats.notes` JSONB column. One
+    stray `datetime` in there raised `TypeError: Object of type datetime is not
+    JSON serializable` inside httpx's request encoder — which killed the entire
+    heartbeat process, so the journal row was never written, the member's
+    `last_heartbeat_at` never advanced, the run-now panel waited for a journal
+    that could not arrive (and gave up at its 12-minute client timeout), and
+    every portfolio queued behind the failing one silently never ran.
+
+    Coercing here rather than at each write site is deliberate: the notes bag
+    has no schema, so the guarantee belongs at the one place it is serialised.
+    """
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def _journal(
     db: SupabaseDB,
     *,
@@ -233,10 +262,35 @@ def _journal(
         "trades_executed": (result.trades if result else 0),
         "buys": (result.buys if result else 0),
         "sells": (result.sells if result else 0),
-        "notes": notes,
+        "notes": _json_safe(notes),
         "error_message": error_message,
     }
-    db.insert_agent_heartbeat(row)
+    log = logging.getLogger("agent_heartbeat")
+    try:
+        db.insert_agent_heartbeat(row)
+    except Exception as exc:  # noqa: BLE001
+        # The journal row is what the run-now panel waits on to declare the run
+        # finished, and losing it would strand the whole heartbeat, so retry
+        # once with a notes bag that cannot fail to serialise. Never let a
+        # journal write take the process down: every portfolio queued behind
+        # this one would silently never rebalance.
+        log.error(
+            "journal write failed for %s (%s): %s — retrying without notes",
+            agent_id, strategy, exc,
+        )
+        row["notes"] = {
+            k: v for k, v in (("portfolio_id", portfolio_id),
+                              ("triggered_by", triggered_by)) if v
+        }
+        row["notes"]["journal_notes_dropped"] = str(exc)
+        try:
+            db.insert_agent_heartbeat(row)
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "journal write failed twice for %s (%s) — clock not advanced",
+                agent_id, strategy,
+            )
+            return
     # Update last_heartbeat_at on every persisted attempt — success or error.
     # This honours the agents.heartbeat_interval_hours interval guard even when
     # the strategy errored (a parked agent's long interval-guard stays in
