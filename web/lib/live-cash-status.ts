@@ -62,6 +62,27 @@ export function brokerCashNote(status: BrokerCashStatus): string | null {
   }
 }
 
+/**
+ * A two-or-three word tag to sit where the missing number would be.
+ *
+ * The full note explains; this one is READ. The explanation shipped as 11px
+ * grey text at the foot of the panel while the symptom — "broker cash —" — sat
+ * at the top in its own row, so the answer was present and still invisible.
+ * A diagnostic nobody's eye lands on is not a diagnostic.
+ */
+export function brokerCashTag(status: BrokerCashStatus): string | null {
+  switch (status) {
+    case "ok":
+      return null;
+    case "not_configured":
+      return "not configured";
+    case "rejected":
+      return "keys rejected";
+    case "unreachable":
+      return "unreachable";
+  }
+}
+
 /** The one-line reason a credit is refused, for the server action. */
 export function creditBlockedReason(status: BrokerCashStatus): string {
   const note = brokerCashNote(status);
