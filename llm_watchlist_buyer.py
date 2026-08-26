@@ -111,7 +111,22 @@ logger = logging.getLogger("llm_watchlist_buyer")
 
 LLM_WATCHLIST_BUYER_DEFAULTS: dict[str, Any] = {
     "provider": "google",
-    "model": "gemini-2.5-pro",
+    "model": "gemini-3.1-pro-preview",
+    # Reasoning depth per call, for models that expose it (Gemini 3.x today;
+    # ignored elsewhere). Phase 1 runs once PER CANDIDATE — up to MAX_SWARM_EVAL
+    # (40) names per portfolio per day — so it is the knob that decides the
+    # daily bill. `medium` rather than the Pro tier's own `high` default
+    # because the deep, equity-intrinsic analysis already happened ONCE in the
+    # shared research card (migration 055); this call is a mandate-fit
+    # judgment over pre-digested work, not a fresh teardown.
+    "thinking_level": "medium",
+    # Phase 2 only ORDERS an already-vetted shortlist — a comparison, not
+    # analysis — so it stays shallow whatever phase 1 is set to.
+    "thinking_level_phase2": "low",
+    # Used ONLY if `model` turns out not to exist (a retired preview id).
+    # Without it the buyer would evaluate nothing while cheerfully reporting
+    # "no candidates met the conviction threshold".
+    "fallback_model": "gemini-3.7-flash",
     "min_cash_pct": 2.0,            # below this, exit before any LLM work
     "target_position_pct": 4.0,     # target weight per BUY
     "min_position_pct": 2.0,        # floor on the last (partial) BUY
@@ -131,10 +146,14 @@ LLM_WATCHLIST_BUYER_DEFAULTS: dict[str, Any] = {
     # post-SELL re-buy cooldown stays 90d — see get_recently_sold_tickers.)
     "rejection_window_days": 30,
     "concurrency": 5,               # ThreadPoolExecutor max_workers for Phase 1
-    "per_call_timeout_sec": 90,     # per-future timeout for Phase 1
-    # Per-ticker output is small (~500 tokens) but Gemini 2.5 Pro's thinking
-    # tokens count toward max_output_tokens. 65536 is Gemini's hard ceiling
-    # and avoids the truncation trap the curator hit (PR #1045).
+    # Per-future timeout for Phase 1. A timeout here is SILENT — the future is
+    # cancelled and the name is simply never considered — so it has to clear a
+    # deep-thinking call comfortably. 90s was sized for Gemini 2.5 Pro.
+    "per_call_timeout_sec": 180,
+    # Per-ticker output is small (~500 tokens) but thinking tokens count toward
+    # max_output_tokens. 65536 is Gemini's hard ceiling and avoids the
+    # truncation trap the curator hit (PR #1045). It is a CAP, not a spend —
+    # `thinking_level` is what actually governs how much reasoning is bought.
     "max_tokens": 65536,
     # Phase 2 is just a list of tickers; thinking still happens but output
     # is tiny.
@@ -429,6 +448,8 @@ def _evaluate_ticker(
     temperature: float,
     max_signals: int,
     policy: dict,
+    thinking_level: str | None = None,
+    fallback_model: str | None = None,
 ) -> dict:
     """Call the LLM for one ticker. Returns either the parsed verdict dict
     or a dict with ``error`` set (never raises).
@@ -471,6 +492,8 @@ def _evaluate_ticker(
             user=user,
             max_tokens=max_tokens,
             temperature=temperature,
+            thinking_level=thinking_level,
+            fallback_model=fallback_model,
         )
     except LLMProviderError as exc:
         return {"ticker": ticker, "error": f"LLM call failed: {exc}"}
@@ -478,6 +501,7 @@ def _evaluate_ticker(
     try:
         parsed, _retry = _parse_with_retry(
             provider, model, resp.text, system=BUYER_SYSTEM_PROMPT,
+            fallback_model=fallback_model,
         )
     except LLMProviderError as exc:
         return {
@@ -547,6 +571,8 @@ def _prioritise(
     portfolio_mandate: str | None,
     max_tokens: int,
     temperature: float,
+    thinking_level: str | None = None,
+    fallback_model: str | None = None,
 ) -> tuple[list[str], dict]:
     """Single LLM call that orders the conviction-5 candidates.
 
@@ -581,9 +607,12 @@ def _prioritise(
             user=user,
             max_tokens=max_tokens,
             temperature=temperature,
+            thinking_level=thinking_level,
+            fallback_model=fallback_model,
         )
         parsed, _retry = _parse_with_retry(
             provider, model, resp.text, system=PRIORITISATION_SYSTEM_PROMPT,
+            fallback_model=fallback_model,
         )
     except LLMProviderError as exc:
         notes["phase2_error"] = f"prioritisation LLM call failed: {exc}"
@@ -772,6 +801,8 @@ def evaluate_candidates(
     max_tokens = int(params["max_tokens"])
     temperature = float(params["temperature"])
     max_signals = int(params["max_signals_per_kind"])
+    thinking_level = params.get("thinking_level")
+    fallback_model = params.get("fallback_model")
     # Callers that know the portfolio pass its resolved policy; the rest get
     # DEFAULTS, so the discipline applies even on paths that predate 086.
     policy = _policy.resolve_policy(policy if policy is not None else {})
@@ -800,6 +831,8 @@ def evaluate_candidates(
                 temperature=temperature,
                 max_signals=max_signals,
                 policy=policy,
+                thinking_level=thinking_level,
+                fallback_model=fallback_model,
             ): ticker
             for ticker in candidates
             if ticker in by_ticker_data
@@ -1070,6 +1103,8 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
         portfolio_mandate=portfolio_mandate,
         max_tokens=int(params["max_tokens_phase2"]),
         temperature=temperature,
+        thinking_level=params.get("thinking_level_phase2"),
+        fallback_model=params.get("fallback_model"),
     )
     result.notes.update(phase2_notes)
 

@@ -1,7 +1,9 @@
 """Portfolio Review Agent — checks each held equity for thesis drift weekly.
 
 The sell-side counterpart of `llm_watchlist_buyer`. For every position in
-the portfolio's book, calls a frontier model (Gemini 2.5 Pro) to decide
+the portfolio's book, calls a frontier model (Gemini 3.1 Pro, at HIGH
+reasoning depth — one call per held position per week makes this the cheap
+place to think hard, and a sell is the decision that is hardest to undo) to decide
 whether the recorded investment thesis has materially deteriorated. If
 the LLM verdict is SELL at conviction >= 4/5, the agent marks the
 recorded thesis as `broken` and sells the full position at the current
@@ -34,10 +36,21 @@ logger = logging.getLogger("portfolio_reviewer")
 
 PORTFOLIO_REVIEWER_DEFAULTS: dict[str, Any] = {
     "provider": "google",
-    "model": "gemini-2.5-pro",
+    "model": "gemini-3.1-pro-preview",
+    # Reasoning depth per call, for models that expose it (Gemini 3.x today;
+    # ignored elsewhere). The reviewer is the cheap place to think hard: one
+    # call per HELD position on a weekly cadence (~15 a week) against the
+    # buyer's ~280, so `high` costs little and buys the most on the decision
+    # that is expensive to get wrong.
+    "thinking_level": "high",
+    # Used ONLY if `model` turns out not to exist — a retired preview id would
+    # otherwise stop every sell decision silently.
+    "fallback_model": "gemini-3.7-flash",
     "sell_conviction_threshold": 4,   # SELL fires when conviction >= this
     "concurrency": 5,                 # ThreadPoolExecutor workers
-    "per_call_timeout_sec": 120,      # Per-position LLM timeout
+    # Per-position LLM timeout. Silent when hit (the position is journalled as
+    # a timeout and simply not reviewed), so it is sized for `high` thinking.
+    "per_call_timeout_sec": 300,
     # Thinking-token headroom — same trap as the curator + buyer (PR #1045).
     "max_tokens": 65536,
     "temperature": 0.2,
@@ -203,6 +216,8 @@ def _evaluate_position(
     current_data: dict,
     max_tokens: int,
     temperature: float,
+    thinking_level: str | None = None,
+    fallback_model: str | None = None,
 ) -> dict:
     """One LLM call. Returns either the parsed verdict dict or
     `{ticker, error, raw_response_truncated}` on failure. Never raises.
@@ -251,6 +266,8 @@ def _evaluate_position(
             user=user,
             max_tokens=max_tokens,
             temperature=temperature,
+            thinking_level=thinking_level,
+            fallback_model=fallback_model,
         )
     except LLMProviderError as exc:
         return {"ticker": ticker, "error": f"LLM call failed: {exc}"}
@@ -258,6 +275,7 @@ def _evaluate_position(
     try:
         parsed, _retry = _parse_with_retry(
             provider, model, resp.text, system=REVIEWER_SYSTEM_PROMPT,
+            fallback_model=fallback_model,
         )
     except LLMProviderError as exc:
         return {
@@ -488,6 +506,8 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
     timeout_sec = float(params["per_call_timeout_sec"])
     max_tokens = int(params["max_tokens"])
     temperature = float(params["temperature"])
+    thinking_level = params.get("thinking_level")
+    fallback_model = params.get("fallback_model")
 
     logger.info(
         "%s: reviewing %d positions, concurrency=%d, timeout=%.0fs",
@@ -516,6 +536,8 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
                 current_data=item["current_data"],
                 max_tokens=max_tokens,
                 temperature=temperature,
+                thinking_level=thinking_level,
+                fallback_model=fallback_model,
             ): item["ticker"]
             for item in work
         }

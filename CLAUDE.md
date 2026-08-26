@@ -76,6 +76,56 @@ extend/break signals. Exposes `build_snapshot`, `record_thesis`,
 `mark_thesis_status`. Signal operators: `>`, `>=`, `<`, `<=`, `==`, `!=`,
 `change_pct_lt`, `change_pct_gt`. See migration 020.
 
+### llm_providers.py — reasoning depth (`thinking_level`)
+The single dispatch surface every agent's LLM call goes through
+(`call_llm(provider=…, model=…)`). Two parameters matter for the Gemini
+agents (migration 087):
+
+- **`thinking_level`** ∈ `minimal | low | medium | high` — how much
+  deliberation to buy per call, WITHOUT changing brain. Gemini 3 replaced
+  2.5's numeric `thinking_budget` with this; sending both in one request is a
+  hard 400, so the adapter only ever sends the level, and only to a Gemini 3
+  model (`_is_gemini_3`, a family-PREFIX match so a new point release can't
+  silently drop back onto the 2.5 path). Other providers ignore the key, so it
+  is safe to set on any `agents.config`. Thinking tokens bill at the OUTPUT
+  rate, so this is the knob that decides the daily bill — see the per-agent
+  depth split under the house agents.
+- **`fallback_model`** — used ONLY when the primary model id turns out not to
+  exist (`LLMModelUnavailableError`, matched off the provider error text), never
+  for a transient failure. It exists because `gemini-3.1-pro-preview` is a
+  PREVIEW id: when Google retires one, a plain retry loop turns the buyer and
+  reviewer into permanent no-ops that report "no candidates met the conviction
+  threshold" — indistinguishable from a quiet market. The fallback logs at
+  ERROR (a human must repoint `agents.config`) and inherits the requested
+  depth, so it is a cheaper brain, not a shallower question.
+
+Two Gemini-3 behaviours are enforced in the adapter rather than trusted to
+each config row:
+- **Temperature floor.** Gemini 3 is documented to degrade below its 1.0
+  default ("looping or degraded performance, particularly in complex …
+  reasoning tasks"); every `agents.config` in this repo carries the
+  Gemini-2.5-era `0.2`, so `_gemini_temperature` clamps up to 1.0 for 3.x
+  only. A higher value is never lowered.
+- **Cost accounting.** Google reports thinking tokens in a SEPARATE
+  `thoughts_token_count` but bills them as output, so `_gemini_output_tokens`
+  sums both — reporting only `candidates_token_count` under-states a
+  deep-thinking run by an order of magnitude.
+
+SDK: **`google-genai`** (`from google import genai`). The legacy
+`google-generativeai` was deprecated Nov 2025 and cannot reach the Gemini 3
+family or `thinking_level` at all; it survives as a fallback for pinned 2.5
+configs only, and a 3.x model without the new SDK fails loudly rather than
+quietly answering a different question. Pinned by
+`tests/test_llm_providers_gemini.py`.
+
+**Why not the literal Deep Research models.** Google also ships
+`deep-research-preview-04-2026` / `-max-`, which are genuinely deeper. They run
+only through the Interactions API as background jobs, take 5-20 minutes, and
+cost $1-3 (max: $3-7) *per task*. The buyer evaluates up to 40 candidates per
+portfolio per day, so that is $40-120/day for one portfolio inside a 60-minute
+Actions job. The amortised slot — `research_evaluation.py`, one card per equity
+shared by every portfolio — is where that model would earn its cost.
+
 ### thesis_policy.py
 The owner-configured **sell discipline** (migration 086) — the rules a thesis's
 signals live under, stored on `portfolios.thesis_policy`. Pure: no DB, no LLM,
@@ -711,7 +761,8 @@ Two trade-phase strategies share the buyer slot:
   on each buy so an `investment_theses` row is recorded (the watchlist
   `rationale` becomes the thesis text).
 - `llm_watchlist_buyer` (the house buyer, migration 032) is the
-  thinking counterpart: per-ticker LLM evaluation (Gemini 2.5 Pro) of
+  thinking counterpart: per-ticker LLM evaluation (Gemini 3.1 Pro at
+  **medium** reasoning depth — migration 087) of
   every watchlist name not already held at ≥ 4%, returning
   `{verdict, conviction 1-5, thesis_text, extend_signals, break_signals}`.
   Conviction gate defaults to 5/5 but is a settable knob
@@ -776,8 +827,8 @@ brief the buyer reads. If the mandate is empty, the reviewer is a
 no-op (`notes.reason='no mandate set'`); it doesn't carry a sell
 discipline of its own.
 
-For each held position it calls Gemini 2.5 Pro with the mandate, the
-recorded buy thesis
+For each held position it calls Gemini 3.1 Pro at **high** reasoning
+depth (migration 087) with the mandate, the recorded buy thesis
 (text + extend/break signals + snapshot at buy), a machine-check of
 which break signals are currently firing (`theses.check_thesis`), and
 the full current company data. Returns `{verdict: HOLD|SELL, conviction
@@ -809,14 +860,16 @@ The house agents drive the pipeline:
 - Four buyer flavors ("Buyer · <model>", renamed from "Conviction
   Buyer" in migration 064), one strategy (`llm_watchlist_buyer`), four
   brains (migrations 036 + 037):
-  - `buyer-gemini` — "Buyer · Gemini", `gemini-2.5-pro`
+  - `buyer-gemini` — "Buyer · Gemini", `gemini-3.1-pro-preview`
+    (`thinking_level: medium`, migration 087)
   - `buyer-claude` — "Buyer · Claude", `claude-opus-4-8`
   - `buyer-chatgpt` — "Buyer · GPT-5", `gpt-5`
   - `buyer-grok` — "Buyer · Grok", `grok-4`
   All four 24h cadence, 5/5 conviction gate (settable), 4% target, 90-day re-buy
   cooldown. Owners pick one per portfolio.
-- `portfolio-reviewer` — reviewer, `gemini-2.5-pro`, weekly,
-  user-mandate-driven (migrations 033 + 034)
+- `portfolio-reviewer` — reviewer, `gemini-3.1-pro-preview`
+  (`thinking_level: high`, migration 087), weekly, user-mandate-driven
+  (migrations 033 + 034)
 - `agent-pelosi` — "Pelosi Tracker", buyer, `Rules-based`, `pelosi_mirror`
   strategy, a self-sourced buyer that copies Nancy Pelosi's disclosed trades
   (migration 068)
@@ -1263,7 +1316,8 @@ min_conviction, ps_vs_median_mode, ps_vs_median_pct}` (the last three are the
 team-builder conviction + P/S-band knobs, migration 064); the mechanical
 `watchlist_buyer` ignores
 it. House agents `alphamolt-shortlist` (`watchlist_curator`, `watchlist_size=40`)
-and four `llm_watchlist_buyer` flavors — `buyer-gemini` (`gemini-2.5-pro`),
+and four `llm_watchlist_buyer` flavors — `buyer-gemini`
+(`gemini-3.1-pro-preview`),
 `buyer-claude` (`claude-opus-4-8`), `buyer-chatgpt` (`gpt-5`),
 `buyer-grok` (`grok-4`) — seeded by migrations 028 + 030 + 032 + 036 +
 037 drive the pipeline for human portfolios. `powered_by` is an optional human-readable LLM brand
@@ -2090,6 +2144,9 @@ pytest tests/test_badges.py                 # pure engine unit tests
 
 # Sell discipline (owner-configured thesis policy, migration 086)
 pytest tests/test_thesis_policy.py          # grace period + signal rules
+
+# Gemini reasoning depth / model fallback (migration 087)
+pytest tests/test_llm_providers_gemini.py   # thinking_level, temp floor, cost, fallback
 
 # Broker seam (live execution)
 pytest tests/test_broker.py                 # protocol + shared policy + sync/mirror
