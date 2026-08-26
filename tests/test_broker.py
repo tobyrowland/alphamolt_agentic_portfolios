@@ -116,8 +116,11 @@ class _FakeDB:
     """The handful of read/write methods broker_sync touches."""
 
     def __init__(self, portfolio=None, holdings=None, account=None,
-                 securities=("AAA", "BBB", "CCC")):
+                 securities=("AAA", "BBB", "CCC"), human_portfolios=None):
         self.portfolio = portfolio
+        # Explicit override so a test can build a SHARED account (several live
+        # portfolios on one broker key); None means "just this one".
+        self.human_portfolios = human_portfolios
         self.holdings = list(holdings or [])
         self.account = account or {"cash_usd": 500.0}
         self.securities = set(securities)
@@ -131,6 +134,8 @@ class _FakeDB:
     def get_human_portfolios(self):
         # Sleeve grouping (migration 083) reads this to decide whether a broker
         # account is shared. One portfolio here => sole occupant => sync allowed.
+        if self.human_portfolios is not None:
+            return list(self.human_portfolios)
         return [self.portfolio] if self.portfolio else []
 
     def get_agent_by_handle(self, handle):
@@ -497,6 +502,10 @@ class TestMirrorIsBrokerNeutral(unittest.TestCase):
         self.mirror = mirror_paper_to_broker
         self.book = {
             "total_value_usd": 1000.0,
+            # The sleeve's allowance. Orders are now checked against it before
+            # they are placed, so a book without one can fund nothing — see
+            # TestMirrorRespectsTheAllowance.
+            "cash_usd": 1100.0,
             "holdings": [{"ticker": "AAA", "market_value_usd": 1000.0}],
         }
         self.pm = _FakePM(self.book, {"AAA": 10.0})
@@ -543,6 +552,163 @@ class TestMirrorIsBrokerNeutral(unittest.TestCase):
             alpaca_mirror.mirror_paper_to_alpaca,
             alpaca_mirror.mirror_paper_to_broker,
         )
+
+
+class _RejectingPM(_FakePM):
+    """A PM whose buy RPC REFUSES, the way the real one does over-allowance.
+
+    ``buy_portfolio_atomic`` returns the rejection rather than raising it, which
+    is precisely what made the 2026-08-26 failure invisible.
+    """
+
+    def __init__(self, book, prices, reject_status="insufficient_cash"):
+        super().__init__(book, prices)
+        self.reject_status = reject_status
+
+    def buy_portfolio_atomic(self, pid, agent_id, ticker, qty, note="", **kw):
+        self.buys.append((pid, ticker, qty, kw.get("price_override")))
+        return {"status": self.reject_status}
+
+
+class TestFillsThatTheDbRefuses(unittest.TestCase):
+    """A fill the DB rejects must never be reported as recorded.
+
+    The 2026-08-26 halt in full: the last buy of a 40-order rebalance filled at
+    the broker, the atomic RPC refused to book it (the sleeve's allowance was
+    ~$77 short after slippage), and the run still reported ``placed: 40``. Real
+    shares existed that no sleeve's records owned, so the next run's alignment
+    gate refused to trade and stayed refusing.
+    """
+
+    def setUp(self):
+        from alpaca_mirror import mirror_paper_to_broker
+        self.mirror = mirror_paper_to_broker
+        self.book = {
+            "total_value_usd": 1000.0,
+            "cash_usd": 1100.0,
+            "holdings": [{"ticker": "AAA", "market_value_usd": 1000.0}],
+        }
+
+    def test_a_rejected_buy_is_not_counted_as_placed(self):
+        pm = _RejectingPM(self.book, {"AAA": 10.0})
+        be = _FakeBackend(equity=1000.0, positions={})
+        out = self.mirror(
+            _FakeDB(portfolio=_live_portfolio()), pm, be,
+            _live_portfolio(), {"id": "paper", "slug": "p"},
+        )
+        # The order really was sent to the broker...
+        self.assertEqual(be.orders, [("buy", "AAA", 100.0)])
+        # ...and the DB really did refuse it, so it is NOT a success.
+        self.assertEqual(out["placed"], 0)
+        self.assertEqual(out["orders"], 1)
+
+    def test_a_rejection_does_not_move_the_tracked_allowance(self):
+        """An unbooked buy has not spent the sleeve's allowance.
+
+        Deducting it anyway would starve every later order in the same run of
+        money it still has.
+        """
+        book = dict(self.book, cash_usd=100_000.0, total_value_usd=1000.0)
+        pm = _RejectingPM(book, {"AAA": 10.0})
+        be = _FakeBackend(equity=1000.0, positions={})
+        self.mirror(
+            _FakeDB(portfolio=_live_portfolio()), pm, be,
+            _live_portfolio(), {"id": "paper", "slug": "p"},
+        )
+        self.assertEqual(len(pm.buys), 1)
+
+    def test_an_accepted_buy_is_counted(self):
+        pm = _FakePM(self.book, {"AAA": 10.0})
+        be = _FakeBackend(equity=1000.0, positions={})
+        out = self.mirror(
+            _FakeDB(portfolio=_live_portfolio()), pm, be,
+            _live_portfolio(), {"id": "paper", "slug": "p"},
+        )
+        self.assertEqual(out["placed"], 1)
+
+
+class TestMirrorRespectsTheAllowance(unittest.TestCase):
+    """No buy is placed for more than the sleeve can pay for.
+
+    The broker's pooled cash is bigger than any one sleeve's allowance, so the
+    broker will happily fill an order the DB then refuses. The check has to
+    happen before the order goes out, and against the *limit* price — the
+    marketable limit can fill anywhere up to it.
+    """
+
+    def setUp(self):
+        from alpaca_mirror import mirror_paper_to_broker
+        self.mirror = mirror_paper_to_broker
+
+    def _run(self, cash):
+        book = {
+            "total_value_usd": 1000.0,
+            "cash_usd": cash,
+            "holdings": [{"ticker": "AAA", "market_value_usd": 1000.0}],
+        }
+        pm = _FakePM(book, {"AAA": 10.0})
+        be = _FakeBackend(equity=1000.0, positions={})
+        out = self.mirror(
+            _FakeDB(portfolio=_live_portfolio()), pm, be,
+            _live_portfolio(), {"id": "paper", "slug": "p"},
+        )
+        return out, be, pm
+
+    def test_an_affordable_buy_goes_out_whole(self):
+        out, be, _ = self._run(cash=100_000.0)
+        self.assertEqual(be.orders, [("buy", "AAA", 100.0)])
+        self.assertEqual(out.get("unaffordable"), 0)
+
+    def test_a_short_allowance_trims_the_order(self):
+        # 100 sh planned; the 3% band puts the limit at $10.30, so $600 buys
+        # 58.2524 sh. The trimmed order must cost no more than the allowance.
+        out, be, _ = self._run(cash=600.0)
+        self.assertEqual(len(be.orders), 1)
+        _, _, qty = be.orders[0]
+        self.assertLess(qty, 100.0)
+        self.assertLessEqual(qty * 10.30, 600.0)
+
+    def test_an_empty_allowance_places_nothing(self):
+        out, be, pm = self._run(cash=0.0)
+        self.assertEqual(be.orders, [])
+        self.assertEqual(pm.buys, [])
+        self.assertEqual(out.get("unaffordable"), 1)
+
+
+class TestDriftRefusalJournalsTheReason(unittest.TestCase):
+    """A refusal caused by sharing must say the account is shared.
+
+    The journal row is what the owner's hub reads to explain a quiet run, and
+    it recorded ``shared_account: false`` for a refusal that happened precisely
+    *because* the account was shared.
+    """
+
+    def test_shared_account_is_reported_on_the_refusal(self):
+        import alpaca_mirror
+        from broker import Position
+
+        live_a = _live_portfolio(slug="a-live", pid="pid-a")
+        live_b = _live_portfolio(slug="b-live", pid="pid-b")
+        for pf in (live_a, live_b):
+            pf["broker_account_key"] = "shared"
+
+        db = _FakeDB(portfolio=live_a)
+        db.human_portfolios = [live_a, live_b]
+        book = {
+            "total_value_usd": 100.0,
+            "cash_usd": 100.0,
+            "holdings": [{"ticker": "AAA", "quantity": 1.0,
+                          "market_value_usd": 100.0}],
+        }
+        pm = _FakePM(book, {"AAA": 10.0})
+        be = _FakeBackend(
+            equity=1000.0, positions={"AAA": Position("AAA", 9.0, 10.0)},
+        )
+        out = alpaca_mirror.mirror_paper_to_broker(
+            db, pm, be, live_a, {"id": "paper", "slug": "p"},
+        )
+        self.assertEqual(out["status"], "drift_refused")
+        self.assertTrue(out["shared_account"])
 
 
 if __name__ == "__main__":

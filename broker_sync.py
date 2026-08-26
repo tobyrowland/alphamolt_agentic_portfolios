@@ -247,3 +247,170 @@ def sync_to_db(
     # the public trade tape reflects real trades. State mirror above is
     # enough for holdings / MTM / leaderboard.
     print(f"\n{tag}done.\n")
+
+
+def repair(
+    backend: BrokerBackend,
+    db,
+    portfolio_slug: str,
+    *,
+    dry_run: bool = False,
+) -> int:
+    """Book the broker fills one sleeve's records are missing, at real prices.
+
+    The gap this closes. ``sync_to_db`` is the reconciler for a **sole-occupant**
+    account: the broker is the source of truth for the whole book, so overwriting
+    from it fixes anything the per-fill recording missed. On a **shared** account
+    that is forbidden (``_refuse_if_shared``) — and nothing replaced it. So a
+    single fill that landed at the broker but failed to reach the DB left the
+    combined records disagreeing with the account, and ``alpaca_mirror.
+    check_account_alignment`` then halted ALL trading on the account, correctly
+    and indefinitely, with no tool to clear it.
+
+    What it does. Diffs the account's sleeves against the broker, and for each
+    symbol that differs books the missing trade **against the sleeve named
+    here** — the attribution is the human's call, because the broker's pooled
+    view cannot know whose order it was. Quantities come from the drift; prices
+    come from the broker's own fill tape, never from a close or a quote (see
+    ``sleeves.plan_repair``). An unrecorded buy was paid for out of pooled cash,
+    so the sleeve's allowance is topped up from the unallocated pot first, which
+    is a real transfer of capital into the sleeve and moves its baseline
+    accordingly.
+
+    Refuses rather than guessing: an unpriceable difference is reported and left
+    alone. Returns a process exit code (0 = records now agree).
+    """
+    import live_cash
+    import sleeves
+    from portfolio import PortfolioManager
+
+    portfolio = _require_portfolio(db, portfolio_slug)
+    if (portfolio.get("mode") or "paper") != "live":
+        raise BrokerError(
+            f"{portfolio_slug!r} is mode={portfolio.get('mode')!r} — repair "
+            f"only applies to live portfolios"
+        )
+
+    fills_reader = getattr(backend, "recent_fills", None)
+    if not callable(fills_reader):
+        raise BrokerError(
+            f"{backend.broker_name} cannot read its fill tape, so a repair "
+            f"would have to invent prices — refusing"
+        )
+
+    key = account_key_for_portfolio(portfolio)
+    sleeve_pfs = [
+        p for p in db.get_human_portfolios()
+        if (p.get("mode") or "paper") == "live"
+        and account_key_for_portfolio(p) == key
+    ] or [portfolio]
+
+    pm = PortfolioManager(db)
+    recorded = sleeves.recorded_positions({
+        p["id"]: pm.get_portfolio_book(p["id"]) for p in sleeve_pfs
+    })
+    actual = {s: p.qty for s, p in backend.get_positions().items()}
+    drift = sleeves.position_drift(recorded, actual)
+
+    print(f"\nRepair  sleeve={portfolio_slug}  account={key}  "
+          f"broker={_endpoint_label(backend)}\n")
+
+    if not drift:
+        print("  records already agree with the broker — nothing to repair\n")
+        return 0
+
+    for d in drift:
+        print(f"  drift  {d.describe()}")
+
+    allowances = {
+        p["id"]: float((db.get_portfolio_account(p["id"]) or {}).get("cash_usd") or 0)
+        for p in sleeve_pfs
+    }
+    unallocated = sleeves.unallocated_cash(backend.get_cash(), allowances)
+
+    plan = sleeves.plan_repair(
+        drift,
+        fills_reader(),
+        _recorded_order_ids(db, sleeve_pfs),
+        allowances[portfolio["id"]],
+        unallocated,
+    )
+
+    print()
+    for leg in plan.legs:
+        print(f"  book   {leg.describe()}")
+    if plan.topup:
+        print(f"  credit ${plan.topup:,.2f} from unallocated "
+              f"(${unallocated:,.2f} available) to cover the unrecorded buys")
+    for refusal in plan.refusals:
+        print(f"  REFUSE {refusal}")
+    if not plan.legs:
+        print("\n  nothing bookable — resolve the refusals above by hand\n")
+        return 1
+
+    if dry_run:
+        print("\n  DRY-RUN — nothing written\n")
+        return 0
+
+    if plan.topup:
+        rc = live_cash.apply_delta(
+            db, portfolio_slug, plan.topup,
+            reason="repair-topup",
+            note=f"cover unrecorded broker fills on {key}",
+        )
+        if rc:
+            print("\n  allowance top-up failed — nothing booked\n")
+            return rc
+
+    agent_id = _repair_agent_id(db)
+    booked = 0
+    for leg in plan.legs:
+        note = f"repair {portfolio_slug} [{leg.order_id or '?'}]"
+        try:
+            if leg.side == "buy":
+                result = pm.buy_portfolio_atomic(
+                    portfolio["id"], agent_id, leg.ticker, leg.qty,
+                    note=note, price_override=leg.price,
+                )
+            else:
+                result = pm.sell_portfolio_atomic(
+                    portfolio["id"], agent_id, leg.ticker, leg.qty,
+                    note=note, price_override=leg.price,
+                )
+        except Exception as exc:  # noqa: BLE001 — report, keep repairing the rest
+            result = {"status": f"raised: {exc}"}
+        if (result or {}).get("status") == "ok":
+            booked += 1
+            print(f"  booked {leg.describe()}")
+        else:
+            print(f"  FAILED {leg.describe()} -> {(result or {}).get('status')}")
+
+    remaining = len(plan.legs) - booked + len(plan.refusals)
+    print(f"\n  booked {booked}/{len(plan.legs)}"
+          f"{f', {remaining} still unresolved' if remaining else ''}\n")
+    return 0 if remaining == 0 else 1
+
+
+def _recorded_order_ids(db, sleeve_pfs: list[dict]) -> set[str]:
+    """Broker order ids already present in the trade tape.
+
+    Mirror fills are noted as ``live mirror <slug> [<order_id>]``, so a fill we
+    DID book can be told apart from one we didn't. Without this a repair could
+    re-book an order that is already in the records — doubling a real position.
+    """
+    ids: set[str] = set()
+    for pf in sleeve_pfs:
+        for note in db.get_portfolio_trade_notes(pf["id"]) or []:
+            note = note.rstrip()
+            if "[" in note and note.endswith("]"):
+                ids.add(note[note.rindex("[") + 1:-1].strip())
+    return {i for i in ids if i and i != "?"}
+
+
+def _repair_agent_id(db) -> str | None:
+    """Attribute repaired fills to the same house agent the mirror uses."""
+    for handle in ("live-mirror", "manual"):
+        agent = db.get_agent_by_handle(handle)
+        if agent:
+            return agent["id"]
+    return None

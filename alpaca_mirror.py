@@ -63,7 +63,9 @@ from broker import (
     BrokerBackend,
     BrokerError,
     account_key_for_portfolio,
+    band_limit_price,
     live_execution_enabled,
+    price_band_from_env,
     resolve_backend_for_portfolio,
 )
 from db import SupabaseDB
@@ -300,14 +302,18 @@ def _mirror_paper_to_broker(
         if shared:
             logger.error(
                 "mirror %s: REFUSING to trade — records disagree with the "
-                "broker on %d symbol(s) across %d sleeves: %s. Reconcile "
-                "before the next run (alpaca_execution.py --reconcile).",
-                live_slug, len(drift), len(siblings), detail,
+                "broker on %d symbol(s) across %d sleeves: %s. Repair before "
+                "the next run: `alpaca_execution.py --repair %s` books the "
+                "missing fills at their real broker prices (--sync cannot: it "
+                "would overwrite this sleeve from the account's pooled view "
+                "and destroy the split).",
+                live_slug, len(drift), len(siblings), detail, live_slug,
             )
             return {
                 "status": "drift_refused",
                 "orders": 0,
                 "drift": [d.describe() for d in drift],
+                "shared_account": shared,
             }
         logger.warning(
             "mirror %s: records disagree with the broker on %d symbol(s): %s "
@@ -333,23 +339,49 @@ def _mirror_paper_to_broker(
     )
 
     agent_id = _mirror_agent_id(db)
+    band = price_band_from_env()
+    # The sleeve's own allowance, tracked as fills land. Sells credit it, buys
+    # debit it, and no buy is placed for more than it can pay for — the RPC that
+    # books the fill enforces the same ceiling, and it enforces it AFTER the
+    # broker has already taken the shares.
+    allowance = float(live_book.get("cash_usd") or 0)
     placed = 0
+    skipped_unaffordable = 0
     for o in orders:
+        qty = o.qty
+        if o.side == "buy" and not dry_run:
+            limit_price = band_limit_price("buy", o.ref_price, band)
+            qty = sleeves.affordable_buy_qty(o.qty, limit_price, allowance)
+            if qty <= 0:
+                logger.warning(
+                    "  SKIP buy %-8s %.4f sh — allowance $%.2f cannot cover "
+                    "$%.2f at the $%.2f limit",
+                    o.ticker, o.qty, allowance, o.qty * limit_price, limit_price,
+                )
+                skipped_unaffordable += 1
+                continue
+            if qty < o.qty:
+                logger.info(
+                    "  TRIM buy %-8s %.4f -> %.4f sh to fit the $%.2f allowance",
+                    o.ticker, o.qty, qty, allowance,
+                )
         logger.info(
             "  %s %-8s %.4f sh   (target_w=%.1f%% cur_w=%.1f%%)",
-            o.side, o.ticker, o.qty, o.target_w * 100, o.cur_w * 100,
+            o.side, o.ticker, qty, o.target_w * 100, o.cur_w * 100,
         )
         if dry_run:
             continue
         try:
             res = executor.execute_and_wait(
-                o.ticker, o.side, o.qty,
+                o.ticker, o.side, qty,
                 allow_live=True, ref_price=o.ref_price,
             )
             if res.filled_qty > 0 and _record_fill(
                 pm, live_pf["id"], agent_id, o, res, live_slug,
             ):
                 placed += 1
+                cash_delta = res.filled_qty * res.avg_price
+                allowance += -cash_delta if o.side == "buy" else cash_delta
         except Exception as exc:  # noqa: BLE001 — one bad order shouldn't abort the rebalance
             logger.error("  order %s %s failed: %s", o.side, o.ticker, exc)
 
@@ -365,6 +397,7 @@ def _mirror_paper_to_broker(
         "status": "ok",
         "orders": len(orders),
         "placed": placed,
+        "unaffordable": skipped_unaffordable,
         "shared_account": shared,
     }
 
@@ -401,6 +434,16 @@ def _record_fill(
     holdings and allowance move by exactly what happened at the broker — a buy
     debits its allowance, a sell credits it back. Returns True when the DB was
     updated.
+
+    The atomic RPCs **return** a rejection rather than raising it (an
+    over-allowance buy comes back as ``{"status": "insufficient_cash", ...}``),
+    so a try/except alone does not know whether the fill was booked. Both
+    outcomes are checked, because the failure they hide is the worst one this
+    module has: real shares bought at the broker that no sleeve's records own,
+    reported by the run as a success. That is what halted trading on
+    2026-08-26 — the last buy of a 40-order rebalance filled ~$77 beyond the
+    sleeve's allowance, the RPC refused it, and the run still logged
+    ``placed: 40``.
     """
     if not agent_id:
         logger.error(
@@ -412,15 +455,26 @@ def _record_fill(
     note = f"live mirror {live_slug} [{getattr(res, 'order_id', '') or '?'}]"
     try:
         if order.side == "buy":
-            pm.buy_portfolio_atomic(
+            result = pm.buy_portfolio_atomic(
                 portfolio_id, agent_id, order.ticker, res.filled_qty,
                 note=note, price_override=res.avg_price,
             )
         else:
-            pm.sell_portfolio_atomic(
+            result = pm.sell_portfolio_atomic(
                 portfolio_id, agent_id, order.ticker, res.filled_qty,
                 note=note, price_override=res.avg_price,
             )
+        status = (result or {}).get("status")
+        if status != "ok":
+            logger.error(
+                "  %s %s filled %.4f @ $%.4f at the broker but the DB "
+                "REJECTED it (%s) — records now disagree with the broker and "
+                "the next run will refuse to trade until repaired "
+                "(alpaca_execution.py --repair %s)",
+                order.side, order.ticker, res.filled_qty, res.avg_price,
+                status or result, live_slug,
+            )
+            return False
         return True
     except Exception as exc:  # noqa: BLE001 — the money already moved at the broker
         logger.error(

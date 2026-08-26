@@ -338,6 +338,27 @@ class AlpacaExecutionBackend:
         """
         broker_sync.reconcile(self, db, portfolio_slug)
 
+    def recent_fills(self, *, symbol: str | None = None) -> list[dict]:
+        """Alpaca's own fill tape — what the account actually paid, and when.
+
+        The repair path needs it because a quantity can be derived from the
+        drift but a PRICE cannot: booking an unrecorded fill at a close or a
+        quote writes a cost basis that was never paid, and every return the
+        sleeve reports afterwards is wrong by that amount.
+        """
+        return self.client.get_fills(symbol=symbol)
+
+    def repair(
+        self, db: SupabaseDB, portfolio_slug: str, *, dry_run: bool = False,
+    ) -> int:
+        """Book fills this sleeve's records are missing (broker-neutral policy).
+
+        Delegates to ``broker_sync.repair``. Unlike ``sync_to_db`` this is safe
+        on a SHARED account: it books named trades against one named sleeve
+        instead of overwriting a book from the broker's pooled view.
+        """
+        return broker_sync.repair(self, db, portfolio_slug, dry_run=dry_run)
+
     def sync_to_db(
         self,
         db: SupabaseDB,
@@ -367,6 +388,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--buy", nargs=2, metavar=("SYMBOL", "QTY"))
     ap.add_argument("--sell", nargs=2, metavar=("SYMBOL", "QTY"))
     ap.add_argument("--reconcile", metavar="SLUG", help="diff Alpaca vs portfolio (read-only)")
+    ap.add_argument(
+        "--repair",
+        metavar="SLUG",
+        help="book broker fills this sleeve's records are missing, at their "
+             "real fill prices (safe on a shared account, unlike --sync)",
+    )
     ap.add_argument(
         "--sync",
         metavar="SLUG",
@@ -461,6 +488,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.reconcile:
             backend.reconcile(SupabaseDB(), args.reconcile)
+
+        if args.repair:
+            be = AlpacaExecutionBackend.for_slug(
+                args.repair, allow_shared_fallback=True,
+            )
+            return be.repair(SupabaseDB(), args.repair, dry_run=args.dry_run)
 
         if args.sync:
             be = AlpacaExecutionBackend.for_slug(args.sync, allow_shared_fallback=True)
