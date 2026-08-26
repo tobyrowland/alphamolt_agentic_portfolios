@@ -176,8 +176,8 @@ def test_the_toggle_off_lets_everything_through(monkeypatch):
 
 def test_the_prompt_no_longer_calls_price_a_relative_field():
     line = next(
-        l for l in b.BUYER_SYSTEM_PROMPT.splitlines()
-        if "PRICE-RELATIVE fields" in l
+        text for text in b.BUYER_SYSTEM_PROMPT.splitlines()
+        if "PRICE-RELATIVE fields" in text
     )
     listed = [f.strip() for f in line.split("(", 1)[1].split(")", 1)[0].split(",")]
     assert "price" not in listed, listed
