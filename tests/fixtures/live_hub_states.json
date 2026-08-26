@@ -624,6 +624,131 @@
         "recentCount": 0,
         "nextRunLabel": "Next scheduled run: Tue 14:00 UTC (in 2h)"
       }
+    },
+    {
+      "name": "dust the mirror will never trade — converged, not stuck",
+      "why": "Scrappy Fightback! (Live) on 2026-08-26: $35.84 off-book on $10,132 = 0.35%, under alpaca_mirror's 1% drift threshold, so the mirror correctly declines to trade it. Eight days after the in-kind move this sat in RED telling its owner real-money trading might be switched off, while the run journal recorded successful runs placing real orders. Reporting as outstanding what the mirror has decided is not worth doing is a false alarm that never clears.",
+      "input": {
+        "now": "2026-08-26T13:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 27584.26,
+        "sleeves": [
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 2.98,
+            "holdingsValue": 10129.63,
+            "offBookValue": 35.84,
+            "followsPortfolioId": "paper",
+            "everFunded": true,
+            "startingCash": 10132.609999999999
+          },
+          {
+            "portfolioId": "house",
+            "displayName": "Alphamolt (House) (Live)",
+            "allowance": 618.44,
+            "holdingsValue": 16833.21,
+            "offBookValue": 69.89,
+            "followsPortfolioId": "paper",
+            "everFunded": true,
+            "startingCash": 17451.649999999998
+          }
+        ],
+        "ledger": [
+          {
+            "portfolioId": "scrappy",
+            "reason": "fund-in-kind-in",
+            "amount": 9999.97,
+            "createdAt": "2026-08-18T09:00:00Z"
+          }
+        ],
+        "runs": [
+          {
+            "kind": "run",
+            "portfolioId": "scrappy",
+            "status": "ok",
+            "createdAt": "2026-08-25T14:00:00Z",
+            "dryRun": false,
+            "orders": 1,
+            "placed": 1
+          }
+        ],
+        "fills": []
+      },
+      "expect": {
+        "headline": "Nothing pending right now.",
+        "tone": "good",
+        "lines": [
+          {
+            "id": "run-2026-08-25T14:00:00Z",
+            "tone": "good",
+            "text": "Scrappy Fightback! (Live): a sync ran 23h ago and placed 1 order."
+          }
+        ],
+        "recentCount": 1,
+        "nextRunLabel": "Next scheduled run: Wed 14:00 UTC (in 1h)"
+      }
+    },
+    {
+      "name": "a real remainder that runs have been chipping at — amber, never red",
+      "why": "Above the mirror's threshold, so genuinely outstanding, and old enough to have outlived a scheduled run. But runs HAVE completed since the move, so 'real-money trading may be switched off' would contradict our own journal. Escalation needs silence from the runner, not merely the passage of time.",
+      "input": {
+        "now": "2026-08-26T13:00:00Z",
+        "unallocated": 0,
+        "brokerCash": 14000,
+        "sleeves": [
+          {
+            "portfolioId": "scrappy",
+            "displayName": "Scrappy Fightback! (Live)",
+            "allowance": 944.58,
+            "holdingsValue": 13055.42,
+            "offBookValue": 5000.0,
+            "followsPortfolioId": "paper",
+            "everFunded": true,
+            "startingCash": 14000.0
+          }
+        ],
+        "ledger": [
+          {
+            "portfolioId": "scrappy",
+            "reason": "fund-in-kind-in",
+            "amount": 9999.97,
+            "createdAt": "2026-08-18T09:00:00Z"
+          }
+        ],
+        "runs": [
+          {
+            "kind": "run",
+            "portfolioId": "scrappy",
+            "status": "ok",
+            "createdAt": "2026-08-25T14:00:00Z",
+            "dryRun": false,
+            "orders": 2,
+            "placed": 2
+          }
+        ],
+        "fills": []
+      },
+      "expect": {
+        "headline": "One thing is still to happen.",
+        "tone": "warn",
+        "lines": [
+          {
+            "id": "offbook-scrappy",
+            "tone": "warn",
+            "text": "$5,000.00 of Scrappy Fightback! (Live)'s holdings aren't its own picks yet — they get traded into them on its next sync. The last sync couldn't place them; it retries on the next run.",
+            "short": "$5,000.00 waiting to be traded into its own picks",
+            "offerSync": true
+          },
+          {
+            "id": "run-2026-08-25T14:00:00Z",
+            "tone": "good",
+            "text": "Scrappy Fightback! (Live): a sync ran 23h ago and placed 2 orders."
+          }
+        ],
+        "recentCount": 1,
+        "nextRunLabel": "Next scheduled run: Wed 14:00 UTC (in 1h)"
+      }
     }
   ]
 }

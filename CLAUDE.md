@@ -2001,7 +2001,14 @@ correlated to a sleeve) and `alpaca_mirror._journal_run` writes `live_mirror`
 with what the run actually did — including **why it did nothing**
 (`market_closed`, `drift_refused`). Read back by
 `web/lib/live-activity-query.ts`; `activity-query.ts` reads `run_logs` through
-a `script_name` allowlist, so neither row can reach a public surface. The hub
+a `script_name` allowlist, so neither row can reach a public surface.
+The off-book warning is scoped to what the mirror would ACTUALLY trade
+(`isTradeableOffBook`: above `MATERIAL_USD` **and** above
+`alpaca_mirror.DEFAULT_THRESHOLD`, 1% of the sleeve's equity) — flagging every
+dollar left a converged sleeve ($35.84 off-book on $10,132, 0.35%) in red
+forever, and the escalation additionally requires that **nothing has run since
+the move**: "real-money trading may be switched off" must not contradict the
+run journal, which recorded successful runs placing real orders throughout. The hub
 re-reads on a 30s tick **only** while something is in flight, and stops after
 10 minutes.
 
