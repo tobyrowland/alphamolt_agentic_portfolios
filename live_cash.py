@@ -37,7 +37,12 @@ import logging
 import sys
 
 import sleeves
-from broker import BrokerError, account_key_for_portfolio, resolve_backend
+from broker import (
+    BrokerError,
+    account_key_for_portfolio,
+    resolve_backend,
+    shared_credentials_permitted,
+)
 from db import SupabaseDB
 
 logging.basicConfig(
@@ -91,12 +96,24 @@ def _sleeve_equity(db: SupabaseDB, portfolio_id: str, allowance: float) -> float
         return round(float(allowance or 0), 2)
 
 
-def _broker_cash(account_key: str, portfolios: list[dict]) -> float:
-    broker = (portfolios[0].get("broker") or "alpaca") if portfolios else "alpaca"
-    backend = resolve_backend(
-        account_key, broker, allow_shared_fallback=len(portfolios) <= 1,
-    )
-    return backend.get_cash()
+def _broker_cash(
+    account_key: str,
+    portfolios: list[dict],
+    *,
+    all_live: list[dict] | None = None,
+    backend=None,
+) -> float:
+    """Cash at the broker account ``account_key``.
+
+    ``backend`` short-circuits resolution entirely — pass one already built and
+    proven to reach this account, so a second resolution with different inputs
+    cannot decide the same account is unreachable.
+    """
+    if backend is not None:
+        return backend.get_cash()
+    return _account_backend(
+        account_key, portfolios, all_live=all_live,
+    ).get_cash()
 
 
 # ----------------------------------------------------------------------
@@ -105,7 +122,8 @@ def _broker_cash(account_key: str, portfolios: list[dict]) -> float:
 
 
 def print_status(db: SupabaseDB, account: str | None = None) -> int:
-    groups = group_by_account(live_portfolios(db))
+    all_pfs = live_portfolios(db)
+    groups = group_by_account(all_pfs)
     if account:
         groups = {k: v for k, v in groups.items() if k == account}
         if not groups:
@@ -118,7 +136,7 @@ def print_status(db: SupabaseDB, account: str | None = None) -> int:
     rc = 0
     for key, pfs in sorted(groups.items()):
         try:
-            cash = _broker_cash(key, pfs)
+            cash = _broker_cash(key, pfs, all_live=all_pfs)
         except BrokerError as exc:
             logger.error("account %s: %s", key, exc)
             rc = 1
@@ -164,8 +182,16 @@ def apply_delta(
     reason: str,
     note: str | None = None,
     dry_run: bool = False,
+    backend=None,
 ) -> int:
-    """Move ``delta`` into (+) or out of (-) one sleeve's allowance."""
+    """Move ``delta`` into (+) or out of (-) one sleeve's allowance.
+
+    ``backend`` lets a caller that has ALREADY resolved and used this account
+    hand its backend in rather than have one resolved again from different
+    inputs. ``broker_sync.repair`` does exactly that: it read the account's
+    positions, cash and fill tape, then the top-up re-resolved and refused —
+    two paths disagreeing about whether the same account was reachable.
+    """
     pf = db.get_portfolio_by_slug(slug)
     if not pf:
         logger.error("no portfolio with slug %r", slug)
@@ -178,11 +204,10 @@ def apply_delta(
         return 1
 
     key = account_key_for_portfolio(pf)
-    siblings = [
-        p for p in live_portfolios(db) if account_key_for_portfolio(p) == key
-    ]
+    all_live = live_portfolios(db)
+    siblings = [p for p in all_live if account_key_for_portfolio(p) == key]
     try:
-        cash = _broker_cash(key, siblings)
+        cash = _broker_cash(key, siblings, all_live=all_live, backend=backend)
     except BrokerError as exc:
         logger.error("%s", exc)
         return 1
@@ -317,9 +342,20 @@ def _net_contributions(backend) -> float | None:
     return round(net, 2)
 
 
-def _account_backend(key: str, pfs: list[dict]):
+def _account_backend(key: str, pfs: list[dict], *, all_live: list[dict] | None = None):
+    """Backend for one account, with the anti-commingle guard applied correctly.
+
+    The guard asks whether the bare env credentials are UNAMBIGUOUS, which is a
+    question about how many distinct broker accounts exist — not how many
+    sleeves this one has. Passing ``pfs`` (one account's sleeves) made every
+    allowance command refuse on a two-sleeve account.
+    """
     broker = (pfs[0].get("broker") or "alpaca") if pfs else "alpaca"
-    return resolve_backend(key, broker, allow_shared_fallback=len(pfs) <= 1)
+    scope = all_live if all_live is not None else pfs
+    return resolve_backend(
+        key, broker,
+        allow_shared_fallback=shared_credentials_permitted(scope),
+    )
 
 
 def print_baselines(db: SupabaseDB, account: str | None = None) -> int:
@@ -330,7 +366,8 @@ def print_baselines(db: SupabaseDB, account: str | None = None) -> int:
     moved real value without moving it — every one of those left the percentage
     overstating (money in) or understating (money out) the truth.
     """
-    groups = group_by_account(live_portfolios(db))
+    all_pfs = live_portfolios(db)
+    groups = group_by_account(all_pfs)
     if account:
         groups = {k: v for k, v in groups.items() if k == account}
     if not groups:
@@ -359,7 +396,8 @@ def print_baselines(db: SupabaseDB, account: str | None = None) -> int:
         print(f"  {'account':<26}${total_baseline:>14,.2f}${total_value:>14,.2f}")
 
         try:
-            net = _net_contributions(_account_backend(key, pfs))
+            net = _net_contributions(
+                _account_backend(key, pfs, all_live=all_pfs))
         except BrokerError as exc:
             logger.warning("account %s: %s", key, exc)
             net = None
@@ -399,7 +437,8 @@ def fix_baselines(
     and every sleeve's return the same as the account's at the moment of the
     reset, which is the honest starting point when the split is unknowable.
     """
-    groups = group_by_account(live_portfolios(db))
+    all_pfs = live_portfolios(db)
+    groups = group_by_account(all_pfs)
     if account:
         groups = {k: v for k, v in groups.items() if k == account}
     if not groups:
@@ -409,7 +448,8 @@ def fix_baselines(
     rc = 0
     for key, pfs in sorted(groups.items()):
         try:
-            net = _net_contributions(_account_backend(key, pfs))
+            net = _net_contributions(
+                _account_backend(key, pfs, all_live=all_pfs))
         except BrokerError as exc:
             logger.error("account %s: %s", key, exc)
             rc = 1

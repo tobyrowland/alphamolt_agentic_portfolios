@@ -376,10 +376,16 @@ def repair(
         return 0
 
     if plan.topup:
+        # Hand over the backend this function has ALREADY read positions, cash
+        # and the fill tape through. Letting the top-up resolve its own is what
+        # failed on 2026-08-27: the same account was reachable here and
+        # "ambiguous" there, so a plan that was correct in every figure booked
+        # nothing.
         rc = live_cash.apply_delta(
             db, portfolio_slug, plan.topup,
             reason="repair-topup",
             note=f"cover unrecorded broker fills on {key}",
+            backend=backend,
         )
         if rc:
             print("\n  allowance top-up failed — nothing booked\n")

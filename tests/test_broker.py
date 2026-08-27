@@ -850,5 +850,87 @@ class TestRepairRefusesLoudlyOnAnUnreadableTape(unittest.TestCase):
         self.assertNotIn("no unrecorded", message.lower())
 
 
+class TestLiveCashScopesTheGuardToTheWholeAccountSet(unittest.TestCase):
+    """The guard must see EVERY live portfolio, not one account's sleeves.
+
+    Scoping it to `pfs` is not merely a missed fix — it inverts the guard. Every
+    sleeve in `pfs` shares one key by construction, so the answer is always
+    "one account, go ahead", INCLUDING when a second, different account exists.
+    That is the commingling case the rule was written to prevent: one owner's
+    strategy resolving another owner's bare credentials.
+    """
+
+    @staticmethod
+    def _pf(slug, key=None):
+        pf = {"id": slug, "slug": slug, "mode": "live", "broker": "alpaca"}
+        if key is not None:
+            pf["broker_account_key"] = key
+        return pf
+
+    def _guard_value_for(self, pfs, all_live):
+        import live_cash
+        seen = {}
+        original = live_cash.resolve_backend
+
+        def _spy(key, broker="alpaca", *, allow_shared_fallback=False):
+            seen["allow"] = allow_shared_fallback
+            return object()
+
+        live_cash.resolve_backend = _spy
+        try:
+            live_cash._account_backend("acct-a", pfs, all_live=all_live)
+        finally:
+            live_cash.resolve_backend = original
+        return seen["allow"]
+
+    def test_sleeves_of_the_only_account_may_share_credentials(self):
+        sleeves_ = [self._pf("a1-live", "acct-a"), self._pf("a2-live", "acct-a")]
+        self.assertTrue(self._guard_value_for(sleeves_, sleeves_))
+
+    def test_sleeves_may_not_when_a_second_account_also_exists(self):
+        """The inversion: `pfs` alone would say yes and permit commingling."""
+        account_a = [self._pf("a1-live", "acct-a"), self._pf("a2-live", "acct-a")]
+        account_b = [self._pf("b1-live", "acct-b")]
+        self.assertFalse(self._guard_value_for(account_a, account_a + account_b))
+
+
+class TestRepairReusesItsOwnBackend(unittest.TestCase):
+    """The top-up must not re-resolve the broker from different inputs.
+
+    On 2026-08-27 `repair` read this account's positions, cash and fill tape,
+    produced a correct plan — then the allowance top-up resolved its own
+    backend, decided the credentials were ambiguous, and booked nothing.
+    """
+
+    def test_apply_delta_is_handed_the_backend(self):
+        import inspect
+        import live_cash
+        params = inspect.signature(live_cash.apply_delta).parameters
+        self.assertIn(
+            "backend", params,
+            "apply_delta must accept an already-resolved backend",
+        )
+        source = inspect.getsource(broker_sync.repair)
+        self.assertIn(
+            "backend=backend", source,
+            "repair must hand its own backend to the top-up rather than "
+            "letting it resolve one",
+        )
+
+    def test_a_supplied_backend_short_circuits_resolution(self):
+        """No resolution happens at all when a backend is given."""
+        import live_cash
+
+        class _Boom:
+            def get_cash(self):
+                return 4321.0
+
+        # If this tried to resolve, it would raise on the unknown broker.
+        self.assertEqual(
+            live_cash._broker_cash("k", [{"broker": "nonsuch"}], backend=_Boom()),
+            4321.0,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
