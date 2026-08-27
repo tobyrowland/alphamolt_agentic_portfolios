@@ -6,17 +6,13 @@ import { useRouter } from "next/navigation";
 import type { LiveCashSummary } from "@/lib/live-cash-query";
 import type { LiveActivity } from "@/lib/live-activity-query";
 import {
-  applyLiveSplit,
   createFollowerShell,
   creditAllowance,
   debitAllowance,
+  transferAllowance,
 } from "@/lib/live-cash-mutations";
 import { syncLivePortfolioToAlpaca } from "@/lib/live-mirror-mutations";
 import {
-  allocationToTargets,
-  currentAllocation,
-  rebalanceAllocation,
-  splitImpact,
 } from "@/lib/sleeve-funding";
 import {
   buildHubState,
@@ -25,14 +21,17 @@ import {
   sleeveColor,
 } from "@/lib/live-activity";
 import SplitBar from "@/components/account/split-bar";
-import AssignCash from "@/components/account/assign-cash";
 import StrategyRow, {
   RowHeader,
   type StrategyMeta,
 } from "@/components/account/strategy-row";
-import SplitCommandBar, {
-  type MovePreview,
-} from "@/components/account/split-command-bar";
+import MoveMoney from "@/components/account/move-money";
+import {
+  UNASSIGNED_ID,
+  type Bucket,
+  accountHeadline,
+  routeMove,
+} from "@/lib/money-move";
 import ExecutionTimeline from "@/components/account/execution-timeline";
 
 /**
@@ -115,7 +114,6 @@ function AccountPanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
-  const [reviewing, setReviewing] = useState(false);
 
   const sleeves = account.sleeves;
   const currents = useMemo(
@@ -124,61 +122,30 @@ function AccountPanel({
   );
   const total = round2(currents.reduce((s, c) => s + c, 0));
 
-  // ---- The allocation ------------------------------------------------------
-  // Held as percentages that always sum to 100. `raw` is whatever is currently
-  // under the cursor, so a half-typed "1" doesn't get reformatted mid-keystroke.
-  const [alloc, setAlloc] = useState<number[]>(() => currentAllocation(currents));
-  const [raw, setRaw] = useState<{ index: number; value: string } | null>(null);
-  const [touched, setTouched] = useState(false);
+  // ---- The buckets ---------------------------------------------------------
+  // One decomposition of the account, by who owns the money. "Not assigned" is
+  // a bucket like any strategy, which is what lets a single "move money" verb
+  // replace the old credit / debit / re-split trio.
+  const buckets: Bucket[] = useMemo(() => {
+    const rows: Bucket[] = sleeves.map((s, i) => ({
+      id: s.portfolioId,
+      name: s.displayName,
+      value: currents[i],
+      cash: s.allowance,
+    }));
+    if (account.unallocated != null) {
+      rows.push({
+        id: UNASSIGNED_ID,
+        name: "Not assigned",
+        value: round2(account.unallocated),
+        cash: round2(account.unallocated),
+      });
+    }
+    return rows;
+  }, [sleeves, currents, account.unallocated]);
 
-  // Re-seed from fresh server numbers — but never over an edit in progress,
-  // because this page re-reads itself every 30s while a run is in flight.
-  const signature = sleeves.map((s, i) => `${s.portfolioId}:${currents[i]}`).join("|");
-  useEffect(() => {
-    if (touched) return;
-    setAlloc(currentAllocation(currents));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signature, touched]);
-
-  function setPct(index: number, value: string) {
-    setRaw({ index, value });
-    setTouched(true);
-    setReviewing(false);
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return;
-    setAlloc((prev) => rebalanceAllocation(prev, index, parsed));
-  }
-
-  function resetSplit() {
-    setAlloc(currentAllocation(currents));
-    setRaw(null);
-    setTouched(false);
-    setReviewing(false);
-  }
-
-  const targets = useMemo(() => allocationToTargets(alloc, total), [alloc, total]);
-  const { legs, impacts } = useMemo(
-    () =>
-      splitImpact(
-        sleeves.map((s, i) => ({
-          portfolioId: s.portfolioId,
-          current: currents[i],
-          target: targets[i] ?? currents[i],
-          allowance: s.allowance,
-        })),
-      ),
-    [sleeves, currents, targets],
-  );
-  const dirty = legs.length > 0;
-  const moveTotal = round2(legs.reduce((s, l) => s + l.amount, 0));
-  const nameById = new Map(sleeves.map((s) => [s.portfolioId, s.displayName]));
-  const movePreviews: MovePreview[] = legs.map((l) => ({
-    fromName: nameById.get(l.fromPortfolioId) ?? "?",
-    toName: nameById.get(l.toPortfolioId) ?? "?",
-    amount: l.amount,
-    cash: l.cash,
-    positions: l.positions,
-  }));
+  const headline = accountHeadline(total, account.unallocated);
+  const accountTotal = headline.amount;
 
   // ---- What's happening ----------------------------------------------------
   const sleeveIds = new Set(sleeves.map((s) => s.portfolioId));
@@ -261,13 +228,27 @@ function AccountPanel({
   const lineFor = (portfolioId: string) =>
     hub.lines.find((l) => l.portfolioId === portfolioId && l.short) ?? null;
 
-  const segments = sleeves.map((s, i) => ({
-    id: s.portfolioId,
-    label: s.displayName,
-    value: currents[i],
-    target: targets[i] ?? currents[i],
-    color: sleeveColor(i),
-  }));
+  // The bar draws what the account IS — every bucket, unassigned included, so
+  // it reconciles with the list beneath it. There is no target to preview: a
+  // move is stated explicitly and previewed in the move box itself.
+  const segments = [
+    ...sleeves.map((s, i) => ({
+      id: s.portfolioId,
+      label: s.displayName,
+      value: currents[i],
+      target: currents[i],
+      color: sleeveColor(i),
+    })),
+    ...(account.unallocated != null
+      ? [{
+          id: UNASSIGNED_ID,
+          label: "Not assigned",
+          value: round2(account.unallocated),
+          target: round2(account.unallocated),
+          color: "var(--color-border-light, #333333)",
+        }]
+      : []),
+  ];
 
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.02] px-4 py-4">
@@ -279,52 +260,58 @@ function AccountPanel({
               {account.accountKey}
             </span>
           )}
-          Your strategies run{" "}
-          <span className="font-mono font-semibold tabular-nums">${fmt(total)}</span>{" "}
-          of real money
+          <span className="font-mono font-semibold tabular-nums">
+            ${fmt(accountTotal)}
+          </span>{" "}
+          {headline.caption}
         </p>
         <p className="font-mono text-[11.5px] tabular-nums text-text-muted">
-          broker cash{" "}
-          <span className="text-text-dim">
-            {account.brokerCash == null ? "—" : `$${fmt(account.brokerCash)}`}
-          </span>
-          <span className="mx-2 text-text-muted/60">·</span>
-          unassigned{" "}
-          <span className="text-text-dim">
-            {account.unallocated == null ? "—" : `$${fmt(account.unallocated)}`}
-          </span>
-          {/* The reason belongs beside the missing number, not in small print
-              at the foot of the panel — that is where the eye already is. */}
+          {/* The reason the balance is missing belongs beside the missing
+              number. Everything else that used to sit on this line was a
+              SECOND decomposition of the same money (cash vs stock) shown
+              beside the first (whose money) as though they were peers — the
+              single thing that stopped the screen adding up. */}
           {brokerCashTag(account.brokerCashStatus) && (
             <span
-              className="ml-2 rounded border border-[var(--color-orange)]/40 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-[var(--color-orange)]"
+              className="rounded border border-[var(--color-orange)]/40 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-[var(--color-orange)]"
               title={brokerCashNote(account.brokerCashStatus) ?? undefined}
             >
               {brokerCashTag(account.brokerCashStatus)}
             </span>
           )}
-          {/* The action belongs beside the figure it spends — the pot is a
-              property of the account, and this is where its balance is shown. */}
-          <AssignCash
-            unallocated={account.unallocated}
-            strategies={sleeves.map((s) => ({
-              portfolioId: s.portfolioId,
-              displayName: s.displayName,
-            }))}
-            disabled={pending}
-            onAssign={(portfolioId, amount) => {
-              const to = sleeves.find((s) => s.portfolioId === portfolioId);
-              run(
-                () => creditAllowance({ portfolioId, amount }),
-                `Assigned $${fmt(amount)} to ${to?.displayName ?? "strategy"}.`,
-                resetSplit,
-              );
-            }}
-          />
         </p>
       </div>
 
-      <SplitBar segments={segments} total={total} dirty={dirty} />
+      <SplitBar segments={segments} total={accountTotal} dirty={false} />
+
+      <div className="mt-3">
+        <MoveMoney
+          buckets={buckets}
+          disabled={pending}
+          onMove={(fromId, toId, amount) => {
+            const route = routeMove(fromId, toId);
+            if (!route) return;
+            const name = (id: string) =>
+              buckets.find((b) => b.id === id)?.name ?? "that strategy";
+            const done = `Moved $${fmt(amount)} from ${name(fromId)} to ${name(toId)}.`;
+            if (route.kind === "credit") {
+              run(() => creditAllowance({ portfolioId: route.portfolioId, amount }), done);
+            } else if (route.kind === "debit") {
+              run(() => debitAllowance({ portfolioId: route.portfolioId, amount }), done);
+            } else {
+              run(
+                () =>
+                  transferAllowance({
+                    fromPortfolioId: route.fromPortfolioId,
+                    toPortfolioId: route.toPortfolioId,
+                    amount,
+                  }),
+                done,
+              );
+            }
+          }}
+        />
+      </div>
 
       <ExecutionTimeline
         state={hub}
@@ -347,73 +334,37 @@ function AccountPanel({
             color={sleeveColor(i)}
             current={currents[i]}
             sharePct={total > 0 ? (currents[i] / total) * 100 : 0}
-            targetPct={
-              raw?.index === i ? raw.value : formatPct(alloc[i] ?? 0)
-            }
-            targetUsd={targets[i] ?? currents[i]}
-            impact={impacts.get(s.portfolioId) ?? null}
-            pending={Math.abs((targets[i] ?? currents[i]) - currents[i]) > 1}
             meta={liveMeta[s.portfolioId]}
             statusLine={lineFor(s.portfolioId)}
             disabled={pending}
-            editable={sleeves.length > 1 && total > 0}
             paperOptions={paperOptions}
-            onPct={(value) => setPct(i, value)}
-            onDebit={(amount) =>
-              run(
-                () => debitAllowance({ portfolioId: s.portfolioId, amount }),
-                `Debited $${fmt(amount)} from ${s.displayName}.`,
-                resetSplit,
-              )
-            }
           />
         ))}
+
+        {account.unallocated != null && (
+          <li className="flex flex-wrap items-center gap-x-3.5 gap-y-1 border-t border-border py-3">
+            <span
+              aria-hidden
+              className="h-2 w-2 shrink-0 rounded-full bg-border-light"
+            />
+            <span className="flex flex-grow flex-col gap-0.5">
+              <span className="text-[15px] font-semibold text-text-dim">
+                Not assigned
+              </span>
+              <span className="font-mono text-[11.5px] text-text-muted">
+                sitting as cash &middot; no strategy is trading it
+              </span>
+            </span>
+            <span className="font-mono text-[16px] tabular-nums">
+              ${fmt(account.unallocated)}
+            </span>
+          </li>
+        )}
       </ul>
 
-      {!dirty && (
-        <p className="mt-2 text-[11.5px] text-text-muted">
-          {total <= 0
-            ? "Nothing to allocate yet — this account holds no attributed money."
-            : sleeves.length < 2
-              ? "One strategy runs the whole account. Bring another live to split it."
-              : "Change a percentage to move money between strategies — the others adjust to keep the account at 100%."}
-        </p>
-      )}
-
-      {dirty && (
-        <SplitCommandBar
-          moves={movePreviews}
-          total={moveTotal}
-          disabled={pending}
-          reviewing={reviewing}
-          error={error}
-          onReview={() => setReviewing(true)}
-          onCancel={() => setReviewing(false)}
-          onReset={resetSplit}
-          onApply={() => {
-            setReviewing(false);
-            run(
-              () =>
-                applyLiveSplit({
-                  targets: sleeves.map((s, i) => ({
-                    portfolioId: s.portfolioId,
-                    target: targets[i] ?? currents[i],
-                  })),
-                  assumedTotal: total,
-                }),
-              "Split applied. Any moved positions restructure on the next sync.",
-              () => {
-                setRaw(null);
-                setTouched(false);
-              },
-            );
-          }}
-        />
-      )}
-
-      {/* Outcomes of anything that isn't the split (credits, syncs). */}
+      {/* Outcomes of a move or a sync. */}
       <p aria-live="polite" className="empty:hidden">
-        {error && !dirty && (
+        {error && (
           <span
             role="alert"
             className="mt-2 block font-mono text-[11.5px] leading-relaxed text-[var(--color-red,#FF3333)]"
@@ -440,8 +391,7 @@ function AccountPanel({
                   paperPortfolioId: paperId,
                   accountPortfolioId: sleeves[0].portfolioId,
                 }),
-              `${name} (Live) added at $0 — give it a share above and apply.`,
-              resetSplit,
+              `${name} (Live) added at $0 — move money into it above.`,
             )
           }
         />

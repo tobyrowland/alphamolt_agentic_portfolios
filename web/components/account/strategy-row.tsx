@@ -19,7 +19,11 @@ import SyncLiveButton from "@/components/portfolio/sync-live-button";
  * that isn't needed at a glance (sync, re-pointing, cash moves) is behind one
  * explicit disclosure per row.
  *
- * The only editable thing on the row is the share this strategy should run,
+ * The row reports; it does not move money. Every money movement is one verb
+ * in the account-level move box, because moving between strategies and moving
+ * to and from the unassigned pot are the same act — see web/lib/money-move.ts.
+ *
+ * What was here before:
  * as a percentage. Dollars are the consequence and are shown as one, in the
  * impact line under the row.
  */
@@ -43,7 +47,7 @@ export function RowHeader() {
       <span className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-text-muted">
         Strategy
       </span>
-      {["Worth", "Cash", "P&L", "Should run"].map((h) => (
+      {["Worth", "Cash", "P&L", ""].map((h) => (
         <span
           key={h}
           className="text-right font-mono text-[9.5px] uppercase tracking-[0.14em] text-text-muted"
@@ -61,52 +65,24 @@ export default function StrategyRow({
   color,
   current,
   sharePct,
-  targetPct,
-  targetUsd,
-  impact,
-  pending,
   meta,
   statusLine,
   disabled,
-  editable,
   paperOptions,
-  onPct,
-  onDebit,
 }: {
   sleeve: SleeveCash;
   color: string;
   /** What it runs today: allowance + holdings. */
   current: number;
   sharePct: number;
-  /** The proportion it SHOULD run, as a percentage string being edited. */
-  targetPct: string;
-  targetUsd: number;
-  /** What applying would move, split into cash and share records. */
-  impact: SleeveImpact | null;
-  pending: boolean;
   meta?: StrategyMeta;
-  /**
-   * Can this share actually be changed? False for a sole strategy on the
-   * account: it runs 100% by definition, so a stepper there is a control that
-   * silently refuses every input.
-   */
-  editable: boolean;
   /** The timeline's line about this strategy — reduced here to a health dot. */
   statusLine?: HubLine | null;
   disabled: boolean;
   paperOptions: { id: string; name: string }[];
-  onPct: (raw: string) => void;
-  onDebit: (amount: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   const down = meta?.pnlPct != null && meta.pnlPct < 0;
-  const pct = Number(targetPct);
-  const valid = Number.isFinite(pct) && pct >= 0 && pct <= 100;
-
-  function nudge(step: number) {
-    const base = valid ? pct : sharePct;
-    onPct(String(Math.round(Math.min(100, Math.max(0, base + step)) * 100) / 100));
-  }
 
   return (
     <li className="border-b border-white/[0.07] px-3 py-2.5 last:border-b-0">
@@ -190,51 +166,6 @@ export default function StrategyRow({
           )}
         </Cell>
 
-        {/* The only control on the row: the share it should run. */}
-        <div className="flex items-center justify-between gap-2 sm:justify-end">
-          <span className="font-mono text-[9.5px] uppercase tracking-wider text-text-muted sm:hidden">
-            Should run
-          </span>
-          {!editable ? (
-            <span
-              className="font-mono text-[13px] tabular-nums text-text-muted"
-              title="The only strategy on this account runs all of it"
-            >
-              100%
-            </span>
-          ) : (
-          <span className="inline-flex items-center gap-1">
-            <Stepper label={`Decrease ${sleeve.displayName}`} disabled={disabled} onClick={() => nudge(-1)}>
-              −
-            </Stepper>
-            <span className="relative">
-              <input
-                type="number"
-                min="0"
-                max="100"
-                step="0.5"
-                inputMode="decimal"
-                value={targetPct}
-                onChange={(e) => onPct(e.target.value)}
-                disabled={disabled}
-                aria-label={`Percentage of the account ${sleeve.displayName} should run`}
-                className={`w-[4.5rem] rounded border bg-transparent py-1 pl-2 pr-5 text-right font-mono text-[13px] tabular-nums text-text focus:outline-none disabled:opacity-50 ${
-                  valid
-                    ? "border-white/[0.12] focus:border-white/35"
-                    : "border-[var(--color-red,#FF3333)]/60"
-                }`}
-              />
-              <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 font-mono text-[11px] text-text-muted">
-                %
-              </span>
-            </span>
-            <Stepper label={`Increase ${sleeve.displayName}`} disabled={disabled} onClick={() => nudge(1)}>
-              +
-            </Stepper>
-          </span>
-          )}
-        </div>
-
         <div className="flex justify-end">
           <button
             type="button"
@@ -248,31 +179,6 @@ export default function StrategyRow({
         </div>
       </div>
 
-      {/* What applying would do to THIS strategy, in dollars. */}
-      {pending && impact && (
-        <p className="mt-1.5 text-[11.5px] leading-relaxed text-amber-200">
-          <span className="font-mono tabular-nums">
-            → ${fmt(targetUsd)}
-          </span>
-          <span className="mx-1.5 text-text-muted/60">·</span>
-          <span className="font-mono tabular-nums">
-            {impact.delta >= 0 ? "+" : "−"}${fmt(Math.abs(impact.delta))}
-          </span>
-          {Math.abs(impact.positions) > 0.005 && (
-            <span className="text-text-muted">
-              {" "}
-              (${fmt(Math.abs(impact.cash))} cash + ${fmt(Math.abs(impact.positions))} as
-              positions{impact.delta > 0 ? ", traded into its own picks on its next sync" : ""})
-            </span>
-          )}
-        </p>
-      )}
-      {pending && !impact && (
-        <p className="mt-1.5 font-mono text-[11.5px] tabular-nums text-text-muted">
-          → ${fmt(targetUsd)}
-        </p>
-      )}
-
       {/* Everything that isn't needed at a glance. */}
       {open && (
         <div className="mt-2 rounded-lg border border-white/[0.08] px-3 py-1 pb-3">
@@ -284,21 +190,6 @@ export default function StrategyRow({
               options={paperOptions}
             />
           )}
-          <div className="mt-4 flex flex-col gap-2 border-t border-white/10 pt-3">
-            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-text-muted">
-              Return cash
-            </p>
-            {/* Only the outbound half lives here. Assigning FROM the pot is an
-                account-level act — it belongs beside the pot's balance, which
-                is shown once at the top rather than repeated in every card.
-                Returning money is a property of the strategy holding it. */}
-            <AmountAction
-              label="Debit"
-              hint="this strategy → unassigned"
-              disabled={disabled}
-              onSubmit={onDebit}
-            />
-          </div>
         </div>
       )}
     </li>
@@ -314,78 +205,6 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
       </span>
       <span>{children}</span>
     </div>
-  );
-}
-
-function Stepper({
-  label,
-  disabled,
-  onClick,
-  children,
-}: {
-  label: string;
-  disabled: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      className="h-6 w-6 shrink-0 rounded border border-white/[0.12] font-mono text-[13px] leading-none text-text-muted transition-colors hover:border-white/30 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-    >
-      {children}
-    </button>
-  );
-}
-
-function AmountAction({
-  label,
-  hint,
-  disabled,
-  onSubmit,
-}: {
-  label: string;
-  hint: string;
-  disabled: boolean;
-  onSubmit: (amount: number) => void;
-}) {
-  const [raw, setRaw] = useState("");
-  const amount = Number(raw);
-  const valid = Number.isFinite(amount) && amount > 0;
-  return (
-    <form
-      className="flex flex-wrap items-center gap-2"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!valid) return;
-        onSubmit(amount);
-        setRaw("");
-      }}
-    >
-      <input
-        type="number"
-        min="0.01"
-        step="0.01"
-        inputMode="decimal"
-        placeholder="0.00"
-        value={raw}
-        onChange={(e) => setRaw(e.target.value)}
-        disabled={disabled}
-        className="w-28 rounded border border-white/[0.12] bg-transparent px-2.5 py-1 font-mono text-[13px] tabular-nums text-text placeholder:text-text-muted focus:border-white/35 focus:outline-none disabled:opacity-50"
-        aria-label={`${label} amount`}
-      />
-      <button
-        type="submit"
-        disabled={disabled || !valid}
-        className="rounded border border-white/[0.12] px-3 py-1 text-[12.5px] font-medium text-text-dim transition-colors hover:border-white/25 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {label}
-      </button>
-      <span className="text-[11px] text-text-muted">{hint}</span>
-    </form>
   );
 }
 
