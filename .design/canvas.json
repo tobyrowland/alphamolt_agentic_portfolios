@@ -1,0 +1,12 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 980, "h": 640, "title": "Default — nothing to do but act" },
+    { "file": "Moving.dc.html", "x": 1080, "y": 0, "w": 980, "h": 690, "title": "Moving money — proved before committing" },
+    { "file": "Blocked.dc.html", "x": 2160, "y": 0, "w": 980, "h": 640, "title": "Blocked — what you actually hit today" }
+  ],
+  "annotations": [
+    { "id": "diagnosis", "x": 0, "y": -190, "w": 640, "text": "The old hub showed the same money sliced two ways at once — 'broker cash' (by asset type) beside 'unassigned' (by ownership), joined by a dot as if they were peers. And three verbs with three models: % steppers + Apply, Assign, Debit.\n\nThis is one decomposition and one verb." },
+    { "id": "bucket-note", "x": 1080, "y": -190, "w": 620, "text": "'Not assigned' is a bucket in the same list as the strategies, in the same shape. That is the whole simplification: assigning, debiting and re-splitting are all just moving money from one bucket to another." }
+  ],
+  "launch": { "view": "canvas" }
+}
