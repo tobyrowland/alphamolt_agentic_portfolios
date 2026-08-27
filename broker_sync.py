@@ -24,11 +24,14 @@ second broker gets both for free.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from broker import BrokerBackend, BrokerError, account_key_for_portfolio
 
 logger = logging.getLogger(__name__)
+
+#: How far back ``repair`` reads the broker's fill tape.
+FILL_LOOKBACK_DAYS = 30
 
 
 def _endpoint_label(backend: BrokerBackend) -> str:
@@ -298,6 +301,13 @@ def repair(
             f"would have to invent prices — refusing"
         )
 
+    # How far back to read the broker's tape. Generous: a divergence can sit
+    # unnoticed over a weekend or an outage (this one did), and the rows are
+    # filtered by symbol and order id afterwards anyway.
+    fills_after = (
+        datetime.now(timezone.utc) - timedelta(days=FILL_LOOKBACK_DAYS)
+    ).isoformat()
+
     key = account_key_for_portfolio(portfolio)
     sleeve_pfs = [
         p for p in db.get_human_portfolios()
@@ -328,9 +338,22 @@ def repair(
     }
     unallocated = sleeves.unallocated_cash(backend.get_cash(), allowances)
 
+    # An unreadable tape must NOT arrive here as "no fills". The refusal text
+    # for an empty tape says the fill does not exist and sends the operator off
+    # to repair by hand; saying that because our own request 422'd is a wrong
+    # diagnosis with a real cost. So the read is allowed to fail loudly.
+    try:
+        fills = fills_reader(after=fills_after)
+    except Exception as exc:  # noqa: BLE001 — surfaced as a refusal, not a crash
+        raise BrokerError(
+            f"could not read {backend.broker_name}'s fill tape ({exc}) — "
+            f"refusing to repair, because without it every price would be a "
+            f"guess. This is a fault to fix, not a missing fill."
+        ) from exc
+
     plan = sleeves.plan_repair(
         drift,
-        fills_reader(),
+        fills,
         _recorded_order_ids(db, sleeve_pfs),
         allowances[portfolio["id"]],
         unallocated,

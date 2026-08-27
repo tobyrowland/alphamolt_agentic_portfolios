@@ -338,7 +338,9 @@ class AlpacaExecutionBackend:
         """
         broker_sync.reconcile(self, db, portfolio_slug)
 
-    def recent_fills(self, *, symbol: str | None = None) -> list[dict]:
+    def recent_fills(
+        self, *, symbol: str | None = None, after: str | None = None,
+    ) -> list[dict]:
         """Alpaca's own fill tape — what the account actually paid, and when.
 
         The repair path needs it because a quantity can be derived from the
@@ -346,7 +348,7 @@ class AlpacaExecutionBackend:
         quote writes a cost basis that was never paid, and every return the
         sleeve reports afterwards is wrong by that amount.
         """
-        return self.client.get_fills(symbol=symbol)
+        return self.client.get_fills(symbol=symbol, after=after)
 
     def repair(
         self, db: SupabaseDB, portfolio_slug: str, *, dry_run: bool = False,

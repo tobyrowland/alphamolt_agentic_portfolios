@@ -472,6 +472,13 @@ def plan_repair(
         sym = (row.get("symbol") or "").upper()
         if sym:
             by_symbol.setdefault(sym, []).append(row)
+    # Newest first, decided HERE rather than trusted from the caller. The most
+    # recent unrecorded fill is the one the drift came from, and picking the
+    # oldest instead would book a real position at a stale price — a silent,
+    # permanent error in every return the sleeve reports afterwards. A pure
+    # function must not depend on an undocumented property of its input.
+    for rows in by_symbol.values():
+        rows.sort(key=lambda r: str(r.get("transaction_time") or ""), reverse=True)
 
     for d in drift:
         delta = d.delta

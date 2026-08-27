@@ -711,5 +711,144 @@ class TestDriftRefusalJournalsTheReason(unittest.TestCase):
         self.assertTrue(out["shared_account"])
 
 
+class _PagingSession:
+    """A stub Alpaca HTTP session that enforces the real page-size cap."""
+
+    PAGE_MAX = 100
+
+    def __init__(self, rows, *, cap=PAGE_MAX):
+        self.rows = rows
+        self.cap = cap
+        self.requests: list[dict] = []
+
+    def request(self, method, url, params=None, json=None, timeout=None):
+        params = dict(params or {})
+        self.requests.append(params)
+
+        class _Resp:
+            def __init__(self, status, payload, text=""):
+                self.status_code = status
+                self._payload = payload
+                self.content = b"x" if payload is not None else b""
+                self.text = text
+
+            def json(self):
+                return self._payload
+
+        size = int(params.get("page_size") or 0)
+        if size > self.cap:
+            return _Resp(
+                422,
+                {"message": f"tried to set the page size to {size}, "
+                            f"but the maximum is {self.cap}"},
+                "422",
+            )
+        start = 0
+        token = params.get("page_token")
+        if token:
+            ids = [r["id"] for r in self.rows]
+            start = ids.index(token) + 1 if token in ids else len(self.rows)
+        return _Resp(200, self.rows[start:start + size])
+
+
+def _fill_row(i, symbol="ZBRA", side="buy", price="360.11"):
+    return {"id": f"a{i}", "symbol": symbol, "side": side,
+            "qty": "1", "price": price, "order_id": f"ord-{i}"}
+
+
+class TestFillTapeReading(unittest.TestCase):
+    """Reading the broker's fill tape — the input a repair prices against.
+
+    The 2026-08-27 failure: ``get_fills`` asked for ``page_size=500``, Alpaca
+    caps it at 100 and answers 422, the error was swallowed into ``[]``, and
+    the repair then told its operator the fill did not exist — when the truth
+    was that we never looked.
+    """
+
+    def _client(self, rows, cap=100):
+        from alpaca_client import AlpacaClient
+        client = AlpacaClient.__new__(AlpacaClient)
+        client.base_url = "https://example.test"
+        client._session = _PagingSession(rows, cap=cap)
+        return client
+
+    def test_it_never_asks_for_more_than_the_page_cap(self):
+        client = self._client([_fill_row(i) for i in range(250)])
+        client.get_fills(limit=500)
+        sizes = [int(r["page_size"]) for r in client._session.requests]
+        self.assertTrue(sizes, "no request was made")
+        self.assertLessEqual(max(sizes), 100)
+
+    def test_it_pages_to_collect_more_than_one_page(self):
+        client = self._client([_fill_row(i) for i in range(250)])
+        rows = client.get_fills(limit=250)
+        self.assertEqual(len(rows), 250)
+        self.assertGreater(len(client._session.requests), 1)
+
+    def test_an_unreadable_tape_raises_rather_than_returning_empty(self):
+        """The distinction the repair's refusal wording depends on."""
+        from alpaca_client import AlpacaError
+        client = self._client([_fill_row(0)], cap=1)
+        client._session.cap = 0   # every page size is rejected
+        with self.assertRaises(AlpacaError):
+            client.get_fills(limit=10)
+
+    def test_a_genuinely_empty_tape_is_an_empty_list(self):
+        client = self._client([])
+        self.assertEqual(client.get_fills(limit=10), [])
+
+    def test_the_symbol_filter_is_applied(self):
+        rows = [_fill_row(0, "ZBRA"), _fill_row(1, "AAPL")]
+        client = self._client(rows)
+        got = client.get_fills(symbol="zbra", limit=10)
+        self.assertEqual([r["symbol"] for r in got], ["ZBRA"])
+
+    def test_a_lookback_window_is_passed_through(self):
+        client = self._client([_fill_row(0)])
+        client.get_fills(after="2026-07-28T00:00:00+00:00", limit=10)
+        self.assertEqual(
+            client._session.requests[0].get("after"),
+            "2026-07-28T00:00:00+00:00",
+        )
+
+    def test_it_asks_for_newest_first_explicitly(self):
+        """Which fill gets picked decides a real-money cost basis."""
+        client = self._client([_fill_row(0)])
+        client.get_fills(after="2026-07-28T00:00:00+00:00", limit=10)
+        self.assertEqual(client._session.requests[0].get("direction"), "desc")
+
+    def test_cash_transfers_respect_the_same_cap(self):
+        """The sibling reader carried the identical 500 — silently."""
+        client = self._client([_fill_row(i) for i in range(150)])
+        client.get_cash_transfers(limit=500)
+        sizes = [int(r["page_size"]) for r in client._session.requests]
+        self.assertLessEqual(max(sizes), 100)
+
+
+class TestRepairRefusesLoudlyOnAnUnreadableTape(unittest.TestCase):
+    """"Could not look" must never be reported as "does not exist"."""
+
+    class _Backend(_FakeBackend):
+        broker_name = "alpaca"
+
+        def recent_fills(self, *, symbol=None, after=None):
+            raise RuntimeError("422: page size")
+
+    def test_it_raises_instead_of_reporting_a_missing_fill(self):
+        from broker import Position
+        db = _FakeDB(
+            portfolio=_live_portfolio(),
+            account={"cash_usd": 500.0, "starting_cash": 500.0},
+        )
+        # No recorded holdings, a broker position: drift, with nothing to
+        # price it against until the tape is read.
+        be = self._Backend(positions={"AAA": Position("AAA", 9.0, 10.0)})
+        with self.assertRaises(BrokerError) as ctx:
+            broker_sync.repair(be, db, "x-live")
+        message = str(ctx.exception)
+        self.assertIn("could not read", message.lower())
+        self.assertNotIn("no unrecorded", message.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

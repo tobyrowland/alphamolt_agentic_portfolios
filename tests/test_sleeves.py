@@ -834,6 +834,30 @@ class TestPlanRepair(unittest.TestCase):
         self.assertEqual(plan.legs, ())
         self.assertTrue(any("price" in r for r in plan.refusals))
 
+    def test_it_books_the_newest_fill_regardless_of_input_order(self):
+        """The drift came from the most recent fill, not an older one.
+
+        Booking the stale price would be a permanent, silent error in every
+        return the sleeve reports afterwards — so the ordering is decided here
+        rather than trusted from whatever order the broker's API returned.
+        """
+        old_fill = dict(_fill("ZBRA", "buy", 4.0, 100.00, "old"),
+                        transaction_time="2026-08-01T14:00:00Z")
+        new_fill = dict(_fill("ZBRA", "buy", 4.0, 360.11, "new"),
+                        transaction_time="2026-08-26T14:23:00Z")
+        for order in ([old_fill, new_fill], [new_fill, old_fill]):
+            with self.subTest(order=[f["order_id"] for f in order]):
+                plan = sleeves.plan_repair(
+                    [_drift("ZBRA", 2.0, 6.0)],
+                    order,
+                    recorded_order_ids=set(),
+                    allowance=100_000.0,
+                    unallocated=0.0,
+                )
+                self.assertEqual(len(plan.legs), 1)
+                self.assertEqual(plan.legs[0].price, 360.11)
+                self.assertEqual(plan.legs[0].order_id, "new")
+
     def test_it_never_nets_one_symbol_against_another(self):
         """Two differences produce two legs, not one combined adjustment."""
         plan = sleeves.plan_repair(
