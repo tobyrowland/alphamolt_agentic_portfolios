@@ -811,6 +811,12 @@ class TestFillTapeReading(unittest.TestCase):
             "2026-07-28T00:00:00+00:00",
         )
 
+    def test_it_asks_for_newest_first_explicitly(self):
+        """Which fill gets picked decides a real-money cost basis."""
+        client = self._client([_fill_row(0)])
+        client.get_fills(after="2026-07-28T00:00:00+00:00", limit=10)
+        self.assertEqual(client._session.requests[0].get("direction"), "desc")
+
     def test_cash_transfers_respect_the_same_cap(self):
         """The sibling reader carried the identical 500 — silently."""
         client = self._client([_fill_row(i) for i in range(150)])

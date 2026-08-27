@@ -166,6 +166,11 @@ class AlpacaClient:
         page_token: str | None = None
         while len(out) < limit:
             query = dict(params or {})
+            # Ordering is stated, never inherited. A caller picking "the" fill
+            # off the front of this list is choosing a real-money cost basis,
+            # and Alpaca's default direction is not the same for every
+            # combination of date/after/until.
+            query.setdefault("direction", "desc")
             query["page_size"] = min(self.ACTIVITIES_PAGE_MAX, limit - len(out))
             if page_token:
                 query["page_token"] = page_token
