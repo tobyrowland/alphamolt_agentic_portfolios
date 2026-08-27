@@ -11,12 +11,26 @@ import { syncLivePortfolioToAlpaca } from "@/lib/live-mirror-mutations";
  * second dispatches. After dispatch it shows a "started" note (the workflow
  * runs async on GitHub Actions; fills land on the next sync/refresh).
  *
- * Styled as a RISK control, not a primary one: it lives inside a strategy's
- * drawer, and the account page now spends green on gains and red on losses and
- * refusals, so a green "go" button here would have read as "this is the good
- * outcome" for the one control that spends real money.
+ * Styled as a RISK control, not a primary one: the account page spends green on
+ * gains and red on losses and refusals, so a green "go" button here would have
+ * read as "this is the good outcome" for the one control that spends real
+ * money. Amber, and two clicks.
+ *
+ * `compact` puts the trigger on a strategy's ROW rather than inside its drawer.
+ * It used to live only in the drawer, which was defensible when the hub was a
+ * report; on an action-first surface it hides the one verb that actually places
+ * orders behind a disclosure — the owner asked where the Sync button had gone.
+ * Only the resting state shrinks: arming still shows the full sentence about
+ * real orders before the second click, because that warning is the reason the
+ * control is two-step at all.
  */
-export default function SyncLiveButton({ portfolioId }: { portfolioId: string }) {
+export default function SyncLiveButton({
+  portfolioId,
+  compact = false,
+}: {
+  portfolioId: string;
+  compact?: boolean;
+}) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
   const [done, setDone] = useState(false);
@@ -39,7 +53,11 @@ export default function SyncLiveButton({ portfolioId }: { portfolioId: string })
   }
 
   if (done) {
-    return (
+    return compact ? (
+      <span className="font-mono text-[11px] uppercase tracking-wider text-text-muted">
+        sync started
+      </span>
+    ) : (
       <p className="mt-3 text-[13px] leading-relaxed text-text-dim">
         Sync started — Alpaca orders are being placed to match your paper book.
         Fills appear here after the next reconcile (give it a minute, then
@@ -48,8 +66,22 @@ export default function SyncLiveButton({ portfolioId }: { portfolioId: string })
     );
   }
 
+  // Resting compact state: a chip on the row. Arming drops the full control
+  // (and its warning) below, so nothing about the second click is abbreviated.
+  if (compact && !confirming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="inline-flex shrink-0 items-center rounded-lg border border-amber-400/50 bg-amber-400/10 px-3 py-1.5 text-[12.5px] font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/40"
+      >
+        Sync
+      </button>
+    );
+  }
+
   return (
-    <div className="mt-3">
+    <div className={compact ? "mt-2 w-full" : "mt-3"}>
       {!confirming ? (
         <button
           type="button"
