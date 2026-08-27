@@ -56,6 +56,7 @@ from broker import (
     account_key_for_portfolio,
     band_limit_price,
     price_band_from_env,
+    shared_credentials_permitted,
 )
 from db import SupabaseDB
 
@@ -516,10 +517,7 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if not live:
                 logger.info("no live portfolios to reconcile")
-            # "One distinct account", not "one portfolio" — several sleeves of
-            # a single account resolve the same credentials unambiguously, so
-            # the bare ALPACA_* env vars stay usable for them.
-            single = len({account_key_for_portfolio(p) for p in live}) == 1
+            single = shared_credentials_permitted(live)
             for p in live:
                 try:
                     be = AlpacaExecutionBackend.for_slug(

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import unittest
 
+import broker
 import broker_sync
 import sleeves
 from alpaca_mirror import (
@@ -588,6 +589,67 @@ class TestPlanInKind(unittest.TestCase):
         holdings = [{"ticker": "X", "quantity": 4.0, "avg_cost_usd": None, "price": 25.0}]
         plan = sleeves.plan_in_kind(0.0, holdings, 50.0)
         self.assertEqual(plan.share_moves[0].avg_cost, 25.0)
+
+
+class TestSharedCredentialsGuard(unittest.TestCase):
+    """The anti-commingle guard counts ACCOUNTS, never portfolios.
+
+    Production on 2026-08-27: two live portfolios, one shared broker account.
+    Counting portfolios made every `live_cash` allowance command refuse — so
+    the repair's $90.03 top-up failed and a correct plan booked nothing.
+    """
+
+    @staticmethod
+    def _pf(slug, key=None):
+        pf = {"id": slug, "slug": slug, "mode": "live"}
+        if key is not None:
+            pf["broker_account_key"] = key
+        return pf
+
+    def test_two_sleeves_of_one_account_may_use_the_bare_credentials(self):
+        """The exact production shape."""
+        live = [
+            self._pf("scrappy-fightback-live", "test-portfolio-toby-live"),
+            self._pf("test-portfolio-toby-live"),
+        ]
+        self.assertTrue(broker.shared_credentials_permitted(live))
+
+    def test_two_distinct_accounts_may_not(self):
+        """The case the guard actually exists for."""
+        live = [self._pf("mine-live"), self._pf("theirs-live")]
+        self.assertFalse(broker.shared_credentials_permitted(live))
+
+    def test_a_sole_live_portfolio_may(self):
+        self.assertTrue(broker.shared_credentials_permitted([self._pf("solo-live")]))
+
+    def test_many_sleeves_of_one_account_still_may(self):
+        live = [self._pf(f"s{i}-live", "one-account") for i in range(5)]
+        self.assertTrue(broker.shared_credentials_permitted(live))
+
+    def test_a_null_account_key_falls_back_to_the_slug(self):
+        """Pre-083 rows carry no key; two of them are two accounts."""
+        self.assertFalse(
+            broker.shared_credentials_permitted(
+                [self._pf("a-live"), self._pf("b-live")]
+            )
+        )
+
+
+class TestGuardIsNotOpenCoded(unittest.TestCase):
+    """One rule, one place — it was open-coded four times and got it wrong twice."""
+
+    def test_no_module_recomputes_the_account_count_itself(self):
+        import pathlib as _p
+        offenders = []
+        for name in ("live_cash.py", "alpaca_mirror.py", "alpaca_execution.py"):
+            text = _p.Path(name).read_text()
+            if "account_key_for_portfolio(p) for p in" in text:
+                offenders.append(name)
+        self.assertEqual(
+            offenders, [],
+            "these re-derive the anti-commingle guard instead of calling "
+            "broker.shared_credentials_permitted",
+        )
 
 
 if __name__ == "__main__":

@@ -67,6 +67,7 @@ from broker import (
     live_execution_enabled,
     price_band_from_env,
     resolve_backend_for_portfolio,
+    shared_credentials_permitted,
 )
 from db import SupabaseDB
 from portfolio import PortfolioError, PortfolioManager
@@ -562,7 +563,7 @@ def _mirror_all_live(
     # using the plain credentials, while two portfolios pointing at genuinely
     # different accounts are refused so one owner's targets can never land in
     # another's account.
-    single = len({account_key_for_portfolio(p) for p in live}) == 1
+    single = shared_credentials_permitted(live)
     rc = 0
     for live_pf in live:
         slug = live_pf.get("slug") or live_pf["id"][:8]
