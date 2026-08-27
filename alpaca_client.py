@@ -142,6 +142,42 @@ class AlpacaClient:
         """Market clock — is_open, next_open, next_close."""
         return self._request("GET", "/v2/clock")
 
+    #: Alpaca caps the activities page size at 100 and answers 422 above it —
+    #: not an empty page, a hard error. Asking for 500 silently cost us the
+    #: whole tape (see ``get_fills``).
+    ACTIVITIES_PAGE_MAX = 100
+
+    def _activities(
+        self,
+        path: str,
+        *,
+        params: dict | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Page through an account-activities endpoint, newest first.
+
+        Alpaca returns at most ``ACTIVITIES_PAGE_MAX`` rows per call and hands
+        back an ``id`` cursor for the next page, so "give me the last 500" is
+        several requests rather than one big one. Raises on a failed request —
+        the callers decide whether an unreadable tape is fatal, and they cannot
+        decide that if it arrives as an empty list.
+        """
+        out: list[dict] = []
+        page_token: str | None = None
+        while len(out) < limit:
+            query = dict(params or {})
+            query["page_size"] = min(self.ACTIVITIES_PAGE_MAX, limit - len(out))
+            if page_token:
+                query["page_token"] = page_token
+            rows = self._request("GET", path, params=query)
+            if not isinstance(rows, list) or not rows:
+                break
+            out.extend(rows)
+            page_token = str(rows[-1].get("id") or "")
+            if not page_token or len(rows) < query["page_size"]:
+                break
+        return out
+
     def get_cash_transfers(self, *, limit: int = 500) -> list[dict]:
         """Cash movements in and out of the account — deposits, withdrawals.
 
@@ -158,42 +194,53 @@ class AlpacaClient:
         baseline off a partial answer.
         """
         try:
-            rows = self._request(
-                "GET",
-                "/v2/account/activities"
-                f"?activity_types=CSD,CSW,JNLC&page_size={int(limit)}",
+            return self._activities(
+                "/v2/account/activities",
+                params={"activity_types": "CSD,CSW,JNLC"},
+                limit=limit,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort by contract
             logger.warning("could not read cash transfers: %s", exc)
             return []
-        return rows if isinstance(rows, list) else []
 
-    def get_fills(self, *, symbol: str | None = None, limit: int = 500) -> list[dict]:
+    def get_fills(
+        self,
+        *,
+        symbol: str | None = None,
+        after: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
         """Executed fills on this account — the broker's own trade tape.
 
         Needed to REPAIR records that diverged from the broker: when a fill
         landed but AlphaMolt failed to book it, the one thing we must not do is
         invent a price. The activity row carries the actual ``price`` and
-        ``qty`` the account was charged, so the repaired record matches what was
-        really paid rather than a close, a quote, or a plan.
+        ``qty`` the account was charged, so the repaired record matches what
+        was really paid rather than a close, a quote, or a plan.
 
-        Returns raw ``FILL`` activity rows (newest first), optionally narrowed
-        to one symbol. Best-effort and never raises, like the other activity
-        reader: an empty list means "couldn't read it", and the caller refuses
-        to repair rather than guessing.
+        ``after`` is an ISO-8601 instant bounding how far back to read (Alpaca
+        forbids combining it with ``date``). Returns raw ``FILL`` activity rows,
+        newest first, optionally narrowed to one symbol.
+
+        **Raises** ``AlpacaError`` when the tape cannot be read, deliberately
+        unlike the other activity reader. An empty list has to mean "the broker
+        has no such fill", because that is what the repair path acts on: a
+        failure returned as `[]` told an operator the fill did not exist when
+        the truth was that we never looked. That is exactly how a 422 over the
+        page size (this method asked for 500; the cap is 100) presented as a
+        missing fill.
         """
-        try:
-            rows = self._request(
-                "GET",
-                f"/v2/account/activities/FILL?page_size={int(limit)}",
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort by contract
-            logger.warning("could not read fills: %s", exc)
-            return []
-        if not isinstance(rows, list):
-            return []
+        params: dict = {}
+        if after:
+            params["after"] = after
+        rows = self._activities(
+            "/v2/account/activities/FILL", params=params, limit=limit,
+        )
         if symbol:
-            rows = [r for r in rows if (r.get("symbol") or "").upper() == symbol.upper()]
+            rows = [
+                r for r in rows
+                if (r.get("symbol") or "").upper() == symbol.upper()
+            ]
         return rows
 
     def get_asset(self, symbol: str) -> dict:
