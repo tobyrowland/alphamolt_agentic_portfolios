@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { SleeveCash } from "@/lib/live-cash-query";
 import type { HubLine } from "@/lib/live-activity";
 import type { SleeveImpact } from "@/lib/sleeve-funding";
+import { creditCeilingHint, spareCashLabel } from "@/lib/live-cash-status";
 import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
 import SyncLiveButton from "@/components/portfolio/sync-live-button";
 
@@ -290,17 +291,22 @@ export default function StrategyRow({
           )}
           <div className="mt-4 flex flex-col gap-2 border-t border-white/10 pt-3">
             <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-text-muted">
-              Spare account cash
+              {spareCashLabel(unallocated)}
             </p>
+            {creditCeilingHint(unallocated) && (
+              <p className="text-[11px] leading-relaxed text-text-muted">
+                {creditCeilingHint(unallocated)}
+              </p>
+            )}
             <AmountAction
               label="Credit"
-              hint="spare cash → this strategy"
+              hint="unassigned → this strategy"
               disabled={disabled || unallocated == null}
               onSubmit={onCredit}
             />
             <AmountAction
               label="Debit"
-              hint="this strategy → spare cash"
+              hint="this strategy → unassigned"
               disabled={disabled}
               onSubmit={onDebit}
             />
