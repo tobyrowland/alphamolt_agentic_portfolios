@@ -5,7 +5,6 @@ import Link from "next/link";
 import type { SleeveCash } from "@/lib/live-cash-query";
 import type { HubLine } from "@/lib/live-activity";
 import type { SleeveImpact } from "@/lib/sleeve-funding";
-import { creditCeilingHint, spareCashLabel } from "@/lib/live-cash-status";
 import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
 import SyncLiveButton from "@/components/portfolio/sync-live-button";
 
@@ -71,9 +70,7 @@ export default function StrategyRow({
   disabled,
   editable,
   paperOptions,
-  unallocated,
   onPct,
-  onCredit,
   onDebit,
 }: {
   sleeve: SleeveCash;
@@ -98,9 +95,7 @@ export default function StrategyRow({
   statusLine?: HubLine | null;
   disabled: boolean;
   paperOptions: { id: string; name: string }[];
-  unallocated: number | null;
   onPct: (raw: string) => void;
-  onCredit: (amount: number) => void;
   onDebit: (amount: number) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -291,31 +286,18 @@ export default function StrategyRow({
           )}
           <div className="mt-4 flex flex-col gap-2 border-t border-white/10 pt-3">
             <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-text-muted">
-              {spareCashLabel(unallocated)}
+              Return cash
             </p>
-            {creditCeilingHint(unallocated) && (
-              <p className="text-[11px] leading-relaxed text-text-muted">
-                {creditCeilingHint(unallocated)}
-              </p>
-            )}
-            <AmountAction
-              label="Credit"
-              hint="unassigned → this strategy"
-              disabled={disabled || unallocated == null}
-              onSubmit={onCredit}
-            />
+            {/* Only the outbound half lives here. Assigning FROM the pot is an
+                account-level act — it belongs beside the pot's balance, which
+                is shown once at the top rather than repeated in every card.
+                Returning money is a property of the strategy holding it. */}
             <AmountAction
               label="Debit"
               hint="this strategy → unassigned"
               disabled={disabled}
               onSubmit={onDebit}
             />
-            {unallocated == null && (
-              <p className="text-[11px] leading-relaxed text-text-muted">
-                Crediting needs the broker balance, which this server can&apos;t
-                read. Use <code className="font-mono">live_cash.py --credit</code>.
-              </p>
-            )}
           </div>
         </div>
       )}

@@ -30,11 +30,7 @@ RUNNER = ROOT / "tests" / "ts_broker_cash_status_runner.mjs"
 
 
 def _run_ts() -> dict:
-    """Evaluate the copy module through Node and return everything it exports.
-
-    Shared by the test classes below rather than inherited: subclassing a
-    TestCase to reuse its loader also re-runs every one of its tests.
-    """
+    """Evaluate the copy module through Node and return everything it exports."""
     node = shutil.which("node")
     if node is None:
         raise unittest.SkipTest("node not available")
@@ -97,58 +93,6 @@ class BrokerCashStatusCopyTests(unittest.TestCase):
         for status in ("not_configured", "rejected", "unreachable"):
             with self.subTest(status):
                 self.assertIn(self.notes[status], self.credit[status])
-
-
-class SpareCashLabelTests(unittest.TestCase):
-    """The credit panel must name the pot the hub names, and show its size.
-
-    Reported by the owner, with the panel open in front of them: "where is the
-    spare cash to add?" The figure was $12,149.18, at the top of the hub, under
-    a different word — while the panel was headed with the NAME of an amount
-    and never showed it, despite already holding the number for its own
-    disabled check.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        out = _run_ts()
-        cls.spare_labels = out["spareLabels"]
-        cls.ceilings = out["ceilings"]
-
-    def test_it_shows_the_amount_next_to_the_input(self):
-        label = self.spare_labels["typical"]
-        self.assertIn("12,149.18", label)
-
-    def test_it_uses_the_same_word_as_the_account_header(self):
-        """One quantity, one name — the header says 'unassigned'."""
-        for key in ("typical", "zero", "unknown", "whole"):
-            with self.subTest(key=key):
-                self.assertIn("UNASSIGNED", self.spare_labels[key])
-                self.assertNotIn(
-                    "SPARE", self.spare_labels[key].upper(),
-                    "two names for one pot is what caused the question",
-                )
-
-    def test_an_unreadable_balance_shows_no_figure(self):
-        """Never invent one — brokerCashNote explains this case."""
-        self.assertEqual(self.spare_labels["unknown"], "UNASSIGNED CASH")
-        self.assertNotIn("$", self.spare_labels["unknown"])
-
-    def test_zero_is_shown_as_zero_not_hidden(self):
-        self.assertIn("$0.00", self.spare_labels["zero"])
-
-    def test_it_is_always_two_decimal_places(self):
-        self.assertIn("$500.00", self.spare_labels["whole"])
-
-    def test_an_empty_pot_says_what_to_do_instead(self):
-        """A credit of anything would be refused server-side; say so first."""
-        hint = self.ceilings["zero"]
-        self.assertIsNotNone(hint)
-        self.assertIn("nothing unassigned", hint)
-
-    def test_a_funded_pot_carries_no_warning(self):
-        self.assertIsNone(self.ceilings["typical"])
-        self.assertIsNone(self.ceilings["unknown"])
 
 
 if __name__ == "__main__":

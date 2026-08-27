@@ -14,13 +14,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const {
-  brokerCashNote,
-  brokerCashTag,
-  creditBlockedReason,
-  spareCashLabel,
-  creditCeilingHint,
-} = await import(
+const { brokerCashNote, brokerCashTag, creditBlockedReason } = await import(
   join(here, "..", "web", "lib", "live-cash-status.ts")
 );
 
@@ -33,16 +27,5 @@ process.stdout.write(
     creditBlocked: Object.fromEntries(
       STATUSES.map((s) => [s, creditBlockedReason(s)]),
     ),
-    spareLabels: {
-      typical: spareCashLabel(12149.18),
-      zero: spareCashLabel(0),
-      unknown: spareCashLabel(null),
-      whole: spareCashLabel(500),
-    },
-    ceilings: {
-      typical: creditCeilingHint(12149.18),
-      zero: creditCeilingHint(0),
-      unknown: creditCeilingHint(null),
-    },
   }),
 );
