@@ -29,19 +29,24 @@ ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "tests" / "ts_broker_cash_status_runner.mjs"
 
 
+def _run_ts() -> dict:
+    """Evaluate the copy module through Node and return everything it exports."""
+    node = shutil.which("node")
+    if node is None:
+        raise unittest.SkipTest("node not available")
+    proc = subprocess.run(
+        [node, "--experimental-strip-types", str(RUNNER)],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    if proc.returncode != 0:
+        raise unittest.SkipTest(f"node cannot strip types: {proc.stderr[:300]}")
+    return json.loads(proc.stdout)
+
+
 class BrokerCashStatusCopyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        node = shutil.which("node")
-        if node is None:
-            raise unittest.SkipTest("node not available")
-        proc = subprocess.run(
-            [node, "--experimental-strip-types", str(RUNNER)],
-            capture_output=True, text=True, cwd=ROOT,
-        )
-        if proc.returncode != 0:
-            raise unittest.SkipTest(f"node cannot strip types: {proc.stderr[:300]}")
-        out = json.loads(proc.stdout)
+        out = _run_ts()
         cls.notes = out["notes"]
         cls.tags = out["tags"]
         cls.credit = out["creditBlocked"]

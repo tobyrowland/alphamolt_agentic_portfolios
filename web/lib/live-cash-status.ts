@@ -89,3 +89,4 @@ export function creditBlockedReason(status: BrokerCashStatus): string {
   const detail = note ?? "The broker balance is unknown.";
   return `${detail} Use \`live_cash.py --credit\` in the meantime.`;
 }
+

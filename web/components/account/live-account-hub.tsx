@@ -25,6 +25,7 @@ import {
   sleeveColor,
 } from "@/lib/live-activity";
 import SplitBar from "@/components/account/split-bar";
+import AssignCash from "@/components/account/assign-cash";
 import StrategyRow, {
   RowHeader,
   type StrategyMeta,
@@ -302,6 +303,24 @@ function AccountPanel({
               {brokerCashTag(account.brokerCashStatus)}
             </span>
           )}
+          {/* The action belongs beside the figure it spends — the pot is a
+              property of the account, and this is where its balance is shown. */}
+          <AssignCash
+            unallocated={account.unallocated}
+            strategies={sleeves.map((s) => ({
+              portfolioId: s.portfolioId,
+              displayName: s.displayName,
+            }))}
+            disabled={pending}
+            onAssign={(portfolioId, amount) => {
+              const to = sleeves.find((s) => s.portfolioId === portfolioId);
+              run(
+                () => creditAllowance({ portfolioId, amount }),
+                `Assigned $${fmt(amount)} to ${to?.displayName ?? "strategy"}.`,
+                resetSplit,
+              );
+            }}
+          />
         </p>
       </div>
 
@@ -339,15 +358,7 @@ function AccountPanel({
             disabled={pending}
             editable={sleeves.length > 1 && total > 0}
             paperOptions={paperOptions}
-            unallocated={account.unallocated}
             onPct={(value) => setPct(i, value)}
-            onCredit={(amount) =>
-              run(
-                () => creditAllowance({ portfolioId: s.portfolioId, amount }),
-                `Credited $${fmt(amount)} to ${s.displayName}.`,
-                resetSplit,
-              )
-            }
             onDebit={(amount) =>
               run(
                 () => debitAllowance({ portfolioId: s.portfolioId, amount }),
