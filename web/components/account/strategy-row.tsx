@@ -166,7 +166,15 @@ export default function StrategyRow({
           )}
         </Cell>
 
-        <div className="flex justify-end">
+        <div className="flex items-center justify-end gap-2">
+          {/* The verb that actually places orders belongs where it can be
+              seen. It stays two-step and amber; only its resting state is a
+              chip. */}
+          <SyncLiveButton portfolioId={sleeve.portfolioId} compact />
+          {/* With Sync on the row, the drawer holds only the book this
+              strategy copies — so when there is no other book to pick, an
+              expander would open an empty box. */}
+          {paperOptions.length > 0 && (
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
@@ -176,20 +184,18 @@ export default function StrategyRow({
           >
             {open ? "▾" : "▸"}
           </button>
+          )}
         </div>
       </div>
 
       {/* Everything that isn't needed at a glance. */}
-      {open && (
+      {open && paperOptions.length > 0 && (
         <div className="mt-2 rounded-lg border border-white/[0.08] px-3 py-1 pb-3">
-          <SyncLiveButton portfolioId={sleeve.portfolioId} />
-          {paperOptions.length > 0 && (
-            <FollowTargetPicker
-              portfolioId={sleeve.portfolioId}
-              currentId={sleeve.followsPortfolioId}
-              options={paperOptions}
-            />
-          )}
+          <FollowTargetPicker
+            portfolioId={sleeve.portfolioId}
+            currentId={sleeve.followsPortfolioId}
+            options={paperOptions}
+          />
         </div>
       )}
     </li>
