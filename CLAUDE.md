@@ -894,6 +894,20 @@ Two trade-phase strategies share the buyer slot:
   candidates, one query each by default), deduped by a process-level run
   cache so a name is searched at most once per heartbeat across all
   portfolios/buyers (the swarm enriches the shared candidate map once).
+  **The per-name prompt states no cash figure**, deliberately: this call
+  answers "does THIS equity fit THIS mandate at TODAY's price", and
+  affordability is the draft's decision downstream. Telling the model
+  "Cash available: $467 (0.0% of portfolio)" while asking whether to buy
+  invites a PASS for a reason that is not about the equity — and a PASS is
+  recorded as a ~30-day `screener_rejections` hide, indistinguishable from
+  "this business is bad", so it quarantines a name the buyer would want the
+  day it has money. It was happening: of 84 names hidden on the Scrappy
+  Fightback book, 15 cited the cash position ("...the portfolio lacks
+  sufficient cash ($467) to purchase a significant position"); most also gave
+  a genuine mandate reason, so cash was a contaminant rather than the whole
+  cause, but one with a 30-day consequence. The PRIORITISATION prompt keeps
+  its cash line — ranking names under scarcity is exactly that call's job.
+  Pinned by `tests/test_buyer_rejections.py`.
   Config knobs (`news_search` / `news_queries` / `news_max_chars`) live in
   `agents.config`; the whole step auto-no-ops when `SERPAPI_API_KEY` is
   unset, so it's safe everywhere. The mechanical `watchlist_buyer` is
