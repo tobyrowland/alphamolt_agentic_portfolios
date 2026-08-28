@@ -10,18 +10,11 @@ import PulseSection from "@/components/dashboard/pulse-section";
 import NeedsAttention, {
   type AttentionItem,
 } from "@/components/dashboard/needs-attention";
-import LiveAccountHub from "@/components/account/live-account-hub";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
   getLiveCashOverview,
   type LiveCashSummary,
 } from "@/lib/live-cash-query";
-import {
-  getLiveActivity,
-  EMPTY_LIVE_ACTIVITY,
-  type LiveActivity,
-} from "@/lib/live-activity-query";
-import type { StrategyMeta } from "@/components/account/strategy-row";
 import {
   getDashboardData,
   type DashPortfolio,
@@ -82,17 +75,6 @@ export default async function AccountPage() {
         })
       : [];
 
-  // What the live account has been doing: mirror dispatches/runs from the
-  // run_logs journal + the fills they produced. Same fail-open contract — a
-  // missing signal costs a line in the hub, never the dashboard.
-  const liveActivity =
-    livePortfolios.length > 0
-      ? await getLiveActivity(livePortfolios.map((p) => p.id)).catch((err) => {
-          console.error("live activity read failed:", err);
-          return EMPTY_LIVE_ACTIVITY;
-        })
-      : EMPTY_LIVE_ACTIVITY;
-
   return (
     <>
       <Nav />
@@ -106,7 +88,6 @@ export default async function AccountPage() {
               portfolios={portfolios}
               livePortfolios={livePortfolios}
               liveAccounts={liveAccounts}
-              liveActivity={liveActivity}
               activity={activity}
               spyValues={spyValues}
             />
@@ -132,7 +113,6 @@ function Dashboard({
   portfolios,
   livePortfolios,
   liveAccounts,
-  liveActivity,
   activity,
   spyValues,
 }: {
@@ -140,7 +120,6 @@ function Dashboard({
   portfolios: DashPortfolio[];
   livePortfolios: DashPortfolio[];
   liveAccounts: LiveCashSummary[];
-  liveActivity: LiveActivity;
   activity: DashTrade[];
   spyValues: DashValuePoint[];
 }) {
@@ -206,36 +185,26 @@ function Dashboard({
       </section>
 
       {/* Private real-money followers (migrations 037 + 083) — owner-only.
-          ONE object per strategy: the hub's cards carry the value, P&L and
-          controls that used to be split across a separate overview card and a
-          table row, which made it hard to see where one strategy ended and the
-          next began. Every live control lives HERE, not on the (read-only)
-          live pages. */}
+          The console itself now lives at /live: it is the one surface that
+          spends real money and it needs room for positions, targets and what
+          the next sync will do, none of which belongs in this page's column.
+          What stays here is a way IN plus the one number worth knowing without
+          clicking — and, when something is wrong, that it is. */}
       {livePortfolios.length > 0 && (
-        <section aria-label="Live account">
-          <div className="mb-3 flex flex-wrap items-center gap-3">
-            <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim">
-              Live account
-            </h2>
-            <span
-              className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-green,#00FF41)]/40 bg-[var(--color-green,#00FF41)]/[0.08] px-2.5 py-1 text-[10px] font-mono font-bold uppercase tracking-[0.12em] text-[var(--color-green,#00FF41)]"
-              title="Backed by a real Alpaca account. Private — only you can see this."
-            >
-              <span
-                aria-hidden
-                className="h-1.5 w-1.5 rounded-full bg-[var(--color-green,#00FF41)] animate-pulse"
-                style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
-              />
-              Private · real money
-            </span>
-          </div>
-          <LiveAccountHub
-            accounts={liveAccounts}
-            paperOptions={portfolios.map((p) => ({ id: p.id, name: p.name }))}
-            liveMeta={buildLiveMeta(livePortfolios)}
-            activity={liveActivity}
-          />
-        </section>
+        <LiveAccountLink
+          count={livePortfolios.length}
+          value={liveAccounts.reduce(
+            (sum, a) =>
+              sum +
+              a.sleeves.reduce((s, x) => s + x.allowance + x.holdingsValue, 0),
+            0,
+          )}
+          unallocated={liveAccounts.reduce<number | null>(
+            (sum, a) =>
+              sum == null || a.unallocated == null ? null : sum + a.unallocated,
+            0,
+          )}
+        />
       )}
 
       {/* Recent swarm activity */}
@@ -331,18 +300,56 @@ function PortfolioCard({ p }: { p: DashPortfolio }) {
  * hub's split arithmetic works off live prices — showing both next to the same
  * target box would put two different "worth" figures on one card.
  */
-function buildLiveMeta(
-  livePortfolios: DashPortfolio[],
-): Record<string, StrategyMeta> {
-  const meta: Record<string, StrategyMeta> = {};
-  for (const p of livePortfolios) {
-    meta[p.id] = {
-      pnlPct: p.pnlPct,
-      numPositions: p.numPositions,
-      followsName: p.followsName,
-    };
-  }
-  return meta;
+/**
+ * The doorway to /live on the dashboard.
+ *
+ * Deliberately one line of fact and one link, not a summary: two places
+ * showing the same real-money figures is how they end up disagreeing, and this
+ * page cannot be the one that is right (it does not load positions). It shows
+ * what the account is worth, flags cash sitting unassigned — the thing an
+ * owner would want to act on and would otherwise never look for — and hands
+ * over.
+ */
+function LiveAccountLink({
+  count,
+  value,
+  unallocated,
+}: {
+  count: number;
+  value: number;
+  unallocated: number | null;
+}) {
+  const idle = unallocated != null && unallocated >= 1;
+  return (
+    <section aria-label="Live account">
+      <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
+        Live account
+      </h2>
+      <Link
+        href="/live"
+        className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-[var(--color-green,#00FF41)]/25 bg-[var(--color-green,#00FF41)]/[0.04] px-4 py-3.5 transition-colors hover:border-[var(--color-green,#00FF41)]/50"
+      >
+        <span
+          aria-hidden
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-green,#00FF41)] animate-pulse"
+          style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
+        />
+        <span className="font-mono text-[17px] font-bold tabular-nums text-text">
+          ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </span>
+        <span className="text-[13px] text-text-muted">
+          real money across {count} {count === 1 ? "strategy" : "strategies"}
+        </span>
+        {idle && (
+          <span className="rounded-full border border-amber-400/40 bg-amber-400/[0.08] px-2.5 py-1 text-[11.5px] text-amber-200">
+            ${unallocated.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{" "}
+            not assigned to any strategy
+          </span>
+        )}
+        <span className="ml-auto text-[13px] text-text-dim">Open console →</span>
+      </Link>
+    </section>
+  );
 }
 
 function ActivityRow({ t }: { t: DashTrade }) {

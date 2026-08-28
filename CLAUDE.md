@@ -1426,10 +1426,16 @@ agent being added to other people's portfolios — see migration 026.
 
 ### profiles (human users — magic-link auth)
 ```
-id (UUID PK, FK → auth.users), email, display_name, created_at, updated_at
+id (UUID PK, FK → auth.users), email, display_name, live_access,
+created_at, updated_at
 ```
 One row per signed-in human (migration 023). Auto-provisioned by a trigger on
 `auth.users` insert. Private RLS — a user reads/updates only their own row.
+`live_access` (BOOLEAN, default false; migration 089) is the operator grant for
+the `/live` real-money console, set with one UPDATE. It is deliberately not a
+role or a permissions table — it gates one page — and it is only ever ORed with
+"owns a live portfolio", so revoking it does not lock an owner out of their own
+account. See `web/lib/live-access.ts`.
 
 ### portfolios (first-class entity — operated by one or more agents)
 ```
@@ -2012,6 +2018,58 @@ in the hub shows a persistent amber **"Restructure pending"** warning while
 follower) is material; and the daily `--mirror-all-live` cron re-converges
 every sleeve regardless. Plain debits to unallocated stay cash-bounded — 
 freeing cash *out* of all strategies would need real sells (not built).
+
+**`/live` — the real-money console has its own page (migration 089).** The hub
+lived in a section near the bottom of `/account`, sharing that page's 1100px
+column with five other sections. Wrong home twice over: it is the only surface
+that spends real money, and it needs room for things `/account` has no business
+carrying. `web/app/live/page.tsx` is that page — the hub, plus **positions per
+sleeve**. `/account` keeps one link card showing the account's value and
+flagging unassigned cash, and nothing else (two places rendering the same
+real-money figures is how they come to disagree, and the dashboard cannot be
+the one that is right — it does not load positions).
+
+**Access** is the OR of two grants (`web/lib/live-access.ts`, pure resolver +
+server read): owning a `mode='live'` portfolio — which already proves
+provisioning, since a follower only exists after an operator go-live — OR
+`profiles.live_access`, for the case ownership cannot serve (a beta cohort, or
+an owner mid-onboarding). A visitor without access gets **`notFound()`**, not a
+redirect or a "no access" screen: there is no reason to disclose that the page
+exists. The resolver fails **closed** — a DB error denies — which is the
+opposite of the fail-open contract the rest of the hub uses, and deliberately
+so: there a failure costs a line, here it would open a real-money surface. The
+nav's "Live" entry is fetched from `/api/live-access` because `Nav` resolves
+auth in the BROWSER on purpose (a server-side session read would force every
+page that renders it into dynamic rendering); the entry is a rendering hint
+only — `/live` re-resolves access server-side.
+
+**Positions — the table that explains a name the mirror never touches.**
+`web/lib/live-positions.ts` (pure, `tests/test_live_positions.py` via
+`tests/ts_live_positions_runner.mjs`) is a **twin of `alpaca_mirror.plan_mirror`'s
+decision rule**, not a re-derivation: same `DEFAULT_THRESHOLD` (1% of equity),
+same `MIN_ORDER_USD`, same share-rounded order test, same denominator (the
+paper book's total INCLUDING cash — normalising over holdings alone would
+overstate every target and make a converged sleeve read as permanently
+underweight). The tests assert the constants against `alpaca_mirror.py` itself,
+so a table that quietly disagreed with the mirror would fail CI. Weights are
+measured against the SLEEVE's own equity, never the broker aggregate — the
+same rule that keeps sleeves from liquidating each other (migration 083).
+
+It sorts every name into a state the owner can act on, which is the point:
+*on target* / *pending* (the next sync moves it) / **stranded** — off the paper
+book AND inside the trade threshold, so no ordinary sync will ever sell it,
+and only a `replicate` run or a manual sell clears it. That last category is
+what a $103 KRMN position was: it arrived through an in-kind funding move
+(migration 084 moves share *records* without trading), its target is therefore
+zero, and at 0.26% of the sleeve the mirror skips it on every run. Meanwhile
+TREX and TRU, which looked identical in the broker's list, were correct — the
+paper book holds them at ~2.8% against 5.7-8.3% for everything else, and both
+sat ~0.85pp under target, inside the band. Nothing on the old console
+distinguished the two cases. Marks come from `securities.price`, the same
+column `portfolio.ts` uses, and the page **says** they are close-to-close (the
+15-min intraday refresh is paused under the EOD-first price policy), so the
+difference from the broker's live screen during market hours is stated rather
+than left to be reconciled by hand.
 
 **The live hub — one card per strategy, and an honest "what's happening".**
 The /account live section is the owner's control room
