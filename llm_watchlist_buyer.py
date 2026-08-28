@@ -237,10 +237,21 @@ Allowed signal fields (use exactly these names — anything else is silently dro
 Output strict JSON only — no prose, no markdown fences."""
 
 
+# NOTE — no cash figure here, deliberately. This call answers "does THIS
+# equity fit THIS mandate at TODAY's price"; affordability is decided
+# downstream by the draft, which sizes against the shared pot. Telling the
+# model "Cash available: $467 (0.0% of portfolio)" while asking whether to buy
+# invites it to answer PASS for a reason that is not about the equity — and a
+# PASS is recorded as a 30-day screener rejection, indistinguishable from "this
+# business is bad". It was doing exactly that: of 84 hidden names on the
+# Scrappy Fightback book, 15 cited the cash position in their rationale
+# ("...and the portfolio lacks sufficient cash ($467) to purchase a
+# significant position"). A name the buyer would want if it had money must stay
+# eligible for the day it does. PRIORITISATION_USER_TEMPLATE keeps its cash
+# line — ordering names under scarcity is precisely that call's job.
 BUYER_USER_TEMPLATE = """\
 {portfolio_mandate_block}PORTFOLIO STATE:
 - Total value: ${total_value_usd:,.0f}
-- Cash available: ${cash_usd:,.0f} ({cash_pct:.1f}% of portfolio)
 - Current holdings: {current_holdings}
 
 EQUITY UNDER REVIEW: {ticker}
@@ -468,13 +479,10 @@ def _evaluate_ticker(
     equity_for_json = {k: v for k, v in equity_data.items() if k != "recent_news"}
 
     pc = _portfolio_context(portfolio)
-    cash_pct = (pc["cash_usd"] / pc["total_value_usd"] * 100) if pc["total_value_usd"] else 0.0
 
     user = BUYER_USER_TEMPLATE.format(
         portfolio_mandate_block=_mandate_block(portfolio_mandate),
         total_value_usd=pc["total_value_usd"],
-        cash_usd=pc["cash_usd"],
-        cash_pct=cash_pct,
         current_holdings=pc["current_holdings"],
         ticker=ticker,
         curator_rationale=(curator_rationale or "(no rationale on watchlist row)").strip(),

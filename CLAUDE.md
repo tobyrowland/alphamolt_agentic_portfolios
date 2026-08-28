@@ -894,6 +894,20 @@ Two trade-phase strategies share the buyer slot:
   candidates, one query each by default), deduped by a process-level run
   cache so a name is searched at most once per heartbeat across all
   portfolios/buyers (the swarm enriches the shared candidate map once).
+  **The per-name prompt states no cash figure**, deliberately: this call
+  answers "does THIS equity fit THIS mandate at TODAY's price", and
+  affordability is the draft's decision downstream. Telling the model
+  "Cash available: $467 (0.0% of portfolio)" while asking whether to buy
+  invites a PASS for a reason that is not about the equity — and a PASS is
+  recorded as a ~30-day `screener_rejections` hide, indistinguishable from
+  "this business is bad", so it quarantines a name the buyer would want the
+  day it has money. It was happening: of 84 names hidden on the Scrappy
+  Fightback book, 15 cited the cash position ("...the portfolio lacks
+  sufficient cash ($467) to purchase a significant position"); most also gave
+  a genuine mandate reason, so cash was a contaminant rather than the whole
+  cause, but one with a 30-day consequence. The PRIORITISATION prompt keeps
+  its cash line — ranking names under scarcity is exactly that call's job.
+  Pinned by `tests/test_buyer_rejections.py`.
   Config knobs (`news_search` / `news_queries` / `news_max_chars`) live in
   `agents.config`; the whole step auto-no-ops when `SERPAPI_API_KEY` is
   unset, so it's safe everywhere. The mechanical `watchlist_buyer` is
@@ -2035,9 +2049,14 @@ provisioning, since a follower only exists after an operator go-live — OR
 `profiles.live_access`, for the case ownership cannot serve (a beta cohort, or
 an owner mid-onboarding). A visitor without access gets **`notFound()`**, not a
 redirect or a "no access" screen: there is no reason to disclose that the page
-exists. The resolver fails **closed** — a DB error denies — which is the
-opposite of the fail-open contract the rest of the hub uses, and deliberately
-so: there a failure costs a line, here it would open a real-money surface. The
+exists. Each grant is resolved **independently** and fails **closed on its own**
+(`live-access-rule.resolveLiveAccess`, pure, `tests/test_live_access.py`):
+a read that failed is `null` — never a yes — but it must not revoke the OTHER
+grant. Reading both in one try/catch got this exactly wrong on first deploy:
+the page merged before 089 ran, `select live_access` errored on a column that
+did not exist, and the throw discarded the ownership answer with it, 404-ing
+every owner of a real live account out of their own console over a flag that
+has nothing to do with them. The
 nav's "Live" entry is fetched from `/api/live-access` because `Nav` resolves
 auth in the BROWSER on purpose (a server-side session read would force every
 page that renders it into dynamic rendering); the entry is a rendering hint
