@@ -2035,9 +2035,14 @@ provisioning, since a follower only exists after an operator go-live — OR
 `profiles.live_access`, for the case ownership cannot serve (a beta cohort, or
 an owner mid-onboarding). A visitor without access gets **`notFound()`**, not a
 redirect or a "no access" screen: there is no reason to disclose that the page
-exists. The resolver fails **closed** — a DB error denies — which is the
-opposite of the fail-open contract the rest of the hub uses, and deliberately
-so: there a failure costs a line, here it would open a real-money surface. The
+exists. Each grant is resolved **independently** and fails **closed on its own**
+(`live-access-rule.resolveLiveAccess`, pure, `tests/test_live_access.py`):
+a read that failed is `null` — never a yes — but it must not revoke the OTHER
+grant. Reading both in one try/catch got this exactly wrong on first deploy:
+the page merged before 089 ran, `select live_access` errored on a column that
+did not exist, and the throw discarded the ownership answer with it, 404-ing
+every owner of a real live account out of their own console over a flag that
+has nothing to do with them. The
 nav's "Live" entry is fetched from `/api/live-access` because `Nav` resolves
 auth in the BROWSER on purpose (a server-side session read would force every
 page that renders it into dynamic rendering); the entry is a rendering hint
