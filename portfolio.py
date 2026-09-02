@@ -38,6 +38,7 @@ from datetime import date
 from typing import Any
 
 from db import SupabaseDB
+from returns import advance_index
 
 logger = logging.getLogger(__name__)
 
@@ -970,6 +971,40 @@ class PortfolioManager:
         start_ts = time.time()
         snapshot_date = (as_of or date.today()).isoformat()
 
+        # Inputs for the time-weighted index (migration 090), read once for
+        # the whole sweep. Both fail soft: a snapshot must still be written if
+        # either read breaks — losing a day's history is worse than losing a
+        # day's index, which the backfill can rebuild.
+        try:
+            flows = self.db.get_portfolio_flows_for_date(snapshot_date)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("flow read failed, treating today as flow-free: %s", exc)
+            flows = {}
+        try:
+            priors = self.db.get_prior_snapshots(snapshot_date)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("prior-snapshot read failed, index not advanced: %s", exc)
+            priors = {}
+
+        def _twr(portfolio_id: str, total_value: float) -> dict:
+            """The index columns for one portfolio's row today."""
+            prior = priors.get(portfolio_id) or {}
+            prev_value = prior.get("total_value_usd")
+            prev_index = prior.get("twr_index")
+            flow = float(flows.get(portfolio_id, 0.0))
+            return {
+                "flow_usd": round(flow, 2),
+                "twr_index": round(
+                    advance_index(
+                        None if prev_index is None else float(prev_index),
+                        None if prev_value is None else float(prev_value),
+                        float(total_value),
+                        flow,
+                    ),
+                    10,
+                ),
+            }
+
         if agent_handle:
             agent = self.db.get_agent_by_handle(agent_handle)
             if not agent:
@@ -1001,6 +1036,7 @@ class PortfolioManager:
                     "pnl_usd": portfolio["pnl_usd"],
                     "pnl_pct": portfolio["pnl_pct"],
                     "num_positions": len(portfolio["holdings"]),
+                    **_twr(portfolio_id, portfolio["total_value_usd"]),
                 }
                 if dry_run:
                     logger.info("[dry-run] %s", row)
@@ -1038,6 +1074,7 @@ class PortfolioManager:
                         "pnl_usd": book["pnl_usd"],
                         "pnl_pct": book["pnl_pct"],
                         "num_positions": len(book["holdings"]),
+                        **_twr(portfolio_id, book["total_value_usd"]),
                     }
                     if dry_run:
                         logger.info("[dry-run] %s", row)
