@@ -146,6 +146,70 @@ portfolio per day, so that is $40-120/day for one portfolio inside a 60-minute
 Actions job. The amortised slot — `research_evaluation.py`, one card per equity
 shared by every portfolio — is where that model would earn its cost.
 
+### returns.py
+Time-weighted return — the only return that survives a deposit (migration 090).
+Pure: no DB, no clock (`tests/test_returns.py`, `tests/test_twr_wiring.py`).
+
+**Why it exists.** Every percentage the system reported was computed from raw
+portfolio VALUE, which is only a return when no money moves. That held while
+every portfolio was a paper book funded once with $1M at creation; it broke the
+day live **sleeves** arrived (migration 083), which are funded in tranches. On
+2026-09-02 the Scrappy Fightback live sleeve reported **+0.80%** against its
+paper twin's **+6.28%** — read literally, catastrophic execution. It was
+arithmetic: different windows (the paper book earned +2.46% before the sleeve
+existed), and $29,600 of the sleeve's $39,600 baseline had arrived six days
+earlier. The same flaw sat in the leaderboard, worse: its value-based
+`pnl_pct` reported the sleeve at **+305%**, nearly all of it deposits, and
+`pnl_pct_1d` read ~+43% on the day $12,149 was credited — a number that then
+entered the Sharpe stdev as if it were a market move.
+
+**The rule.** `r_t = (V_t − F_t) / V_{t−1} − 1`, chained into a cumulative
+`twr_index` (base 1.0 at a portfolio's first snapshot). The return between any
+two dates is the ratio of their indices. Removing the flows gives the sleeve
++3.12% against the paper book's +3.74% over the same window — a real but
+ordinary 0.6pp of cash drag plus one day of marking lag.
+
+**Two questions, two numbers.** This does not replace the dollar figure: "you
+contributed $39,600.61 and hold $39,916.27" is unchanged, and `starting_cash`
+stays the sum of contributions. What changes is that the PERCENTAGE stops
+sharing that denominator — "how much have I made" and "how good is this
+strategy" are different questions, and only the first is answerable from a
+cost basis.
+
+**Why it is safe to ship.** A paper portfolio has no `portfolio_cash_ledger`
+rows at all, so `flow_usd` is always 0 and the index is mathematically
+identical to the value ratio it replaces — not one public leaderboard number
+moves. Every new expression in the view also COALESCEs to the old value-based
+one when `twr_index` is NULL, so the view is correct between the migration and
+the backfill and for any row the writer misses.
+
+Conventions worth knowing, each pinned by a test:
+- **Flows are end-of-day** (`V_t − F_t`). Snapshots are daily closes and flows
+  land intraday, so nothing stored can say whether a deposit preceded the day's
+  move; crediting the day to capital already there understates the deposit day
+  slightly and washes out. Dividing by `V_{t−1} + F_t` instead would assume a
+  16:00 deposit worked all day.
+- **A portfolio's first snapshot is always 1.0.** The funding that created it
+  is not a return, however far the first mark sits from the money paid in (the
+  sleeve was marked $145 below its $9,999.97 in-kind funding on day one).
+- **`baseline-reset` is not a flow** (`db.NON_FLOW_LEDGER_REASONS`): it
+  corrects a number, nothing moves, and counting it would delete a real return.
+- **A sleeve emptied by a transfer records no loss** — the withdrawal is added
+  back, so draining Alphamolt (House) to $0 is not −100%.
+- **A genuine wipeout stays wiped out**, and `advance_index` (the daily writer's
+  one step) must agree with `twr_index` (the backfill's whole series) through
+  it: both write the same column, so a disagreement would make a portfolio's
+  reported history depend on which process last touched it.
+
+Writer: `portfolio.snapshot_all` reads the day's flows and each portfolio's
+prior snapshot in two bulk queries, then writes `flow_usd` + `twr_index` per
+row. It chains off the row STRICTLY BEFORE today, because the 15-minute
+intraday job rewrites today's row repeatedly and chaining off a value it is
+about to replace would compound a partial day against itself. Both reads fail
+soft — losing a day's index is recoverable by backfill, losing the snapshot is
+not. Backfill/repair: `python backfill_twr.py [--dry-run] [--portfolio ID]`,
+which shares the same pure module.
+
 ### thesis_policy.py
 The owner-configured **sell discipline** (migration 086) — the rules a thesis's
 signals live under, stored on `portfolios.thesis_policy`. Pure: no DB, no LLM,

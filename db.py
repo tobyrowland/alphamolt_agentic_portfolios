@@ -1293,6 +1293,61 @@ class SupabaseDB:
             .execute()
         )
 
+    # Ledger reasons that are NOT external capital movements. A baseline
+    # reset corrects a number that was wrong; nothing moved, so counting it as
+    # a flow would remove a return the portfolio genuinely earned.
+    NON_FLOW_LEDGER_REASONS = frozenset({"baseline-reset"})
+
+    def get_portfolio_flows_for_date(self, snapshot_date: str) -> dict[str, float]:
+        """Net external capital movement per portfolio on one date.
+
+        Feeds `agent_portfolio_history.flow_usd` so the day's return can be
+        measured with the flow removed (migration 090). Paper portfolios never
+        appear here — they are funded once at creation and have no ledger rows
+        — so this returns {} for them and their maths is unchanged.
+        """
+        resp = (
+            self.client.table("portfolio_cash_ledger")
+            .select("portfolio_id, delta_usd, reason")
+            .gte("created_at", f"{snapshot_date}T00:00:00Z")
+            .lt("created_at", f"{snapshot_date}T23:59:59.999Z")
+            .execute()
+        )
+        out: dict[str, float] = {}
+        for row in resp.data or []:
+            if (row.get("reason") or "") in self.NON_FLOW_LEDGER_REASONS:
+                continue
+            pid = row.get("portfolio_id")
+            if not pid:
+                continue
+            out[pid] = out.get(pid, 0.0) + float(row.get("delta_usd") or 0)
+        return out
+
+    def get_prior_snapshots(self, before_date: str) -> dict[str, dict]:
+        """Each portfolio's most recent snapshot strictly before ``before_date``.
+
+        One read for the whole sweep rather than one per portfolio. Returns
+        {portfolio_id: {"total_value_usd", "twr_index"}} — the two inputs
+        `returns.advance_index` needs to carry the series forward.
+
+        Deliberately reads the row BEFORE today rather than today's: the
+        intraday job overwrites today's row many times, and chaining off a
+        value this same job is about to replace would compound a partial day
+        against itself.
+        """
+        rows = self._paginate(
+            "agent_portfolio_history",
+            "portfolio_id, snapshot_date, total_value_usd, twr_index",
+            order="snapshot_date",
+            filters=[("lt", "snapshot_date", before_date)],
+        )
+        out: dict[str, dict] = {}
+        for r in rows:  # ascending by date, so the last write per id wins
+            pid = r.get("portfolio_id")
+            if pid:
+                out[pid] = r
+        return out
+
     # ------------------------------------------------------------------
     # Swarm Consensus
     # ------------------------------------------------------------------
