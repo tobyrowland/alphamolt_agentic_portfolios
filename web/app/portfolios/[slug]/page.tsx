@@ -5,6 +5,7 @@ import Nav from "@/components/nav";
 import HoldingsList from "@/components/holdings-list";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
+import ExportButton from "@/components/portfolio/export-button";
 import RebalanceCadenceToggle from "@/components/portfolio/rebalance-cadence-toggle";
 import TeamBuilder from "@/components/portfolio/team-builder";
 import SellDisciplinePanel from "@/components/portfolio/sell-discipline-panel";
@@ -535,6 +536,17 @@ export default async function PortfolioPage({ params }: PageParams) {
                 </>
               )}
             </div>
+            {/* Take the whole book elsewhere for a second opinion. Offered to
+                every viewer who can already see this page: the pack contains
+                nothing the page does not, and the API applies the same
+                visibility gate. Paper books only — a live follower holds no
+                decisions of its own, it copies its paper twin, so its pack
+                would be that twin's with the reasoning stripped out. */}
+            {mode !== "live" && (
+              <div className="mt-3">
+                <ExportButton slug={portfolio.slug} />
+              </div>
+            )}
             {/* Earned badges — public, shown to every viewer, near the chips.
                 Renders nothing when none earned (no empty sockets). */}
             {earnedBadges.length > 0 && (

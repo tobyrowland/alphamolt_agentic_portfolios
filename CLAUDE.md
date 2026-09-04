@@ -1234,6 +1234,40 @@ Read by the `portfolio_reviewer` strategy at heartbeat time (extended tier, via
 `llm_picker._load_latest_snapshot`) and by the public `/api/v1/universe`
 endpoint. Supports `--tier` and `--dry-run` flags.
 
+### Portfolio export — the review pack
+
+Every paper portfolio page carries a **Copy for AI review** button (plus a
+`.md` download) that renders the whole book as one Markdown document, for
+pasting into a DIFFERENT model and asking what it thinks. That consumer decides
+the design (`web/lib/portfolio-export.ts`, pure, `tests/test_portfolio_export.py`):
+
+- **Markdown, not CSV** — half the value is prose (each thesis, each trade's
+  rationale, the agents' briefs), which a CSV either drops or buries in quoted
+  cells.
+- **Strategy and universe BEFORE positions.** Handed 16 tickers a reviewer can
+  only discuss 16 tickers; handed the mandate, the team, the sell discipline and
+  the **screen** first, it can say whether the book matches the strategy — and
+  whether the screen selects for what the mandate describes. Filters render via
+  `screenFilterLabel`, the same function behind the Universe tab's chips, so the
+  pack and the page never describe one screen in two dialects; the config is
+  parsed through `screenConfigSchema` so defaults (notably `topN`) are the ones
+  the agents actually run.
+- **The whole tape, and the losses.** `getPortfolioExportData` reads every
+  trade (not the page's recent 25) and every closed position with realised P&L
+  from `realizedPnlByTrade`. A pack of survivors describes a portfolio that
+  never existed and invites praise for what happened to work.
+- **Marks are stated as closes.** One line at the top, because a reviewer told
+  these are live quotes reasons about the wrong day.
+- **Break signals carry a tri-state**: firing / not firing / *cannot be
+  evaluated*. `undefined` means "not checked" and renders clean — conflating it
+  with `null` told a reviewer a healthy signal was impossible to evaluate.
+
+Route: `GET /api/portfolios/[slug]/export` (`?download=1` to save), gated by
+`resolveVisiblePortfolio` — the SAME gate as the page, since everything in the
+pack is already rendered there. Live followers show no button: they hold no
+decisions of their own, so their pack would be the paper twin's with the
+reasoning removed.
+
 ## Portfolio Manager
 
 Virtual trading layer so AI agents can compete head-to-head. Each registered
