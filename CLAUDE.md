@@ -1234,6 +1234,60 @@ Read by the `portfolio_reviewer` strategy at heartbeat time (extended tier, via
 `llm_picker._load_latest_snapshot`) and by the public `/api/v1/universe`
 endpoint. Supports `--tier` and `--dry-run` flags.
 
+### Portfolio export — the review pack
+
+Every paper portfolio page carries a **Copy for AI review** button (plus a
+`.md` download) that renders the whole book as one Markdown document, for
+pasting into a DIFFERENT model and asking what it thinks. That consumer decides
+the design (`web/lib/portfolio-export.ts`, pure, `tests/test_portfolio_export.py`):
+
+- **Markdown, not CSV** — half the value is prose (each thesis, each trade's
+  rationale, the agents' briefs), which a CSV either drops or buries in quoted
+  cells.
+- **Strategy and universe BEFORE positions.** Handed 16 tickers a reviewer can
+  only discuss 16 tickers; handed the mandate, the team, the sell discipline and
+  the **screen** first, it can say whether the book matches the strategy — and
+  whether the screen selects for what the mandate describes. Filters render via
+  `screenFilterLabel`, the same function behind the Universe tab's chips, so the
+  pack and the page never describe one screen in two dialects; the config is
+  parsed through `screenConfigSchema` so defaults (notably `topN`) are the ones
+  the agents actually run.
+- **The whole tape, and the losses.** `getPortfolioExportData` reads every
+  trade (not the page's recent 25) and every closed position with realised P&L
+  from `realizedPnlByTrade`. A pack of survivors describes a portfolio that
+  never existed and invites praise for what happened to work.
+- **Marks are stated as closes.** One line at the top, because a reviewer told
+  these are live quotes reasons about the wrong day.
+- **Break signals carry a tri-state** (`markFiring`, evaluated against
+  `getCurrentSignalFacts` — the same source as the page's thesis gauges):
+  firing / not firing / *cannot be evaluated*. A `change_pct_*` signal is left
+  `undefined` ("not checked here" — it needs the buy snapshot, resolved at
+  review time), because guessing `false` would report an armed tripwire as
+  quiet. Conflating `undefined` with `null` told a reviewer a healthy signal
+  was impossible to evaluate.
+- **A methodology section and a limitations section**, because the ask is an
+  incisive critique of the PROCESS and a reviewer cannot criticise a mechanism
+  it has to infer. The methodology states the parts most often assumed wrongly:
+  ranking is a **percentile within the filtered set** (a name scores well by
+  beating the other candidates, not outright), the buyer judges **one name at a
+  time** and is **not told the cash position**, and the agent that buys is never
+  the agent that sells. The limitations are MEASURED from the pack's own data
+  where possible — "N of M recorded signals cannot be evaluated (fields: …)"
+  counts the inert tripwires rather than asserting a sentence that would go
+  stale — alongside the fixed ones: closing marks not live, paper fills with no
+  spread or slippage, and that an absence may be the 30-day rejection hide or
+  the 90-day re-buy cooldown rather than a judgement.
+
+Route: `GET /api/portfolios/[slug]/export` (`?download=1` to save), **owner
+only** — `resolveVisiblePortfolio` then `isViewerOwner`, a non-owner getting
+404 rather than 403. Stricter than the page on purpose: most of the pack is
+already rendered to any viewer of a public portfolio, but bundling a
+competitor's whole strategy, every thesis and the entire trade tape into one
+file built to be fed to a model is a different act from reading the page, and a
+public leaderboard entry is not consent to it. Live followers show no button:
+they hold no decisions of their own, so their pack would be the paper twin's
+with the reasoning removed.
+
 ## Portfolio Manager
 
 Virtual trading layer so AI agents can compete head-to-head. Each registered

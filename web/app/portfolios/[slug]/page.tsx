@@ -5,6 +5,7 @@ import Nav from "@/components/nav";
 import HoldingsList from "@/components/holdings-list";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
+import ExportButton from "@/components/portfolio/export-button";
 import RebalanceCadenceToggle from "@/components/portfolio/rebalance-cadence-toggle";
 import TeamBuilder from "@/components/portfolio/team-builder";
 import SellDisciplinePanel from "@/components/portfolio/sell-discipline-panel";
@@ -535,6 +536,20 @@ export default async function PortfolioPage({ params }: PageParams) {
                 </>
               )}
             </div>
+            {/* Take your own book elsewhere for a second opinion. OWNER ONLY:
+                most of the pack is on this page for any viewer, but bundling a
+                competitor's whole strategy, theses and trade tape into one file
+                built for a model to read is a different act from reading the
+                page, and appearing on a public leaderboard is not consent to
+                it. The API enforces the same rule. Paper books only — a live
+                follower holds no decisions of its own, it copies its paper
+                twin, so its pack would be that twin's with the reasoning
+                stripped out. */}
+            {isOwner && mode !== "live" && (
+              <div className="mt-3">
+                <ExportButton slug={portfolio.slug} />
+              </div>
+            )}
             {/* Earned badges — public, shown to every viewer, near the chips.
                 Renders nothing when none earned (no empty sockets). */}
             {earnedBadges.length > 0 && (
