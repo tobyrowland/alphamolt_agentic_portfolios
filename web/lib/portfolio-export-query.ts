@@ -1,5 +1,7 @@
 import { getSupabase } from "@/lib/supabase";
 import { realizedPnlByTrade, type PnlTrade } from "@/lib/realized-pnl";
+import { markFiring } from "@/lib/portfolio-export";
+import { getCurrentSignalFacts } from "@/lib/theses-query";
 import type {
   ExportClosed,
   ExportData,
@@ -130,6 +132,15 @@ export async function getPortfolioExportData(
     }
   }
 
+  // Where each signal sits against today's facts, from the same source the
+  // page's thesis gauges read. Fail-open: without it every signal renders as
+  // "not checked", which is honest — the pack never claims a tripwire is quiet
+  // when it does not know.
+  const signalFacts = await getCurrentSignalFacts(tickers).catch((err) => {
+    console.error("portfolio export: signal facts unavailable", err);
+    return {} as Record<string, Record<string, number>>;
+  });
+
   // The thesis shown per holding is the one currently in force.
   const thesisRows = (thesesRes.data ?? []) as {
     ticker: string;
@@ -145,8 +156,8 @@ export async function getPortfolioExportData(
     activeThesis.set(t.ticker, {
       openedAt: day(t.opened_at),
       text: t.thesis_text,
-      extendSignals: signals(t.extend_signals),
-      breakSignals: signals(t.break_signals),
+      extendSignals: markFiring(signals(t.extend_signals), signalFacts[t.ticker]),
+      breakSignals: markFiring(signals(t.break_signals), signalFacts[t.ticker]),
     });
   }
 

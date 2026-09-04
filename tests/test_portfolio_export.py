@@ -46,6 +46,7 @@ class ReviewPackTests(unittest.TestCase):
         cls.empty = out["empty"]
         cls.filename = out["filename"]
         cls.zero_weight = out["zeroWeight"]
+        cls.marked = out["marked"]
 
     # -- the honesty requirements -----------------------------------------
     def test_it_says_the_prices_are_closes_not_live(self):
@@ -156,6 +157,91 @@ class ReviewPackTests(unittest.TestCase):
         """Without prompts the likely question is 'thoughts?', which gets a
         generic answer from any model."""
         self.assertIn("Questions worth asking", self.doc)
+
+
+class MethodologyTests(unittest.TestCase):
+    """The pack has to explain the PROCESS, or the critique is stock-picking.
+
+    A reviewer that must infer the mechanism will criticise the mechanism it
+    imagined. These pin the parts easiest to assume wrongly.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = _run_ts()["doc"]
+
+    def test_it_says_ranking_is_relative_to_the_filtered_set(self):
+        """The most consequential thing to get wrong: a name scores well by
+        beating the other candidates, not by being good outright."""
+        self.assertIn("percentile within the filtered set", self.doc)
+
+    def test_it_says_the_buyer_judges_one_name_at_a_time(self):
+        flat = " ".join(self.doc.replace("**", "").split())
+        self.assertIn("one at a time", flat)
+
+    def test_it_says_the_buyer_is_blind_to_cash(self):
+        """Otherwise a reviewer reads a PASS as 'couldn't afford it'."""
+        self.assertIn("not told how much", self.doc)
+
+    def test_it_says_buyer_and_seller_are_different_agents(self):
+        self.assertIn("never the agent that sells", self.doc)
+
+    def test_it_states_the_shortlist_cap_in_the_process_too(self):
+        flat = " ".join(self.doc.replace("**", "").split())
+        self.assertIn("top 40 are offered", flat)
+
+
+class LimitationsTests(unittest.TestCase):
+    """What the record cannot tell you — measured, not asserted."""
+
+    @classmethod
+    def setUpClass(cls):
+        out = _run_ts()
+        cls.doc = out["doc"]
+        cls.marked = out["marked"]
+
+    def test_inert_signals_are_counted_from_the_data(self):
+        """The fixture has exactly one signal on a field with no facts behind
+        it. A hard-coded sentence would go stale; a count cannot."""
+        self.assertIn("1 of 4 recorded signals cannot be evaluated", self.doc)
+        self.assertIn("price_pct_of_52w_high", self.doc)
+
+    def test_the_counts_read_as_english(self):
+        """A pack riddled with '1 signals' reads as machine output and gets
+        treated as such by the reader on the other end."""
+        self.assertIn("1 signal compares", self.doc)
+        self.assertNotIn("1 signals", self.doc)
+
+    def test_it_warns_the_discipline_is_weaker_than_it_looks(self):
+        self.assertIn("weaker than the signal", self.doc)
+
+    def test_it_says_paper_trading_has_no_costs(self):
+        """A reviewer judging returns needs to know no spread or slippage was
+        ever paid."""
+        self.assertIn("slippage", self.doc)
+
+    def test_it_warns_an_absence_may_not_be_a_judgement(self):
+        """The 30-day hide and the 90-day cooldown both remove names for
+        reasons that are not views."""
+        self.assertIn("not always a judgement", self.doc)
+        self.assertIn("90 days", self.doc)
+
+    def test_it_asks_where_the_process_goes_wrong(self):
+        self.assertIn("process itself most likely to go wrong", self.doc)
+
+    # -- the tri-state, evaluated ------------------------------------------
+    def test_a_true_static_signal_is_firing(self):
+        self.assertIs(self.marked[1]["firing"], True)   # gm 71.1 < 80
+
+    def test_a_false_static_signal_is_not_firing(self):
+        self.assertIs(self.marked[0]["firing"], False)  # gm 71.1 < 65
+
+    def test_a_field_with_no_facts_is_unevaluable(self):
+        self.assertIsNone(self.marked[2]["firing"])
+
+    def test_a_change_signal_is_left_unchecked(self):
+        """Not false. Guessing false would report an armed tripwire as quiet."""
+        self.assertNotIn("firing", self.marked[3])
 
 
 class EmptyBookTests(unittest.TestCase):

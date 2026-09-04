@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const { buildPortfolioExport, exportFilename } = await import(
+const { buildPortfolioExport, exportFilename, markFiring } = await import(
   join(here, "..", "web", "lib", "portfolio-export.ts")
 );
 
@@ -109,9 +109,23 @@ const zeroWeight = buildPortfolioExport({
   universe: { ...DATA.universe, weights: { quality: 45, value: 25, momentum: 30, inflection: 0 } },
 });
 
+// The tri-state, against real facts. gross_margin_pct is known; ps_now is
+// known; price_pct_of_52w_high has no column behind it; change_pct_lt is not
+// checked here at all.
+const marked = markFiring(
+  [
+    { field: "gross_margin_pct", op: "<", value: 65 },
+    { field: "gross_margin_pct", op: "<", value: 80 },
+    { field: "price_pct_of_52w_high", op: "<", value: 40 },
+    { field: "gross_margin_pct", op: "change_pct_lt", value: -3 },
+  ],
+  { gross_margin_pct: 71.1, ps_now: 3.25 },
+);
+
 process.stdout.write(
   JSON.stringify({
     doc,
+    marked,
     empty,
     zeroWeight,
     filename: exportFilename("portfolio-2", "2026-09-02T13:00:00Z"),

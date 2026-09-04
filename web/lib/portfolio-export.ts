@@ -124,6 +124,45 @@ export type ExportData = {
   cashReserve: Record<string, unknown> | null;
 };
 
+/** Operators compared against a single current value. */
+const STATIC_OPS: Record<string, (a: number, b: number) => boolean> = {
+  ">": (a, b) => a > b,
+  ">=": (a, b) => a >= b,
+  "<": (a, b) => a < b,
+  "<=": (a, b) => a <= b,
+  "==": (a, b) => a === b,
+  "!=": (a, b) => a !== b,
+};
+
+/**
+ * Mark each signal firing / not firing / unevaluable against today's facts.
+ *
+ * Three outcomes, and the difference between the last two is the point:
+ *
+ * * a static operator with a current value → a real true/false;
+ * * a static operator with NO current value → `null`, meaning this tripwire
+ *   cannot fire and never will, whatever the stock does. That is a fact about
+ *   the sell discipline, not a gap in the export, so it is stated;
+ * * a `change_pct_*` operator → left `undefined`. These compare against the
+ *   value frozen at purchase, which the reviewer evaluates at review time and
+ *   this pack does not carry. Guessing false would misreport an armed
+ *   tripwire as quiet.
+ */
+export function markFiring(
+  signals: ExportSignal[],
+  facts: Record<string, number> | undefined,
+): ExportSignal[] {
+  return signals.map((sig) => {
+    if (!(sig.op in STATIC_OPS)) return sig; // change_pct_* — not checked here
+    const current = facts?.[sig.field];
+    const threshold = Number(sig.value);
+    if (current == null || !Number.isFinite(threshold)) {
+      return { ...sig, firing: null };
+    }
+    return { ...sig, firing: STATIC_OPS[sig.op](current, threshold) };
+  });
+}
+
 /** The whole document. */
 export function buildPortfolioExport(d: ExportData): string {
   const s: string[] = [];
@@ -133,10 +172,12 @@ export function buildPortfolioExport(d: ExportData): string {
   s.push("");
   s.push(...strategySection(d));
   s.push(...universeSection(d));
+  s.push(...methodologySection(d));
   s.push(...positionsSection(d));
   s.push(...thesesSection(d));
   s.push(...tradesSection(d));
   s.push(...closedSection(d));
+  s.push(...limitationsSection(d));
   s.push(...questionsSection());
   return s.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
 }
@@ -278,6 +319,61 @@ function universeSection(d: ExportData): string[] {
   return s;
 }
 
+/**
+ * How a name gets into this book and how it leaves.
+ *
+ * The point of the pack is a critique of the PROCESS, not a stock-picking
+ * opinion, and a reviewer cannot criticise a mechanism it has to infer. This
+ * is deliberately specific about the parts that are easy to assume wrongly:
+ * that ranking is relative to the filtered set rather than absolute, that the
+ * buyer judges one name at a time with no view of the alternatives, and that
+ * the seller is a different agent bound by the owner's rules rather than the
+ * one that bought.
+ *
+ * Kept to the architecture that actually holds, with the portfolio's own
+ * numbers substituted where they exist — a methodology note that drifts from
+ * the system is worse than none, because it is confidently wrong.
+ */
+function methodologySection(d: ExportData): string[] {
+  const topN = d.universe?.topN;
+  const s = ["## How this book is run", ""];
+  s.push(
+    "The pipeline is deterministic up to the point of judgement, then " +
+      "explicitly a judgement call:",
+    "",
+    "1. **Screen.** The filters above are applied to every liquid US-listed " +
+      "stock (≥ $5M average daily traded value, ≥ $1 close). This is a hard " +
+      "gate — a name failing any filter is never seen.",
+    "2. **Rank.** Survivors are scored on the weighted lenses above. Each " +
+      "component is a **percentile within the filtered set**, not an absolute " +
+      "measure, so a name scores well by being better than the other " +
+      "candidates rather than good outright. An AI research card (business " +
+      "quality: moat, growth durability, earnings quality) and an adversarial " +
+      "bull/bear pair then nudge the rank.",
+    topN != null
+      ? `3. **Shortlist.** Only the top ${topN} are offered to the buyers. ` +
+        "Everything below is invisible to them, however good."
+      : "3. **Shortlist.** A fixed top slice is offered to the buyers.",
+    "4. **Judge.** A buying agent evaluates each shortlisted name **one at a " +
+      "time** against its own brief, returning BUY/PASS with a 1-5 conviction, " +
+      "a written thesis, and machine-checkable break/extend signals. It sees " +
+      "the company's fundamentals, valuation history, the research card, the " +
+      "bull/bear verdicts and a recent-news snippet. It is not told how much " +
+      "cash is available — affordability is decided afterwards, so a good " +
+      "business is not rejected for being briefly unaffordable.",
+    "5. **Size.** Qualifying names are drafted into the shared cash pool at a " +
+      "target weight. Where several agents share a book they draft in turn.",
+    "6. **Record.** Every buy freezes a snapshot of the company's numbers at " +
+      "that moment, alongside the thesis and its signals — so a later reader " +
+      "can see what was believed and on what evidence.",
+    "7. **Review.** A separate selling agent re-reads each holding against its " +
+      "recorded thesis on its own cadence, under the owner's sell rules above. " +
+      "The agent that buys is never the agent that sells.",
+    "",
+  );
+  return s;
+}
+
 function positionsSection(d: ExportData): string[] {
   if (d.holdings.length === 0) return ["## Positions", "", "None.", ""];
   const s = ["## Positions", ""];
@@ -384,6 +480,68 @@ function closedSection(d: ExportData): string[] {
  * Without this the likely prompt is "what do you think?", which gets a generic
  * answer. These are the questions the data below can actually support.
  */
+/**
+ * What this record cannot tell you.
+ *
+ * The most useful thing in the pack, and the easiest to omit. A reviewer that
+ * does not know the marks are stale, or that some tripwires are inert, will
+ * spend its critique on artefacts and miss the real weaknesses. Where a
+ * limitation is measurable it is MEASURED from this portfolio's own data
+ * rather than asserted, so the sentence cannot quietly go out of date.
+ */
+function limitationsSection(d: ExportData): string[] {
+  const s = ["## What this record cannot tell you", ""];
+
+  const allSignals = d.holdings.flatMap((h) => [
+    ...(h.thesis?.breakSignals ?? []),
+    ...(h.thesis?.extendSignals ?? []),
+  ]);
+  const inert = allSignals.filter((sig) => sig.firing === null);
+  if (inert.length > 0) {
+    const fields = [...new Set(inert.map((sig) => sig.field))].sort();
+    s.push(
+      `- **${inert.length} of ${allSignals.length} recorded signals cannot be ` +
+        `evaluated** (fields: ${fields.map((f) => `\`${f}\``).join(", ")}). ` +
+        "No data reaches them, so those tripwires will never fire however far " +
+        "the stock moves. Treat the sell discipline as weaker than the signal " +
+        "list makes it look.",
+    );
+  }
+  const changeOps = allSignals.filter((sig) => sig.firing === undefined).length;
+  if (changeOps > 0) {
+    s.push(
+      `- ${changeOps} signal${changeOps === 1 ? "" : "s"} compare` +
+        `${changeOps === 1 ? "s" : ""} against the value frozen at purchase ` +
+        "(`change_pct_*`), so its live state is computed at review time and " +
+        "is not in this pack.",
+    );
+  }
+
+  s.push(
+    "- **Prices are closing marks, not live.** Intraday moves, and anything " +
+      "that happened after the as-of date above, are absent.",
+    "- **Paper trading.** No commissions, spread, slippage, borrow, dividends, " +
+      "or tax. Fills are struck at the closing price, which real execution " +
+      "would not achieve.",
+    "- All values are treated as USD, including any non-US listing.",
+  );
+  if (d.universe?.hideRejected) {
+    s.push(
+      "- A name a buyer passed on is hidden from the screen for ~30 days. " +
+        "**An absence is therefore not always a judgement** — it may be a " +
+        "name that was rejected once and has not been reconsidered since.",
+    );
+  }
+  s.push(
+    "- After a sell, the same name cannot be re-bought for 90 days, so some " +
+      "absences are a cooling-off rule rather than a view.",
+    "- The frozen thesis snapshots are the numbers **as at purchase**. Where a " +
+      "figure looks stale against the position table, that is the point of it.",
+    "",
+  );
+  return s;
+}
+
 function questionsSection(): string[] {
   return [
     "## Questions worth asking a reviewer",
@@ -393,7 +551,8 @@ function questionsSection(): string[] {
     "3. Does the screen itself (filters and ranking weights) select for the kind of business the mandate describes?",
     "4. Where is the concentration risk (single name, sector, factor) that the weights alone don't show?",
     "5. On the closed positions, were the exits consistent with the sell discipline above?",
-    "6. What would you sell first, and what is missing from this book entirely?",
+    "6. Given the pipeline described above, where is the process itself most likely to go wrong — the screen, the ranking, the per-name judgement, or the sell rules?",
+    "7. What would you sell first, and what is missing from this book entirely?",
     "",
   ];
 }

@@ -1258,9 +1258,25 @@ the design (`web/lib/portfolio-export.ts`, pure, `tests/test_portfolio_export.py
   never existed and invites praise for what happened to work.
 - **Marks are stated as closes.** One line at the top, because a reviewer told
   these are live quotes reasons about the wrong day.
-- **Break signals carry a tri-state**: firing / not firing / *cannot be
-  evaluated*. `undefined` means "not checked" and renders clean — conflating it
-  with `null` told a reviewer a healthy signal was impossible to evaluate.
+- **Break signals carry a tri-state** (`markFiring`, evaluated against
+  `getCurrentSignalFacts` — the same source as the page's thesis gauges):
+  firing / not firing / *cannot be evaluated*. A `change_pct_*` signal is left
+  `undefined` ("not checked here" — it needs the buy snapshot, resolved at
+  review time), because guessing `false` would report an armed tripwire as
+  quiet. Conflating `undefined` with `null` told a reviewer a healthy signal
+  was impossible to evaluate.
+- **A methodology section and a limitations section**, because the ask is an
+  incisive critique of the PROCESS and a reviewer cannot criticise a mechanism
+  it has to infer. The methodology states the parts most often assumed wrongly:
+  ranking is a **percentile within the filtered set** (a name scores well by
+  beating the other candidates, not outright), the buyer judges **one name at a
+  time** and is **not told the cash position**, and the agent that buys is never
+  the agent that sells. The limitations are MEASURED from the pack's own data
+  where possible — "N of M recorded signals cannot be evaluated (fields: …)"
+  counts the inert tripwires rather than asserting a sentence that would go
+  stale — alongside the fixed ones: closing marks not live, paper fills with no
+  spread or slippage, and that an absence may be the 30-day rejection hide or
+  the 90-day re-buy cooldown rather than a judgement.
 
 Route: `GET /api/portfolios/[slug]/export` (`?download=1` to save), gated by
 `resolveVisiblePortfolio` — the SAME gate as the page, since everything in the
