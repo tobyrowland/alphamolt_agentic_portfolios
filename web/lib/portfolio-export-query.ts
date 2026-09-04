@@ -58,7 +58,11 @@ export async function getPortfolioExportData(
         .order("opened_at", { ascending: true }),
       supabase
         .from("portfolio_agents")
-        .select("mandate, role, agents!inner(display_name, default_mandate)")
+        .select(
+          "mandate, role, config, " +
+            "agents!inner(display_name, default_mandate, strategy, config, " +
+            "heartbeat_interval_hours)",
+        )
         .eq("portfolio_id", pid)
         .order("joined_at", { ascending: true }),
     ]);
@@ -250,17 +254,27 @@ export async function getPortfolioExportData(
   type EmbeddedAgent = {
     display_name: string | null;
     default_mandate: string | null;
+    strategy: string | null;
+    config: Record<string, unknown> | null;
+    heartbeat_interval_hours: number | null;
   };
   const team = ((teamRes.data ?? []) as unknown as {
     mandate: string | null;
     role: string | null;
+    config: Record<string, unknown> | null;
     agents: EmbeddedAgent | EmbeddedAgent[] | null;
   }[]).map((m) => {
     const agent = Array.isArray(m.agents) ? (m.agents[0] ?? null) : m.agents;
+    // The instance's own knobs override the library agent's, exactly as the
+    // heartbeat merges them — otherwise the pack describes the default rather
+    // than the agent this owner actually tuned.
+    const cfg = { ...(agent?.config ?? {}), ...(m.config ?? {}) };
     return {
       name: agent?.display_name ?? "Agent",
       role: m.role,
       brief: m.mandate ?? agent?.default_mandate ?? null,
+      ...agentShape(agent?.strategy ?? null, cfg),
+      cadenceHours: agent?.heartbeat_interval_hours ?? null,
     };
   });
 
@@ -323,6 +337,60 @@ function universeFrom(raw: Record<string, unknown> | null) {
     aiBudget: cfg.aiBudget,
     hideRejected: cfg.hideRejected,
   };
+}
+
+/**
+ * What kind of agent this is, and the knobs that matter for its kind.
+ *
+ * Keyed off `agents.strategy` rather than the display name or the role tag:
+ * `double_down` and `pelosi_mirror` are both tagged role=buyer but neither
+ * ever sees the screen, and a pack that lumps them in with the screen buyer
+ * misdescribes where the positions came from. `SELF_SOURCED` mirrors
+ * `agent_strategies.SELF_SOURCED_BUYER_STRATEGIES`; a strategy absent from
+ * both lists degrades to "other", which the document simply lists by name
+ * rather than describing wrongly.
+ */
+const SELF_SOURCED: Record<string, string> = {
+  double_down: "the portfolio's own current holdings",
+  pelosi_mirror: "a member of Congress's disclosed trades",
+};
+const SCREEN_BUYERS = new Set([
+  "llm_watchlist_buyer",
+  "watchlist_buyer",
+  "ma_sniper",
+]);
+const REVIEWERS = new Set(["portfolio_reviewer"]);
+
+function agentShape(strategy: string | null, cfg: Record<string, unknown>) {
+  const n = (key: string) => {
+    const v = Number(cfg[key]);
+    return Number.isFinite(v) ? v : null;
+  };
+  if (strategy && strategy in SELF_SOURCED) {
+    return {
+      kind: "self-sourced-buyer" as const,
+      sourcedFrom: SELF_SOURCED[strategy],
+      convictionGate: n("min_conviction"),
+      addPct: n("add_position_pct"),
+      maxPct: n("max_position_pct"),
+    };
+  }
+  if (strategy && SCREEN_BUYERS.has(strategy)) {
+    return {
+      kind: "screen-buyer" as const,
+      convictionGate: n("min_conviction"),
+      targetPct: n("target_position_pct"),
+      minPct: n("min_position_pct"),
+    };
+  }
+  if (strategy && REVIEWERS.has(strategy)) {
+    return {
+      kind: "reviewer" as const,
+      convictionGate: null,
+      sellThreshold: n("sell_conviction_threshold"),
+    };
+  }
+  return { kind: "other" as const, convictionGate: null };
 }
 
 function day(iso: string | null | undefined): string | null {

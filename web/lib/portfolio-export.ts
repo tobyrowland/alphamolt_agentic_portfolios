@@ -92,6 +92,31 @@ export type ExportClosed = {
  * tab (`screenFilterLabel`), so the pack and the page describe the same screen
  * in the same words rather than in two dialects.
  */
+/**
+ * One hired agent, with the knobs that change what the book DOES.
+ *
+ * `kind` matters more than the name: a self-sourced buyer never sees the
+ * screen, so a methodology that describes one pipeline for every agent is
+ * simply wrong on a book that has one — and wrong in a way a reviewer cannot
+ * detect, because the positions look the same either way.
+ */
+export type ExportAgent = {
+  name: string;
+  role: string | null;
+  brief: string | null;
+  kind: "screen-buyer" | "self-sourced-buyer" | "reviewer" | "other";
+  /** What it re-reads each run, for a self-sourced buyer. */
+  sourcedFrom?: string | null;
+  cadenceHours: number | null;
+  convictionGate: number | null;
+  /** Percent-of-book knobs, only those that apply to this agent's kind. */
+  targetPct?: number | null;
+  minPct?: number | null;
+  addPct?: number | null;
+  maxPct?: number | null;
+  sellThreshold?: number | null;
+};
+
 export type ExportUniverse = {
   presetLabel: string | null;
   brief: string | null;
@@ -118,7 +143,7 @@ export type ExportData = {
   holdings: ExportHolding[];
   trades: ExportTrade[];
   closed: ExportClosed[];
-  team: { name: string; role: string | null; brief: string | null }[];
+  team: ExportAgent[];
   universe: ExportUniverse | null;
   sellDiscipline: Record<string, unknown> | null;
   cashReserve: Record<string, unknown> | null;
@@ -320,58 +345,130 @@ function universeSection(d: ExportData): string[] {
 }
 
 /**
- * How a name gets into this book and how it leaves.
+ * How a name gets into this book and how it leaves — for THIS team.
  *
- * The point of the pack is a critique of the PROCESS, not a stock-picking
- * opinion, and a reviewer cannot criticise a mechanism it has to infer. This
- * is deliberately specific about the parts that are easy to assume wrongly:
- * that ranking is relative to the filtered set rather than absolute, that the
- * buyer judges one name at a time with no view of the alternatives, and that
- * the seller is a different agent bound by the owner's rules rather than the
- * one that bought.
+ * The first version of this described a single pipeline: screen, rank,
+ * shortlist, judge, size, record, review. That is the house pipeline and it is
+ * wrong the moment a book hires a self-sourced buyer, which never sees the
+ * screen at all — it re-reads what the portfolio already owns and adds to it.
+ * On the Scrappy Fightback book that agent made a real trade (a PODD top-up),
+ * and a reviewer reading the generic description would have attributed it to
+ * the screen. Wrong in a way a reviewer cannot detect from the positions.
  *
- * Kept to the architecture that actually holds, with the portfolio's own
- * numbers substituted where they exist — a methodology note that drifts from
- * the system is worse than none, because it is confidently wrong.
+ * So the steps are derived from the agents actually hired, with their real
+ * cadences and gates. A methodology note is only worth including if it is true
+ * of the specific book it is attached to.
  */
 function methodologySection(d: ExportData): string[] {
-  const topN = d.universe?.topN;
+  const screenBuyers = d.team.filter((a) => a.kind === "screen-buyer");
+  const selfSourced = d.team.filter((a) => a.kind === "self-sourced-buyer");
+  const reviewers = d.team.filter((a) => a.kind === "reviewer");
+  if (d.team.length === 0) return [];
+
   const s = ["## How this book is run", ""];
+  const topN = d.universe?.topN;
+
+  if (screenBuyers.length > 0) {
+    s.push(
+      `**Buying from the screen** — ${list(screenBuyers.map((a) => a.name))}:`,
+      "",
+      "1. **Screen.** The filters above are applied to every liquid US-listed " +
+        "stock (≥ $5M average daily traded value, ≥ $1 close). A name failing " +
+        "any filter is never seen.",
+      "2. **Rank.** Survivors score on the weighted lenses above. Each " +
+        "component is a **percentile within the filtered set**, not an " +
+        "absolute measure, so a name ranks well by beating the other " +
+        "candidates rather than by being good outright. An AI research card " +
+        "(moat, growth durability, earnings quality) and an adversarial " +
+        "bull/bear pair then nudge it.",
+      topN != null
+        ? `3. **Shortlist.** Only the top ${topN} reach the buyer. Everything ` +
+          "below is invisible to it, however good."
+        : "3. **Shortlist.** A fixed top slice reaches the buyer.",
+      "4. **Judge.** The buyer evaluates each shortlisted name **one at a " +
+        "time** against its own brief, returning BUY/PASS with a 1-5 " +
+        "conviction, a written thesis and machine-checkable signals. It sees " +
+        "fundamentals, valuation history, the research card, the bull/bear " +
+        "verdicts and a recent-news snippet. It is **not told the cash " +
+        "position** — affordability is decided afterwards, so a good business " +
+        "is not rejected for being briefly unaffordable.",
+      "5. **Size and record.** Qualifying names are bought from the shared " +
+        "cash pool, and every buy freezes the company's numbers at that " +
+        "moment alongside the thesis.",
+      "",
+    );
+    for (const a of screenBuyers) s.push(...agentLine(a));
+    s.push("");
+  }
+
+  if (selfSourced.length > 0) {
+    s.push(
+      "**Buying without the screen** — these agents never see the screen. " +
+        "They bring their own candidates and run BEFORE the screen buyer each " +
+        "cycle, so the cash they spend is gone before it drafts:",
+      "",
+    );
+    for (const a of selfSourced) {
+      s.push(
+        `- **${a.name}** re-reads ${a.sourcedFrom ?? "its own source"} each ` +
+          "run and buys from it on the same per-name judgement the screen " +
+          "buyer uses.",
+      );
+      s.push(...agentLine(a).map((l) => `  ${l}`));
+    }
+    s.push("");
+  }
+
+  if (reviewers.length > 0) {
+    s.push(
+      `**Selling** — ${list(reviewers.map((a) => a.name))}. The agent that ` +
+        "buys is never the agent that sells. The reviewer re-reads each " +
+        "holding against its recorded thesis, under the sell rules above, and " +
+        "exits the **whole position or none** — it does not trim.",
+      "",
+    );
+    for (const a of reviewers) s.push(...agentLine(a));
+    s.push("");
+  }
+
   s.push(
-    "The pipeline is deterministic up to the point of judgement, then " +
-      "explicitly a judgement call:",
-    "",
-    "1. **Screen.** The filters above are applied to every liquid US-listed " +
-      "stock (≥ $5M average daily traded value, ≥ $1 close). This is a hard " +
-      "gate — a name failing any filter is never seen.",
-    "2. **Rank.** Survivors are scored on the weighted lenses above. Each " +
-      "component is a **percentile within the filtered set**, not an absolute " +
-      "measure, so a name scores well by being better than the other " +
-      "candidates rather than good outright. An AI research card (business " +
-      "quality: moat, growth durability, earnings quality) and an adversarial " +
-      "bull/bear pair then nudge the rank.",
-    topN != null
-      ? `3. **Shortlist.** Only the top ${topN} are offered to the buyers. ` +
-        "Everything below is invisible to them, however good."
-      : "3. **Shortlist.** A fixed top slice is offered to the buyers.",
-    "4. **Judge.** A buying agent evaluates each shortlisted name **one at a " +
-      "time** against its own brief, returning BUY/PASS with a 1-5 conviction, " +
-      "a written thesis, and machine-checkable break/extend signals. It sees " +
-      "the company's fundamentals, valuation history, the research card, the " +
-      "bull/bear verdicts and a recent-news snippet. It is not told how much " +
-      "cash is available — affordability is decided afterwards, so a good " +
-      "business is not rejected for being briefly unaffordable.",
-    "5. **Size.** Qualifying names are drafted into the shared cash pool at a " +
-      "target weight. Where several agents share a book they draft in turn.",
-    "6. **Record.** Every buy freezes a snapshot of the company's numbers at " +
-      "that moment, alongside the thesis and its signals — so a later reader " +
-      "can see what was believed and on what evidence.",
-    "7. **Review.** A separate selling agent re-reads each holding against its " +
-      "recorded thesis on its own cadence, under the owner's sell rules above. " +
-      "The agent that buys is never the agent that sells.",
+    "The owner can also sell any holding by hand at any time, which bypasses " +
+      "every rule above.",
     "",
   );
   return s;
+}
+
+/** The knobs that decide what an agent actually does, stated as a line. */
+function agentLine(a: ExportAgent): string[] {
+  const bits: string[] = [];
+  if (a.cadenceHours != null) bits.push(`runs ${cadence(a.cadenceHours)}`);
+  if (a.convictionGate != null) {
+    bits.push(
+      `only acts at conviction **${a.convictionGate}/5** ` +
+        "(anything lower is interest, not a trade)",
+    );
+  }
+  if (a.sellThreshold != null) {
+    bits.push(`sells at conviction ≥ **${a.sellThreshold}/5**`);
+  }
+  if (a.targetPct != null) bits.push(`targets **${a.targetPct}%** per position`);
+  if (a.minPct != null) bits.push(`will not open below ${a.minPct}%`);
+  if (a.addPct != null) bits.push(`adds **${a.addPct}%** at a time`);
+  if (a.maxPct != null) bits.push(`up to a **${a.maxPct}%** ceiling`);
+  return bits.length > 0 ? [`- _${a.name}: ${bits.join(", ")}._`] : [];
+}
+
+function cadence(hours: number): string {
+  if (hours <= 24) return "daily";
+  if (hours <= 24 * 7) return "weekly";
+  if (hours <= 24 * 31) return "monthly";
+  return `every ${Math.round(hours / 24)} days`;
+}
+
+function list(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 function positionsSection(d: ExportData): string[] {
