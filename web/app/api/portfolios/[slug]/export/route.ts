@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { resolveVisiblePortfolio } from "@/lib/portfolio-visibility";
+import {
+  isViewerOwner,
+  resolveVisiblePortfolio,
+} from "@/lib/portfolio-visibility";
 import { getPortfolioExportData } from "@/lib/portfolio-export-query";
 import { buildPortfolioExport, exportFilename } from "@/lib/portfolio-export";
 
@@ -8,11 +11,17 @@ export const dynamic = "force-dynamic";
 /**
  * The portfolio as one Markdown document, for review by another model.
  *
- * Visibility is `resolveVisiblePortfolio` — the SAME gate as the page itself,
- * not a looser or stricter one. Everything in the pack (holdings, the trade
- * tape, each thesis) is already rendered on that page, so an export that any
- * page viewer can take discloses nothing new; and a private portfolio 404s
- * here exactly as it does there.
+ * OWNER ONLY, which is stricter than the page. Most of the pack is already
+ * rendered to anyone who can open a public portfolio, so this is not about
+ * secrecy — it is that an export is a different act from reading. The pack
+ * bundles a competitor's entire strategy, every thesis and the whole trade
+ * tape into one file built to be fed to a model, and a public leaderboard
+ * entry is not consent to that. Owners export their own books.
+ *
+ * Two gates, both required: `resolveVisiblePortfolio` (so a private book is
+ * invisible as ever) then `isViewerOwner`. A non-owner gets 404 rather than
+ * 403 — the route's existence is not worth confirming to someone who cannot
+ * use it.
  *
  * `?download=1` asks the browser to save it; without it the body is served
  * inline so the page can copy it to the clipboard.
@@ -23,7 +32,7 @@ export async function GET(
 ) {
   const { slug } = await params;
   const portfolio = await resolveVisiblePortfolio(slug);
-  if (!portfolio) {
+  if (!portfolio || !(await isViewerOwner(portfolio))) {
     return new NextResponse("Not found", { status: 404 });
   }
 

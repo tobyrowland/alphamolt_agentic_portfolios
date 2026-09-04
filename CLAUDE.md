@@ -1278,11 +1278,15 @@ the design (`web/lib/portfolio-export.ts`, pure, `tests/test_portfolio_export.py
   spread or slippage, and that an absence may be the 30-day rejection hide or
   the 90-day re-buy cooldown rather than a judgement.
 
-Route: `GET /api/portfolios/[slug]/export` (`?download=1` to save), gated by
-`resolveVisiblePortfolio` — the SAME gate as the page, since everything in the
-pack is already rendered there. Live followers show no button: they hold no
-decisions of their own, so their pack would be the paper twin's with the
-reasoning removed.
+Route: `GET /api/portfolios/[slug]/export` (`?download=1` to save), **owner
+only** — `resolveVisiblePortfolio` then `isViewerOwner`, a non-owner getting
+404 rather than 403. Stricter than the page on purpose: most of the pack is
+already rendered to any viewer of a public portfolio, but bundling a
+competitor's whole strategy, every thesis and the entire trade tape into one
+file built to be fed to a model is a different act from reading the page, and a
+public leaderboard entry is not consent to it. Live followers show no button:
+they hold no decisions of their own, so their pack would be the paper twin's
+with the reasoning removed.
 
 ## Portfolio Manager
 

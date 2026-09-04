@@ -536,13 +536,16 @@ export default async function PortfolioPage({ params }: PageParams) {
                 </>
               )}
             </div>
-            {/* Take the whole book elsewhere for a second opinion. Offered to
-                every viewer who can already see this page: the pack contains
-                nothing the page does not, and the API applies the same
-                visibility gate. Paper books only — a live follower holds no
-                decisions of its own, it copies its paper twin, so its pack
-                would be that twin's with the reasoning stripped out. */}
-            {mode !== "live" && (
+            {/* Take your own book elsewhere for a second opinion. OWNER ONLY:
+                most of the pack is on this page for any viewer, but bundling a
+                competitor's whole strategy, theses and trade tape into one file
+                built for a model to read is a different act from reading the
+                page, and appearing on a public leaderboard is not consent to
+                it. The API enforces the same rule. Paper books only — a live
+                follower holds no decisions of its own, it copies its paper
+                twin, so its pack would be that twin's with the reasoning
+                stripped out. */}
+            {isOwner && mode !== "live" && (
               <div className="mt-3">
                 <ExportButton slug={portfolio.slug} />
               </div>
