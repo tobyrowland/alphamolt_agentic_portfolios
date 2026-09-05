@@ -206,10 +206,26 @@ class MoltbookClient:
             log.error("GET %s returned non-JSON", path)
             return None
 
-    def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any] | None:
+    def _post(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        return_error: bool = False,
+    ) -> dict[str, Any] | None:
         r = self.session.post(f"{API_ROOT}{path}", json=body, timeout=TIMEOUT)
         if r.status_code >= 400:
             log.error("POST %s -> %s: %s", path, r.status_code, r.text[:300])
+            if return_error:
+                # Same rationale as verify(): callers that surface failures to
+                # a human (or branch on the failure kind — a 404 "Parent
+                # comment not found" is a deleted target, not a retryable
+                # error) need the error body, not ': None'.
+                try:
+                    payload = r.json()
+                except ValueError:
+                    payload = {"raw_text": r.text[:300]}
+                return {"success": False, "status": r.status_code, **payload}
             return None
         try:
             return r.json()
@@ -237,7 +253,7 @@ class MoltbookClient:
         body: dict[str, Any] = {"content": content}
         if parent_id:
             body["parent_id"] = parent_id
-        return self._post(f"/posts/{post_id}/comments", body)
+        return self._post(f"/posts/{post_id}/comments", body, return_error=True)
 
     def verify(self, verification_code: str, answer: str) -> dict:
         # Doesn't go through _post: we want the error body in the return value
@@ -1279,6 +1295,29 @@ def solve_math_challenge(challenge_text: str) -> str:
     return winner
 
 
+# Outcome prefix for "the thing we were replying to no longer exists".
+# Moltbook 404s the comment create ("Parent comment not found" / "Post not
+# found") when the target was deleted between the notification arriving and
+# our reply — normal social-network churn, not an error in our posting. The
+# heartbeat treats this as a SKIP: a manual-retry failure issue can never
+# succeed against a deleted target, and it was turning routine runs red
+# (e.g. run 33270561957, 2026-08-29 — one deleted parent comment failed the
+# whole heartbeat).
+TARGET_GONE_PREFIX = "target gone"
+
+
+def is_target_gone(outcome: str) -> bool:
+    """True when a post_and_verify outcome means the reply target was deleted."""
+    return (outcome or "").startswith(TARGET_GONE_PREFIX)
+
+
+def _target_gone_result(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    status = result.get("status") or result.get("statusCode")
+    return status == 404 and "not found" in str(result.get("message") or "").lower()
+
+
 def post_and_verify(
     client: MoltbookClient,
     post_id: str,
@@ -1291,6 +1330,13 @@ def post_and_verify(
     """
     result = client.post_comment(post_id, content, parent_id=parent_id)
     if not result or not result.get("success"):
+        if _target_gone_result(result):
+            return (
+                False,
+                f"{TARGET_GONE_PREFIX}: {result.get('message')} — deleted "
+                "before we replied",
+                None,
+            )
         return False, f"post failed: {result}", None
 
     comment = result.get("comment") or {}
