@@ -3,14 +3,14 @@
 Intraday 15-min delayed price refresher.
 
 Hits EODHD's /real-time bulk endpoint and writes (price, price_asof) back
-to `companies` for every ticker in the active TV screen. Scheduled every
+to `securities` (Level 0) for every active Tier-1 ticker. Scheduled every
 15 min during US market hours via .github/workflows/intraday-prices.yml.
 
-Only touches the price-related columns — fundamentals, R40, AI narrative,
-flags, sort_order etc. all keep their daily/weekly refresh cadence. The
-05:30 UTC portfolio_valuation.py snapshot still picks up close-of-business
-because the last intraday tick of the day runs around 21:45 UTC and
-markets have been closed since ~22:00 UTC by the time MTM runs.
+Only touches the price columns (securities.price / price_asof) — identity,
+gate, fundamentals and valuation keep their own cadences. Outside market
+hours securities.price settles on the daily EOD close written by
+prices_daily_updater, so the 05:30 UTC portfolio_valuation.py snapshot
+still marks against close-of-business.
 
 Usage:
     python intraday_prices.py
