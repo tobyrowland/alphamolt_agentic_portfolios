@@ -2,7 +2,9 @@
 
 import unittest
 
-from data_freshness_report import classify, OK, WATCH, STALE
+from data_freshness_report import (
+    OK, STALE, WATCH, classify, count_past_window, tail_age_days,
+)
 
 
 def _c(**kw):
@@ -53,6 +55,47 @@ class ClassifyTests(unittest.TestCase):
     def test_non_daily_feed_zero_24h_not_auto_stale(self):
         # expected_daily=False → 0 in 24h is not penalised on that rule alone.
         self.assertEqual(_c(expected_daily=False, refreshed_24h=0), OK)
+
+
+class TailAgeTests(unittest.TestCase):
+    def test_empty_is_none(self):
+        self.assertIsNone(tail_age_days([]))
+
+    def test_small_feed_trims_nothing(self):
+        # Below 100 names int(n * 0.01) is 0, so the exact maximum decides.
+        self.assertEqual(tail_age_days([1.0, 2.0, 99.0]), 99.0)
+
+    def test_trims_the_worst_one_percent(self):
+        # 300 current names + 6 dead ones: 3 are trimmed, so the reported
+        # decision age is the 4th-worst — still a dead name, still not 1 day.
+        ages = [1.0] * 300 + [40.0, 41.0, 42.0, 43.0, 44.0, 45.0]
+        self.assertEqual(tail_age_days(ages), 42.0)
+
+    def test_a_handful_of_dead_names_no_longer_reds_a_fresh_feed(self):
+        # The live case: 3030 names at Friday's close, 6 with a dark feed.
+        ages = [2.0] * 3030 + [22.0, 21.0, 20.0, 17.0, 16.0, 12.0]
+        self.assertEqual(
+            _c(stalest_age_days=tail_age_days(ages), max_stale_days=5,
+               expected_daily=False),
+            OK,
+        )
+
+    def test_a_genuinely_stale_feed_still_trips(self):
+        # Trimming the tail must not mask a feed that stopped for everyone.
+        ages = [30.0] * 3036
+        self.assertEqual(
+            _c(stalest_age_days=tail_age_days(ages), max_stale_days=5,
+               expected_daily=False),
+            STALE,
+        )
+
+
+class PastWindowTests(unittest.TestCase):
+    def test_counts_only_names_past_the_window(self):
+        self.assertEqual(count_past_window([1.0, 4.0, 5.0, 22.0], 4), 2)
+
+    def test_empty_is_zero(self):
+        self.assertEqual(count_past_window([], 4), 0)
 
 
 if __name__ == "__main__":

@@ -41,6 +41,14 @@ OK, WATCH, STALE, INFO = "OK", "WATCH", "STALE", "INFO"
 _EMOJI = {OK: "🟢", WATCH: "🟡", STALE: "🔴", INFO: "⚪"}
 _COLOR = {OK: "#1a7f37", WATCH: "#9a6700", STALE: "#cf222e", INFO: "#57606a"}
 
+# Share of the worst names set aside before judging staleness. Every feed has a
+# small irreducible tail — a name whose EOD feed went dark mid-cycle, a
+# pre-revenue biotech the P/S updater deliberately skips — and the true maximum
+# age is the wrong trigger for a RAG light: 6 dead names out of 3036 turned the
+# whole row red while 99.8% of the universe was current. The tail-trimmed age
+# decides the status; the true stalest is still REPORTED, as the diagnostic.
+STALE_TAIL_PCT = 0.01
+
 # Which GitHub Action(s) keep each dataset fresh — surfaced in the report so a
 # red row points straight at the workflow to check.
 SOURCE = {
@@ -59,6 +67,30 @@ SOURCE = {
 # ---------------------------------------------------------------------------
 
 
+def tail_age_days(ages: list[float], tail_pct: float = STALE_TAIL_PCT) -> float | None:
+    """Stalest age once the worst `tail_pct` of names are set aside. Pure.
+
+    This — not the true maximum — is what the RAG status is judged on, so a
+    handful of stragglers can't red-flag an otherwise-current feed. Small feeds
+    trim nothing (`int(n * 0.01)` is 0 below 100 names), so their exact maximum
+    still decides, which is the right behaviour when every name is visible.
+    """
+    if not ages:
+        return None
+    ordered = sorted(ages)
+    drop = int(len(ordered) * tail_pct)
+    return ordered[len(ordered) - 1 - drop]
+
+
+def count_past_window(ages: list[float], max_stale_days: float) -> int:
+    """How many names are past their expected refresh window. Pure.
+
+    Reported alongside the stalest stamp so a trimmed tail stays visible rather
+    than silently swallowed — "22d · 6 past window" says both things at once.
+    """
+    return sum(1 for a in ages if a > max_stale_days)
+
+
 def classify(
     *,
     have: int,
@@ -72,10 +104,12 @@ def classify(
 ) -> str:
     """RAG status for one data type. Pure → unit-tested.
 
+    `stalest_age_days` is the TAIL-TRIMMED age (see `tail_age_days`), not the
+    raw maximum.
+
     `rotation` feeds (fundamentals, AI) refresh a slice of the universe each day,
-    so their STALEST row legitimately lags by ~a cycle and for names that have
-    left the universe. Judge those by "is it still refreshing?" (24h) — a stale
-    tail is at most WATCH, never STALE.
+    so their stalest row legitimately lags by ~a cycle. Judge those by "is it
+    still refreshing?" (24h) — a stale tail is at most WATCH, never STALE.
     """
     if have == 0:
         return STALE
@@ -143,15 +177,16 @@ def _fmt_age(ts, now: datetime) -> str:
 
 
 def _summarize_map(stamps: list[str], now: datetime):
-    """(newest_ts, oldest_ts, refreshed_24h) over a list of ISO stamps."""
+    """(newest_ts, oldest_ts, refreshed_24h, ages_days) over a list of stamps."""
     parsed = [(s, _parse(s)) for s in stamps if _parse(s) is not None]
     if not parsed:
-        return None, None, 0
+        return None, None, 0, []
     parsed.sort(key=lambda p: p[1])
     oldest, newest = parsed[0][0], parsed[-1][0]
     cutoff = now.timestamp() - 86_400
     refreshed = sum(1 for _, d in parsed if d.timestamp() >= cutoff)
-    return newest, oldest, refreshed
+    ages = [(now - d).total_seconds() / 86_400 for _, d in parsed]
+    return newest, oldest, refreshed, ages
 
 
 def gather(db: SupabaseDB) -> list[Row]:
@@ -160,6 +195,7 @@ def gather(db: SupabaseDB) -> list[Row]:
     secs = db.get_all_securities(
         columns="ticker,is_tier1,price,price_asof", status="active")
     tier1 = [s for s in secs if s.get("is_tier1")]
+    tier1_tickers = {s["ticker"] for s in tier1}
     total = len(tier1)
     rows: list[Row] = []
 
@@ -169,11 +205,14 @@ def gather(db: SupabaseDB) -> list[Row]:
     # freshness is judged by age (weekend-tolerant), not a 24h-refresh count —
     # a genuinely dead feed still trips once the newest price ages past window.
     priced = [s for s in tier1 if db.safe_float(s.get("price"))]
-    newest, oldest, r24 = _summarize_map([s.get("price_asof") for s in priced], now)
+    newest, oldest, r24, ages = _summarize_map(
+        [s.get("price_asof") for s in priced], now)
     rows.append(_row(
         "Current price", have=len(priced), total=total,
-        newest=newest, oldest=oldest, refreshed_24h=r24, now=now,
+        newest=newest, oldest=oldest, refreshed_24h=r24, ages=ages, now=now,
         expected_daily=False, max_stale_days=5, min_coverage=0.9,
+        note="a name past window has usually gone dark at the source "
+             "(acquired / halted) while still listed",
     ))
 
     # 2. Daily prices (prices_daily) — EOD layer. Newest date + recent coverage.
@@ -204,34 +243,43 @@ def gather(db: SupabaseDB) -> list[Row]:
     # last valuation row frozen by design — the updater only refreshes active
     # Tier-1 — so they must not drag the stalest stamp into a false STALE.
     val = db.get_all_valuation_latest()
-    tier1_tickers = {s["ticker"] for s in tier1}
     val = {t: v for t, v in val.items() if t in tier1_tickers}
-    newest, oldest, r24 = _summarize_map(
+    newest, oldest, r24, ages = _summarize_map(
         [v.get("fetched_at") for v in val.values()], now)
     rows.append(_row(
         "Valuation / P-S", have=len(val), total=total,
-        newest=newest, oldest=oldest, refreshed_24h=r24, now=now,
+        newest=newest, oldest=oldest, refreshed_24h=r24, ages=ages, now=now,
         expected_daily=True, max_stale_days=4, min_coverage=0.5,
+        note="pre-revenue names have no computable P/S, so their row stays "
+             "frozen at its last revenue-bearing date",
     ))
 
     # 4. Fundamentals (fundamentals) — daily ROTATION (~universe/batch days).
+    # Scoped to active Tier 1, like every other row: the table also holds rows
+    # for names that have since left the universe, and those are never
+    # refreshed again by design — unscoped they read as a 72-day stale tail and
+    # pushed a healthy 14-day rotation to WATCH.
     fund = db.get_fundamentals_freshness()
-    newest, oldest, r24 = _summarize_map(list(fund.values()), now)
+    fund = {t: v for t, v in fund.items() if t in tier1_tickers}
+    newest, oldest, r24, ages = _summarize_map(list(fund.values()), now)
     rows.append(_row(
         "Fundamentals", have=len(fund), total=total,
-        newest=newest, oldest=oldest, refreshed_24h=r24, now=now,
+        newest=newest, oldest=oldest, refreshed_24h=r24, ages=ages, now=now,
         expected_daily=True, max_stale_days=30, min_coverage=0.5, rotation=True,
         note="rotation: stalest nears the cycle length by design",
     ))
 
     # 5. AI analysis (ai_analysis) — rotation (bull/bear/narrative clocks).
+    # Tier-1-scoped for the same reason as fundamentals above.
     ai = db.get_ai_analysis_freshness()
-    newest, oldest, r24 = _summarize_map(list(ai.values()), now)
+    ai = {t: v for t, v in ai.items() if t in tier1_tickers}
+    newest, oldest, r24, ages = _summarize_map(list(ai.values()), now)
     rows.append(_row(
         "AI analysis", have=len(ai), total=total,
-        newest=newest, oldest=oldest, refreshed_24h=r24, now=now,
+        newest=newest, oldest=oldest, refreshed_24h=r24, ages=ages, now=now,
         expected_daily=True, max_stale_days=30, min_coverage=0.3, rotation=True,
-        note="rotation: refreshing daily; stalest tail is dropped-from-universe names",
+        note="rotation: refreshing daily; the verified-data gate holds back "
+             "names without usable fundamentals",
     ))
 
     # 6. Estimates — not ingested yet (informational).
@@ -270,20 +318,27 @@ def gather(db: SupabaseDB) -> list[Row]:
     return rows
 
 
-def _row(name, *, have, total, newest, oldest, refreshed_24h, now,
+def _row(name, *, have, total, newest, oldest, refreshed_24h, ages, now,
          expected_daily, max_stale_days, min_coverage, rotation=False, note="") -> Row:
     status = classify(
         have=have, total=total,
-        stalest_age_days=_age_days(oldest, now),
+        stalest_age_days=tail_age_days(ages),
         refreshed_24h=refreshed_24h, expected_daily=expected_daily,
         max_stale_days=max_stale_days, min_coverage=min_coverage,
         rotation=rotation,
     )
+    # Report the TRUE stalest (the diagnostic — it names the row to go look at)
+    # even though the trimmed age decided the status, and say how many names sit
+    # past the window so a trimmed tail is never silently swallowed.
+    over = count_past_window(ages, max_stale_days)
+    stalest = _fmt_age(oldest, now)
+    if over:
+        stalest += f" · {over} past window"
     return Row(
         name=name,
         coverage=f"{have} / {total}" if total else str(have),
         freshest=_fmt_age(newest, now),
-        stalest=_fmt_age(oldest, now),
+        stalest=stalest,
         refreshed_24h=str(refreshed_24h),
         status=status,
         note=note,
