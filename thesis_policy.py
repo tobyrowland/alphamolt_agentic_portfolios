@@ -176,6 +176,21 @@ def resolve_policy(raw: Any) -> dict[str, Any]:
     return policy
 
 
+def json_safe(policy: dict[str, Any]) -> dict[str, Any]:
+    """A copy of ``policy`` fit for JSON serialization (e.g. a run-log journal).
+
+    ``resolve_policy`` keeps ``rebuy_cooldown_ignores_sells_before`` as a live
+    ``datetime`` so ``cooldown_cutoff`` can compare it directly — but that
+    makes the dict itself unsafe to hand to something that will ``json.dumps``
+    it (e.g. ``result.notes``, which a heartbeat run journals verbatim).
+    """
+    safe = dict(policy)
+    exempt = safe.get("rebuy_cooldown_ignores_sells_before")
+    if isinstance(exempt, datetime):
+        safe["rebuy_cooldown_ignores_sells_before"] = exempt.isoformat()
+    return safe
+
+
 # ---------------------------------------------------------------------------
 # Rule 1 — grace period
 # ---------------------------------------------------------------------------
