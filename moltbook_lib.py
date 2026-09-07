@@ -237,7 +237,24 @@ class MoltbookClient:
         body: dict[str, Any] = {"content": content}
         if parent_id:
             body["parent_id"] = parent_id
-        return self._post(f"/posts/{post_id}/comments", body)
+        # Doesn't go through _post: we want the error body in the return value
+        # so post_and_verify can surface it (same reasoning as verify() / #743
+        # — a 404 "Parent comment not found" used to reach the log as the
+        # useless 'post failed: None', hiding that the failure was permanent).
+        r = self.session.post(
+            f"{API_ROOT}/posts/{post_id}/comments", json=body, timeout=TIMEOUT
+        )
+        try:
+            payload = r.json()
+        except ValueError:
+            payload = {"raw_text": r.text[:300]}
+        if r.status_code >= 400:
+            log.error(
+                "POST /posts/%s/comments -> %s: %s",
+                post_id, r.status_code, r.text[:300],
+            )
+            return {"success": False, "status": r.status_code, **payload}
+        return payload
 
     def verify(self, verification_code: str, answer: str) -> dict:
         # Doesn't go through _post: we want the error body in the return value
@@ -482,6 +499,20 @@ class GitHubIssuer:
 
 def notification_marker(notif_id: str) -> str:
     return f"<!-- moltbook-notif:{notif_id} -->"
+
+
+def is_content_gone(outcome: str) -> bool:
+    """True when a post/reply failure is PERMANENT because the target content
+    no longer exists — the parent comment or post was deleted on Moltbook's
+    side (HTTP 404 from the comments endpoint, e.g. 'Parent comment not
+    found'). No retry can ever succeed, so callers should skip rather than
+    fail: heartbeat run 34041749434 (2026-09-06) filed a 'retryable' FAILED
+    issue and exited 1 over exactly this, for a reply that had nowhere to go.
+
+    Matches only the structured 'post failed (HTTP 404)' outcome emitted by
+    post_and_verify — a verification failure or a 5xx never reads as gone.
+    """
+    return "post failed (HTTP 404)" in (outcome or "")
 
 
 def prune_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
@@ -1291,6 +1322,12 @@ def post_and_verify(
     """
     result = client.post_comment(post_id, content, parent_id=parent_id)
     if not result or not result.get("success"):
+        status = (result or {}).get("status")
+        if status:
+            message = (result or {}).get("message") or (result or {}).get(
+                "raw_text"
+            ) or "(no error body)"
+            return False, f"post failed (HTTP {status}): {message}", None
         return False, f"post failed: {result}", None
 
     comment = result.get("comment") or {}
