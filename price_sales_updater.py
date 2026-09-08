@@ -20,7 +20,7 @@ import os
 import statistics
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 
 from db import SupabaseDB
 from eodhd_updater import fetch_fundamentals_with_fallbacks
+from fundamentals_updater import select_stale_batch
 from exchanges import resolve_eodhd_exchange, YAHOO_SUFFIX
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.environ.get("EODHD_API_KEY", "")
 
 DELAY_BETWEEN_CALLS = 0.5  # seconds between EODHD API calls
+UPSERT_FLUSH = 100  # valuation rows per upsert round trip
 
 # When ps_now diverges from the latest stored weekly-history point by more than
 # this fraction, the underlying revenue denominator almost certainly stepped
@@ -281,6 +283,96 @@ def get_shares_outstanding(fundamentals: dict) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# P/S resolution — numerator and denominator must share a currency
+# ---------------------------------------------------------------------------
+
+# EODHD reports Highlights.MarketCapitalization in USD for a US listing, but the
+# income statement stays in the issuer's FILING currency. Dividing one by the
+# other is only a P/S when both are USD; for a foreign-domiciled ADR it silently
+# divides dollars by pesos. Three names show the error exactly tracking their
+# home FX rate: FMX (MXN) wrote 0.05 against a true ~1.0, TME (CNY) wrote 0.40
+# against ~2.8, and TGS (ARS) rounded all the way to 0.00. On 2026-09-08, 100
+# Tier 1 names carried a P/S under 0.15.
+#
+# The damage is not only the name itself. Half the screener's Value lens is the
+# peer ratio (screen.VAL_W_PEER = 0.5, ps / peer_ps_median), where a currency
+# error does NOT cancel the way the self-relative half does — and worse,
+# peer_ps_median is itself a sector median OVER these rows (migration 058), so a
+# handful of corrupted ADRs drags the denominator for everything in their
+# sector. The same number is quoted to the buyer LLM as a fact and gates the
+# ps_vs_median band.
+#
+# Whether a P/S disagrees with EODHD's own by more than this factor is the
+# currency-agnostic tell: normal disagreement between a derived and a reported
+# multiple is a few percent (different TTM cut-offs), never multiples.
+PS_SANITY_RATIO = 3.0
+
+
+def get_reported_ps(fundamentals: dict) -> float | None:
+    """EODHD's own trailing P/S — currency-consistent by construction."""
+    valuation = fundamentals.get("Valuation") or {}
+    ps = _safe_float(valuation.get("PriceSalesTTM"))
+    return ps if ps and ps > 0 else None
+
+
+def get_revenue_currency(fundamentals: dict) -> str | None:
+    """Currency the income statement is reported in, or None if undeclared.
+
+    Deliberately does NOT fall back to General.CurrencyCode: that is the
+    LISTING currency, which reads USD for precisely the US-listed ADRs whose
+    revenue is not in dollars, so using it would blind the check to the only
+    case it exists for.
+    """
+    statement = (fundamentals.get("Financials") or {}).get("Income_Statement") or {}
+    for key in ("currency_symbol", "currency"):
+        val = statement.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip().upper()
+    return None
+
+
+def resolve_ps(
+    market_cap: float | None,
+    revenue_ttm: float | None,
+    reported_ps: float | None,
+    revenue_currency: str | None,
+) -> tuple[float | None, str]:
+    """Decide a ticker's P/S, or refuse. Pure — unit-tested.
+
+    Returns `(ps, reason)`; `ps` is None when no trustworthy figure exists, and
+    the caller skips the ticker. Refusing is the point: a skipped name is absent
+    from the Value lens, while a wrong one is ranked as though it were cheap and
+    pulls its whole sector's peer median with it.
+    """
+    derived = None
+    if market_cap and market_cap > 0 and revenue_ttm and revenue_ttm > 0:
+        derived = market_cap / revenue_ttm
+
+    # An explicitly non-USD income statement makes `derived` meaningless, no
+    # matter how plausible it looks.
+    if revenue_currency and revenue_currency != "USD":
+        if reported_ps:
+            return reported_ps, f"reported ({revenue_currency} revenue)"
+        return None, f"revenue reported in {revenue_currency}, no USD-consistent P/S"
+
+    # Undeclared currency: fall back to disagreement with EODHD's own multiple,
+    # which catches the same fault without needing the currency code at all.
+    if derived and reported_ps:
+        ratio = max(derived, reported_ps) / min(derived, reported_ps)
+        if ratio > PS_SANITY_RATIO:
+            return reported_ps, (
+                f"reported (derived {derived:.4g} disagrees {ratio:.0f}x — "
+                "likely non-USD revenue)"
+            )
+
+    if derived:
+        return derived, "derived"
+    if reported_ps:
+        return reported_ps, "reported (no market cap)"
+    return None, "no market cap and no reported P/S"
+
+
+# ---------------------------------------------------------------------------
 # Date helpers
 # ---------------------------------------------------------------------------
 
@@ -402,11 +494,23 @@ def compute_ps_for_ticker(
 
     market_cap = get_market_cap(fundamentals)
 
-    # Current P/S from fundamentals
-    if market_cap and market_cap > 0:
-        ps_current = round(market_cap / revenue_ttm, 2)
-    else:
-        logger.warning("SKIP %s: no market cap data", ticker)
+    # Current P/S — refuses rather than divides USD by a filing currency.
+    ps_raw, ps_reason = resolve_ps(
+        market_cap, revenue_ttm,
+        get_reported_ps(fundamentals), get_revenue_currency(fundamentals),
+    )
+    if ps_raw is None:
+        logger.warning("SKIP %s: %s", ticker, ps_reason)
+        return None
+    if not ps_reason.startswith("derived"):
+        logger.info("%s: P/S from %s", ticker, ps_reason)
+
+    ps_current = round(ps_raw, 2)
+    if ps_current <= 0:
+        # A P/S that rounds to zero is never a real multiple — it is a units or
+        # currency fault (TGS wrote 0.00 for months). Writing it puts a literal
+        # zero into ps, ps_ath and the sector's peer median.
+        logger.warning("SKIP %s: P/S %.6g rounds to zero (%s)", ticker, ps_raw, ps_reason)
         return None
 
     # --- Build history ---
@@ -502,6 +606,36 @@ def compute_ps_for_ticker(
 
 
 # ---------------------------------------------------------------------------
+# Work ordering
+# ---------------------------------------------------------------------------
+
+
+def order_by_staleness(items: list[dict], ps_map: dict[str, dict]) -> list[dict]:
+    """Order the run's work queue stalest-first (pure, unit-tested).
+
+    A run that cannot finish the universe processes a prefix of this list, so
+    the prefix has to be the names that have gone longest without a P/S. The
+    previous order came straight from `securities` with no ORDER BY, which meant
+    a truncated run served an arbitrary slice and the same tail could be starved
+    for days: on 2026-09-08, 126 Tier 1 names had no valuation row inside a week
+    while others were refreshed daily.
+
+    Delegates the key to `fundamentals_updater.select_stale_batch` — the same
+    rotation rule the fundamentals refresh uses — so there is one definition of
+    "stalest first" in the pipeline. Valuation `date` strings are ISO, so they
+    sort lexically exactly like the `fetched_at` timestamps it was written for.
+    """
+    freshness = {
+        t: v["last_updated"]
+        for t, v in ps_map.items()
+        if v.get("last_updated")
+    }
+    by_ticker = {item["ticker"]: item for item in items}
+    ordered = select_stale_batch(list(by_ticker), freshness, len(by_ticker))
+    return [by_ticker[t] for t in ordered]
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -567,6 +701,10 @@ def main():
         ticker_list = [t for t in ticker_list if t["ticker"].upper() in filter_set]
         logger.info("Filtered to %d tickers: %s", len(ticker_list), args.tickers)
 
+    # Stalest first, so a run that runs out of time still serves the names that
+    # have gone longest without an update (see order_by_staleness).
+    ticker_list = order_by_staleness(ticker_list, ps_map)
+
     # Compute dates
     today = date.today()
     today_str = today.isoformat()
@@ -580,6 +718,27 @@ def main():
     updated = 0
     skipped = 0
     errors = 0
+
+    # Rows are upserted in batches: one HTTP round trip per ticker was ~3,000
+    # writes a run, and the run has a wall-clock budget it was already blowing.
+    pending: list[dict] = []
+    pending_modes: list[str] = []
+
+    def flush() -> None:
+        """Write the buffered valuation rows, counting the outcome."""
+        nonlocal backfilled, updated, errors, pending, pending_modes
+        if not pending:
+            return
+        batch, modes = pending, pending_modes
+        pending, pending_modes = [], []
+        try:
+            db.upsert_valuation_batch(batch)
+        except Exception as e:
+            logger.error("ERROR writing %d rows to DB: %s", len(batch), e)
+            errors += len(batch)
+            return
+        backfilled += sum(1 for m in modes if m == "backfill")
+        updated += sum(1 for m in modes if m != "backfill")
 
     for item in ticker_list:
         ticker = item["ticker"]
@@ -635,17 +794,14 @@ def main():
             "ps_pct_of_ath": result.get("pct_of_ath"),
             "history_json": result.get("history_json"),
             "source": "price_sales_updater",
-            "fetched_at": datetime.utcnow().isoformat(),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
-        try:
-            db.upsert_valuation_batch([val_row])
-            if result_mode == "backfill":
-                backfilled += 1
-            else:
-                updated += 1
-        except Exception as e:
-            logger.error("ERROR writing %s to DB: %s", ticker, e)
-            errors += 1
+        pending.append(val_row)
+        pending_modes.append(result_mode)
+        if len(pending) >= UPSERT_FLUSH:
+            flush()
+
+    flush()
 
     # Log run stats
     duration = round(time.time() - start_time, 1)
