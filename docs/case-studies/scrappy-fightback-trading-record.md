@@ -11,6 +11,10 @@ Nothing here is hypothetical. Every number and every quotation is read directly
 from the production database on 2026-08-24. Where the record is incomplete or
 ambiguous, that is stated explicitly rather than smoothed over.
 
+**What was done about it:** [`sell-discipline-fix.md`](./sell-discipline-fix.md)
+describes the four defences built in response to the sell-side failures below, and
+what was deliberately left alone.
+
 ---
 
 ## 1. Setup

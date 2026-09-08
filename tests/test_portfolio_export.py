@@ -170,6 +170,46 @@ class MethodologyTests(unittest.TestCase):
     def setUpClass(cls):
         cls.doc = _run_ts()["doc"]
 
+    def test_a_self_sourced_buyer_is_not_described_as_using_the_screen(self):
+        """The bug this replaced: one generic pipeline claimed every position
+        came through the screen. Double-Down never sees it — it re-reads what
+        the book already holds — and it made a real trade on this portfolio.
+        A reviewer could not detect the misattribution from the positions."""
+        self.assertIn("Buying without the screen", self.doc)
+        self.assertIn("never see the screen", self.doc)
+        self.assertIn("the portfolio's own current holdings", self.doc)
+
+    def test_it_says_self_sourced_buyers_spend_first(self):
+        """They run BEFORE the draft, so the cash is gone before it buys."""
+        self.assertIn("BEFORE the screen buyer", self.doc)
+
+    def test_each_agents_cadence_is_stated(self):
+        """'On its own cadence' is not reviewable. Turnover cannot be judged
+        without knowing the buyer is weekly and the top-up agent daily."""
+        flat = " ".join(self.doc.split())
+        self.assertIn("Buyer · Gemini: runs weekly", flat)
+        self.assertIn("Double-Down Buyer: runs daily", flat)
+
+    def test_the_conviction_gate_is_stated(self):
+        """1-5 means nothing without knowing only 5 acts."""
+        self.assertIn("conviction **5/5**", self.doc)
+
+    def test_the_sizing_knobs_are_stated(self):
+        for fragment in ("**4%** per position", "**1.5%** at a time", "**9%** ceiling"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, self.doc)
+
+    def test_the_sell_threshold_is_stated(self):
+        self.assertIn("sells at conviction ≥ **4/5**", self.doc)
+
+    def test_it_says_sells_are_whole_positions(self):
+        """A reviewer suggesting 'trim it' should know trimming is not on
+        offer to any agent here."""
+        self.assertIn("whole position or none", self.doc)
+
+    def test_it_admits_the_owner_can_override_everything(self):
+        self.assertIn("sell any holding by hand", self.doc)
+
     def test_it_says_ranking_is_relative_to_the_filtered_set(self):
         """The most consequential thing to get wrong: a name scores well by
         beating the other candidates, not by being good outright."""
@@ -181,14 +221,14 @@ class MethodologyTests(unittest.TestCase):
 
     def test_it_says_the_buyer_is_blind_to_cash(self):
         """Otherwise a reviewer reads a PASS as 'couldn't afford it'."""
-        self.assertIn("not told how much", self.doc)
+        self.assertIn("not told the cash position", self.doc)
 
     def test_it_says_buyer_and_seller_are_different_agents(self):
         self.assertIn("never the agent that sells", self.doc)
 
     def test_it_states_the_shortlist_cap_in_the_process_too(self):
         flat = " ".join(self.doc.replace("**", "").split())
-        self.assertIn("top 40 are offered", flat)
+        self.assertIn("top 40 reach the buyer", flat)
 
 
 class LimitationsTests(unittest.TestCase):

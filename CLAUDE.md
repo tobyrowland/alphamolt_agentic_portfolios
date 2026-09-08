@@ -1265,13 +1265,23 @@ the design (`web/lib/portfolio-export.ts`, pure, `tests/test_portfolio_export.py
   review time), because guessing `false` would report an armed tripwire as
   quiet. Conflating `undefined` with `null` told a reviewer a healthy signal
   was impossible to evaluate.
-- **A methodology section and a limitations section**, because the ask is an
-  incisive critique of the PROCESS and a reviewer cannot criticise a mechanism
-  it has to infer. The methodology states the parts most often assumed wrongly:
-  ranking is a **percentile within the filtered set** (a name scores well by
-  beating the other candidates, not outright), the buyer judges **one name at a
-  time** and is **not told the cash position**, and the agent that buys is never
-  the agent that sells. The limitations are MEASURED from the pack's own data
+- **A methodology section derived from the TEAM ACTUALLY HIRED**, not a generic
+  pipeline. The first version described one path — screen, rank, shortlist,
+  judge, size, review — which is wrong the moment a book hires a **self-sourced
+  buyer**: `double_down` and `pelosi_mirror` never see the screen and run
+  BEFORE it, so the cash is gone before the draft. Scrappy Fightback has one,
+  and it made a real trade (a PODD top-up), so the generic text misattributed a
+  position to the screen in a way no reviewer could detect. Agents are
+  classified off `agents.strategy` (never the role tag — both self-sourced
+  strategies are tagged `buyer`), and each carries its real cadence, conviction
+  gate and sizing knobs with the instance's config overriding the library
+  agent's, exactly as the heartbeat merges them. It states the parts most often
+  assumed wrongly: ranking is a **percentile within the filtered set** (a name
+  scores well by beating the other candidates, not outright), the buyer judges
+  **one name at a time** and is **not told the cash position**, the reviewer
+  exits whole positions and never trims, and the owner can override all of it
+  by hand.
+- **A limitations section** The limitations are MEASURED from the pack's own data
   where possible — "N of M recorded signals cannot be evaluated (fields: …)"
   counts the inert tripwires rather than asserting a sentence that would go
   stale — alongside the fixed ones: closing marks not live, paper fills with no

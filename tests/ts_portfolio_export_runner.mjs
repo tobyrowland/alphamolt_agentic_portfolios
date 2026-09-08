@@ -69,9 +69,25 @@ const DATA = {
     },
   ],
   closed: [{ ticker: "ADMA", realisedUsd: -430.5, lastSoldAt: "2026-08-11" }],
+  // The real Scrappy Fightback team: a screen buyer, a self-sourced buyer that
+  // never sees the screen, and a reviewer — on three different cadences.
   team: [
-    { name: "Buyer · Gemini", role: "buyer", brief: "Find fallen leaders." },
-    { name: "Portfolio Reviewer", role: "reviewer", brief: null },
+    {
+      name: "Buyer · Gemini", role: "buyer", brief: "Find fallen leaders.",
+      kind: "screen-buyer", cadenceHours: 168, convictionGate: 5,
+      targetPct: 4, minPct: 2,
+    },
+    {
+      name: "Portfolio Review Agent", role: "reviewer", brief: null,
+      kind: "reviewer", cadenceHours: 168, convictionGate: null,
+      sellThreshold: 4,
+    },
+    {
+      name: "Double-Down Buyer", role: "buyer", brief: "Press the winners.",
+      kind: "self-sourced-buyer",
+      sourcedFrom: "the portfolio's own current holdings",
+      cadenceHours: 24, convictionGate: 5, addPct: 1.5, maxPct: 9,
+    },
   ],
   universe: {
     presetLabel: "Turnaround",
