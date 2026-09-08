@@ -591,21 +591,78 @@ class SupabaseDB:
         resp = q.execute()
         return resp.data or []
 
-    def get_all_valuation_latest(self) -> dict[str, dict]:
+    # The valuation table carries one dated row per ticker per day, each with a
+    # ~52-point history_json blob, so it grows by the size of the universe every
+    # day (218k rows / 211 MB by 2026-09-08). Reading it whole to find the newest
+    # row per ticker is what pushed price_sales_updater past its job timeout —
+    # see migration 091. Fallback pagination is bounded by this window instead.
+    VALUATION_LOOKBACK_DAYS = 30
+
+    def get_all_valuation_latest(self, lookback_days: int | None = None) -> dict[str, dict]:
         """Return the latest valuation row per ticker, keyed by ticker.
 
         The Level 0 replacement for `get_all_price_sales()` — used by
         price_sales_updater.py to read each ticker's prior P/S state (history /
-        ATH / as-of date) for incremental updates. Paginates the whole table and
-        keeps the newest `date` per ticker.
+        ATH / as-of date) for incremental updates.
+
+        Prefers the `latest_valuation_state()` RPC (migration 091), which does
+        the DISTINCT ON server-side and so transfers one history blob per ticker
+        rather than one per ticker per day. Falls back to paginating a bounded
+        recent window when the RPC isn't deployed yet — a ticker with no row in
+        that window is reported as absent, which the caller correctly treats as
+        "rebuild from scratch".
         """
+        rows = self._latest_valuation_via_rpc()
+        if rows is not None:
+            return rows
+        return self._latest_valuation_paginated(
+            self.VALUATION_LOOKBACK_DAYS if lookback_days is None else lookback_days
+        )
+
+    def _latest_valuation_via_rpc(self) -> dict[str, dict] | None:
+        """Read latest-per-ticker valuation through the migration-091 RPC.
+
+        Returns None (not an empty dict) when the RPC is unavailable, so the
+        caller can tell "not deployed" from "table is empty".
+        """
+        latest: dict[str, dict] = {}
+        page = 0
+        page_size = 1000
+        try:
+            while True:
+                resp = (
+                    self.client.rpc("latest_valuation_state")
+                    .range(page * page_size, (page + 1) * page_size - 1)
+                    .execute()
+                )
+                batch = resp.data or []
+                for row in batch:
+                    t = row.get("ticker")
+                    if t:
+                        latest[t] = row
+                if len(batch) < page_size:
+                    break
+                page += 1
+        except Exception as exc:
+            import logging
+            logging.getLogger("db").warning(
+                "latest_valuation_state RPC unavailable (%s); "
+                "falling back to windowed pagination — apply migration 091", exc,
+            )
+            return None
+        return latest
+
+    def _latest_valuation_paginated(self, lookback_days: int) -> dict[str, dict]:
+        """Pre-091 fallback: paginate valuation rows newer than the window."""
+        floor = (date.today() - timedelta(days=max(1, lookback_days))).isoformat()
         latest: dict[str, dict] = {}
         page = 0
         page_size = 1000
         while True:
             resp = (
                 self.client.table("valuation")
-                .select("ticker, date, ps, ps_ath, history_json, fetched_at")
+                .select("ticker, date, ps, ps_ath, history_json")
+                .gte("date", floor)
                 .order("date", desc=True)
                 .range(page * page_size, (page + 1) * page_size - 1)
                 .execute()

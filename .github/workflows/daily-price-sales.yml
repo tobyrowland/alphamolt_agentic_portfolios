@@ -18,7 +18,11 @@ on:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Headroom, not the fix: the read that blew the old 30-minute budget is
+    # gone (migration 091). A universe-sized run is ~25 min of EODHD calls,
+    # so this leaves room for a slow API day without silently truncating
+    # coverage the way the 30-minute cliff did from 2026-09-04.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository

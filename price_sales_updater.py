@@ -20,7 +20,7 @@ import os
 import statistics
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 
 from db import SupabaseDB
 from eodhd_updater import fetch_fundamentals_with_fallbacks
+from fundamentals_updater import select_stale_batch
 from exchanges import resolve_eodhd_exchange, YAHOO_SUFFIX
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.environ.get("EODHD_API_KEY", "")
 
 DELAY_BETWEEN_CALLS = 0.5  # seconds between EODHD API calls
+UPSERT_FLUSH = 100  # valuation rows per upsert round trip
 
 # When ps_now diverges from the latest stored weekly-history point by more than
 # this fraction, the underlying revenue denominator almost certainly stepped
@@ -502,6 +504,36 @@ def compute_ps_for_ticker(
 
 
 # ---------------------------------------------------------------------------
+# Work ordering
+# ---------------------------------------------------------------------------
+
+
+def order_by_staleness(items: list[dict], ps_map: dict[str, dict]) -> list[dict]:
+    """Order the run's work queue stalest-first (pure, unit-tested).
+
+    A run that cannot finish the universe processes a prefix of this list, so
+    the prefix has to be the names that have gone longest without a P/S. The
+    previous order came straight from `securities` with no ORDER BY, which meant
+    a truncated run served an arbitrary slice and the same tail could be starved
+    for days: on 2026-09-08, 126 Tier 1 names had no valuation row inside a week
+    while others were refreshed daily.
+
+    Delegates the key to `fundamentals_updater.select_stale_batch` — the same
+    rotation rule the fundamentals refresh uses — so there is one definition of
+    "stalest first" in the pipeline. Valuation `date` strings are ISO, so they
+    sort lexically exactly like the `fetched_at` timestamps it was written for.
+    """
+    freshness = {
+        t: v["last_updated"]
+        for t, v in ps_map.items()
+        if v.get("last_updated")
+    }
+    by_ticker = {item["ticker"]: item for item in items}
+    ordered = select_stale_batch(list(by_ticker), freshness, len(by_ticker))
+    return [by_ticker[t] for t in ordered]
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -567,6 +599,10 @@ def main():
         ticker_list = [t for t in ticker_list if t["ticker"].upper() in filter_set]
         logger.info("Filtered to %d tickers: %s", len(ticker_list), args.tickers)
 
+    # Stalest first, so a run that runs out of time still serves the names that
+    # have gone longest without an update (see order_by_staleness).
+    ticker_list = order_by_staleness(ticker_list, ps_map)
+
     # Compute dates
     today = date.today()
     today_str = today.isoformat()
@@ -580,6 +616,27 @@ def main():
     updated = 0
     skipped = 0
     errors = 0
+
+    # Rows are upserted in batches: one HTTP round trip per ticker was ~3,000
+    # writes a run, and the run has a wall-clock budget it was already blowing.
+    pending: list[dict] = []
+    pending_modes: list[str] = []
+
+    def flush() -> None:
+        """Write the buffered valuation rows, counting the outcome."""
+        nonlocal backfilled, updated, errors, pending, pending_modes
+        if not pending:
+            return
+        batch, modes = pending, pending_modes
+        pending, pending_modes = [], []
+        try:
+            db.upsert_valuation_batch(batch)
+        except Exception as e:
+            logger.error("ERROR writing %d rows to DB: %s", len(batch), e)
+            errors += len(batch)
+            return
+        backfilled += sum(1 for m in modes if m == "backfill")
+        updated += sum(1 for m in modes if m != "backfill")
 
     for item in ticker_list:
         ticker = item["ticker"]
@@ -635,17 +692,14 @@ def main():
             "ps_pct_of_ath": result.get("pct_of_ath"),
             "history_json": result.get("history_json"),
             "source": "price_sales_updater",
-            "fetched_at": datetime.utcnow().isoformat(),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
-        try:
-            db.upsert_valuation_batch([val_row])
-            if result_mode == "backfill":
-                backfilled += 1
-            else:
-                updated += 1
-        except Exception as e:
-            logger.error("ERROR writing %s to DB: %s", ticker, e)
-            errors += 1
+        pending.append(val_row)
+        pending_modes.append(result_mode)
+        if len(pending) >= UPSERT_FLUSH:
+            flush()
+
+    flush()
 
     # Log run stats
     duration = round(time.time() - start_time, 1)
