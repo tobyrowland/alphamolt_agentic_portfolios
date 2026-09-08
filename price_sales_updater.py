@@ -283,6 +283,96 @@ def get_shares_outstanding(fundamentals: dict) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# P/S resolution — numerator and denominator must share a currency
+# ---------------------------------------------------------------------------
+
+# EODHD reports Highlights.MarketCapitalization in USD for a US listing, but the
+# income statement stays in the issuer's FILING currency. Dividing one by the
+# other is only a P/S when both are USD; for a foreign-domiciled ADR it silently
+# divides dollars by pesos. Three names show the error exactly tracking their
+# home FX rate: FMX (MXN) wrote 0.05 against a true ~1.0, TME (CNY) wrote 0.40
+# against ~2.8, and TGS (ARS) rounded all the way to 0.00. On 2026-09-08, 100
+# Tier 1 names carried a P/S under 0.15.
+#
+# The damage is not only the name itself. Half the screener's Value lens is the
+# peer ratio (screen.VAL_W_PEER = 0.5, ps / peer_ps_median), where a currency
+# error does NOT cancel the way the self-relative half does — and worse,
+# peer_ps_median is itself a sector median OVER these rows (migration 058), so a
+# handful of corrupted ADRs drags the denominator for everything in their
+# sector. The same number is quoted to the buyer LLM as a fact and gates the
+# ps_vs_median band.
+#
+# Whether a P/S disagrees with EODHD's own by more than this factor is the
+# currency-agnostic tell: normal disagreement between a derived and a reported
+# multiple is a few percent (different TTM cut-offs), never multiples.
+PS_SANITY_RATIO = 3.0
+
+
+def get_reported_ps(fundamentals: dict) -> float | None:
+    """EODHD's own trailing P/S — currency-consistent by construction."""
+    valuation = fundamentals.get("Valuation") or {}
+    ps = _safe_float(valuation.get("PriceSalesTTM"))
+    return ps if ps and ps > 0 else None
+
+
+def get_revenue_currency(fundamentals: dict) -> str | None:
+    """Currency the income statement is reported in, or None if undeclared.
+
+    Deliberately does NOT fall back to General.CurrencyCode: that is the
+    LISTING currency, which reads USD for precisely the US-listed ADRs whose
+    revenue is not in dollars, so using it would blind the check to the only
+    case it exists for.
+    """
+    statement = (fundamentals.get("Financials") or {}).get("Income_Statement") or {}
+    for key in ("currency_symbol", "currency"):
+        val = statement.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip().upper()
+    return None
+
+
+def resolve_ps(
+    market_cap: float | None,
+    revenue_ttm: float | None,
+    reported_ps: float | None,
+    revenue_currency: str | None,
+) -> tuple[float | None, str]:
+    """Decide a ticker's P/S, or refuse. Pure — unit-tested.
+
+    Returns `(ps, reason)`; `ps` is None when no trustworthy figure exists, and
+    the caller skips the ticker. Refusing is the point: a skipped name is absent
+    from the Value lens, while a wrong one is ranked as though it were cheap and
+    pulls its whole sector's peer median with it.
+    """
+    derived = None
+    if market_cap and market_cap > 0 and revenue_ttm and revenue_ttm > 0:
+        derived = market_cap / revenue_ttm
+
+    # An explicitly non-USD income statement makes `derived` meaningless, no
+    # matter how plausible it looks.
+    if revenue_currency and revenue_currency != "USD":
+        if reported_ps:
+            return reported_ps, f"reported ({revenue_currency} revenue)"
+        return None, f"revenue reported in {revenue_currency}, no USD-consistent P/S"
+
+    # Undeclared currency: fall back to disagreement with EODHD's own multiple,
+    # which catches the same fault without needing the currency code at all.
+    if derived and reported_ps:
+        ratio = max(derived, reported_ps) / min(derived, reported_ps)
+        if ratio > PS_SANITY_RATIO:
+            return reported_ps, (
+                f"reported (derived {derived:.4g} disagrees {ratio:.0f}x — "
+                "likely non-USD revenue)"
+            )
+
+    if derived:
+        return derived, "derived"
+    if reported_ps:
+        return reported_ps, "reported (no market cap)"
+    return None, "no market cap and no reported P/S"
+
+
+# ---------------------------------------------------------------------------
 # Date helpers
 # ---------------------------------------------------------------------------
 
@@ -404,11 +494,23 @@ def compute_ps_for_ticker(
 
     market_cap = get_market_cap(fundamentals)
 
-    # Current P/S from fundamentals
-    if market_cap and market_cap > 0:
-        ps_current = round(market_cap / revenue_ttm, 2)
-    else:
-        logger.warning("SKIP %s: no market cap data", ticker)
+    # Current P/S — refuses rather than divides USD by a filing currency.
+    ps_raw, ps_reason = resolve_ps(
+        market_cap, revenue_ttm,
+        get_reported_ps(fundamentals), get_revenue_currency(fundamentals),
+    )
+    if ps_raw is None:
+        logger.warning("SKIP %s: %s", ticker, ps_reason)
+        return None
+    if not ps_reason.startswith("derived"):
+        logger.info("%s: P/S from %s", ticker, ps_reason)
+
+    ps_current = round(ps_raw, 2)
+    if ps_current <= 0:
+        # A P/S that rounds to zero is never a real multiple — it is a units or
+        # currency fault (TGS wrote 0.00 for months). Writing it puts a literal
+        # zero into ps, ps_ath and the sector's peer median.
+        logger.warning("SKIP %s: P/S %.6g rounds to zero (%s)", ticker, ps_raw, ps_reason)
         return None
 
     # --- Build history ---

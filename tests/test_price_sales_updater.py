@@ -12,7 +12,12 @@ import unittest
 from datetime import date, timedelta
 
 import db as db_module
-from price_sales_updater import order_by_staleness
+from price_sales_updater import (
+    get_reported_ps,
+    get_revenue_currency,
+    order_by_staleness,
+    resolve_ps,
+)
 
 
 def _items(*tickers):
@@ -160,6 +165,97 @@ class LatestValuationReadTests(unittest.TestCase):
         out = inst.get_all_valuation_latest()
         self.assertEqual(out, {})
         self.assertNotIn("table", rec)  # did not fall back
+
+
+class ResolvePsTests(unittest.TestCase):
+    """A P/S is only a P/S when numerator and denominator share a currency.
+
+    EODHD reports market cap in USD for a US listing but leaves the income
+    statement in the filing currency, so mcap/revenue silently divided dollars
+    by pesos for US-listed ADRs. The observed errors tracked each home FX rate
+    exactly: FMX (MXN) 0.05 vs a true ~1.0, TME (CNY) 0.40 vs ~2.8, TGS (ARS)
+    rounded to 0.00.
+    """
+
+    def test_plain_usd_name_uses_the_derived_ratio(self):
+        ps, reason = resolve_ps(1_000.0, 100.0, None, "USD")
+        self.assertAlmostEqual(ps, 10.0)
+        self.assertEqual(reason, "derived")
+
+    def test_undeclared_currency_still_uses_the_derived_ratio(self):
+        # Most US names declare nothing; behaviour must be unchanged for them.
+        ps, reason = resolve_ps(1_000.0, 100.0, None, None)
+        self.assertAlmostEqual(ps, 10.0)
+        self.assertEqual(reason, "derived")
+
+    def test_foreign_currency_revenue_prefers_the_reported_multiple(self):
+        # FMX: market cap USD, revenue MXN → derived 0.05, true ~1.0.
+        ps, reason = resolve_ps(1_000.0, 20_000.0, 1.0, "MXN")
+        self.assertAlmostEqual(ps, 1.0)
+        self.assertIn("MXN", reason)
+
+    def test_foreign_currency_revenue_refuses_when_nothing_trustworthy_exists(self):
+        # Refusing is the point: absent from the Value lens beats ranked cheap.
+        ps, reason = resolve_ps(1_000.0, 20_000.0, None, "ARS")
+        self.assertIsNone(ps)
+        self.assertIn("ARS", reason)
+
+    def test_undeclared_currency_caught_by_disagreement_with_eodhd(self):
+        # The currency-agnostic backstop: derived 0.05 vs reported 1.0 is 20x.
+        ps, reason = resolve_ps(1_000.0, 20_000.0, 1.0, None)
+        self.assertAlmostEqual(ps, 1.0)
+        self.assertIn("20x", reason)
+
+    def test_small_disagreement_keeps_the_derived_ratio(self):
+        # Different TTM cut-offs disagree by a few percent; that is not a fault.
+        ps, reason = resolve_ps(1_000.0, 100.0, 10.4, None)
+        self.assertAlmostEqual(ps, 10.0)
+        self.assertEqual(reason, "derived")
+
+    def test_disagreement_just_under_the_threshold_is_tolerated(self):
+        ps, _ = resolve_ps(1_000.0, 100.0, 10.0 / 2.9, None)
+        self.assertAlmostEqual(ps, 10.0)
+
+    def test_reported_used_when_market_cap_is_missing(self):
+        ps, reason = resolve_ps(None, 100.0, 4.2, "USD")
+        self.assertAlmostEqual(ps, 4.2)
+        self.assertIn("no market cap", reason)
+
+    def test_no_usable_input_refuses(self):
+        self.assertIsNone(resolve_ps(None, 100.0, None, None)[0])
+        self.assertIsNone(resolve_ps(0.0, 100.0, None, None)[0])
+        self.assertIsNone(resolve_ps(1_000.0, 0.0, None, None)[0])
+
+    def test_reported_ps_of_zero_is_not_treated_as_a_value(self):
+        # get_reported_ps already filters these out, but the resolver must not
+        # resurrect a zero if one reaches it.
+        ps, _ = resolve_ps(1_000.0, 100.0, 0.0, None)
+        self.assertAlmostEqual(ps, 10.0)
+
+
+class ExtractorTests(unittest.TestCase):
+    def test_revenue_currency_read_from_the_income_statement(self):
+        f = {"Financials": {"Income_Statement": {"currency_symbol": "mxn"}}}
+        self.assertEqual(get_revenue_currency(f), "MXN")
+
+    def test_revenue_currency_ignores_the_listing_currency(self):
+        # General.CurrencyCode is USD for exactly the ADRs this check exists
+        # for, so falling back to it would blind the check.
+        f = {"General": {"CurrencyCode": "USD"},
+             "Financials": {"Income_Statement": {}}}
+        self.assertIsNone(get_revenue_currency(f))
+
+    def test_revenue_currency_absent_blocks(self):
+        self.assertIsNone(get_revenue_currency({}))
+        self.assertIsNone(get_revenue_currency({"Financials": None}))
+
+    def test_reported_ps_extraction(self):
+        self.assertAlmostEqual(
+            get_reported_ps({"Valuation": {"PriceSalesTTM": "2.5"}}), 2.5
+        )
+        self.assertIsNone(get_reported_ps({"Valuation": {"PriceSalesTTM": 0}}))
+        self.assertIsNone(get_reported_ps({"Valuation": {"PriceSalesTTM": None}}))
+        self.assertIsNone(get_reported_ps({}))
 
 
 if __name__ == "__main__":
