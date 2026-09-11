@@ -324,6 +324,9 @@ class FixesSectionTests(unittest.TestCase):
         cls.doc = out["doc"]
         cls.off = out["policyOff"]
         cls.empty = out["empty"]
+        cls.default_policy = out["defaultPolicy"]
+        cls.mixed = out["mixedPolicy"]
+        cls.buyer_only = out["buyerOnly"]
 
     def test_it_names_the_failures_concretely(self):
         """A reviewer cannot match a vague 'sell timing was improved' against
@@ -382,9 +385,41 @@ class FixesSectionTests(unittest.TestCase):
         self.assertIn("criteria a different agent enforces", self.doc)
         self.assertIn("Ordering inside a single run", self.doc)
 
-    def test_it_survives_a_portfolio_with_no_policy_set(self):
-        self.assertIn("## What has already been fixed", self.empty)
-        self.assertIn("the default applies", self.empty)
+    def test_an_untouched_policy_is_the_defaults_not_an_absence(self):
+        """`portfolios.thesis_policy` is `{}` on almost every real book, and
+        `{}` is not 'no sell discipline' — resolve_policy fills every key from
+        DEFAULTS, so those books run a 30-day grace period and a fired-break
+        requirement. Reading the raw object reported them as unprotected."""
+        self.assertIn("**Active on this book.** 30 days.", self.default_policy)
+        self.assertIn(
+            "Positions are not reviewed for sale in their first **30 days**",
+            self.default_policy,
+        )
+        self.assertIn("they are the system defaults", self.default_policy)
+
+    def test_a_deliberate_setting_is_distinguished_from_an_inherited_one(self):
+        """The same 30 days means something different to a reviewer depending
+        on whether the owner chose it. On a book that set some keys and not
+        others, the untouched ones say so."""
+        self.assertIn("**30 days** (default)", self.mixed)
+        self.assertIn("**10% cash**.", self.mixed)  # stored — no marker
+        self.assertNotIn("they are the system defaults", self.mixed)
+
+    def test_entries_needing_an_agent_the_book_has_not_hired_are_dropped(self):
+        """The grace period is a rule about the reviewer and the cash reserve
+        is about a self-sourced buyer starved by the draft. On a book with
+        neither, both describe a failure it structurally cannot have."""
+        self.assertIn("## What has already been fixed", self.buyer_only)
+        self.assertNotIn("Positions bought and sold within seconds", self.buyer_only)
+        self.assertNotIn("Sells with nothing actually broken", self.buyer_only)
+        self.assertNotIn("A buyer that never had any money", self.buyer_only)
+        # The thesis-authoring ones still apply — it has a buyer.
+        self.assertIn("Theses that were false the moment", self.buyer_only)
+
+    def test_a_portfolio_with_no_team_gets_no_fixes_section(self):
+        """Four real books have hired nobody. A page of remedies about buyers
+        and reviewers they do not have is noise."""
+        self.assertNotIn("## What has already been fixed", self.empty)
 
 
 class FilenameTests(unittest.TestCase):

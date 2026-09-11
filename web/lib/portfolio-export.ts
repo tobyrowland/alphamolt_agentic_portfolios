@@ -25,6 +25,52 @@
  *
  * Pure: no fetch, no React, no server actions (`tests/test_portfolio_export.py`).
  */
+import { resolvePolicy as resolveCashPolicy } from "@/lib/cash-policy";
+import { resolvePolicy as resolveSellDiscipline } from "@/lib/thesis-policy";
+
+/**
+ * The rules actually in force, not the keys the owner happened to store.
+ *
+ * `portfolios.thesis_policy` is `{}` on most books, and `{}` is not "no sell
+ * discipline" — `resolve_policy` fills every missing key from `DEFAULTS`, so
+ * an untouched portfolio runs a 30-day grace period and a fired-break
+ * requirement exactly as if they had been typed in. Reading the raw object
+ * made the pack silently omit the whole sell-discipline block for those
+ * books, which reads as a portfolio with no sell rules at all.
+ *
+ * `stored` is kept alongside so the pack can still distinguish a deliberate
+ * choice from an untouched default — the same number means something
+ * different to a reviewer depending on which it is.
+ */
+const POLICY_KEYS = [
+  "grace_period_days",
+  "require_fired_break_signal",
+  "relative_fields_change_only",
+  "reserve_pct",
+];
+
+function resolved(d: ExportData) {
+  const rawSell = d.sellDiscipline ?? {};
+  const rawCash = d.cashReserve ?? {};
+  const stored = (key: string) => key in rawSell || key in rawCash;
+  return {
+    sell: resolveSellDiscipline(rawSell),
+    cash: resolveCashPolicy(rawCash),
+    stored,
+    allDefault: !POLICY_KEYS.some(stored),
+  };
+}
+
+/**
+ * " (default)" where the owner has not set the key themselves.
+ *
+ * Worth the four characters: the same 30 days means something different to a
+ * reviewer depending on whether it was chosen or inherited. Suppressed when
+ * every key is a default and the block says so once instead.
+ */
+function origin(r: ReturnType<typeof resolved>, key: string): string {
+  return r.stored(key) || r.allDefault ? "" : " (default)";
+}
 
 export type ExportHolding = {
   ticker: string;
@@ -110,6 +156,8 @@ export type ExportAgent = {
   role: string | null;
   brief: string | null;
   kind: "screen-buyer" | "self-sourced-buyer" | "reviewer" | "other";
+  /** Whether it puts each candidate to an LLM one name at a time. */
+  judgesPerName?: boolean;
   /** What it re-reads each run, for a self-sourced buyer. */
   sourcedFrom?: string | null;
   cadenceHours: number | null;
@@ -253,10 +301,7 @@ function strategySection(d: ExportData): string[] {
       s.push("");
     }
   }
-  const policies = policyLines(d);
-  if (policies.length > 0) {
-    s.push("### Sell discipline & cash policy", "", ...policies, "");
-  }
+  s.push("### Sell discipline & cash policy", "", ...policyLines(d), "");
   return s;
 }
 
@@ -268,31 +313,40 @@ function strategySection(d: ExportData): string[] {
  * Given `{"require_fired_break_signal": true}` it mostly cannot.
  */
 function policyLines(d: ExportData): string[] {
+  const r = resolved(d);
   const out: string[] = [];
-  const sd = d.sellDiscipline ?? {};
-  const grace = numOrNull(sd["grace_period_days"]);
-  if (grace != null) {
+  if (r.allDefault) {
     out.push(
-      grace > 0
-        ? `- Positions are not reviewed for sale in their first **${grace} days**.`
-        : "- No holding period — positions can be sold from day one.",
+      "_The owner has not changed any of these — they are the system " +
+        "defaults, which is what the book runs on._",
+      "",
     );
   }
-  if (sd["require_fired_break_signal"] === true) {
-    out.push("- A sell requires a recorded break signal to actually be firing.");
-  } else if (sd["require_fired_break_signal"] === false) {
-    out.push("- Sells do not require a break signal to be firing.");
-  }
-  if (sd["relative_fields_change_only"] === true) {
+  const grace = r.sell.grace_period_days;
+  out.push(
+    grace > 0
+      ? `- Positions are not reviewed for sale in their first **${grace} days**${origin(r, "grace_period_days")}.`
+      : `- No holding period — positions can be sold from day one${origin(r, "grace_period_days")}.`,
+  );
+  out.push(
+    r.sell.require_fired_break_signal
+      ? `- A sell requires a recorded break signal to actually be firing${origin(r, "require_fired_break_signal")}.`
+      : `- Sells do not require a break signal to be firing${origin(r, "require_fired_break_signal")}.`,
+  );
+  if (r.sell.relative_fields_change_only) {
     out.push(
       "- Price-relative signals must be written as change-since-purchase, " +
-        "not as a static level.",
+        `not as a static level${origin(r, "relative_fields_change_only")}.`,
+    );
+  } else {
+    out.push(
+      "- Price-relative signals may carry static levels" +
+        `${origin(r, "relative_fields_change_only")}.`,
     );
   }
-  const reserve = numOrNull((d.cashReserve ?? {})["reserve_pct"]);
-  if (reserve != null) {
-    out.push(`- The screen buyer stops buying at **${reserve}% cash**.`);
-  }
+  out.push(
+    `- The screen buyer stops buying at **${r.cash.reserve_pct}% cash**${origin(r, "reserve_pct")}.`,
+  );
   return out;
 }
 
@@ -495,8 +549,24 @@ type KnownFix = {
   remedy: string;
   /** Where it is enforced, so a reviewer can go and read it. */
   where: string;
+  /**
+   * Whether this book's team can exhibit the failure at all.
+   *
+   * Half these defects need an agent the portfolio may not have hired: the
+   * grace period is a rule about the reviewer, the cash reserve is about a
+   * self-sourced buyer being starved by the draft that runs after it. Listed
+   * on a book with neither, an entry describes a problem that portfolio
+   * structurally cannot have — which is noise at best, and at worst points a
+   * reviewer at a shape that is not there.
+   */
+  appliesTo: (t: ExportAgent[]) => boolean;
   status: (d: ExportData) => FixStatus;
 };
+
+const has = (t: ExportAgent[], kind: ExportAgent["kind"]) =>
+  t.some((a) => a.kind === kind);
+const buys = (t: ExportAgent[]) =>
+  has(t, "screen-buyer") || has(t, "self-sourced-buyer");
 
 /**
  * Four states, and they are not interchangeable. `true` / `false` are a
@@ -523,6 +593,7 @@ const KNOWN_FIXES: KnownFix[] = [
       "invariant rather than a preference: nothing wants a position whose " +
       "exit trigger is met at purchase.",
     where: "`theses.record_thesis` / `theses._drop_already_true`",
+    appliesTo: buys,  // any buyer records a thesis
     status: () => ({
       on: null,
       note:
@@ -549,18 +620,19 @@ const KNOWN_FIXES: KnownFix[] = [
       "buyer's prompt teaches the rules, so signals are authored compliant " +
       "rather than silently filtered.",
     where: "`thesis_policy.signal_permitted(..., kind=)`",
+    appliesTo: buys,
     status: (d) => {
-      const v = (d.sellDiscipline ?? {})["relative_fields_change_only"];
-      if (v === true) return { on: true };
-      if (v === false) {
-        return {
-          on: false,
-          note:
-            "Switched off on this book, so signals here may carry static " +
-            "levels on price-relative fields.",
-        };
+      const r = resolved(d);
+      const key = "relative_fields_change_only";
+      if (r.sell[key]) {
+        return { on: true, note: r.stored(key) ? undefined : "The default." };
       }
-      return { on: null, note: "Not set on this book; the default applies." };
+      return {
+        on: false,
+        note:
+          "Switched off on this book, so signals here may carry static " +
+          "levels on price-relative fields.",
+      };
     },
   },
   {
@@ -576,10 +648,13 @@ const KNOWN_FIXES: KnownFix[] = [
       "and journals them rather than judging them. The owner's manual Sell " +
       "button stays the escape hatch for a genuine blow-up.",
     where: "`thesis_policy.within_grace_period` / `portfolio_reviewer`",
+    appliesTo: (t) => has(t, "reviewer"),
     status: (d) => {
-      const days = numOrNull((d.sellDiscipline ?? {})["grace_period_days"]);
-      if (days == null) return { on: null, note: "Not set; the default applies." };
-      if (days > 0) return { on: true, note: `${days} days.` };
+      const r = resolved(d);
+      const days = r.sell.grace_period_days;
+      if (days > 0) {
+        return { on: true, note: `${days} days${origin(r, "grace_period_days")}.` };
+      }
       return {
         on: false,
         note:
@@ -602,20 +677,19 @@ const KNOWN_FIXES: KnownFix[] = [
       "become unsellable, and suppressed sells are journalled rather than " +
       "folded into the HOLD list.",
     where: "`thesis_policy.sell_is_permitted`",
+    appliesTo: (t) => has(t, "reviewer"),
     status: (d) => {
-      const v = (d.sellDiscipline ?? {})["require_fired_break_signal"];
-      if (v === true) {
+      const r = resolved(d);
+      if (r.sell.require_fired_break_signal) {
         return {
           on: true,
           note:
+            `${r.stored("require_fired_break_signal") ? "" : "The default. "}` +
             "Only as strong as the signals it reads — see the unevaluable " +
             "count under *What this record cannot tell you*.",
         };
       }
-      if (v === false) {
-        return { on: false, note: "Switched off on this book." };
-      }
-      return { on: null, note: "Not set on this book; the default applies." };
+      return { on: false, note: "Switched off on this book." };
     },
   },
   {
@@ -631,9 +705,10 @@ const KNOWN_FIXES: KnownFix[] = [
       "editing the tape, can only ever shorten the lookback, and goes inert " +
       "on its own once those sells age past 90 days.",
     where: "`thesis_policy.cooldown_cutoff`",
+    appliesTo: buys,
     status: (d) => {
-      const raw = (d.sellDiscipline ?? {})["rebuy_cooldown_ignores_sells_before"];
-      if (typeof raw === "string" && raw.length > 0) {
+      const raw = resolved(d).sell.rebuy_cooldown_ignores_sells_before;
+      if (raw) {
         return { on: true, note: `Sells before ${raw} are exempt on this book.` };
       }
       return {
@@ -661,15 +736,15 @@ const KNOWN_FIXES: KnownFix[] = [
       "funding gate asked in dollars (is there enough for one " +
       "worthwhile add?) rather than as a share of the book.",
     where: "`cash_policy.reserve_pct` / `double_down.plan_double_down`",
+    appliesTo: (t) => has(t, "self-sourced-buyer") && has(t, "screen-buyer"),
     status: (d) => {
-      const pctv = numOrNull((d.cashReserve ?? {})["reserve_pct"]);
-      if (pctv == null) return { on: null, note: "Not set; the default applies." };
+      const r = resolved(d);
       return {
         on: true,
         note:
-          `${pctv}%. A reserve is a transfer of budget to the buyers that ` +
-          "run first, not a renewable supply — only sells and deposits " +
-          "create cash.",
+          `${r.cash.reserve_pct}%${origin(r, "reserve_pct")}. A reserve is a ` +
+          "transfer of budget to the buyers that run first, not a renewable " +
+          "supply — only sells and deposits create cash.",
       };
     },
   },
@@ -687,6 +762,7 @@ const KNOWN_FIXES: KnownFix[] = [
       "affordability is the draft's decision downstream. The prioritisation " +
       "call, whose whole job is ranking under scarcity, still sees cash.",
     where: "`llm_watchlist_buyer` (per-name prompt)",
+    appliesTo: (t) => t.some((a) => a.judgesPerName === true),
     status: () => ({
       on: null,
       note:
@@ -713,6 +789,8 @@ const KNOWN_FIXES: KnownFix[] = [
  *    to go and find the NEXT one.
  */
 function fixesSection(d: ExportData): string[] {
+  const fixes = KNOWN_FIXES.filter((f) => f.appliesTo(d.team));
+  if (fixes.length === 0) return [];
   const s = ["## What has already been fixed", ""];
   s.push(
     "Known defects in this pipeline that have been diagnosed and closed, with " +
@@ -723,7 +801,7 @@ function fixesSection(d: ExportData): string[] {
     "",
   );
 
-  for (const fix of KNOWN_FIXES) {
+  for (const fix of fixes) {
     const st = fix.status(d);
     const flag =
       st.on === true

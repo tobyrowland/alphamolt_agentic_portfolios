@@ -1366,7 +1366,23 @@ the design (`web/lib/portfolio-export.ts`, pure, `tests/test_portfolio_export.py
   criteria another enforces, and ordering inside a single run that leaves no
   trace in the book — which is the part a third party can use to find the
   NEXT one. Placed before the positions because a reviewer forms its findings
-  while reading them.
+  while reading them. Entries are **gated on the team actually hired**
+  (`appliesTo` over `ExportAgent.kind`, plus `judgesPerName` for the two
+  strategies that run the per-name LLM call): the grace period is a rule about
+  the reviewer and the cash reserve about a self-sourced buyer starved by the
+  draft, so on a book with neither they describe a failure it structurally
+  cannot have. A portfolio with no members renders no section at all, as the
+  methodology already does.
+- **Policies are RESOLVED against their defaults, not read raw.**
+  `portfolios.thesis_policy` is `{}` on 11 of 13 real books, and `{}` is not
+  "no sell discipline" — `resolve_policy` fills every key from `DEFAULTS`, so
+  an untouched portfolio runs the 30-day grace period and the fired-break
+  requirement exactly as if they had been typed in. Reading the stored object
+  omitted the whole Sell-discipline block for those books, which reads as a
+  portfolio with no sell rules. The pack now imports the same TS twins the
+  owner UI uses (`web/lib/thesis-policy.ts`, `web/lib/cash-policy.ts`) and
+  marks a value `(default)` where the owner never set it — the same 30 days
+  means something different depending on whether it was chosen or inherited.
 - **A limitations section** The limitations are MEASURED from the pack's own data
   where possible — "N of M recorded signals cannot be evaluated (fields: …)"
   counts the inert tripwires rather than asserting a sentence that would go
