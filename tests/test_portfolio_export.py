@@ -305,6 +305,88 @@ class EmptyBookTests(unittest.TestCase):
         self.assertIn("closing marks", self.empty)
 
 
+class FixesSectionTests(unittest.TestCase):
+    """What has already been fixed — the half a reviewer cannot infer.
+
+    Handed only the current state, every reviewer re-derives the same closed
+    defects: the born-broken thesis, the same-minute sell. Those findings cost
+    a round of reading and change nothing. The section exists so the attention
+    goes somewhere new instead.
+
+    Its one way to be actively harmful is to claim a defence that this book
+    does not have, so the status of every remedy is read from the portfolio's
+    own config rather than asserted.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        out = _run_ts()
+        cls.doc = out["doc"]
+        cls.off = out["policyOff"]
+        cls.empty = out["empty"]
+
+    def test_it_names_the_failures_concretely(self):
+        """A reviewer cannot match a vague 'sell timing was improved' against
+        anything it sees. The screen filter that became a break signal, and
+        the sells inside one run, are recognisable."""
+        self.assertIn("## What has already been fixed", self.doc)
+        self.assertIn("perf_52w_vs_spy < -20", self.doc)
+        self.assertIn("80 to 86 seconds", self.doc)
+
+    def test_it_says_where_each_remedy_is_enforced(self):
+        """The point is that the reviewer can go and read the code, and go
+        looking for the same shape elsewhere."""
+        for where in (
+            "theses._drop_already_true",
+            "thesis_policy.signal_permitted",
+            "thesis_policy.sell_is_permitted",
+            "cash_policy.reserve_pct",
+        ):
+            self.assertIn(where, self.doc)
+
+    def test_it_comes_before_the_positions(self):
+        """Read after the book, it is an epilogue — the reviewer has already
+        spent its attention re-deriving the closed issues."""
+        self.assertLess(
+            self.doc.index("## What has already been fixed"),
+            self.doc.index("\n## Positions\n"),
+        )
+
+    def test_a_defence_in_force_is_reported_with_its_setting(self):
+        self.assertIn("**Active on this book.** 30 days.", self.doc)
+        self.assertIn("**Active on this book.** 2%.", self.doc)
+
+    def test_a_defence_switched_off_is_reported_as_off(self):
+        """The one failure that would make this section worse than nothing:
+        telling a reviewer the book is protected by a rule it has disabled."""
+        self.assertIn("Set to 0 on this book", self.off)
+        self.assertIn(
+            "**Not active on this book** — treat the failure above as live here.",
+            self.off,
+        )
+        self.assertNotIn("**Active on this book.** 30 days.", self.off)
+
+    def test_an_unused_corrective_tool_is_not_reported_as_a_missing_defence(self):
+        """The cooldown exemption is an operator correction, not a standing
+        preference. A book that never needed one is not unprotected."""
+        self.assertIn("**Not used on this book.**", self.doc)
+        self.assertIn("2026-08-20T00:00:00Z", self.off)
+
+    def test_it_tells_the_reviewer_not_to_restate_these(self):
+        self.assertIn("Findings that restate one of these are not useful", self.doc)
+
+    def test_it_generalises_the_root_cause(self):
+        """The transferable part: one agent writing the criteria another
+        enforces, and ordering inside a run that leaves no trace."""
+        self.assertIn("### The shape these share", self.doc)
+        self.assertIn("criteria a different agent enforces", self.doc)
+        self.assertIn("Ordering inside a single run", self.doc)
+
+    def test_it_survives_a_portfolio_with_no_policy_set(self):
+        self.assertIn("## What has already been fixed", self.empty)
+        self.assertIn("the default applies", self.empty)
+
+
 class FilenameTests(unittest.TestCase):
     def test_it_is_dated_and_slugged(self):
         self.assertEqual(_run_ts()["filename"], "portfolio-2-portfolio-2026-09-02.md")

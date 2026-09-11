@@ -119,6 +119,20 @@ const empty = buildPortfolioExport({
   sellDiscipline: null, cashReserve: null, pricedAsOf: null, universe: null,
 });
 
+// The same book with its sell discipline switched off, and a cooldown
+// exemption dated. The fixes section must read the config rather than
+// asserting the remedies are in force.
+const policyOff = buildPortfolioExport({
+  ...DATA,
+  sellDiscipline: {
+    grace_period_days: 0,
+    require_fired_break_signal: false,
+    relative_fields_change_only: false,
+    rebuy_cooldown_ignores_sells_before: "2026-08-20T00:00:00Z",
+  },
+  cashReserve: {},
+});
+
 // A screen with the Inflection lens switched off — the pre-074 default.
 const zeroWeight = buildPortfolioExport({
   ...DATA,
@@ -143,6 +157,7 @@ process.stdout.write(
     doc,
     marked,
     empty,
+    policyOff,
     zeroWeight,
     filename: exportFilename("portfolio-2", "2026-09-02T13:00:00Z"),
   }),

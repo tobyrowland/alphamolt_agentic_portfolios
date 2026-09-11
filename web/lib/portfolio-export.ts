@@ -14,6 +14,11 @@
  * * **Losses included, in full.** Closed positions and their realised P&L are
  *   part of the record. An export that quietly showed only current holdings
  *   would invite a review of a portfolio that never existed.
+ * * **Known defects are declared, with their remedies.** A reviewer handed
+ *   only the current state re-derives the same closed issues every time, and
+ *   a finding that restates one costs a round of reading for nothing. The
+ *   status of each remedy is read from THIS book's config, so a defence that
+ *   is switched off here is reported as off.
  * * **The as-of is stated, not implied.** Marks are close-to-close, so a
  *   reviewer told "current price" during market hours would be misled about
  *   figures that are up to a day old. It says so, once, at the top.
@@ -198,6 +203,7 @@ export function buildPortfolioExport(d: ExportData): string {
   s.push(...strategySection(d));
   s.push(...universeSection(d));
   s.push(...methodologySection(d));
+  s.push(...fixesSection(d));
   s.push(...positionsSection(d));
   s.push(...thesesSection(d));
   s.push(...tradesSection(d));
@@ -471,6 +477,296 @@ function list(names: string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
+/**
+ * One defect the system has already closed, and whether the remedy is live
+ * on THIS book.
+ *
+ * The list is system-level and hard-coded, because that is what it is: a
+ * record of changes made to the pipeline, not a property of any one
+ * portfolio. What IS per-portfolio is `status` — a defence that exists in the
+ * codebase but is switched off here is not fixed here, and saying otherwise
+ * would be the one thing this section must never do.
+ */
+type KnownFix = {
+  title: string;
+  /** What actually went wrong, concretely enough to recognise elsewhere. */
+  failure: string;
+  /** What was built in response. */
+  remedy: string;
+  /** Where it is enforced, so a reviewer can go and read it. */
+  where: string;
+  status: (d: ExportData) => FixStatus;
+};
+
+/**
+ * Four states, and they are not interchangeable. `true` / `false` are a
+ * setting's real position on this book; `null` means the remedy is not a
+ * setting at all and cannot be turned off; `"n/a"` means it is a corrective
+ * tool this book has had no occasion to use — which is not the same as a
+ * defence being switched off, and must not be reported as one.
+ */
+type FixStatus = { on: boolean | null | "n/a"; note?: string };
+
+const KNOWN_FIXES: KnownFix[] = [
+  {
+    title: "Theses that were false the moment they were written",
+    failure:
+      "The buyer authored the break signals for its own position, and could " +
+      "write one the screen had already guaranteed — a screen filtering " +
+      "`perf_52w_vs_spy < -20` paired with a break signal of " +
+      "`perf_52w_vs_spy < -20`. Every candidate arrived pre-broken, so the " +
+      "reviewer could exit on day one against a tripwire that was never a " +
+      "test of anything.",
+    remedy:
+      "A break signal that already evaluates true against the buy-time " +
+      "snapshot is dropped at record time and logged. It is a correctness " +
+      "invariant rather than a preference: nothing wants a position whose " +
+      "exit trigger is met at purchase.",
+    where: "`theses.record_thesis` / `theses._drop_already_true`",
+    status: () => ({
+      on: null,
+      note:
+        "Applies when a thesis is recorded, so a position opened before it " +
+        "landed can still carry one — the firing column under each thesis is " +
+        "where to check.",
+    }),
+  },
+  {
+    title: "Confirmation signals doing duty as falsification tests",
+    failure:
+      "Extend (confirmation) signals were being written as thresholds the " +
+      "screen guarantees are unreachable — `perf_52w_vs_spy > 0` on a name " +
+      "selected for being 20% behind the index. The reviewer then read an " +
+      "unmet wish as evidence against the position and sold while its own " +
+      "note said no break signal had fired.",
+    remedy:
+      "Operator rules that differ by signal kind. A static upside threshold " +
+      "is legitimate on a **break** signal (it is a take-profit) and banned " +
+      "on an **extend**; a static downside threshold is banned on both " +
+      "(that is the born-broken case); `==` and `!=` are banned outright. " +
+      "Price-relative fields must be written as change-since-purchase, which " +
+      "is structurally immune because the delta at purchase is zero. The " +
+      "buyer's prompt teaches the rules, so signals are authored compliant " +
+      "rather than silently filtered.",
+    where: "`thesis_policy.signal_permitted(..., kind=)`",
+    status: (d) => {
+      const v = (d.sellDiscipline ?? {})["relative_fields_change_only"];
+      if (v === true) return { on: true };
+      if (v === false) {
+        return {
+          on: false,
+          note:
+            "Switched off on this book, so signals here may carry static " +
+            "levels on price-relative fields.",
+        };
+      }
+      return { on: null, note: "Not set on this book; the default applies." };
+    },
+  },
+  {
+    title: "Positions bought and sold within seconds",
+    failure:
+      "Buyers and reviewers run in the same heartbeat over the same book, " +
+      "buyers first. With no holding period, a name could be bought and sold " +
+      "inside the same run — three were, in 80 to 86 seconds — and one " +
+      "turnaround thesis was closed six days in while the reviewer's own " +
+      "note called the fundamentals exceptionally strong.",
+    remedy:
+      "A grace period. The reviewer skips positions younger than it entirely " +
+      "and journals them rather than judging them. The owner's manual Sell " +
+      "button stays the escape hatch for a genuine blow-up.",
+    where: "`thesis_policy.within_grace_period` / `portfolio_reviewer`",
+    status: (d) => {
+      const days = numOrNull((d.sellDiscipline ?? {})["grace_period_days"]);
+      if (days == null) return { on: null, note: "Not set; the default applies." };
+      if (days > 0) return { on: true, note: `${days} days.` };
+      return {
+        on: false,
+        note:
+          "Set to 0 on this book — a position can be sold on the same day it " +
+          "is bought.",
+      };
+    },
+  },
+  {
+    title: "Sells with nothing actually broken",
+    failure:
+      "A SELL verdict needed only the reviewer's own conviction. Nothing " +
+      "required the recorded thesis to have failed, so the exit rationale " +
+      "and the recorded break signals could disagree with each other and the " +
+      "position still closed.",
+    remedy:
+      "The reviewer refuses a SELL unless a recorded break signal is " +
+      "actually firing. It self-disables where there is nothing to check — " +
+      "no thesis, no signals, a failed evaluation — so a position can never " +
+      "become unsellable, and suppressed sells are journalled rather than " +
+      "folded into the HOLD list.",
+    where: "`thesis_policy.sell_is_permitted`",
+    status: (d) => {
+      const v = (d.sellDiscipline ?? {})["require_fired_break_signal"];
+      if (v === true) {
+        return {
+          on: true,
+          note:
+            "Only as strong as the signals it reads — see the unevaluable " +
+            "count under *What this record cannot tell you*.",
+        };
+      }
+      if (v === false) {
+        return { on: false, note: "Switched off on this book." };
+      }
+      return { on: null, note: "Not set on this book; the default applies." };
+    },
+  },
+  {
+    title: "Names locked out by sells since ruled invalid",
+    failure:
+      "A sold name cannot be re-bought for 90 days, derived from the " +
+      "immutable trade tape. When a batch of sells was later judged to have " +
+      "been made by a process that no longer exists, the names stayed " +
+      "excluded anyway — including names still passing every screen filter.",
+    remedy:
+      "A dated, per-portfolio exemption: sells before a stated instant do " +
+      "not count toward the cooldown. It corrects the consequence instead of " +
+      "editing the tape, can only ever shorten the lookback, and goes inert " +
+      "on its own once those sells age past 90 days.",
+    where: "`thesis_policy.cooldown_cutoff`",
+    status: (d) => {
+      const raw = (d.sellDiscipline ?? {})["rebuy_cooldown_ignores_sells_before"];
+      if (typeof raw === "string" && raw.length > 0) {
+        return { on: true, note: `Sells before ${raw} are exempt on this book.` };
+      }
+      return {
+        on: "n/a",
+        note:
+          "No exemption set here, so the full 90-day cooldown applies to " +
+          "every past sell. It is an operator correction rather than a " +
+          "standing preference — a book with no invalidated sells has no " +
+          "occasion for one.",
+      };
+    },
+  },
+  {
+    title: "A buyer that never had any money to spend",
+    failure:
+      "Self-sourced buyers run before the screen draft, and the draft bought " +
+      "until cash hit its floor — so a buyer scheduled first always arrived " +
+      "to find the floor already reached. One made zero trades in its entire " +
+      "life while the screen buyer made 25 over the same book. Its own " +
+      "funding gate compounded it by asking for a percentage of net asset " +
+      "value, which on a fully-invested book is a wall rather than a buffer.",
+    remedy:
+      "An owner-set cash reserve on the portfolio — the draft stops there " +
+      "and leaves the difference for the buyers that run before it — and a " +
+      "funding gate asked in dollars (is there enough for one " +
+      "worthwhile add?) rather than as a share of the book.",
+    where: "`cash_policy.reserve_pct` / `double_down.plan_double_down`",
+    status: (d) => {
+      const pctv = numOrNull((d.cashReserve ?? {})["reserve_pct"]);
+      if (pctv == null) return { on: null, note: "Not set; the default applies." };
+      return {
+        on: true,
+        note:
+          `${pctv}%. A reserve is a transfer of budget to the buyers that ` +
+          "run first, not a renewable supply — only sells and deposits " +
+          "create cash.",
+      };
+    },
+  },
+  {
+    title: "Passes that were really about the cash balance",
+    failure:
+      "The per-name buy prompt stated the cash position, and a PASS is " +
+      "recorded as a ~30-day hide on the screen. Names were being " +
+      "quarantined for reasons like *the portfolio lacks sufficient " +
+      "cash* — indistinguishable, a month later, from a judgement that " +
+      "the business was bad.",
+    remedy:
+      "The per-name prompt no longer carries a cash figure. That call " +
+      "answers whether this equity fits this mandate at today's price; " +
+      "affordability is the draft's decision downstream. The prioritisation " +
+      "call, whose whole job is ranking under scarcity, still sees cash.",
+    where: "`llm_watchlist_buyer` (per-name prompt)",
+    status: () => ({
+      on: null,
+      note:
+        "Hides recorded before this landed may still be affordability " +
+        "passes wearing a mandate reason.",
+    }),
+  },
+];
+
+/**
+ * What has already been fixed — so the reviewer spends its attention
+ * elsewhere.
+ *
+ * A reviewer handed only the current state re-derives the same well-known
+ * defects every time, and a finding that restates a closed issue costs the
+ * owner a round of reading for nothing. Two things make this worth the words
+ * it takes:
+ *
+ *  * **The status is per-portfolio.** A defence that is switched off here is
+ *    reported as off, so the section can never read as a claim that the book
+ *    is safe when the config says it isn't.
+ *  * **The shape generalises.** Every entry below shares one of two root
+ *    causes, named at the end. That is the part a reviewer can actually use
+ *    to go and find the NEXT one.
+ */
+function fixesSection(d: ExportData): string[] {
+  const s = ["## What has already been fixed", ""];
+  s.push(
+    "Known defects in this pipeline that have been diagnosed and closed, with " +
+      "whether each remedy is live on this book. **Findings that restate one " +
+      "of these are not useful.** Findings that show a remedy is not actually " +
+      "load-bearing here, or that the same failure exists somewhere this list " +
+      "does not reach, are.",
+    "",
+  );
+
+  for (const fix of KNOWN_FIXES) {
+    const st = fix.status(d);
+    const flag =
+      st.on === true
+        ? "**Active on this book.**"
+        : st.on === false
+          ? "**Not active on this book** — treat the failure above as live here."
+          : st.on === "n/a"
+            ? "**Not used on this book.**"
+            : "**Unconditional** — not a setting, applies to every portfolio.";
+    s.push(`### ${fix.title}`, "");
+    s.push(`- **Was:** ${fix.failure}`);
+    s.push(`- **Now:** ${fix.remedy}`);
+    s.push(`- **Enforced in:** ${fix.where}`);
+    s.push(`- **Status:** ${flag}${st.note ? ` ${st.note}` : ""}`);
+    s.push("");
+  }
+
+  s.push(
+    "### The shape these share",
+    "",
+    "Both root causes are worth carrying into the rest of the review, " +
+      "because neither is visible in the output they produce:",
+    "",
+    "1. **One agent writes the criteria a different agent enforces, and " +
+      "nothing checks those criteria against reality at the moment they are " +
+      "written.** The buyer authoring its own falsification test is the " +
+      "clearest case, but the pattern recurs anywhere a rule is authored in " +
+      "one place and read in another.",
+    "2. **Ordering inside a single run decides the outcome and leaves no " +
+      "trace.** Buyers run before reviewers; self-sourced buyers run before " +
+      "the draft. The positions look identical either way, so a sequencing " +
+      "bug is invisible in the book and only shows up in the timestamps.",
+    "",
+    "The design choice underneath all of it was left deliberately in place: " +
+      "the buyer still authors the conditions under which its own position " +
+      "will be sold. The fixes constrain what it may write and when the " +
+      "reviewer may act; they do not move the judgement to a different " +
+      "agent.",
+    "",
+  );
+  return s;
+}
+
 function positionsSection(d: ExportData): string[] {
   if (d.holdings.length === 0) return ["## Positions", "", "None.", ""];
   const s = ["## Positions", ""];
@@ -649,7 +945,8 @@ function questionsSection(): string[] {
     "4. Where is the concentration risk (single name, sector, factor) that the weights alone don't show?",
     "5. On the closed positions, were the exits consistent with the sell discipline above?",
     "6. Given the pipeline described above, where is the process itself most likely to go wrong — the screen, the ranking, the per-name judgement, or the sell rules?",
-    "7. What would you sell first, and what is missing from this book entirely?",
+    "7. Taking the two root causes named under *What has already been fixed*, where else in this pipeline does the same shape appear — and what would you change there?",
+    "8. What would you sell first, and what is missing from this book entirely?",
     "",
   ];
 }
