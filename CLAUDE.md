@@ -409,8 +409,19 @@ valuation).
 
 **The affordability gate is the only gate** (`universe_sync.passes_gate`) and
 carries no strategy: trailing-30d ADDV ≥ $5M, last close ≥ $1, enough price
-history, active US listing of an included security type. No margin/growth/
-valuation/sector views — those are lenses downstream.
+history, a **live EOD feed** (≤ `GATE_MAX_DARK_DAYS` = 10 trading days since
+the name's last bar), and active US listing of an included security type. No
+margin/growth/valuation/sector views — those are lenses downstream.
+
+The liveness leg exists because EODHD's symbol list keeps carrying a name for
+weeks after it stops trading (acquired / halted), and its trailing-30d ADDV
+decays only as the last live bars age out of the window — so a dead name sat in
+Tier 1 with a frozen price, poisoning every freshness measure downstream. It is
+still an affordability question, not a strategy one: a name you cannot get a
+current price for is not tradable. `collect_addv` already tracked each ticker's
+last bar date, so it costs no extra API calls; demotions are named in the log,
+since they usually mark a corporate action the symbol list hasn't caught up
+with.
 
 **Three clocks** (per data type): membership/identity weekly
 (`universe_sync.py`), prices daily (`prices_daily_updater.py`), fundamentals on
@@ -699,7 +710,9 @@ REIT, drops funds / preferreds / warrants / units / SPACs (`classify_security`)
 **and OTC / pink-sheet quotations** (`is_us_exchange_listed` — US-exchange-
 listed only), adds new listings, soft-deletes names that fell off the list (or
 were dropped by the OTC gate) (`status='delisted'`). Then computes the trailing-30d ADDV for the whole universe from
-~30 `eod-bulk-last-day` calls and sets `is_tier1` via `passes_gate`. Flags:
+~30 `eod-bulk-last-day` calls and sets `is_tier1` via `passes_gate` — which also
+demotes any name whose EOD feed has been dark for more than
+`GATE_MAX_DARK_DAYS` (10) trading days, derived from the same bulk pass. Flags:
 `--dry-run`, `--skip-gate`, `--limit N`.
 
 ### prices_daily_updater.py (04:15 UTC daily)
