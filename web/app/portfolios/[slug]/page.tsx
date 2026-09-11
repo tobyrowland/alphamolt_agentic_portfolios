@@ -15,6 +15,7 @@ import BetaDisclaimer from "@/components/beta-disclaimer";
 import ActivityDrawer from "@/components/activity-drawer";
 import SectorChip from "@/components/portfolio/sector-chip";
 import PortfolioTabs from "@/components/portfolio/portfolio-tabs";
+import UniverseSummaryCard from "@/components/portfolio/universe-summary-card";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
 import BuildRunLive from "@/components/portfolio/build-run-live";
 import EditablePortfolioName from "@/components/portfolio/editable-portfolio-name";
@@ -49,6 +50,8 @@ import {
   type InvestmentThesis,
 } from "@/lib/theses-query";
 import { getNextEarningsBulk } from "@/lib/earnings-query";
+import { getUniverseSummary } from "@/lib/portfolio-universe-query";
+import { showsUniverse, type UniverseSummary } from "@/lib/portfolio-universe";
 import {
   isViewerOwner,
   resolveVisiblePortfolio,
@@ -115,6 +118,9 @@ async function getPortfolioPageData(slug: string): Promise<{
   holdingsCount: number;
   /** Earned badges (public — shown to every viewer). */
   earnedBadges: EarnedBadge[];
+  /** Public summary of the screen the buyers draft from; null when the book
+   *  has no screen-drafting buyer (see `@/lib/portfolio-universe`). */
+  universe: UniverseSummary | null;
   /** Owner-only, live followers only: the followed paper book + the owner's
    *  paper books to re-point at (follows_portfolio_id, migration 070). */
   liveFollow: {
@@ -138,6 +144,7 @@ async function getPortfolioPageData(slug: string): Promise<{
       totalTrades: 0,
       holdingsCount: 0,
       earnedBadges: [],
+      universe: null,
       liveFollow: null,
     };
   }
@@ -213,6 +220,19 @@ async function getPortfolioPageData(slug: string): Promise<{
   ]);
   const { trades, totalTrades } = recent;
 
+  // The public screen summary needs the roster — only a screen-drafting buyer
+  // makes it a true statement about this book — so it starts once the team has
+  // resolved, in parallel with the holdings-shaped reads below. A live follower
+  // runs no agents of its own (it mirrors the paper sibling), so it has no
+  // screen to describe. Fail-soft: a summary is not worth a 500.
+  const universePromise: Promise<UniverseSummary | null> =
+    mode === "live"
+      ? Promise.resolve(null)
+      : getUniverseSummary(portfolio.screen_config, team).catch((err) => {
+          console.error("getUniverseSummary failed for", slug, err);
+          return null;
+        });
+
   // Live values for the thesis panels' signal gauges — where each holding
   // sits today vs its recorded break/extend trip-wires. Needs the holdings
   // list, so it runs after the snapshot resolves. Fail-open ({}).
@@ -229,6 +249,7 @@ async function getPortfolioPageData(slug: string): Promise<{
         ),
       ])
     : [{} as Record<string, Record<string, number>>, {} as Record<string, string>];
+  const universe = await universePromise;
 
   return {
     portfolio,
@@ -244,6 +265,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     totalTrades,
     holdingsCount,
     earnedBadges,
+    universe,
     liveFollow,
   };
 }
@@ -268,6 +290,7 @@ export default async function PortfolioPage({ params }: PageParams) {
     totalTrades,
     holdingsCount,
     earnedBadges,
+    universe,
     liveFollow,
   } = await getPortfolioPageData(slug);
   if (!portfolio) notFound();
@@ -347,6 +370,19 @@ export default async function PortfolioPage({ params }: PageParams) {
             />
           )}
         </section>
+      )}
+
+      {/* UNIVERSE — what the buyers are allowed to pick from. Sits between
+          the numbers and the team on purpose: read in this order, a visitor
+          can ask whether the book reflects the pond it fishes; read after the
+          holdings, it can only take the positions as given. Summary only —
+          the filters themselves stay on the owner-only Universe tab. */}
+      {showsUniverse(universe) && (
+        <UniverseSummaryCard
+          summary={universe}
+          slug={portfolio.slug}
+          isOwner={isOwner}
+        />
       )}
 
       {/* TEAM — the build + manage surface (owner) or a read-only roster

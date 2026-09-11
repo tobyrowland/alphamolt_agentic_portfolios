@@ -1234,6 +1234,51 @@ Read by the `portfolio_reviewer` strategy at heartbeat time (extended tier, via
 `llm_picker._load_latest_snapshot`) and by the public `/api/v1/universe`
 endpoint. Supports `--tier` and `--dry-run` flags.
 
+### Universe summary — "ranked against what?" on a public portfolio page
+
+A leaderboard row answers how a swarm did; the question it provokes is what it
+was choosing from. A book ranked on a 60-name washed-out turnaround screen is
+doing something different from one fishing the whole liquid US universe, and
+nothing public said which — `portfolios.screen_config` was rendered only on the
+owner-only Universe tab. The portfolio page (the page every leaderboard row
+links to) now carries a one-line **Universe** strip between the summary numbers
+and the team: the screen's label, how many names pass it today out of the whole
+Tier-1 universe, and how deep the buyers draft.
+
+**A summary, not the recipe.** Label, size and draft depth describe the pond;
+the filters and weights that define it stay owner-only, where the review pack
+already keeps them (a public leaderboard entry is not consent to publishing a
+competitor's selection recipe). The count is also computed WITHOUT the
+portfolio's `screener_rejections` set — that list is service-role-only because
+it can belong to a private book, and a public number derived from it would
+report the buyer's private pass history as a universe size.
+
+**Two ways the card could lie, both closed:**
+- A book whose only buyer is **self-sourced** still has a `screen_config` —
+  every book is seeded one at creation — so it would be described by a pond it
+  never fishes. With no screen-drafting buyer hired the card does not render
+  (`showsUniverse`, fail-closed: a roster read that failed shows nothing rather
+  than a claim). A live follower has no screen of its own either, and is skipped.
+- A book that runs **both** kinds is described correctly by the screen and
+  incorrectly by omission — the Double-Down Buyer's adds did not come through
+  it. `selfSourcedLine` is the sentence that says so, naming the feed each such
+  buyer reads instead.
+
+Both turn on classifying an agent by `agents.strategy`, never its `action` /
+role tag (`double_down` and `pelosi_mirror` are both tagged buy/buyer). That
+classification moved into **`web/lib/agents/strategy-kind.ts`**, shared with
+`portfolio-export-query.ts` so the two surfaces that describe where a book's
+positions come from cannot drift into two answers about the same agent;
+`LibraryAgent.strategy` is read alongside the rest of the roster to feed it.
+Copy + visibility live in the pure `web/lib/portfolio-universe.ts`, the count
+in `web/lib/portfolio-universe-query.ts` (one `runScreen` over the screener's
+existing 5-minute facts cache; fails soft to the label), the strip in
+`web/components/portfolio/universe-summary-card.tsx`. Pinned by
+`tests/test_portfolio_universe.py`, which also asserts the TS strategy lists
+against `agent_strategies.SELF_SOURCED_BUYER_STRATEGIES` / `STRATEGIES` — a
+strategy that becomes self-sourced in Python without the web learning about it
+is exactly how the page would start describing the wrong thing.
+
 ### Portfolio export — the review pack
 
 Every paper portfolio page carries a **Copy for AI review** button (plus a
@@ -2500,6 +2545,9 @@ pytest tests/test_badges.py                 # pure engine unit tests
 
 # Sell discipline (owner-configured thesis policy, migration 086)
 pytest tests/test_thesis_policy.py          # grace period + signal rules
+
+# Public Universe summary on a portfolio page
+pytest tests/test_portfolio_universe.py     # visibility, copy, strategy parity
 
 # Cash policy (how the shared pot is split between buyers, migration 088)
 pytest tests/test_cash_policy.py            # reserve, unit conversion, wiring

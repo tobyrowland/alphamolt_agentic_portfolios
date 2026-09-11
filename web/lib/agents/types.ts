@@ -75,6 +75,13 @@ export interface LibraryAgent {
    * this is set; mechanical/manage agents leave it null.
    */
   defaultMandate: string | null;
+  /**
+   * The heartbeat strategy key (`agent_strategies.STRATEGIES`), or null for a
+   * manually-managed agent. Classified by `@/lib/agents/strategy-kind` — the
+   * only honest way to tell a screen buyer from a self-sourced one, since both
+   * carry `action: "buy"`.
+   */
+  strategy: string | null;
 }
 
 /** A configured copy of a library agent saved onto a portfolio. */
