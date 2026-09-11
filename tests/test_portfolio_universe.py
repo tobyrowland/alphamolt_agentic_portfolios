@@ -15,6 +15,12 @@ of them can be wrong in ways a reader cannot detect from the page:
   * A book that runs BOTH kinds is described correctly by the screen and
     incorrectly by omission: the Double-Down Buyer's adds did not come through
     it. `selfSourcedLine` is the sentence that says so.
+  * A book that EDITED a house preset keeps the preset id in
+    `portfolios.screen_config`, so the stored id is not a description. Three
+    of the four live "Quality Growth" books had deleted every filter but
+    `P/S <= 15` and still carried the name — which is why the first version of
+    this strip read "Quality Growth - 2,653 of 3,030 names pass", naming a
+    screen that no longer existed and a number that constrained nothing.
 
 Both turn on classifying an agent by `agents.strategy`, never by its role tag
 — `double_down` and `pelosi_mirror` are both tagged buy/buyer. So these tests
@@ -105,6 +111,31 @@ class VisibilityTests(_TsCase):
         self.assertFalse(self.out["shows"]["nullSummary"])
 
 
+class LabelTests(_TsCase):
+    """The label must describe the config, not the preset id it still carries.
+
+    Both configs below are the REAL rows from `portfolios.screen_config` on
+    2026-09-11 — the untouched preset (AI agent's Portfolio) and the drifted
+    one shared by Buffet 2.0, sonofchucky and Alphamolt (House) (Live).
+    """
+
+    def setUp(self):
+        if self.out["labels"] is None:
+            raise unittest.SkipTest("web deps unavailable (no npm install)")
+
+    def test_untouched_preset_is_recognised(self):
+        self.assertTrue(self.out["labels"]["untouchedIsPreset"])
+
+    def test_preset_with_filters_deleted_is_not_the_preset(self):
+        self.assertFalse(self.out["labels"]["driftedIsPreset"])
+
+    def test_the_deleted_filters_are_why(self):
+        # Four constraints down to one — the count the strip reports is a
+        # measure of P/S <= 15 alone, not of "Quality Growth".
+        self.assertEqual(len(self.out["labels"]["untouchedFilters"]), 4)
+        self.assertEqual(self.out["labels"]["driftedFilters"], ["P/S \u2264 15\u00d7"])
+
+
 class CopyTests(_TsCase):
     """The sentences themselves — each carries a fact that is easy to lose."""
 
@@ -130,6 +161,31 @@ class CopyTests(_TsCase):
             "The top 20 ranked names are offered to Buyer · Gemini, "
             "Buyer · Claude and Buyer · GPT-5 each run.",
         )
+
+    def test_ranking_names_the_lenses_heaviest_first(self):
+        # The other half of "what does this book select for" — and nearly all
+        # of it when the filters barely cut.
+        self.assertEqual(
+            self.out["ranking"]["qualityGrowth"],
+            "Ranked on quality 60 \u00b7 value 25 \u00b7 momentum 15.",
+        )
+        self.assertEqual(
+            self.out["ranking"]["turnaround"],
+            "Ranked on inflection 60 \u00b7 value 20 \u00b7 quality 15 \u00b7 momentum 5.",
+        )
+
+    def test_zero_weight_lenses_are_omitted(self):
+        self.assertNotIn("inflection", self.out["ranking"]["qualityGrowth"])
+
+    def test_an_all_zero_blend_says_what_happens(self):
+        # The schema permits it; an empty sentence would be the wrong answer.
+        self.assertEqual(
+            self.out["ranking"]["allZero"],
+            "Ranked on an even blend of every lens.",
+        )
+
+    def test_a_screen_with_no_filters_says_so(self):
+        self.assertIn("whole liquid US universe", self.out["noFiltersLine"])
 
     def test_no_self_sourced_note_when_every_buyer_reads_the_screen(self):
         self.assertIsNone(self.out["selfSourced"]["none"])

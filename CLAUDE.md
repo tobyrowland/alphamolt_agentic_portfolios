@@ -1245,13 +1245,29 @@ links to) now carries a one-line **Universe** strip between the summary numbers
 and the team: the screen's label, how many names pass it today out of the whole
 Tier-1 universe, and how deep the buyers draft.
 
-**A summary, not the recipe.** Label, size and draft depth describe the pond;
-the filters and weights that define it stay owner-only, where the review pack
-already keeps them (a public leaderboard entry is not consent to publishing a
-competitor's selection recipe). The count is also computed WITHOUT the
-portfolio's `screener_rejections` set — that list is service-role-only because
-it can belong to a private book, and a public number derived from it would
-report the buyer's private pass history as a universe size.
+**The whole selection rule, in the order it runs** — filter (chips), rank
+(the lens blend), take the top N. The first version showed only a label and a
+count, and the count turned out to say almost nothing: the house Quality
+Growth preset filters on four things, but three of the four live books
+carrying that name had deleted everything except `P/S ≤ 15`, so **2,653 of
+3,030** names passed and the strip read as a big number describing no
+constraint at all. What narrows a book is its filters plus its weights, so
+both are stated. Filters render through `screenFilterLabel` — the same
+function behind the Universe tab's chips and the review pack — so no surface
+describes one screen in two dialects.
+
+The count is computed WITHOUT the portfolio's `screener_rejections` set — that
+list is service-role-only because it can belong to a private book, and a
+public number derived from it would report the buyer's private pass history as
+a universe size.
+
+**The label is derived, never read off the stored id.**
+`saveUniverseScreenConfig` keeps `screen_config.preset` when the owner edits
+the filters, so the id alone is not a description — rendering "Quality Growth"
+above a single `P/S ≤ 15` chip states a screen that does not exist. The label
+comes from `isHousePreset(config)` (the same comparison the screener uses for
+index policy): matching → the preset's label; drifted → the label plus an
+`edited` marker; no preset, or `custom` → "Custom screen".
 
 **Two ways the card could lie, both closed:**
 - A book whose only buyer is **self-sourced** still has a `screen_config` —
@@ -1277,7 +1293,16 @@ existing 5-minute facts cache; fails soft to the label), the strip in
 `tests/test_portfolio_universe.py`, which also asserts the TS strategy lists
 against `agent_strategies.SELF_SOURCED_BUYER_STRATEGIES` / `STRATEGIES` — a
 strategy that becomes self-sourced in Python without the web learning about it
-is exactly how the page would start describing the wrong thing.
+is exactly how the page would start describing the wrong thing — and pins the
+label rule against the REAL drifted and undrifted `screen_config` rows.
+
+Those label cases need `web/lib/screen/config.ts`, which uses the `@/` alias
+and extensionless TS imports that Next resolves and node does not:
+**`tests/ts_web_alias_hook.mjs`** registers both resolutions for any runner
+that needs a `web/lib` module (import it first). It cannot supply npm packages
+though — config.ts needs zod and the CI test job installs pip only — so the
+runner imports config.ts inside a try/catch and those cases skip in CI while
+the pure-module cases still run.
 
 ### Portfolio export — the review pack
 

@@ -9,10 +9,18 @@
  * summary; the owner-only Universe tab remains the place the screen is read
  * and edited in full.
  *
- * DELIBERATELY NOT THE RECIPE. Label, size and the draft depth describe the
- * pond; the filters and weights that define it stay owner-only, where the
- * export pack already keeps them (a public leaderboard entry is not consent
- * to publishing a competitor's selection recipe).
+ * THE WHOLE SELECTION RULE, not just its size. The first version showed only
+ * a label and a count, and the count turned out to say almost nothing: the
+ * house "Quality Growth" preset filters on four things, but several books had
+ * deleted three of them, so 2,653 of 3,030 names passed and the strip read as
+ * a big impressive number describing no constraint at all. What narrows a book
+ * is the filters plus the ranking weights, so both are stated. The owner-only
+ * Universe tab remains the place the screen is EDITED; this is the read-only
+ * public account of it.
+ *
+ * The filters arrive pre-rendered by `screenFilterLabel` — the same function
+ * behind the Universe tab's chips and the review pack — so no surface can
+ * describe one screen in two dialects.
  *
  * Pure — no DB, no zod, no imports at all, so the copy decisions below are
  * pinned by `tests/test_portfolio_universe.py` through the real module.
@@ -26,10 +34,32 @@ export interface UniverseBuyer {
   sourcedFrom?: string;
 }
 
+/** Lens weights, as the screener's four-way blend stores them. */
+export interface UniverseWeights {
+  quality: number;
+  value: number;
+  momentum: number;
+  inflection: number;
+}
+
 export interface UniverseSummary {
-  /** House preset label, or the preset id, or "Custom screen". */
+  /** House preset label, or "Custom screen". */
   presetLabel: string;
   isCustom: boolean;
+  /**
+   * The config started from a house preset but no longer matches it.
+   *
+   * `portfolios.screen_config` keeps the preset ID after the owner edits the
+   * filters, so the stored ID alone is not a description: three of the four
+   * live "Quality Growth" books had deleted every filter but `P/S ≤ 15` and
+   * still carried the name. Rendering the name unqualified next to one chip
+   * states a screen that does not exist.
+   */
+  modified: boolean;
+  /** Filter chips, pre-rendered by `screenFilterLabel`. Empty = no filters. */
+  filters: string[];
+  /** The blend the survivors are ranked by. */
+  weights: UniverseWeights;
   /** How many names the buyers see: the screen's ranked top N. */
   topN: number;
   /** Names passing the filters today; null when the count was unavailable. */
@@ -74,6 +104,28 @@ export function sizeLine(s: UniverseSummary): string {
   if (s.universeCount == null) return `${n} ${noun} ${verb} today`;
   return `${n} of ${s.universeCount.toLocaleString("en-US")} ${noun} ${verb} today`;
 }
+
+/**
+ * The lens blend, zero-weight lenses omitted.
+ *
+ * This is half the answer to "what does this book select for", and on a
+ * barely-filtered screen it is nearly all of it: when 88% of the universe
+ * passes the filters, what the book actually does is rank and take the top N.
+ */
+export function rankingLine(s: UniverseSummary): string {
+  const parts = (["quality", "value", "momentum", "inflection"] as const)
+    .filter((k) => s.weights[k] > 0)
+    .sort((a, b) => s.weights[b] - s.weights[a])
+    .map((k) => `${k} ${s.weights[k]}`);
+  // Every lens at zero is a degenerate config the schema still permits; say
+  // what actually happens (the blend is flat) rather than an empty sentence.
+  if (parts.length === 0) return "Ranked on an even blend of every lens.";
+  return `Ranked on ${parts.join(" · ")}.`;
+}
+
+/** What to say where the chips go when a screen constrains nothing. */
+export const NO_FILTERS_LINE =
+  "No filters — the whole liquid US universe is eligible before ranking.";
 
 /** "The top 20 are offered to Buyer · Gemini each run." */
 export function draftLine(s: UniverseSummary): string {
