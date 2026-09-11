@@ -18,11 +18,10 @@ on:
 jobs:
   update:
     runs-on: ubuntu-latest
-    # The updater walks the whole Tier-1 universe at ~1 call/sec, so a run takes
-    # 22-28 min and grows with the universe. At the old 30-min ceiling roughly
-    # one run in three was killed mid-sweep (GitHub reports the timeout as
-    # "cancelled", and the script never reaches its run_logs write — so the
-    # misses were invisible in the DB). 60 leaves real headroom.
+    # Headroom, not the fix: the read that blew the old 30-minute budget is
+    # gone (migration 091). A universe-sized run is ~25 min of EODHD calls,
+    # so this leaves room for a slow API day without silently truncating
+    # coverage the way the 30-minute cliff did from 2026-09-04.
     timeout-minutes: 60
 
     steps:

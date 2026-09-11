@@ -591,21 +591,78 @@ class SupabaseDB:
         resp = q.execute()
         return resp.data or []
 
-    def get_all_valuation_latest(self) -> dict[str, dict]:
+    # The valuation table carries one dated row per ticker per day, each with a
+    # ~52-point history_json blob, so it grows by the size of the universe every
+    # day (218k rows / 211 MB by 2026-09-08). Reading it whole to find the newest
+    # row per ticker is what pushed price_sales_updater past its job timeout —
+    # see migration 091. Fallback pagination is bounded by this window instead.
+    VALUATION_LOOKBACK_DAYS = 30
+
+    def get_all_valuation_latest(self, lookback_days: int | None = None) -> dict[str, dict]:
         """Return the latest valuation row per ticker, keyed by ticker.
 
         The Level 0 replacement for `get_all_price_sales()` — used by
         price_sales_updater.py to read each ticker's prior P/S state (history /
-        ATH / as-of date) for incremental updates. Paginates the whole table and
-        keeps the newest `date` per ticker.
+        ATH / as-of date) for incremental updates.
+
+        Prefers the `latest_valuation_state()` RPC (migration 091), which does
+        the DISTINCT ON server-side and so transfers one history blob per ticker
+        rather than one per ticker per day. Falls back to paginating a bounded
+        recent window when the RPC isn't deployed yet — a ticker with no row in
+        that window is reported as absent, which the caller correctly treats as
+        "rebuild from scratch".
         """
+        rows = self._latest_valuation_via_rpc()
+        if rows is not None:
+            return rows
+        return self._latest_valuation_paginated(
+            self.VALUATION_LOOKBACK_DAYS if lookback_days is None else lookback_days
+        )
+
+    def _latest_valuation_via_rpc(self) -> dict[str, dict] | None:
+        """Read latest-per-ticker valuation through the migration-091 RPC.
+
+        Returns None (not an empty dict) when the RPC is unavailable, so the
+        caller can tell "not deployed" from "table is empty".
+        """
+        latest: dict[str, dict] = {}
+        page = 0
+        page_size = 1000
+        try:
+            while True:
+                resp = (
+                    self.client.rpc("latest_valuation_state")
+                    .range(page * page_size, (page + 1) * page_size - 1)
+                    .execute()
+                )
+                batch = resp.data or []
+                for row in batch:
+                    t = row.get("ticker")
+                    if t:
+                        latest[t] = row
+                if len(batch) < page_size:
+                    break
+                page += 1
+        except Exception as exc:
+            import logging
+            logging.getLogger("db").warning(
+                "latest_valuation_state RPC unavailable (%s); "
+                "falling back to windowed pagination — apply migration 091", exc,
+            )
+            return None
+        return latest
+
+    def _latest_valuation_paginated(self, lookback_days: int) -> dict[str, dict]:
+        """Pre-091 fallback: paginate valuation rows newer than the window."""
+        floor = (date.today() - timedelta(days=max(1, lookback_days))).isoformat()
         latest: dict[str, dict] = {}
         page = 0
         page_size = 1000
         while True:
             resp = (
                 self.client.table("valuation")
-                .select("ticker, date, ps, ps_ath, history_json, fetched_at")
+                .select("ticker, date, ps, ps_ath, history_json")
+                .gte("date", floor)
                 .order("date", desc=True)
                 .range(page * page_size, (page + 1) * page_size - 1)
                 .execute()
@@ -1017,6 +1074,7 @@ class SupabaseDB:
 
     def get_recently_sold_tickers(
         self, portfolio_id: str, *, days: int = 90,
+        ignore_before: "datetime | None" = None,
     ) -> set[str]:
         """Tickers a portfolio has sold within the last ``days`` days.
 
@@ -1024,9 +1082,18 @@ class SupabaseDB:
         enforce a re-buy cooldown: once the owner or the reviewer agent
         has exited a position, the buyer is not allowed to immediately
         re-establish it. Default 90 days mirrors the user-facing rule.
+
+        ``ignore_before`` raises the cutoff: sells executed strictly before it
+        are not counted. Callers pass the owner's exemption instant via
+        ``thesis_policy.cooldown_cutoff`` — see that module for why an
+        exemption exists at all. A value EARLIER than the natural cutoff is
+        ignored, so this can only ever shorten the lookback, never extend it.
         """
         from datetime import datetime, timedelta, timezone
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        natural = datetime.now(timezone.utc) - timedelta(days=days)
+        if ignore_before is not None and ignore_before > natural:
+            natural = ignore_before
+        cutoff = natural.isoformat()
         resp = (
             self.client.table("agent_trades")
             .select("ticker")
@@ -1040,6 +1107,26 @@ class SupabaseDB:
             for r in (resp.data or [])
             if r.get("ticker")
         }
+
+    def get_portfolio_trade_notes(
+        self, portfolio_id: str, *, limit: int = 1000,
+    ) -> list[str]:
+        """The ``note`` of every recent trade in a portfolio, newest first.
+
+        Narrow on purpose: the only caller (``broker_sync.repair``) needs the
+        broker order ids embedded in mirror notes so it can tell a fill that WAS
+        booked from one that wasn't. Selecting one column keeps a 1000-row read
+        cheap and makes it obvious the repair never reasons over trade values.
+        """
+        resp = (
+            self.client.table("agent_trades")
+            .select("note")
+            .eq("portfolio_id", portfolio_id)
+            .order("executed_at", desc=True)
+            .limit(int(limit))
+            .execute()
+        )
+        return [str(r.get("note") or "") for r in (resp.data or [])]
 
     def get_agent_sold_tickers(
         self, portfolio_id: str, agent_id: str,
@@ -1262,6 +1349,61 @@ class SupabaseDB:
             .upsert(data, on_conflict="portfolio_id,snapshot_date")
             .execute()
         )
+
+    # Ledger reasons that are NOT external capital movements. A baseline
+    # reset corrects a number that was wrong; nothing moved, so counting it as
+    # a flow would remove a return the portfolio genuinely earned.
+    NON_FLOW_LEDGER_REASONS = frozenset({"baseline-reset"})
+
+    def get_portfolio_flows_for_date(self, snapshot_date: str) -> dict[str, float]:
+        """Net external capital movement per portfolio on one date.
+
+        Feeds `agent_portfolio_history.flow_usd` so the day's return can be
+        measured with the flow removed (migration 090). Paper portfolios never
+        appear here — they are funded once at creation and have no ledger rows
+        — so this returns {} for them and their maths is unchanged.
+        """
+        resp = (
+            self.client.table("portfolio_cash_ledger")
+            .select("portfolio_id, delta_usd, reason")
+            .gte("created_at", f"{snapshot_date}T00:00:00Z")
+            .lt("created_at", f"{snapshot_date}T23:59:59.999Z")
+            .execute()
+        )
+        out: dict[str, float] = {}
+        for row in resp.data or []:
+            if (row.get("reason") or "") in self.NON_FLOW_LEDGER_REASONS:
+                continue
+            pid = row.get("portfolio_id")
+            if not pid:
+                continue
+            out[pid] = out.get(pid, 0.0) + float(row.get("delta_usd") or 0)
+        return out
+
+    def get_prior_snapshots(self, before_date: str) -> dict[str, dict]:
+        """Each portfolio's most recent snapshot strictly before ``before_date``.
+
+        One read for the whole sweep rather than one per portfolio. Returns
+        {portfolio_id: {"total_value_usd", "twr_index"}} — the two inputs
+        `returns.advance_index` needs to carry the series forward.
+
+        Deliberately reads the row BEFORE today rather than today's: the
+        intraday job overwrites today's row many times, and chaining off a
+        value this same job is about to replace would compound a partial day
+        against itself.
+        """
+        rows = self._paginate(
+            "agent_portfolio_history",
+            "portfolio_id, snapshot_date, total_value_usd, twr_index",
+            order="snapshot_date",
+            filters=[("lt", "snapshot_date", before_date)],
+        )
+        out: dict[str, dict] = {}
+        for r in rows:  # ascending by date, so the last write per id wins
+            pid = r.get("portfolio_id")
+            if pid:
+                out[pid] = r
+        return out
 
     # ------------------------------------------------------------------
     # Swarm Consensus

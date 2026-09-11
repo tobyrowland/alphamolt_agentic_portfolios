@@ -30,6 +30,15 @@ const AUTHED_LINKS: { href: string; label: string }[] = [
   ...SHARED_LINKS,
 ];
 
+// "Live" is the real-money console (/live). It appears only for visitors who
+// actually have access — owning a live portfolio, or the operator grant
+// (migration 089) — because for everyone else the page 404s and a nav entry
+// leading to a 404 is worse than no entry. The check is a fetch rather than
+// part of the session, since the nav deliberately resolves auth in the browser
+// to keep every page static/ISR-eligible; it is a rendering hint only, and
+// /live re-resolves access server-side.
+const LIVE_LINK = { href: "/live", label: "Live" };
+
 export default function Nav() {
   // Border shows only once the user has scrolled past the hero on the
   // homepage. On inner pages scrollY starts ~0 anyway but quickly crosses
@@ -43,6 +52,7 @@ export default function Nav() {
   // than inside NavAuth alone) because the link set depends on it too.
   const [email, setEmail] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [liveAccess, setLiveAccess] = useState(false);
 
   useEffect(() => {
     function onScroll() {
@@ -77,13 +87,37 @@ export default function Nav() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // Ask about the live console only once a session exists, and never for a
+  // signed-out visitor. Any failure leaves the entry hidden — an absent link
+  // costs a bookmark, a wrongly-shown one leads to a 404.
+  useEffect(() => {
+    if (!ready || !email) {
+      setLiveAccess(false);
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/live-access")
+      .then((r) => (r.ok ? r.json() : { access: false }))
+      .then((d) => {
+        if (!cancelled) setLiveAccess(Boolean(d?.access));
+      })
+      .catch(() => {
+        if (!cancelled) setLiveAccess(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, email]);
+
   // Until session resolves we render the logged-out set — same SSR HTML
   // as before, so there's no hydration mismatch. For signed-in visitors
   // the set swaps a tick later (Screener → Portfolios).
-  const links = useMemo(
-    () => (ready && email ? AUTHED_LINKS : LOGGED_OUT_LINKS),
-    [ready, email],
-  );
+  const links = useMemo(() => {
+    if (!(ready && email)) return LOGGED_OUT_LINKS;
+    return liveAccess
+      ? [AUTHED_LINKS[0], LIVE_LINK, ...AUTHED_LINKS.slice(1)]
+      : AUTHED_LINKS;
+  }, [ready, email, liveAccess]);
 
   return (
     <header

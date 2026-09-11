@@ -747,6 +747,7 @@ def _parse_with_retry(
     text: str,
     *,
     system: str,
+    fallback_model: str | None = None,
 ) -> tuple[dict, "LLMResponse | None"]:
     """Parse JSON; on failure, retry once with an explicit nudge.
 
@@ -771,6 +772,12 @@ def _parse_with_retry(
         user=nudge_user,
         max_tokens=16384,
         temperature=0.1,
+        # Re-emitting an already-formed answer as clean JSON is a formatting
+        # task, not a reasoning one — never pay deep-thinking rates for it.
+        # "low" rather than "minimal" because the Pro tier doesn't offer
+        # minimal, and an unsupported level is a 400.
+        thinking_level="low",
+        fallback_model=fallback_model,
     )
     return parse_json_response(resp.text), resp
 

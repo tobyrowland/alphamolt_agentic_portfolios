@@ -32,7 +32,8 @@ import re
 import sys
 import time
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 from dotenv import load_dotenv
 
@@ -42,6 +43,8 @@ from broker import (
     live_execution_enabled,
     resolve_backend_for_portfolio,
 )
+import cash_policy as _cash_policy
+import thesis_policy as _thesis_policy
 from db import SupabaseDB
 from portfolio import PortfolioManager
 
@@ -81,6 +84,20 @@ def _pair_live_followers(portfolios: list[dict]) -> dict[str, dict]:
             continue
         follows = live.get("follows_portfolio_id")
         if follows:
+            if follows in pairs:
+                # Two live portfolios following the SAME paper book. The map is
+                # keyed by paper id, so one would silently overwrite the other
+                # and never mirror. Two sleeves are meant to track two
+                # different strategies; pointing both at one book is a config
+                # mistake, so say so rather than dropping a funded portfolio.
+                log.error(
+                    "live %s and %s both follow paper book %s — only one can "
+                    "be mirrored per book. Point each live portfolio at its "
+                    "own paper portfolio (portfolios.follows_portfolio_id).",
+                    pairs[follows].get("slug") or pairs[follows].get("id"),
+                    live.get("slug") or live.get("id"), follows,
+                )
+                continue
             pairs[follows] = live
             continue
         owned = papers_by_owner.get(live.get("owner_user_id"), [])
@@ -187,6 +204,34 @@ def _is_due(agent: dict, now: datetime) -> bool:
     return now >= due_at
 
 
+def _json_safe(value):
+    """Return ``value`` with every non-JSON-serialisable leaf coerced to text.
+
+    `RebalanceResult.notes` is a free-form bag any strategy may write into, and
+    it is persisted whole into the `agent_heartbeats.notes` JSONB column. One
+    stray `datetime` in there raised `TypeError: Object of type datetime is not
+    JSON serializable` inside httpx's request encoder — which killed the entire
+    heartbeat process, so the journal row was never written, the member's
+    `last_heartbeat_at` never advanced, the run-now panel waited for a journal
+    that could not arrive (and gave up at its 12-minute client timeout), and
+    every portfolio queued behind the failing one silently never ran.
+
+    Coercing here rather than at each write site is deliberate: the notes bag
+    has no schema, so the guarantee belongs at the one place it is serialised.
+    """
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def _journal(
     db: SupabaseDB,
     *,
@@ -218,10 +263,35 @@ def _journal(
         "trades_executed": (result.trades if result else 0),
         "buys": (result.buys if result else 0),
         "sells": (result.sells if result else 0),
-        "notes": notes,
+        "notes": _json_safe(notes),
         "error_message": error_message,
     }
-    db.insert_agent_heartbeat(row)
+    log = logging.getLogger("agent_heartbeat")
+    try:
+        db.insert_agent_heartbeat(row)
+    except Exception as exc:  # noqa: BLE001
+        # The journal row is what the run-now panel waits on to declare the run
+        # finished, and losing it would strand the whole heartbeat, so retry
+        # once with a notes bag that cannot fail to serialise. Never let a
+        # journal write take the process down: every portfolio queued behind
+        # this one would silently never rebalance.
+        log.error(
+            "journal write failed for %s (%s): %s — retrying without notes",
+            agent_id, strategy, exc,
+        )
+        row["notes"] = {
+            k: v for k, v in (("portfolio_id", portfolio_id),
+                              ("triggered_by", triggered_by)) if v
+        }
+        row["notes"]["journal_notes_dropped"] = str(exc)
+        try:
+            db.insert_agent_heartbeat(row)
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "journal write failed twice for %s (%s) — clock not advanced",
+                agent_id, strategy,
+            )
+            return
     # Update last_heartbeat_at on every persisted attempt — success or error.
     # This honours the agents.heartbeat_interval_hours interval guard even when
     # the strategy errored (a parked agent's long interval-guard stays in
@@ -427,7 +497,18 @@ def _llm_swarm_convictions(
     if not eval_pool:
         return {}, {}, max_per, gate
 
-    key = (bp["provider"], bp["model"], mandate_m or "")
+    # Owner sell discipline (migration 086) — shapes which break/extend signals
+    # the buyer may record. Portfolio-level, because the reviewer that enforces
+    # these signals reads the SAME policy; a per-agent knob could not bind both.
+    policy = _thesis_policy.policy_for_portfolio(db, pid)
+
+    # Reasoning depth is part of the identity of an evaluation: two buyers on
+    # the same brain and brief but different `thinking_level` are asking the
+    # same question at different depths, so they must not share a cached sweep.
+    key = (
+        bp["provider"], bp["model"], mandate_m or "",
+        bp.get("thinking_level") or "",
+    )
     evals_list = eval_cache.get(key)
     if evals_list is None:
         try:
@@ -440,6 +521,7 @@ def _llm_swarm_convictions(
                 portfolio=book,
                 portfolio_mandate=mandate_m,
                 params=bp,
+                policy=policy,
                 label=label,
             )
         except Exception as exc:  # noqa: BLE001 — a dead provider buys nothing, never mechanically
@@ -595,9 +677,7 @@ def _run_portfolio_swarm(
     fact_rows = {str(r.get("ticker") or "").upper(): r for r in candidate_rows}
     book = pm.get_portfolio_book(pid)
     held = {str(h.get("ticker") or "").upper() for h in (book.get("holdings") or [])}
-    recently_sold = {
-        str(t).upper() for t in db.get_recently_sold_tickers(pid, days=90)
-    }
+    recently_sold = _thesis_policy.recently_sold_for_cooldown(db, pid)
     prices: dict[str, float] = {}
     for t in cand_map:
         if t in held or t in recently_sold:
@@ -733,8 +813,21 @@ def _run_portfolio_swarm(
                 slug, cap_pct, max_sector_value,
             )
 
+    # Owner cash policy (migration 088). The draft is the LAST buyer to run and
+    # the greedy one, so where it stops is what the buyers that run before it
+    # find next heartbeat. Left at its own 2% default, it consumed everything
+    # and `double_down` (which runs first) never had anything to spend — 0
+    # trades in its entire life. `reserve_fraction` is the one place the
+    # owner's PERCENT becomes the fraction this call wants.
+    cash_policy = _cash_policy.policy_for_portfolio(db, pid)
+    reserve_pct = _cash_policy.reserve_fraction(cash_policy)
+    logger.info(
+        "  portfolio %-22s cash reserve: %.1f%% ($%.0f held back for other agents)",
+        slug, reserve_pct * 100, total_value * reserve_pct,
+    )
     plan = _swarm.snake_draft_plan(
         sw_buyers, draftable, prices, total_value, cash,
+        cash_reserve_pct=reserve_pct,
         min_order_value=total_value * MIN_DRAFT_POSITION_PCT,
         convictions=convictions,
         sector_of=sector_of,

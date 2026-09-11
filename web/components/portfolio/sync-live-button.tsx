@@ -10,8 +10,27 @@ import { syncLivePortfolioToAlpaca } from "@/lib/live-mirror-mutations";
  * places REAL orders, it's two-step — the first click arms a confirm, the
  * second dispatches. After dispatch it shows a "started" note (the workflow
  * runs async on GitHub Actions; fills land on the next sync/refresh).
+ *
+ * Styled as a RISK control, not a primary one: the account page spends green on
+ * gains and red on losses and refusals, so a green "go" button here would have
+ * read as "this is the good outcome" for the one control that spends real
+ * money. Amber, and two clicks.
+ *
+ * `compact` puts the trigger on a strategy's ROW rather than inside its drawer.
+ * It used to live only in the drawer, which was defensible when the hub was a
+ * report; on an action-first surface it hides the one verb that actually places
+ * orders behind a disclosure — the owner asked where the Sync button had gone.
+ * Only the resting state shrinks: arming still shows the full sentence about
+ * real orders before the second click, because that warning is the reason the
+ * control is two-step at all.
  */
-export default function SyncLiveButton({ portfolioId }: { portfolioId: string }) {
+export default function SyncLiveButton({
+  portfolioId,
+  compact = false,
+}: {
+  portfolioId: string;
+  compact?: boolean;
+}) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
   const [done, setDone] = useState(false);
@@ -34,8 +53,12 @@ export default function SyncLiveButton({ portfolioId }: { portfolioId: string })
   }
 
   if (done) {
-    return (
-      <p className="mt-3 text-[13px] text-[var(--color-green)] leading-relaxed">
+    return compact ? (
+      <span className="font-mono text-[11px] uppercase tracking-wider text-text-muted">
+        sync started
+      </span>
+    ) : (
+      <p className="mt-3 text-[13px] leading-relaxed text-text-dim">
         Sync started — Alpaca orders are being placed to match your paper book.
         Fills appear here after the next reconcile (give it a minute, then
         refresh).
@@ -43,15 +66,29 @@ export default function SyncLiveButton({ portfolioId }: { portfolioId: string })
     );
   }
 
+  // Resting compact state: a chip on the row. Arming drops the full control
+  // (and its warning) below, so nothing about the second click is abbreviated.
+  if (compact && !confirming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="inline-flex shrink-0 items-center rounded-lg border border-amber-400/50 bg-amber-400/10 px-3 py-1.5 text-[12.5px] font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/40"
+      >
+        Sync
+      </button>
+    );
+  }
+
   return (
-    <div className="mt-3">
+    <div className={compact ? "mt-2 w-full" : "mt-3"}>
       {!confirming ? (
         <button
           type="button"
           onClick={() => setConfirming(true)}
-          className="inline-flex items-center rounded-lg bg-[var(--color-green)] px-4 py-2 text-sm font-bold text-black hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-green)]/40 transition-[filter]"
+          className="inline-flex items-center rounded-lg border border-amber-400/50 bg-amber-400/10 px-3.5 py-1.5 text-[13px] font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/40"
         >
-          Sync to Alpaca →
+          Sync now — places real orders
         </button>
       ) : (
         <div className="flex flex-col gap-2">
@@ -65,15 +102,15 @@ export default function SyncLiveButton({ portfolioId }: { portfolioId: string })
               type="button"
               onClick={dispatch}
               disabled={pending}
-              className="inline-flex items-center rounded-lg bg-[var(--color-green)] px-4 py-2 text-sm font-bold text-black hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-green)]/40 transition-[filter]"
+              className="inline-flex items-center rounded border border-[var(--color-red)]/50 px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-widest text-[var(--color-red)] transition-colors hover:bg-[var(--color-red)]/10 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {pending ? "Starting…" : "Yes, place real orders"}
+              {pending ? "Starting…" : "Yes — place real orders"}
             </button>
             <button
               type="button"
               onClick={() => setConfirming(false)}
               disabled={pending}
-              className="inline-flex items-center rounded-lg border border-white/[0.12] px-4 py-2 text-sm font-medium text-text-dim hover:text-text hover:border-white/20 disabled:opacity-50 transition-colors"
+              className="inline-flex items-center rounded border border-white/15 px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-widest text-text-muted transition-colors hover:text-text disabled:opacity-50"
             >
               Cancel
             </button>

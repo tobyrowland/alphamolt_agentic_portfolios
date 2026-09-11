@@ -12,6 +12,10 @@ import NeedsAttention, {
 } from "@/components/dashboard/needs-attention";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
+  getLiveCashOverview,
+  type LiveCashSummary,
+} from "@/lib/live-cash-query";
+import {
   getDashboardData,
   type DashPortfolio,
   type DashTrade,
@@ -57,21 +61,33 @@ export default async function AccountPage() {
     /* ignore — greeting falls back to the email local-part */
   }
 
-  const { portfolios, livePortfolio, activity, spyValues } =
+  const { portfolios, livePortfolios, activity, spyValues } =
     await getDashboardData(user.id);
+
+  // The live control hub's data — broker cash, unallocated, every sleeve's
+  // allowance (sleeves — migration 083). Only fetched when a live portfolio
+  // exists; fail-open so a broker hiccup never breaks the dashboard.
+  const liveAccounts =
+    livePortfolios.length > 0
+      ? await getLiveCashOverview(user.id).catch((err) => {
+          console.error("live cash overview failed:", err);
+          return [];
+        })
+      : [];
 
   return (
     <>
       <Nav />
       <main className="flex-1 w-full">
         <div className="max-w-[1100px] mx-auto w-full px-4 sm:px-6 py-8 sm:py-10">
-          {portfolios.length === 0 && !livePortfolio ? (
+          {portfolios.length === 0 && livePortfolios.length === 0 ? (
             <EmptyState displayName={displayName} />
           ) : (
             <Dashboard
               displayName={displayName}
               portfolios={portfolios}
-              livePortfolio={livePortfolio}
+              livePortfolios={livePortfolios}
+              liveAccounts={liveAccounts}
               activity={activity}
               spyValues={spyValues}
             />
@@ -81,7 +97,7 @@ export default async function AccountPage() {
               not to every signed-in visitor. A live follower exists only
               after an operator runs the go-live flow, so its presence is the
               gate. */}
-          {livePortfolio && (
+          {livePortfolios.length > 0 && (
             <div className="mt-10">
               <BetaDisclaimer />
             </div>
@@ -95,13 +111,15 @@ export default async function AccountPage() {
 function Dashboard({
   displayName,
   portfolios,
-  livePortfolio,
+  livePortfolios,
+  liveAccounts,
   activity,
   spyValues,
 }: {
   displayName: string;
   portfolios: DashPortfolio[];
-  livePortfolio: DashPortfolio | null;
+  livePortfolios: DashPortfolio[];
+  liveAccounts: LiveCashSummary[];
   activity: DashTrade[];
   spyValues: DashValuePoint[];
 }) {
@@ -166,9 +184,28 @@ function Dashboard({
         </div>
       </section>
 
-      {/* Private real-money follower (migration 037) — owner-only; links out to
-          its own (private) detail page. Kept separate from the arena books. */}
-      {livePortfolio && <LiveFollowerCard p={livePortfolio} />}
+      {/* Private real-money followers (migrations 037 + 083) — owner-only.
+          The console itself now lives at /live: it is the one surface that
+          spends real money and it needs room for positions, targets and what
+          the next sync will do, none of which belongs in this page's column.
+          What stays here is a way IN plus the one number worth knowing without
+          clicking — and, when something is wrong, that it is. */}
+      {livePortfolios.length > 0 && (
+        <LiveAccountLink
+          count={livePortfolios.length}
+          value={liveAccounts.reduce(
+            (sum, a) =>
+              sum +
+              a.sleeves.reduce((s, x) => s + x.allowance + x.holdingsValue, 0),
+            0,
+          )}
+          unallocated={liveAccounts.reduce<number | null>(
+            (sum, a) =>
+              sum == null || a.unallocated == null ? null : sum + a.unallocated,
+            0,
+          )}
+        />
+      )}
 
       {/* Recent swarm activity */}
       <section aria-label="Recent swarm activity">
@@ -257,66 +294,59 @@ function PortfolioCard({ p }: { p: DashPortfolio }) {
   );
 }
 
-function LiveFollowerCard({ p }: { p: DashPortfolio }) {
-  const down = p.pnlPct != null && p.pnlPct < 0;
-  const color = down
-    ? "var(--color-red,#FF3333)"
-    : "var(--color-green,#00FF41)";
+/**
+ * Per-strategy extras for the live hub's cards. Deliberately NOT the value:
+ * `DashPortfolio.value` is the daily `agent_portfolio_history` mark, while the
+ * hub's split arithmetic works off live prices — showing both next to the same
+ * target box would put two different "worth" figures on one card.
+ */
+/**
+ * The doorway to /live on the dashboard.
+ *
+ * Deliberately one line of fact and one link, not a summary: two places
+ * showing the same real-money figures is how they end up disagreeing, and this
+ * page cannot be the one that is right (it does not load positions). It shows
+ * what the account is worth, flags cash sitting unassigned — the thing an
+ * owner would want to act on and would otherwise never look for — and hands
+ * over.
+ */
+function LiveAccountLink({
+  count,
+  value,
+  unallocated,
+}: {
+  count: number;
+  value: number;
+  unallocated: number | null;
+}) {
+  const idle = unallocated != null && unallocated >= 1;
   return (
     <section aria-label="Live account">
       <h2 className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-text-dim mb-3">
         Live account
       </h2>
       <Link
-        href={`/portfolios/${p.slug}`}
-        className="block rounded-xl border p-4 transition-colors hover:bg-[var(--color-green,#00FF41)]/[0.04]"
-        style={{
-          borderColor: "rgba(0,255,65,0.28)",
-          background:
-            "linear-gradient(180deg, rgba(0,255,65,0.05), rgba(255,255,255,0.012))",
-        }}
+        href="/live"
+        className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-[var(--color-green,#00FF41)]/25 bg-[var(--color-green,#00FF41)]/[0.04] px-4 py-3.5 transition-colors hover:border-[var(--color-green,#00FF41)]/50"
       >
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-green,#00FF41)]/40 bg-[var(--color-green,#00FF41)]/[0.08] px-2.5 py-1 text-[10px] font-mono font-bold uppercase tracking-[0.12em] text-[var(--color-green,#00FF41)]"
-            title="Backed by a real Alpaca account. Private — only you can see this."
-          >
-            <span
-              aria-hidden
-              className="h-1.5 w-1.5 rounded-full bg-[var(--color-green,#00FF41)] animate-pulse"
-              style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
-            />
-            Private · live · real money
+        <span
+          aria-hidden
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-green,#00FF41)] animate-pulse"
+          style={{ boxShadow: "0 0 8px rgba(0,255,65,0.6)" }}
+        />
+        <span className="font-mono text-[17px] font-bold tabular-nums text-text">
+          ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </span>
+        <span className="text-[13px] text-text-muted">
+          real money across {count} {count === 1 ? "strategy" : "strategies"}
+        </span>
+        {idle && (
+          <span className="rounded-full border border-amber-400/40 bg-amber-400/[0.08] px-2.5 py-1 text-[11.5px] text-amber-200">
+            ${unallocated.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{" "}
+            not assigned to any strategy
           </span>
-          <span className="text-[11px] font-mono text-text-muted">
-            View account →
-          </span>
-        </div>
-        <div className="mt-3 flex items-baseline gap-3 flex-wrap">
-          <span className="font-semibold text-text truncate">{p.name}</span>
-          <span className="text-lg font-semibold text-text">
-            {p.value == null
-              ? "—"
-              : `$${p.value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`}
-          </span>
-          <span className="text-sm font-mono" style={{ color }}>
-            {p.pnlPct == null
-              ? ""
-              : `${p.pnlPct >= 0 ? "▲" : "▼"} ${Math.abs(p.pnlPct).toFixed(2)}%`}
-          </span>
-          <span className="text-[11px] text-text-muted">
-            {p.numPositions} position{p.numPositions === 1 ? "" : "s"}
-          </span>
-        </div>
-        <p className="mt-2 text-xs text-text-muted leading-relaxed max-w-[60ch]">
-          Mirrors {p.followsName ? (
-            <span className="text-text">{p.followsName}</span>
-          ) : (
-            "your arena book"
-          )}
-          &apos;s positions onto a real Alpaca account, sized to its actual
-          value. Trades automatically with the swarm — nothing to manage here.
-        </p>
+        )}
+        <span className="ml-auto text-[13px] text-text-dim">Open console →</span>
       </Link>
     </section>
   );

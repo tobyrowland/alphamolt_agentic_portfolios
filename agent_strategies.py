@@ -34,6 +34,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import thesis_policy as _thesis_policy
 from db import SupabaseDB
 from portfolio import PortfolioError, PortfolioManager
 
@@ -506,7 +507,9 @@ def rebalance_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
     # 90-day re-buy cooldown — drop tickers the portfolio sold recently.
     # Mirrors the LLM buyer's behaviour. Stops the buyer from churning
     # back into a name the owner or reviewer just exited.
-    recently_sold = ctx.db.get_recently_sold_tickers(ctx.portfolio_id, days=90)
+    recently_sold = _thesis_policy.recently_sold_for_cooldown(
+        ctx.db, ctx.portfolio_id,
+    )
     if recently_sold:
         skipped = [t for t in watchlist_tickers if t in recently_sold]
         if skipped:
@@ -713,7 +716,9 @@ def rebalance_ma_sniper(ctx: RebalanceContext) -> RebalanceResult:
     cash = float(book["cash_usd"])
     held = {h["ticker"] for h in book["holdings"]}
 
-    recently_sold = ctx.db.get_recently_sold_tickers(ctx.portfolio_id, days=90)
+    recently_sold = _thesis_policy.recently_sold_for_cooldown(
+        ctx.db, ctx.portfolio_id,
+    )
 
     # Price only the names we could actually buy (not held, off cooldown).
     prices: dict[str, float] = {}

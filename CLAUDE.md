@@ -76,6 +76,293 @@ extend/break signals. Exposes `build_snapshot`, `record_thesis`,
 `mark_thesis_status`. Signal operators: `>`, `>=`, `<`, `<=`, `==`, `!=`,
 `change_pct_lt`, `change_pct_gt`. See migration 020.
 
+### llm_providers.py — reasoning depth (`thinking_level`)
+The single dispatch surface every agent's LLM call goes through
+(`call_llm(provider=…, model=…)`). Two parameters matter for the Gemini
+agents (migration 087):
+
+- **`thinking_level`** ∈ `minimal | low | medium | high` — how much
+  deliberation to buy per call, WITHOUT changing brain. Gemini 3 replaced
+  2.5's numeric `thinking_budget` with this; sending both in one request is a
+  hard 400, so the adapter only ever sends the level, and only to a Gemini 3
+  model (`_is_gemini_3`, a family-PREFIX match so a new point release can't
+  silently drop back onto the 2.5 path). Other providers ignore the key, so it
+  is safe to set on any `agents.config`. Thinking tokens bill at the OUTPUT
+  rate, so this is the knob that decides the daily bill — see the per-agent
+  depth split under the house agents.
+- **`fallback_model`** — used ONLY when the primary model id turns out not to
+  exist (`LLMModelUnavailableError`, matched off the provider error text), never
+  for a transient failure. It exists because `gemini-3.1-pro-preview` is a
+  PREVIEW id: when Google retires one, a plain retry loop turns the buyer and
+  reviewer into permanent no-ops that report "no candidates met the conviction
+  threshold" — indistinguishable from a quiet market. The fallback logs at
+  ERROR (a human must repoint `agents.config`) and inherits the requested
+  depth, so it is a cheaper brain, not a shallower question.
+
+Two Gemini-3 behaviours are enforced in the adapter rather than trusted to
+each config row:
+- **Temperature floor.** Gemini 3 is documented to degrade below its 1.0
+  default ("looping or degraded performance, particularly in complex …
+  reasoning tasks"); every `agents.config` in this repo carries the
+  Gemini-2.5-era `0.2`, so `_gemini_temperature` clamps up to 1.0 for 3.x
+  only. A higher value is never lowered.
+- **Cost accounting.** Google reports thinking tokens in a SEPARATE
+  `thoughts_token_count` but bills them as output, so `_gemini_output_tokens`
+  sums both — reporting only `candidates_token_count` under-states a
+  deep-thinking run by an order of magnitude.
+
+**Anthropic and `temperature`.** The adapter asks the installed SDK's
+`messages.stream` whether it takes a `temperature` kwarg and only sends it if
+so (`_accepts_temperature`). anthropic **1.0.0 removed `temperature` and
+`top_p` outright** — no `**kwargs`, so passing it is a `TypeError` raised
+*before* any HTTP request, which is not an `APIError` and so slipped past the
+existing drop-and-retry path. `requirements.txt` pins `anthropic>=0.40.0`, so
+the day a runner resolved 1.0.0 every SDK-based Claude call died with
+"Messages.stream() got an unexpected keyword argument 'temperature'":
+`double_down` evaluated 0 of 16 held names and `buyer-claude` would have done
+the same. (`bull_evaluation` was untouched — it calls the REST API over curl,
+not the SDK, which is why bull verdicts kept landing throughout.) The probe
+reads the bound method rather than a version string or an import path, so it
+survives upgrades in both directions, and treats an unreadable signature or one
+with `**kwargs` as accepting — the API-level fallback still covers a model that
+rejects the parameter at request time. Pinned by
+`tests/test_llm_providers_anthropic.py`, whose stub now carries the real 1.0.0
+`__signature__`: the previous stub took `**kwargs` and so was more permissive
+than the SDK it stood in for, which is exactly how the failure reached
+production through a green suite.
+
+SDK: **`google-genai`** (`from google import genai`). The legacy
+`google-generativeai` was deprecated Nov 2025 and cannot reach the Gemini 3
+family or `thinking_level` at all; it survives as a fallback for pinned 2.5
+configs only, and a 3.x model without the new SDK fails loudly rather than
+quietly answering a different question. Pinned by
+`tests/test_llm_providers_gemini.py`.
+
+**Why not the literal Deep Research models.** Google also ships
+`deep-research-preview-04-2026` / `-max-`, which are genuinely deeper. They run
+only through the Interactions API as background jobs, take 5-20 minutes, and
+cost $1-3 (max: $3-7) *per task*. The buyer evaluates up to 40 candidates per
+portfolio per day, so that is $40-120/day for one portfolio inside a 60-minute
+Actions job. The amortised slot — `research_evaluation.py`, one card per equity
+shared by every portfolio — is where that model would earn its cost.
+
+### returns.py
+Time-weighted return — the only return that survives a deposit (migration 090).
+Pure: no DB, no clock (`tests/test_returns.py`, `tests/test_twr_wiring.py`).
+
+**Why it exists.** Every percentage the system reported was computed from raw
+portfolio VALUE, which is only a return when no money moves. That held while
+every portfolio was a paper book funded once with $1M at creation; it broke the
+day live **sleeves** arrived (migration 083), which are funded in tranches. On
+2026-09-02 the Scrappy Fightback live sleeve reported **+0.80%** against its
+paper twin's **+6.28%** — read literally, catastrophic execution. It was
+arithmetic: different windows (the paper book earned +2.46% before the sleeve
+existed), and $29,600 of the sleeve's $39,600 baseline had arrived six days
+earlier. The same flaw sat in the leaderboard, worse: its value-based
+`pnl_pct` reported the sleeve at **+305%**, nearly all of it deposits, and
+`pnl_pct_1d` read ~+43% on the day $12,149 was credited — a number that then
+entered the Sharpe stdev as if it were a market move.
+
+**The rule.** `r_t = (V_t − F_t) / V_{t−1} − 1`, chained into a cumulative
+`twr_index` (base 1.0 at a portfolio's first snapshot). The return between any
+two dates is the ratio of their indices. Removing the flows gives the sleeve
++3.12% against the paper book's +3.74% over the same window — a real but
+ordinary 0.6pp of cash drag plus one day of marking lag.
+
+**Two questions, two numbers.** This does not replace the dollar figure: "you
+contributed $39,600.61 and hold $39,916.27" is unchanged, and `starting_cash`
+stays the sum of contributions. What changes is that the PERCENTAGE stops
+sharing that denominator — "how much have I made" and "how good is this
+strategy" are different questions, and only the first is answerable from a
+cost basis.
+
+**Why it is safe to ship.** A paper portfolio has no `portfolio_cash_ledger`
+rows at all, so `flow_usd` is always 0 and the index is mathematically
+identical to the value ratio it replaces — not one public leaderboard number
+moves. Every new expression in the view also COALESCEs to the old value-based
+one when `twr_index` is NULL, so the view is correct between the migration and
+the backfill and for any row the writer misses.
+
+Conventions worth knowing, each pinned by a test:
+- **Flows are end-of-day** (`V_t − F_t`). Snapshots are daily closes and flows
+  land intraday, so nothing stored can say whether a deposit preceded the day's
+  move; crediting the day to capital already there understates the deposit day
+  slightly and washes out. Dividing by `V_{t−1} + F_t` instead would assume a
+  16:00 deposit worked all day.
+- **A portfolio's first snapshot is always 1.0.** The funding that created it
+  is not a return, however far the first mark sits from the money paid in (the
+  sleeve was marked $145 below its $9,999.97 in-kind funding on day one).
+- **`baseline-reset` is not a flow** (`db.NON_FLOW_LEDGER_REASONS`): it
+  corrects a number, nothing moves, and counting it would delete a real return.
+- **A sleeve emptied by a transfer records no loss** — the withdrawal is added
+  back, so draining Alphamolt (House) to $0 is not −100%.
+- **A genuine wipeout stays wiped out**, and `advance_index` (the daily writer's
+  one step) must agree with `twr_index` (the backfill's whole series) through
+  it: both write the same column, so a disagreement would make a portfolio's
+  reported history depend on which process last touched it.
+
+Writer: `portfolio.snapshot_all` reads the day's flows and each portfolio's
+prior snapshot in two bulk queries, then writes `flow_usd` + `twr_index` per
+row. It chains off the row STRICTLY BEFORE today, because the 15-minute
+intraday job rewrites today's row repeatedly and chaining off a value it is
+about to replace would compound a partial day against itself. Both reads fail
+soft — losing a day's index is recoverable by backfill, losing the snapshot is
+not. Backfill/repair: `python backfill_twr.py [--dry-run] [--portfolio ID]`,
+which shares the same pure module.
+
+### thesis_policy.py
+The owner-configured **sell discipline** (migration 086) — the rules a thesis's
+signals live under, stored on `portfolios.thesis_policy`. Pure: no DB, no LLM,
+no clock of its own (callers pass `now`), unit-tested in
+`tests/test_thesis_policy.py` against the real production decisions it
+prevents.
+
+**Why it exists.** A buyer, when it opens a position, also authors the
+`break_signals` that will later justify selling it — the optimist writes its own
+falsification test and a different agent enforces it. Nothing constrained what
+could be written, and three failure modes followed (documented with evidence in
+`docs/case-studies/scrappy-fightback-trading-record.md`): a break signal
+identical to the screen's own entry filter (`perf_52w_vs_spy < -20` on a screen
+that filters `perf_52w_vs_spy < -20` — every candidate arrived pre-broken); an
+*extend* signal read as a break (sold while the reviewer's own note said no
+break signal had fired); and no holding period at all (three positions bought
+and sold inside 90 seconds, because the swarm runs buyers before reviewers over
+the shared book).
+
+**Why portfolio-level, not an agent knob.** Per-agent settings live in
+`portfolio_agents.config` and reach exactly one member. The buyer WRITES break
+signals and the reviewer ACTS on them, so a policy on either alone cannot bind
+the other.
+
+Three keys, each enforced at one site (`resolve_policy` fills every missing key
+from `DEFAULTS`, so `{}` is a complete policy and pre-086 rows behave
+identically):
+- `grace_period_days` (default **30**, 0 disables) — `portfolio_reviewer` skips
+  positions younger than this entirely, journalling them as
+  `skipped_in_grace_period`. The owner's manual Sell button stays the escape
+  hatch for a genuine blow-up.
+- `require_fired_break_signal` (default **on**) — the reviewer refuses a SELL
+  unless a recorded break signal is actually firing per `theses.check_thesis`.
+  Self-disabling where there is nothing to check (no thesis, no signals, failed
+  oracle), so a position can never become unsellable; suppressed sells are
+  journalled under `verdicts.sell_blocked_by_policy` rather than folded into the
+  HOLD list.
+- `relative_fields_change_only` (default **on**) — price-relative fields
+  (`RELATIVE_FIELDS`: `perf_52w_vs_spy`, `price_pct_of_52w_high`, `ps_now`,
+  `composite_score` — `price` is deliberately EXCLUDED: `change_pct_*` compares
+  an absolute difference, so on a raw share price the same number means a 9.6%
+  stop on a $52 name and 0.28% on an $1,800 one; banning the static form would
+  outlaw the only sane price stop and permit one that silently misbehaves) may not
+  carry a static DOWNSIDE threshold (`<`, `<=`). Such a threshold says where the
+  stock IS, which on a screen selecting beaten-down names is usually already true
+  at purchase; the change-since-buy form (`change_pct_lt` / `change_pct_gt`) is
+  structurally immune because at buy the delta is zero. Applied in
+  `llm_watchlist_buyer` AFTER the research-card merge so inherited signals are
+  policed too, and to extend signals as well.
+  **The rule is kind-specific** (`signal_permitted(signal, policy, *, kind=)` —
+  `kind` is a REQUIRED keyword, because either default would be silently wrong
+  for the other kind), since break and extend signals fail in opposite
+  directions. A static UPSIDE threshold (`TAKE_PROFIT_OPS`: `>`, `>=`) is
+  permitted on a **break** signal: `ps_now > 15` is a take-profit, and on a
+  screen selecting cheap beaten-down names it sits far above where the stock is,
+  so it cannot be the born-broken failure (and `theses._drop_already_true` still
+  rejects it against the real buy snapshot if it somehow is). The SAME threshold
+  on an **extend** signal is the unreachable wish the reviewer reached for when
+  nothing had fired — `perf_52w_vs_spy > 0` on a name the screen guarantees is
+  below -20 — so extends keep change-ops-only. `==` / `!=` stay banned on both.
+  The buyer's prompt teaches all of this; `tests/test_buyer_signal_policy.py`
+  pins the WIRING (that each call site passes the right `kind`, and that the
+  prompt and `RELATIVE_FIELDS` agree), which no test of the pure function can.
+
+- `rebuy_cooldown_ignores_sells_before` (default **None** = no exemption) —
+  sells executed before this instant do not count toward the 90-day post-sell
+  re-buy cooldown (`db.get_recently_sold_tickers`). The cooldown derives from
+  the immutable `agent_trades` tape: there is no restore flag, and editing the
+  tape to undo an exclusion would falsify the audit record. But a sell made by
+  a process since ruled invalid should not go on excluding a name — on the
+  Scrappy Fightback book all nine sells landed inside what is now a 30-day
+  grace period and eight fired no break signal, yet all nine names stayed
+  locked out while seven still passed every screen filter. A dated exemption
+  states that once, scoped to one portfolio, leaving the standing rule at full
+  strength for anything sold afterwards; it can only ever SHORTEN the lookback
+  (`thesis_policy.cooldown_cutoff` takes the later of the two cutoffs), a
+  future date is rejected rather than honoured (it would disable the cooldown
+  outright), and it goes inert on its own once every pre-cutoff sell ages past
+  90 days. Every buyer reads it through the single seam
+  `thesis_policy.recently_sold_for_cooldown`, so it cannot apply on one buy
+  path and not another. NOT rendered in the Sell discipline panel — it is an
+  operator-set correction, not a standing preference — but it IS carried by
+  `web/lib/thesis-policy.ts`, because `setPortfolioThesisPolicy` writes the
+  whole resolved object and a key the TS twin didn't know would be silently
+  deleted on the owner's next save (pinned by `tests/ts_thesis_policy_runner.mjs`).
+  Stored and resolved as a **normalised ISO-8601 string**, never a `datetime`:
+  the resolved policy is JSON — the reviewer journals it whole into
+  `agent_heartbeats.notes` and the TS twin types this key `string | null` —
+  and a `datetime` in it killed the entire heartbeat at the journal write
+  (`thesis_policy.cooldown_ignore_before` parses on use). `agent_heartbeat.
+  _json_safe` now coerces the whole free-form notes bag before the insert, and
+  a journal write that fails anyway is retried with a minimal payload rather
+  than propagating — the journal row is what the run-now panel waits on, and
+  losing it stranded every portfolio queued behind the failing one. See
+  `tests/test_heartbeat_journal.py`.
+
+**Separately and unconditionally** (a correctness invariant, not policy —
+nothing wants a position whose exit trigger is already met):
+`theses.record_thesis` now drops any break signal that already evaluates true
+against the buy-time snapshot (`theses._drop_already_true`, which compares the
+snapshot against itself — exactly the buy-moment evaluation). Dropped signals
+are logged; `change_pct_*` signals survive by construction.
+
+TS twin for the owner UI: `web/lib/thesis-policy.ts` (`DEFAULTS` +
+`RELATIVE_FIELDS` kept in lock-step), the `setPortfolioThesisPolicy` server
+action, and the **Sell discipline** panel under the team builder
+(`web/components/portfolio/sell-discipline-panel.tsx`). The buyer's prompt also
+teaches the rules, so the model authors compliant signals rather than having
+them silently filtered.
+
+### cash_policy.py
+The owner-configured **cash policy** for a portfolio's shared pot (migration
+088) — stored on `portfolios.cash_policy`. Pure: no DB, no LLM, no clock
+(`tests/test_cash_policy.py`).
+
+**Why it exists.** A portfolio's buyers share one cash pool and nothing
+allocated it between them. `agent_heartbeat._run_portfolio_swarm` runs
+self-sourced buyers (`double_down`) BEFORE the snake draft, and the draft then
+buys until cash reaches its floor — so the draft always left ~2% and the
+Double-Down Buyer always arrived to find ~2%. It made **zero** trades in its
+entire life while the screen buyer made 25 on the same book.
+`swarm.snake_draft_plan` has always accepted a `cash_reserve_pct`; the heartbeat
+never passed one. This is the missing half — somewhere for the OWNER to set it.
+
+**Why portfolio-level, not an agent knob** — the same argument as
+`thesis_policy`: per-agent settings live in `portfolio_agents.config` and reach
+exactly one member, but "leave room for the other agents" is a rule about the
+SHARED POT. On one buyer's config it would bind only that buyer, be silently
+ignored the day a second screen-buyer is hired, and read as one buyer's setting
+for how much everyone *else* gets. Not inside `thesis_policy` either: that
+column is named and documented as the SELL discipline and its panel/TS twin
+carry a fixed key set, so a cash key there would be a naming lie.
+
+One key, `reserve_pct` (default **2.0**, percent of NAV, clamped 0–50) — where
+the screen draft stops buying, leaving the difference for the buyers that run
+before it. The default is exactly `snake_draft_plan`'s own pre-088 default, so
+`{}` is behaviour-identical to pre-088. `reserve_pct` is a PERCENT and
+`snake_draft_plan` wants a FRACTION, so `reserve_fraction()` is the single
+conversion site — a percent passed where a fraction is expected is a 50x sizing
+error no type checker would catch, and `HeartbeatWiringTests` pins that the one
+call site uses the fraction helper.
+
+**What a reserve is NOT.** A TRANSFER of budget from the screen draft to the
+buyers that run before it — not a renewable supply. Only sells (and deposits)
+create cash; on a book that rarely sells, raising the reserve funds an
+occasional extra add rather than a continuous stream.
+
+TS twin: `web/lib/cash-policy.ts` (`DEFAULTS` kept in lock-step —
+`setPortfolioCashPolicy` writes the whole resolved object, so a key the twin
+doesn't know is silently deleted on the owner's next save), the
+`setPortfolioCashPolicy` server action, and the collapsed **Cash reserve** panel
+(`web/components/portfolio/cash-policy-panel.tsx`) under the team builder.
+
 ### broker.py / broker_sync.py
 The broker-neutral execution seam every live (real-money) path runs through —
 the `BrokerBackend` protocol, normalised `Position`/`Fill`/`ExecResult` types,
@@ -626,7 +913,8 @@ Two trade-phase strategies share the buyer slot:
   on each buy so an `investment_theses` row is recorded (the watchlist
   `rationale` becomes the thesis text).
 - `llm_watchlist_buyer` (the house buyer, migration 032) is the
-  thinking counterpart: per-ticker LLM evaluation (Gemini 2.5 Pro) of
+  thinking counterpart: per-ticker LLM evaluation (Gemini 3.1 Pro at
+  **medium** reasoning depth — migration 087) of
   every watchlist name not already held at ≥ 4%, returning
   `{verdict, conviction 1-5, thesis_text, extend_signals, break_signals}`.
   Conviction gate defaults to 5/5 but is a settable knob
@@ -670,6 +958,20 @@ Two trade-phase strategies share the buyer slot:
   candidates, one query each by default), deduped by a process-level run
   cache so a name is searched at most once per heartbeat across all
   portfolios/buyers (the swarm enriches the shared candidate map once).
+  **The per-name prompt states no cash figure**, deliberately: this call
+  answers "does THIS equity fit THIS mandate at TODAY's price", and
+  affordability is the draft's decision downstream. Telling the model
+  "Cash available: $467 (0.0% of portfolio)" while asking whether to buy
+  invites a PASS for a reason that is not about the equity — and a PASS is
+  recorded as a ~30-day `screener_rejections` hide, indistinguishable from
+  "this business is bad", so it quarantines a name the buyer would want the
+  day it has money. It was happening: of 84 names hidden on the Scrappy
+  Fightback book, 15 cited the cash position ("...the portfolio lacks
+  sufficient cash ($467) to purchase a significant position"); most also gave
+  a genuine mandate reason, so cash was a contaminant rather than the whole
+  cause, but one with a 30-day consequence. The PRIORITISATION prompt keeps
+  its cash line — ranking names under scarcity is exactly that call's job.
+  Pinned by `tests/test_buyer_rejections.py`.
   Config knobs (`news_search` / `news_queries` / `news_max_chars`) live in
   `agents.config`; the whole step auto-no-ops when `SERPAPI_API_KEY` is
   unset, so it's safe everywhere. The mechanical `watchlist_buyer` is
@@ -691,8 +993,8 @@ brief the buyer reads. If the mandate is empty, the reviewer is a
 no-op (`notes.reason='no mandate set'`); it doesn't carry a sell
 discipline of its own.
 
-For each held position it calls Gemini 2.5 Pro with the mandate, the
-recorded buy thesis
+For each held position it calls Gemini 3.1 Pro at **high** reasoning
+depth (migration 087) with the mandate, the recorded buy thesis
 (text + extend/break signals + snapshot at buy), a machine-check of
 which break signals are currently firing (`theses.check_thesis`), and
 the full current company data. Returns `{verdict: HOLD|SELL, conviction
@@ -724,14 +1026,16 @@ The house agents drive the pipeline:
 - Four buyer flavors ("Buyer · <model>", renamed from "Conviction
   Buyer" in migration 064), one strategy (`llm_watchlist_buyer`), four
   brains (migrations 036 + 037):
-  - `buyer-gemini` — "Buyer · Gemini", `gemini-2.5-pro`
+  - `buyer-gemini` — "Buyer · Gemini", `gemini-3.1-pro-preview`
+    (`thinking_level: medium`, migration 087)
   - `buyer-claude` — "Buyer · Claude", `claude-opus-4-8`
   - `buyer-chatgpt` — "Buyer · GPT-5", `gpt-5`
   - `buyer-grok` — "Buyer · Grok", `grok-4`
   All four 24h cadence, 5/5 conviction gate (settable), 4% target, 90-day re-buy
   cooldown. Owners pick one per portfolio.
-- `portfolio-reviewer` — reviewer, `gemini-2.5-pro`, weekly,
-  user-mandate-driven (migrations 033 + 034)
+- `portfolio-reviewer` — reviewer, `gemini-3.1-pro-preview`
+  (`thinking_level: high`, migration 087), weekly, user-mandate-driven
+  (migrations 033 + 034)
 - `agent-pelosi` — "Pelosi Tracker", buyer, `Rules-based`, `pelosi_mirror`
   strategy, a self-sourced buyer that copies Nancy Pelosi's disclosed trades
   (migration 068)
@@ -861,7 +1165,17 @@ shared buyer thinking core (`llm_watchlist_buyer.evaluate_candidates`, Claude
 brain) — the SAME per-name LLM eval, research-card + Level 0 fact inputs and
 thesis discipline the other buyers use, pointed at held names with an "add to
 the winner" framing; only `verdict="BUY"` at/above `min_conviction` (default
-5/5) triggers an add. Idempotent modulo price drift — a name at the ceiling has
+5/5) triggers an add. **Funding is a dollar question, not a percentage one**:
+the run gate and `plan_double_down` both ask "is there enough to make one
+worthwhile add?" (`spendable >= min_add_usd`, spendable = cash less a small
+rounding buffer `cash_reserve_pct` **of the cash**). It used to ask whether cash
+was ≥ `min_cash_pct` of NAV and size against `cash - total_value *
+cash_reserve_pct` — on a fully-invested book that is a wall, not a buffer (2% of
+a $1.05M portfolio is $21k), so Scrappy Fightback's real $18,594 computed
+NEGATIVE spendable and the agent skipped every name on every run from the day it
+was hired: **0 trades, ever**. `min_cash_pct` is retired (a stored config still
+carrying it is ignored); `tests/test_double_down.py` pins the real book.
+Idempotent modulo price drift — a name at the ceiling has
 nothing to add, so a re-run on an unchanged book is a no-op (the ceiling is what
 stops a runaway "keep adding forever" loop). Respects the 90-day post-sell
 cooldown (won't fight a recent exit/trim) and records a fresh thesis per add
@@ -919,6 +1233,140 @@ quarters + weekly P/S). Idempotent — re-running on the same date overwrites.
 Read by the `portfolio_reviewer` strategy at heartbeat time (extended tier, via
 `llm_picker._load_latest_snapshot`) and by the public `/api/v1/universe`
 endpoint. Supports `--tier` and `--dry-run` flags.
+
+### Universe summary — "ranked against what?" on a public portfolio page
+
+A leaderboard row answers how a swarm did; the question it provokes is what it
+was choosing from. A book ranked on a 60-name washed-out turnaround screen is
+doing something different from one fishing the whole liquid US universe, and
+nothing public said which — `portfolios.screen_config` was rendered only on the
+owner-only Universe tab. The portfolio page (the page every leaderboard row
+links to) now carries a one-line **Universe** strip between the summary numbers
+and the team: the screen's label, how many names pass it today out of the whole
+Tier-1 universe, and how deep the buyers draft.
+
+**The whole selection rule, in the order it runs** — filter (chips), rank
+(the lens blend), take the top N. The first version showed only a label and a
+count, and the count turned out to say almost nothing: the house Quality
+Growth preset filters on four things, but three of the four live books
+carrying that name had deleted everything except `P/S ≤ 15`, so **2,653 of
+3,030** names passed and the strip read as a big number describing no
+constraint at all. What narrows a book is its filters plus its weights, so
+both are stated. Filters render through `screenFilterLabel` — the same
+function behind the Universe tab's chips and the review pack — so no surface
+describes one screen in two dialects.
+
+The count is computed WITHOUT the portfolio's `screener_rejections` set — that
+list is service-role-only because it can belong to a private book, and a
+public number derived from it would report the buyer's private pass history as
+a universe size.
+
+**The label is derived, never read off the stored id.**
+`saveUniverseScreenConfig` keeps `screen_config.preset` when the owner edits
+the filters, so the id alone is not a description — rendering "Quality Growth"
+above a single `P/S ≤ 15` chip states a screen that does not exist. The label
+comes from `isHousePreset(config)` (the same comparison the screener uses for
+index policy): matching → the preset's label; drifted → the label plus an
+`edited` marker; no preset, or `custom` → "Custom screen".
+
+**Two ways the card could lie, both closed:**
+- A book whose only buyer is **self-sourced** still has a `screen_config` —
+  every book is seeded one at creation — so it would be described by a pond it
+  never fishes. With no screen-drafting buyer hired the card does not render
+  (`showsUniverse`, fail-closed: a roster read that failed shows nothing rather
+  than a claim). A live follower has no screen of its own either, and is skipped.
+- A book that runs **both** kinds is described correctly by the screen and
+  incorrectly by omission — the Double-Down Buyer's adds did not come through
+  it. `selfSourcedLine` is the sentence that says so, naming the feed each such
+  buyer reads instead.
+
+Both turn on classifying an agent by `agents.strategy`, never its `action` /
+role tag (`double_down` and `pelosi_mirror` are both tagged buy/buyer). That
+classification moved into **`web/lib/agents/strategy-kind.ts`**, shared with
+`portfolio-export-query.ts` so the two surfaces that describe where a book's
+positions come from cannot drift into two answers about the same agent;
+`LibraryAgent.strategy` is read alongside the rest of the roster to feed it.
+Copy + visibility live in the pure `web/lib/portfolio-universe.ts`, the count
+in `web/lib/portfolio-universe-query.ts` (one `runScreen` over the screener's
+existing 5-minute facts cache; fails soft to the label), the strip in
+`web/components/portfolio/universe-summary-card.tsx`. Pinned by
+`tests/test_portfolio_universe.py`, which also asserts the TS strategy lists
+against `agent_strategies.SELF_SOURCED_BUYER_STRATEGIES` / `STRATEGIES` — a
+strategy that becomes self-sourced in Python without the web learning about it
+is exactly how the page would start describing the wrong thing — and pins the
+label rule against the REAL drifted and undrifted `screen_config` rows.
+
+Those label cases need `web/lib/screen/config.ts`, which uses the `@/` alias
+and extensionless TS imports that Next resolves and node does not:
+**`tests/ts_web_alias_hook.mjs`** registers both resolutions for any runner
+that needs a `web/lib` module (import it first). It cannot supply npm packages
+though — config.ts needs zod and the CI test job installs pip only — so the
+runner imports config.ts inside a try/catch and those cases skip in CI while
+the pure-module cases still run.
+
+### Portfolio export — the review pack
+
+Every paper portfolio page carries a **Copy for AI review** button (plus a
+`.md` download) that renders the whole book as one Markdown document, for
+pasting into a DIFFERENT model and asking what it thinks. That consumer decides
+the design (`web/lib/portfolio-export.ts`, pure, `tests/test_portfolio_export.py`):
+
+- **Markdown, not CSV** — half the value is prose (each thesis, each trade's
+  rationale, the agents' briefs), which a CSV either drops or buries in quoted
+  cells.
+- **Strategy and universe BEFORE positions.** Handed 16 tickers a reviewer can
+  only discuss 16 tickers; handed the mandate, the team, the sell discipline and
+  the **screen** first, it can say whether the book matches the strategy — and
+  whether the screen selects for what the mandate describes. Filters render via
+  `screenFilterLabel`, the same function behind the Universe tab's chips, so the
+  pack and the page never describe one screen in two dialects; the config is
+  parsed through `screenConfigSchema` so defaults (notably `topN`) are the ones
+  the agents actually run.
+- **The whole tape, and the losses.** `getPortfolioExportData` reads every
+  trade (not the page's recent 25) and every closed position with realised P&L
+  from `realizedPnlByTrade`. A pack of survivors describes a portfolio that
+  never existed and invites praise for what happened to work.
+- **Marks are stated as closes.** One line at the top, because a reviewer told
+  these are live quotes reasons about the wrong day.
+- **Break signals carry a tri-state** (`markFiring`, evaluated against
+  `getCurrentSignalFacts` — the same source as the page's thesis gauges):
+  firing / not firing / *cannot be evaluated*. A `change_pct_*` signal is left
+  `undefined` ("not checked here" — it needs the buy snapshot, resolved at
+  review time), because guessing `false` would report an armed tripwire as
+  quiet. Conflating `undefined` with `null` told a reviewer a healthy signal
+  was impossible to evaluate.
+- **A methodology section derived from the TEAM ACTUALLY HIRED**, not a generic
+  pipeline. The first version described one path — screen, rank, shortlist,
+  judge, size, review — which is wrong the moment a book hires a **self-sourced
+  buyer**: `double_down` and `pelosi_mirror` never see the screen and run
+  BEFORE it, so the cash is gone before the draft. Scrappy Fightback has one,
+  and it made a real trade (a PODD top-up), so the generic text misattributed a
+  position to the screen in a way no reviewer could detect. Agents are
+  classified off `agents.strategy` (never the role tag — both self-sourced
+  strategies are tagged `buyer`), and each carries its real cadence, conviction
+  gate and sizing knobs with the instance's config overriding the library
+  agent's, exactly as the heartbeat merges them. It states the parts most often
+  assumed wrongly: ranking is a **percentile within the filtered set** (a name
+  scores well by beating the other candidates, not outright), the buyer judges
+  **one name at a time** and is **not told the cash position**, the reviewer
+  exits whole positions and never trims, and the owner can override all of it
+  by hand.
+- **A limitations section** The limitations are MEASURED from the pack's own data
+  where possible — "N of M recorded signals cannot be evaluated (fields: …)"
+  counts the inert tripwires rather than asserting a sentence that would go
+  stale — alongside the fixed ones: closing marks not live, paper fills with no
+  spread or slippage, and that an absence may be the 30-day rejection hide or
+  the 90-day re-buy cooldown rather than a judgement.
+
+Route: `GET /api/portfolios/[slug]/export` (`?download=1` to save), **owner
+only** — `resolveVisiblePortfolio` then `isViewerOwner`, a non-owner getting
+404 rather than 403. Stricter than the page on purpose: most of the pack is
+already rendered to any viewer of a public portfolio, but bundling a
+competitor's whole strategy, every thesis and the entire trade tape into one
+file built to be fed to a model is a different act from reading the page, and a
+public leaderboard entry is not consent to it. Live followers show no button:
+they hold no decisions of their own, so their pack would be the paper twin's
+with the reasoning removed.
 
 ## Portfolio Manager
 
@@ -1178,7 +1626,8 @@ min_conviction, ps_vs_median_mode, ps_vs_median_pct}` (the last three are the
 team-builder conviction + P/S-band knobs, migration 064); the mechanical
 `watchlist_buyer` ignores
 it. House agents `alphamolt-shortlist` (`watchlist_curator`, `watchlist_size=40`)
-and four `llm_watchlist_buyer` flavors — `buyer-gemini` (`gemini-2.5-pro`),
+and four `llm_watchlist_buyer` flavors — `buyer-gemini`
+(`gemini-3.1-pro-preview`),
 `buyer-claude` (`claude-opus-4-8`), `buyer-chatgpt` (`gpt-5`),
 `buyer-grok` (`grok-4`) — seeded by migrations 028 + 030 + 032 + 036 +
 037 drive the pipeline for human portfolios. `powered_by` is an optional human-readable LLM brand
@@ -1189,10 +1638,16 @@ agent being added to other people's portfolios — see migration 026.
 
 ### profiles (human users — magic-link auth)
 ```
-id (UUID PK, FK → auth.users), email, display_name, created_at, updated_at
+id (UUID PK, FK → auth.users), email, display_name, live_access,
+created_at, updated_at
 ```
 One row per signed-in human (migration 023). Auto-provisioned by a trigger on
 `auth.users` insert. Private RLS — a user reads/updates only their own row.
+`live_access` (BOOLEAN, default false; migration 089) is the operator grant for
+the `/live` real-money console, set with one UPDATE. It is deliberately not a
+role or a permissions table — it gates one page — and it is only ever ORed with
+"owns a live portfolio", so revoking it does not lock an owner out of their own
+account. See `web/lib/live-access.ts`.
 
 ### portfolios (first-class entity — operated by one or more agents)
 ```
@@ -1201,6 +1656,21 @@ owner_agent_id (FK → agents, nullable), owner_user_id (FK → profiles, nullab
 is_public, mode ('paper' | 'live'), rebalance_cadence ('daily' | 'weekly'),
 last_heartbeat_at, created_at, updated_at
 ```
+`thesis_policy` (JSONB, migration 086, default `'{}'`) is the owner's **sell
+discipline** — read by BOTH the buyer that authors a position's break signals
+and the reviewer that enforces them (which is why it is portfolio-level and not
+a `portfolio_agents.config` knob). Keys `grace_period_days`,
+`require_fired_break_signal`, `relative_fields_change_only`; missing keys fall
+back to `thesis_policy.DEFAULTS`. Non-secret — included in `PORTFOLIO_COLUMNS`.
+Edited on the portfolio page's **Sell discipline** panel. See `thesis_policy.py`.
+
+`cash_policy` (JSONB, migration 088, default `'{}'`) is the owner's **cash
+policy** for the shared pot — one key, `reserve_pct`, read by the swarm draft
+(`agent_heartbeat` passes it to `swarm.snake_draft_plan`). Portfolio-level for
+the same reason as `thesis_policy`: it is a rule about the POT, so it cannot
+bind from one buyer's config. Non-secret — included in `PORTFOLIO_COLUMNS`.
+Edited on the portfolio page's **Cash reserve** panel. See `cash_policy.py`.
+
 `rebalance_cadence` (migration 051, default `'weekly'`) is the owner-set
 rebalance frequency — the heartbeat re-evaluates the portfolio at most every
 24h (`daily`) or 168h (`weekly`) via `agent_heartbeat._portfolio_is_due`. The
@@ -1236,8 +1706,11 @@ indistinguishable from a paper one.
 
 **Two portfolio types per user (migration 037).** `mode` doubles as the
 portfolio *type*: `paper` = the public-capable arena portfolio; `live` = a
-PRIVATE personal real-money account. Uniqueness is per `(owner_user_id, mode)`
-(was one-per-user), so a human holds **one paper + one live**. A live portfolio
+PRIVATE personal real-money account. Migration 070 raised the paper cap to
+**5 per user** (count-based, in `create_portfolio_funded`) and migration 083
+lifted the one-live-per-user index so several live portfolios can share one
+broker account as **sleeves** (see "Sleeves" below) — `broker_account_key`
+declares which account each uses. A live portfolio
 is a personal account, not an arena competitor, so different rules apply:
 - **Always private** — `CHECK (mode='paper' OR is_public=FALSE)`; the
   public-threshold trigger also refuses a live→public flip. Never on the public
@@ -1636,6 +2109,286 @@ The live portfolio's own (private) detail page also exposes an owner-only
 in `web/lib/live-mirror-mutations.ts`) that `workflow_dispatch`es `live-mirror.yml`
 with `action=mirror` (real orders, `dry_run=false`) for an on-demand convergence.
 
+### Sleeves — several live portfolios sharing one broker account (migration 083)
+
+A broker gives an individual **one live account**, so running two live
+strategies means splitting one account. A **sleeve** is a live portfolio that
+owns a share of a shared account:
+
+- **Shares are attributed.** Of the broker's 15 NVDA, 10 are sleeve A's and 5
+  are sleeve B's — recorded in `portfolio_holdings`, known only to AlphaMolt.
+- **Cash is an allowance.** Each sleeve's `portfolio_accounts.cash_usd` is the
+  most it may spend (the `execute_portfolio_buy` RPC already enforces it, as it
+  does for paper). Cash not credited to any sleeve is **unallocated**.
+- **Unowned money is not attributed, deliberately.** Dividends, interest, fees
+  and fresh deposits all land in the broker's cash and simply move the
+  unallocated figure; the owner credits it out when they choose
+  (`live_cash.py`). Per-sleeve dividend attribution is a large amount of
+  machinery for amounts immaterial on a growth-equity book, and auto-detecting
+  a deposit is precisely the guess that misattributes real money silently.
+- **Sale proceeds need no action** — a sell is recorded against the selling
+  sleeve, so the cash returns to its own allowance automatically.
+
+Two invariants, checked before trading:
+
+```
+SUM over sleeves of holdings[symbol]  ==  broker position for symbol
+SUM over sleeves of allowance         <=  broker cash   (difference = unallocated)
+```
+
+**The safety property.** `plan_mirror` sizes off a sleeve's **own** equity
+(recorded holdings + its allowance) and diffs against its **own** recorded
+positions — never the broker aggregate. That is what keeps sleeves from
+destroying each other: passing the aggregate makes a symbol held only by
+another sleeve appear at target weight 0 and get sold in full, every run, with
+real money. `tests/test_sleeves.py` pins both the correct behaviour and the old
+broken one.
+
+Three refusals back it up: the mirror **refuses to trade** a shared account
+whose combined records disagree with the broker (`check_account_alignment` —
+a wrong split is unrecoverable, so a human resolves it); `broker_sync.sync_to_db`
+**refuses to run at all** on a shared account (its whole-book overwrite would
+hand one sleeve every position in the account); and `_pair_live_followers`
+**errors** when two live portfolios follow the same paper book instead of
+silently dropping one. A sole-occupant account keeps its pre-083 behaviour
+exactly — sync still owns reconciliation, and drift only warns.
+
+**Repairing a shared account — `--repair`.** The alignment refusal is correct
+but it used to be a dead end: `sync_to_db` is the only reconciler and it
+refuses on a shared account, so a single fill that reached the broker but not
+the DB halted **all** real-money trading on that account with no way to clear
+it. `broker_sync.repair` (CLI `alpaca_execution.py --repair SLUG`, Actions
+`live-mirror.yml` action `repair`) is the narrow alternative: it books each
+missing trade against the **one sleeve named on the command line** — the
+attribution is the human's call, because the broker's pooled view cannot know
+whose order it was — taking quantities from the drift and **prices from the
+broker's own fill tape** (`AlpacaClient.get_fills` → `/v2/account/activities/
+FILL`). It never invents a price: a difference with no matching unrecorded fill
+is REFUSED, since a guessed cost basis is a permanent, silent error in every
+return the sleeve reports afterwards. An unrecorded buy was paid for out of
+pooled cash, so the sleeve's allowance is topped up from unallocated first
+(`reason='repair-topup'`) — a real transfer of capital in, so it moves the
+baseline like any other credit. Already-booked orders are skipped by matching
+the order id embedded in mirror trade notes, so a repair can never double a
+real position. Planned by the pure `sleeves.plan_repair`
+(`tests/test_sleeves.py`); run `repair` with `dry_run` on first, then `mirror`.
+
+**Two bugs made this necessary, both fixed (2026-08-26).** A 40-order rebalance
+placed a final `buy ZBRA 3.9892`; it filled at the broker; the atomic RPC
+refused to book it (the sleeve's allowance was ~$77 short after slippage on the
+sells); and the run still reported `placed: 40`. Real shares existed that no
+sleeve owned, and every subsequent run refused to trade.
+- `buy_portfolio_atomic` / `sell_portfolio_atomic` **return** a rejection
+  rather than raising it, so `alpaca_mirror._record_fill`'s try/except never
+  saw it. It now checks `status == "ok"` as well as catching exceptions —
+  a fill the DB refused is never counted as recorded.
+- The mirror sizes orders against a sleeve's **equity** but pays for them out
+  of its **allowance**, and the broker's pooled cash is far larger, so the
+  broker fills orders the DB then refuses. Every buy is now checked against the
+  running allowance before it is placed (`sleeves.affordable_buy_qty`) and
+  **trimmed** to fit — against the *limit* price, not the reference price,
+  because a marketable limit can fill anywhere up to the band. Trimming rather
+  than skipping is what keeps the book converging: a skipped name would be
+  re-planned and re-skipped at the same shortfall on every run. A trim below
+  `MIN_TRIMMED_ORDER_USD` ($25) is dropped as dust.
+
+`portfolios.broker_account_key` declares which credentials entry a live
+portfolio uses (key into `ALPACA_ACCOUNTS`); two live rows with the same key are
+sleeves of one account. NULL falls back to the slug, so pre-083 rows are
+unchanged. Migration 083 also lifts the one-live-per-user index, adds
+`portfolio_cash_ledger` (audit of allowance movements) and seeds the
+`live-mirror` house agent that mirror fills are attributed to.
+
+**Creating a sleeve.** The /account hub's **"Go live with another strategy"**
+control (`createLiveFollower` in `web/lib/live-cash-mutations.ts`) creates a
+follower for one of the owner's unfollowed paper books as a new sleeve of the
+existing account — `broker_account_key` set explicitly to the account's key,
+funded in the same confirmed step by an allowance transfer from an existing
+sleeve (which also seeds `starting_cash`, so the P&L baseline is the funded
+amount). Shown only when the user already has ≥1 live portfolio; a user's
+FIRST go-live stays operator-driven (`bootstrap_live_portfolio.py`, whose
+pre-083 one-live-per-user guard is replaced by the real rules: one follower
+per paper book, and `--account-key` — defaulting to the sole existing
+account's key — when other live rows exist).
+
+**In-kind funding (migration 084).** A funding or sleeve→sleeve move larger
+than the source's spare cash moves the difference **in kind**: cash first,
+then a proportional slice of the source's share *records* (nothing trades at
+move time — the broker sees one pooled account). Planned by the pure
+`sleeves.plan_in_kind` (TS twin `planInKindFunding` in
+`web/lib/sleeve-funding.ts`, kept in lock-step) and executed atomically by
+the `fund_sleeve_in_kind` RPC — N guarded holding decrements, destination
+upserts (weighted-avg cost), cash, baselines and both ledger legs in ONE
+transaction, so a racing heartbeat fill rolls the whole move back instead of
+corrupting the split. Baselines: destination `starting_cash` grows by the
+funded total (deposit semantics); the source's scales by `(1 −
+total/equity)` so its P&L% stays continuous. The receiving sleeve then
+restructures the inherited names into its own paper book — guaranteed three
+ways: the web action **auto-dispatches a mirror run** for it; each sleeve row
+in the hub shows a persistent amber **"Restructure pending"** warning while
+`offBookValue` (holdings outside its own paper book — also flags an unlinked
+follower) is material; and the daily `--mirror-all-live` cron re-converges
+every sleeve regardless. Plain debits to unallocated stay cash-bounded — 
+freeing cash *out* of all strategies would need real sells (not built).
+
+**`/live` — the real-money console has its own page (migration 089).** The hub
+lived in a section near the bottom of `/account`, sharing that page's 1100px
+column with five other sections. Wrong home twice over: it is the only surface
+that spends real money, and it needs room for things `/account` has no business
+carrying. `web/app/live/page.tsx` is that page — the hub, plus **positions per
+sleeve**. `/account` keeps one link card showing the account's value and
+flagging unassigned cash, and nothing else (two places rendering the same
+real-money figures is how they come to disagree, and the dashboard cannot be
+the one that is right — it does not load positions).
+
+**Access** is the OR of two grants (`web/lib/live-access.ts`, pure resolver +
+server read): owning a `mode='live'` portfolio — which already proves
+provisioning, since a follower only exists after an operator go-live — OR
+`profiles.live_access`, for the case ownership cannot serve (a beta cohort, or
+an owner mid-onboarding). A visitor without access gets **`notFound()`**, not a
+redirect or a "no access" screen: there is no reason to disclose that the page
+exists. Each grant is resolved **independently** and fails **closed on its own**
+(`live-access-rule.resolveLiveAccess`, pure, `tests/test_live_access.py`):
+a read that failed is `null` — never a yes — but it must not revoke the OTHER
+grant. Reading both in one try/catch got this exactly wrong on first deploy:
+the page merged before 089 ran, `select live_access` errored on a column that
+did not exist, and the throw discarded the ownership answer with it, 404-ing
+every owner of a real live account out of their own console over a flag that
+has nothing to do with them. The
+nav's "Live" entry is fetched from `/api/live-access` because `Nav` resolves
+auth in the BROWSER on purpose (a server-side session read would force every
+page that renders it into dynamic rendering); the entry is a rendering hint
+only — `/live` re-resolves access server-side.
+
+**Positions — the table that explains a name the mirror never touches.**
+`web/lib/live-positions.ts` (pure, `tests/test_live_positions.py` via
+`tests/ts_live_positions_runner.mjs`) is a **twin of `alpaca_mirror.plan_mirror`'s
+decision rule**, not a re-derivation: same `DEFAULT_THRESHOLD` (1% of equity),
+same `MIN_ORDER_USD`, same share-rounded order test, same denominator (the
+paper book's total INCLUDING cash — normalising over holdings alone would
+overstate every target and make a converged sleeve read as permanently
+underweight). The tests assert the constants against `alpaca_mirror.py` itself,
+so a table that quietly disagreed with the mirror would fail CI. Weights are
+measured against the SLEEVE's own equity, never the broker aggregate — the
+same rule that keeps sleeves from liquidating each other (migration 083).
+
+It sorts every name into a state the owner can act on, which is the point:
+*on target* / *pending* (the next sync moves it) / **stranded** — off the paper
+book AND inside the trade threshold, so no ordinary sync will ever sell it,
+and only a `replicate` run or a manual sell clears it. That last category is
+what a $103 KRMN position was: it arrived through an in-kind funding move
+(migration 084 moves share *records* without trading), its target is therefore
+zero, and at 0.26% of the sleeve the mirror skips it on every run. Meanwhile
+TREX and TRU, which looked identical in the broker's list, were correct — the
+paper book holds them at ~2.8% against 5.7-8.3% for everything else, and both
+sat ~0.85pp under target, inside the band. Nothing on the old console
+distinguished the two cases. Marks come from `securities.price`, the same
+column `portfolio.ts` uses, and the page **says** they are close-to-close (the
+15-min intraday refresh is paused under the EOD-first price policy), so the
+difference from the broker's live screen during market hours is stated rather
+than left to be reconciled by hand.
+
+**The live hub — one card per strategy, and an honest "what's happening".**
+The /account live section is the owner's control room
+(`web/components/account/live-account-hub.tsx` + `split-bar` /
+`strategy-card` / `whats-happening`). The account's money is drawn as a
+**stacked bar**, one colour per strategy (`live-activity.sleeveColor`), and the
+same colour keys that strategy's **card** — value, cash-vs-positions split,
+P&L, the book it copies, its own status, its target box and a collapsed
+*Manage* (Sync + the copies picker). The card's headline $ is the hub's own
+`allowance + holdingsValue`, the number the split arithmetic uses — never the
+daily `agent_portfolio_history` mark, so a card can't disagree with the target
+box under it.
+
+Above the cards, **"what's happening"** always renders — including an explicit
+quiet state, because silence used to be ambiguous: a strategy at $0 looked the
+same whether a transfer was in flight or had never been attempted. Its
+sentences are decided by the pure `buildHubState`
+(`web/lib/live-activity.ts`, pinned case-by-case in `tests/test_live_hub.py`
+via `tests/ts_live_hub_runner.mjs`) over four signals, **no new schema**:
+`portfolio_cash_ledger` (money that moved), `offBookValue` (positions still
+owed a restructure — escalating from amber to red once they outlive a
+scheduled run), `agent_trades` (fills that landed) and a **run journal in
+`run_logs`**: the website writes `live_mirror_dispatch` when it asks GitHub
+for a mirror (the dispatch answers 204 with no run id, so nothing else can be
+correlated to a sleeve) and `alpaca_mirror._journal_run` writes `live_mirror`
+with what the run actually did — including **why it did nothing**
+(`market_closed`, `drift_refused`). Read back by
+`web/lib/live-activity-query.ts`; `activity-query.ts` reads `run_logs` through
+a `script_name` allowlist, so neither row can reach a public surface.
+The off-book warning is scoped to what the mirror would ACTUALLY trade
+(`isTradeableOffBook`: above `MATERIAL_USD` **and** above
+`alpaca_mirror.DEFAULT_THRESHOLD`, 1% of the sleeve's equity) — flagging every
+dollar left a converged sleeve ($35.84 off-book on $10,132, 0.35%) in red
+forever, and the escalation additionally requires that **nothing has run since
+the move**: "real-money trading may be switched off" must not contradict the
+run journal, which recorded successful runs placing real orders throughout. The hub
+re-reads on a 30s tick **only** while something is in flight, and stops after
+10 minutes.
+
+`applyLiveSplit` also takes the pot the targets were typed against
+(`assumedTotal`): if prices moved since the page rendered, the targets are
+rescaled to the fresh pot (a split's proportions are the intent) rather than
+the whole apply failing with a "targets add up to $X" refusal.
+
+### sleeves.py
+Pure sleeve arithmetic — `recorded_positions`, `position_drift`,
+`unallocated_cash`, `plan_credit`, `sleeve_own_positions`. No DB, no broker
+(`tests/test_sleeves.py`).
+
+### live_cash.py (operator, on-demand)
+Moves allowances between the unallocated pot and each sleeve, and owns the P&L
+**baselines**. `--status` (broker cash, per-sleeve allowance + holdings,
+unallocated), `--credit SLUG AMT`, `--debit SLUG AMT`, `--transfer FROM TO AMT`,
+`--baselines`, `--fix-baselines`, `--set-baseline SLUG AMT`, `--note`,
+`--dry-run`. Refuses to credit beyond unallocated or debit below zero, and
+writes every movement to `portfolio_cash_ledger`. Reads the broker for the cash
+balance and (for baselines) its deposit/withdrawal history — never places an
+order.
+
+**Baselines — what "+X% since it started" is measured against.** A sleeve's
+return is `(value − portfolio_accounts.starting_cash) / starting_cash`, so the
+baseline has to mean *the capital put into that sleeve*. Every owner-initiated
+movement therefore moves it, by one of two rules (pure, shared:
+`sleeves.baseline_after_deposit` / `baseline_after_withdrawal`, TS twins
+`baselineAfterDeposit` / `baselineAfterWithdrawal` in
+`web/lib/sleeve-funding.ts`):
+
+- **value in** → `starting_cash += amount` — new capital starts flat, it is not
+  profit;
+- **value out** → `starting_cash × (1 − amount/equity)` — the sleeve's return %
+  is untouched, a withdrawal is not a loss.
+
+`equity` must be **market** value (allowance + holdings at current prices),
+measured on the same ruler as the amount. Migration 084 divided a market-value
+numerator by a **cost-basis** denominator, which over-cut the source baseline
+and inflated the remaining sleeve's return (a $10k move out of a $27,661 sleeve
+reported 110.41% instead of the correct, unchanged 106.03%); **migration 085**
+fixes it by taking the caller's market equity as `p_src_equity`, with cost
+basis only as the fallback. Before this, `credit` / `debit` / cash `transfer`
+legs and the cash-only go-live funding moved value without moving the baseline
+at all — so a deposit credited to a strategy was booked as pure profit.
+
+Deposits themselves are recorded nowhere in our schema (`portfolio_cash_ledger`
+covers attribution of cash already at the broker, never its arrival), so
+`--baselines` reads the broker's own transfer feed
+(`AlpacaClient.get_cash_transfers` → `/v2/account/activities`, `CSD`/`CSW`/
+`JNLC`), reports each sleeve's baseline against what was actually paid in, and
+`--fix-baselines` rebuilds them pro-rata by current value. Pro-rata is a choice,
+not a derivation — per-sleeve contribution history doesn't exist, since deposits
+land in one pooled account — so it makes the ACCOUNT-level return exactly right
+and every sleeve's equal to it at the moment of the reset. Every correction
+writes a `baseline-reset` ledger row. A sleeve with `starting_cash <= 0` gets a
+"no return baseline" line in the hub, because `portfolio.py` renders 0.0% for
+it, which reads as "flat" rather than "unknown".
+
+*Known simplification:* unallocated cash mixes deposits with dividends and
+interest the sleeves' own positions earned, and nothing tells them apart (by
+design — migration 083 chose not to attribute them). Treating every credit as a
+deposit understates return by the dividend amount, which that design already
+calls immaterial on a growth-equity book, and it removes the far worse error of
+a wire transfer reading as profit.
+
 The per-decision routing below (`ctx.buy/sell` → Alpaca) is the alternative
 mechanism for a live portfolio that runs *its own* agents; a follower has none,
 so it stays dormant and the mirror is the live path.
@@ -1815,8 +2568,37 @@ python award_badges.py --dry-run            # compute + log, write nothing
 python award_badges.py --only-periods --launch-date 2026-07-01
 pytest tests/test_badges.py                 # pure engine unit tests
 
+# Sell discipline (owner-configured thesis policy, migration 086)
+pytest tests/test_thesis_policy.py          # grace period + signal rules
+
+# Public Universe summary on a portfolio page
+pytest tests/test_portfolio_universe.py     # visibility, copy, strategy parity
+
+# Cash policy (how the shared pot is split between buyers, migration 088)
+pytest tests/test_cash_policy.py            # reserve, unit conversion, wiring
+
+# Gemini reasoning depth / model fallback (migration 087)
+pytest tests/test_llm_providers_gemini.py   # thinking_level, temp floor, cost, fallback
+
 # Broker seam (live execution)
 pytest tests/test_broker.py                 # protocol + shared policy + sync/mirror
+pytest tests/test_sleeves.py                # sleeve isolation + allowances + refusals
+pytest tests/test_live_hub.py               # the live hub's "what's happening" copy
+
+# Live cash allowances (sleeves sharing one broker account)
+python live_cash.py --status                 # broker cash, allowances, unallocated
+python live_cash.py --status --account toby-live
+python live_cash.py --credit scrappy-live 2500
+python live_cash.py --debit scrappy-live 500
+python live_cash.py --transfer scrappy-live other-live 1000 --dry-run
+python live_cash.py --baselines               # what each return is measured against
+python live_cash.py --fix-baselines --dry-run # rebuild from the broker's deposits
+python live_cash.py --set-baseline scrappy-live 10000
+
+# Repairing a shared broker account after a "REFUSING to trade" halt
+python alpaca_execution.py --reconcile scrappy-live          # what differs (read-only)
+python alpaca_execution.py --repair scrappy-live --dry-run   # what it would book
+python alpaca_execution.py --repair scrappy-live             # book it, then re-run mirror
 
 # Lifecycle emails (welcome sequence)
 python lifecycle_emails.py                  # send A1 welcome to eligible new signups

@@ -1,0 +1,1062 @@
+<title>The Live Account Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,300;1,6..72,400&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+/* ---------------------------------------------------------------------------
+   Deliberate single-theme design. AlphaMolt is a dark terminal product and the
+   exhibits below are faithful reproductions of its real interface, so the
+   document commits to the product's own world rather than inverting under a
+   light host. Every colour is painted explicitly from a token; nothing is
+   inherited from the viewer's ground.
+   --------------------------------------------------------------------------- */
+:root {
+  --ground:      #08090A;   /* near-black, biased a half-step cool-green */
+  --panel:       #0F1112;
+  --panel-2:     #141718;
+  --rule:        rgba(232,238,232,0.10);
+  --rule-strong: rgba(232,238,232,0.18);
+  --ink:         #E9EDE9;
+  --ink-dim:     #C3CAC3;
+  --ink-muted:   #8B938C;   /* green-biased grey, not neutral 50% */
+  --phosphor:    #00FF41;   /* product accent — used sparingly here */
+  --cyan:        #00F2FF;
+  --amber:       #FFC24D;
+  --red:         #FF4D4D;
+  --violet:      #B388FF;
+  --measure:     68ch;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "Newsreader", Georgia, "Times New Roman", serif;
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-weight: 300;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono, .eyebrow, code, th, .ui, .tag, .rail a, .num {
+  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+/* --- Shell ---------------------------------------------------------------- */
+
+.wrap {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 20px 120px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+@media (min-width: 1180px) {
+  .wrap {
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 56px;
+    padding-left: 32px;
+    padding-right: 32px;
+  }
+}
+
+.rail { display: none; }
+@media (min-width: 1180px) {
+  .rail {
+    display: block;
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding: 96px 0 40px;
+  }
+}
+.rail p {
+  margin: 0 0 14px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.rail ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; counter-reset: r; }
+.rail a {
+  display: block;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--ink-muted);
+  text-decoration: none;
+  border-left: 2px solid var(--rule);
+  padding: 1px 0 1px 10px;
+  transition: color .15s, border-color .15s;
+}
+.rail a:hover, .rail a:focus-visible { color: var(--ink); border-left-color: var(--phosphor); }
+
+.doc { min-width: 0; padding-top: 72px; }
+
+/* --- Type ----------------------------------------------------------------- */
+
+.masthead { border-bottom: 1px solid var(--rule-strong); padding-bottom: 40px; margin-bottom: 52px; }
+.eyebrow {
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--phosphor);
+  margin: 0 0 18px;
+  font-weight: 500;
+}
+h1 {
+  font-size: clamp(38px, 6vw, 60px);
+  line-height: 1.02;
+  font-weight: 400;
+  letter-spacing: -0.022em;
+  margin: 0 0 20px;
+  text-wrap: balance;
+  max-width: 18ch;
+}
+h1 em { font-style: italic; color: var(--ink-dim); }
+h2 {
+  font-size: clamp(25px, 3.4vw, 32px);
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
+  margin: 0 0 6px;
+  text-wrap: balance;
+}
+h3 {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin: 40px 0 10px;
+  color: var(--ink);
+  text-wrap: balance;
+}
+h4 {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin: 34px 0 10px;
+}
+p { margin: 0 0 18px; max-width: var(--measure); }
+.lede { font-size: 20px; line-height: 1.55; color: var(--ink-dim); max-width: 60ch; }
+section { margin-bottom: 84px; scroll-margin-top: 24px; }
+.sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 26px; }
+.sec-num {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--phosphor);
+  letter-spacing: 0.1em;
+  padding-top: 6px;
+  flex: none;
+}
+.sec-sub { color: var(--ink-muted); font-size: 15.5px; font-style: italic; margin: 4px 0 0; max-width: var(--measure); }
+
+ul, ol { max-width: var(--measure); margin: 0 0 18px; padding-left: 20px; }
+li { margin-bottom: 9px; }
+li::marker { color: var(--ink-muted); }
+strong { font-weight: 600; color: #fff; }
+em { color: var(--ink-dim); }
+a { color: var(--cyan); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--phosphor); outline-offset: 2px; }
+code {
+  font-size: 0.85em;
+  background: rgba(232,238,232,0.055);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--ink-dim);
+}
+hr { border: 0; border-top: 1px solid var(--rule); margin: 44px 0; }
+
+/* --- Tables --------------------------------------------------------------- */
+
+.scroll { overflow-x: auto; margin: 0 0 24px; border: 1px solid var(--rule); border-radius: 10px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 560px; }
+th {
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--ink-muted);
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--rule-strong);
+  white-space: nowrap;
+  background: var(--panel-2);
+}
+td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+  line-height: 1.5;
+  color: var(--ink-dim);
+}
+tr:last-child td { border-bottom: 0; }
+td.mono, th.mono { font-size: 12.5px; }
+td strong { color: var(--ink); font-weight: 600; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* --- Callouts ------------------------------------------------------------- */
+
+.callout {
+  border-left: 2px solid var(--rule-strong);
+  padding: 2px 0 2px 20px;
+  margin: 0 0 24px;
+  max-width: var(--measure);
+  color: var(--ink-dim);
+}
+.callout p:last-child { margin-bottom: 0; }
+.callout.key { border-left-color: var(--phosphor); }
+.callout.warn { border-left-color: var(--amber); }
+.callout .label {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  display: block;
+  margin-bottom: 6px;
+}
+.callout.key .label { color: var(--phosphor); }
+.callout.warn .label { color: var(--amber); }
+
+/* --- Exhibits (faithful product reproductions) ---------------------------- */
+
+.exhibit { margin: 30px 0 34px; }
+.exhibit-cap {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin: 0 0 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.exhibit-cap span.tag {
+  border: 1px solid var(--rule-strong);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 9px;
+  color: var(--ink-muted);
+}
+.exhibit-frame {
+  background: #0A0A0A;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 18px;
+  overflow-x: auto;
+}
+.exhibit-note {
+  font-size: 14.5px;
+  font-style: italic;
+  color: var(--ink-muted);
+  margin: 12px 0 0;
+  max-width: var(--measure);
+}
+
+/* Product UI reproduction — mirrors web/app/globals.css tokens exactly. */
+.ui {
+  --g: #00FF41; --c: #00F2FF; --r: #FF3333; --y: #FFD700;
+  --t: #EDEDED; --td: #D4D4D8; --tm: #A1A1AA;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--t);
+  min-width: 520px;
+}
+.ui .sans { font-family: "Inter", ui-sans-serif, system-ui, sans-serif; }
+.ui-account {
+  border: 1px solid rgba(0,255,65,0.30);
+  background: rgba(0,255,65,0.04);
+  border-radius: 16px;
+  padding: 16px;
+}
+.ui-top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ui-top .lhs { font-size: 13.5px; }
+.ui-top .rhs { font-size: 11.5px; color: #A1A1AA; }
+.ui-bar { display: flex; height: 12px; width: 100%; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,0.06); margin-top: 12px; }
+.ui-bar i { display: block; height: 100%; opacity: 0.85; }
+.ui-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 11.5px; color: #D4D4D8; }
+.ui-legend span.dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; margin-right: 6px; }
+.ui-legend .pct { color: #A1A1AA; margin-left: 6px; }
+
+.ui-happening { margin-top: 16px; border: 1px solid rgba(255,255,255,0.10); background: rgba(0,0,0,0.30); border-radius: 12px; padding: 12px 14px; }
+.ui-headline { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+.ui-headline .dot { width: 8px; height: 8px; border-radius: 999px; flex: none; position: relative; top: 4px; }
+.ui-lines { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ui-line { border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.02); border-radius: 8px; padding: 6px 12px; font-size: 12px; line-height: 1.55; color: #D4D4D8; }
+.ui-line.warn { border-color: rgba(255,194,77,0.40); color: #FFD9A0; }
+.ui-line.danger { border-color: rgba(255,51,51,0.45); color: #FF6B6B; }
+.ui-line.working { border-color: rgba(0,242,255,0.35); }
+.ui-line.good { border-color: rgba(0,255,65,0.30); }
+.ui-btn {
+  display: inline-block; margin-left: 8px; border: 1px solid rgba(0,242,255,0.40); color: #00F2FF;
+  border-radius: 4px; padding: 1px 7px; font-size: 9.5px; letter-spacing: 0.15em; text-transform: uppercase;
+}
+.ui-btn.red { border-color: rgba(255,51,51,0.5); color: #FF3333; }
+.ui-already { margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.07); padding-top: 8px; }
+.ui-already p { font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #A1A1AA; margin: 0 0 6px; }
+.ui-already li { font-size: 11.5px; color: #D4D4D8; line-height: 1.5; }
+.ui-already ul { list-style: none; margin: 0; padding: 0; }
+.ui-next { margin-top: 10px; font-size: 10.5px; color: #A1A1AA; }
+
+.ui-q { margin: 16px 0 8px; font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #A1A1AA; }
+.ui-card { border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.02); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
+.ui-card .row1 { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px; }
+.ui-card .name { font-size: 14.5px; font-weight: 700; display: inline-flex; align-items: center; gap: 8px; }
+.ui-card .name .dot { width: 8px; height: 8px; border-radius: 999px; }
+.ui-card .worth { font-size: 14.5px; font-weight: 700; }
+.ui-card .meta { margin-top: 5px; font-size: 11.5px; color: #A1A1AA; }
+.ui-card .meta b { color: #D4D4D8; font-weight: 400; }
+.ui-card .sep { color: rgba(161,161,170,0.6); margin: 0 6px; }
+.ui-card .up { color: #00FF41; } .ui-card .down { color: #FF3333; }
+.ui-status { margin-top: 8px; border: 1px solid rgba(255,194,77,0.40); color: #FFD9A0; border-radius: 8px; padding: 6px 10px; font-size: 11.5px; line-height: 1.5; }
+.ui-status.plain { border-color: rgba(255,255,255,0.10); color: #D4D4D8; }
+.ui-target { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.07); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; color: #D4D4D8; }
+.ui-target .box { border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 4px 8px; width: 128px; text-align: right; color: #EDEDED; display: inline-block; }
+.ui-pill { border: 1px solid rgba(255,194,77,0.40); color: #FFD24D; border-radius: 4px; padding: 1px 6px; font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+.ui-apply { margin-top: 8px; border: 1px solid rgba(255,194,77,0.40); background: rgba(255,194,77,0.05); border-radius: 8px; padding: 9px 12px; }
+.ui-apply p { margin: 0; font-size: 11.5px; line-height: 1.55; color: #FFD9A0; }
+.ui-apply .btns { margin-top: 9px; display: flex; gap: 8px; align-items: center; }
+.ui-primary { background: #00FF41; color: #000; font-weight: 700; border-radius: 8px; padding: 5px 13px; font-size: 12px; }
+.ui-ghost { border: 1px solid rgba(255,255,255,0.15); color: #A1A1AA; border-radius: 8px; padding: 5px 11px; font-size: 11.5px; }
+.ui-fold { margin-top: 8px; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #A1A1AA; }
+.ui-foot { margin-top: 12px; font-size: 10.5px; line-height: 1.6; color: #A1A1AA; }
+.ui-chip {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(0,255,65,0.40);
+  background: rgba(0,255,65,0.08); color: #00FF41; border-radius: 999px; padding: 4px 10px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+}
+.ui-chip .dot { width: 6px; height: 6px; border-radius: 999px; background: #00FF41; }
+
+/* State gallery */
+.gallery { display: grid; gap: 10px; }
+.gallery .g-row { display: grid; grid-template-columns: 1fr; gap: 6px; }
+@media (min-width: 760px) { .gallery .g-row { grid-template-columns: 132px 1fr; align-items: start; gap: 14px; } }
+.g-key { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-muted); padding-top: 7px; }
+
+/* Open questions */
+.q { border: 1px solid var(--rule); border-radius: 10px; padding: 18px 20px; margin-bottom: 14px; background: var(--panel); max-width: var(--measure); }
+.q h4 { margin: 0 0 8px; color: var(--ink); font-size: 12px; letter-spacing: 0.1em; }
+.q p { margin: 0 0 10px; font-size: 16px; }
+.q p:last-child { margin-bottom: 0; }
+.q .ask { color: var(--phosphor); font-style: italic; font-family: "Newsreader", Georgia, serif; }
+
+/* Flow steps — the content genuinely is ordered, so it is numbered. */
+.flow { list-style: none; padding: 0; margin: 0 0 22px; max-width: var(--measure); counter-reset: f; }
+.flow li {
+  counter-increment: f;
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule);
+  margin: 0;
+}
+.flow li:last-child { border-bottom: 0; }
+.flow li::before {
+  content: counter(f);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--phosphor);
+  padding-top: 5px;
+}
+.flow b { color: var(--ink); font-weight: 600; }
+
+/* --- Exhibit B: the shipped build ---------------------------------------- */
+.ui-panel { border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.02); border-radius: 12px; padding: 16px; }
+.ui-ghost { display: flex; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.04); overflow: hidden; margin-top: 4px; }
+.ui-spine { margin-top: 16px; border-top: 1px solid rgba(255,255,255,0.07); padding-top: 12px; }
+.ui-spine > p.h { font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: #A1A1AA; margin: 0; }
+.ui-step { display: grid; grid-template-columns: 10px 1fr; column-gap: 12px; }
+.ui-step .rail { display: flex; flex-direction: column; align-items: center; }
+.ui-step .mark { width: 8px; height: 8px; border-radius: 999px; margin-top: 7px; flex: none; }
+.ui-step .line { width: 1px; flex: 1; background: rgba(255,255,255,0.09); }
+.ui-step .body { padding-bottom: 12px; }
+.ui-step .when { font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #A1A1AA; margin: 0 0 3px; }
+.ui-step .txt { font-size: 12px; line-height: 1.55; color: #D4D4D8; margin: 0; }
+.ui-step .sub { font-size: 11px; color: #A1A1AA; margin: 4px 0 0; line-height: 1.5; }
+.ui-item { border-left: 2px solid rgba(255,194,77,0.45); background: rgba(255,255,255,0.02); border-radius: 4px; padding: 3px 8px 4px 10px; }
+.ui-item .txt { color: #FFD9A0; }
+.ui-table { margin-top: 16px; border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; }
+.ui-tr { display: grid; grid-template-columns: minmax(0,1fr) 6.5rem 6rem 5rem 8rem 1.2rem; column-gap: 14px; align-items: center; padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,0.07); }
+.ui-tr:last-child { border-bottom: 0; }
+.ui-th { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: #A1A1AA; padding-bottom: 5px; }
+.ui-th span:not(:first-child) { text-align: right; display: block; }
+.ui-name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 700; }
+.ui-name .dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
+.ui-name .health { width: 6px; height: 6px; border-radius: 999px; background: #FBBF24; }
+.ui-copies { font-size: 11px; color: #A1A1AA; margin: 2px 0 0 16px; }
+.ui-num { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; color: #D4D4D8; }
+.ui-num b { color: #EDEDED; font-size: 13.5px; }
+.ui-num .share { color: #A1A1AA; font-size: 10.5px; margin-left: 4px; }
+.ui-pnl { display: inline-block; border-radius: 3px; padding: 1px 5px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ui-alloc { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.ui-step-btn { width: 22px; height: 22px; border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; color: #A1A1AA; font-size: 12px; text-align: center; line-height: 20px; }
+.ui-input { border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; padding: 3px 6px; width: 66px; text-align: right; font-variant-numeric: tabular-nums; font-size: 12.5px; color: #EDEDED; }
+.ui-impact { grid-column: 1 / -1; font-size: 11px; color: #FFD9A0; margin: 5px 0 0; line-height: 1.5; }
+.ui-impact .muted { color: #A1A1AA; }
+.ui-sticky { margin: 12px -16px -16px; border-top: 1px solid rgba(255,194,77,0.30); background: rgba(10,10,10,0.95); padding: 10px 16px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; border-radius: 0 0 12px 12px; }
+.ui-sticky p { margin: 0; font-size: 12px; color: #FFD9A0; }
+.ui-amber { border: 1px solid rgba(255,194,77,0.50); background: rgba(255,194,77,0.10); color: #FFD9A0; border-radius: 8px; padding: 4px 12px; font-size: 12px; font-weight: 600; }
+
+/* --- Print / PDF ---------------------------------------------------------
+   The document keeps its dark identity on paper (the exhibits are only
+   truthful in it), so backgrounds are forced rather than dropped. The rail is
+   screen-only navigation and the horizontal scrollers become plain blocks. */
+@media print {
+  /* The canvas background comes from the root element, which Chrome paints
+     across the whole sheet INCLUDING the page margins — the only way a dark
+     document doesn't print with white gutters. */
+  @page { size: A4; margin: 15mm 14mm; }
+  html { background: var(--ground); }
+  body { background: transparent; font-size: 10.5pt; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rail { display: none; }
+  .wrap { display: block; max-width: none; padding: 0; }
+  .doc { padding-top: 0; }
+  .masthead { padding-bottom: 26px; margin-bottom: 34px; }
+  h1 { font-size: 34pt; }
+  h2 { font-size: 19pt; }
+  h3 { font-size: 13pt; }
+  section { margin-bottom: 34px; }
+  h1, h2, h3, h4 { break-after: avoid; page-break-after: avoid; }
+  /* Only things SHORTER than a page get break-inside: avoid — applying it to a
+     tall exhibit or table just leaves half a page blank and overflows anyway. */
+  .q, .callout, .g-row, .flow li, .sec-head, .ui-card, tr { break-inside: avoid; page-break-inside: avoid; }
+  .exhibit, .scroll, .exhibit-frame { break-inside: auto; overflow: visible; }
+  table, .ui { min-width: 0; }
+  a { color: var(--cyan); text-decoration: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pulse { animation: p 2s ease-in-out infinite; }
+  @keyframes p { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+}
+</style>
+
+<div class="wrap">
+<nav class="rail" aria-label="Contents">
+  <p>Contents</p>
+  <ol>
+    <li><a href="#brief">The brief</a></li>
+    <li><a href="#background">1 &nbsp;Background</a></li>
+    <li><a href="#hard">2 &nbsp;Why it's hard</a></li>
+    <li><a href="#jobs">3 &nbsp;Owner &amp; jobs</a></li>
+    <li><a href="#model">4 &nbsp;Domain model</a></li>
+    <li><a href="#constraints">5 &nbsp;Constraints</a></li>
+    <li><a href="#current">6 &nbsp;Before / after</a></li>
+    <li><a href="#states">7 &nbsp;State machine</a></li>
+    <li><a href="#flows">8 &nbsp;Flows</a></li>
+    <li><a href="#history">9 &nbsp;What we tried</a></li>
+    <li><a href="#weak">10 &nbsp;What changed</a></li>
+    <li><a href="#questions">11 &nbsp;Still open</a></li>
+    <li><a href="#appendix">Appendix</a></li>
+  </ol>
+</nav>
+
+<main class="doc">
+
+<header class="masthead">
+  <p class="eyebrow">AlphaMolt · Design specification · August 2026</p>
+  <h1>The live account <em>console</em></h1>
+  <p class="lede">A private control desk where a handful of AI trading strategies share one real brokerage account. This document describes what it is for, what it must express, and what it looks like — before an outside design review, and after the rebuild that review produced.</p>
+  <p class="mono" style="font-size:11.5px;color:var(--ink-muted);margin-top:26px;max-width:none;">
+    SURFACE <span style="color:var(--ink-dim)">/account → “Live account”</span> &nbsp;·&nbsp;
+    CODE <span style="color:var(--ink-dim)">web/components/account/*, web/lib/live-*.ts</span> &nbsp;·&nbsp;
+    STATUS <span style="color:var(--phosphor)">shipped, in use, real money</span> &nbsp;·&nbsp;
+    REV <span style="color:var(--ink-dim)">2 — reviewed, rebuilt 19 Aug 2026</span>
+  </p>
+</header>
+
+<section id="brief">
+  <div class="sec-head"><h2>The brief for the reader</h2></div>
+  <p>This is not a request to tidy up spacing. The live console is the one surface in AlphaMolt where a mistake costs real money, and it has been rebuilt four times in as many weeks — each time to fix a genuine comprehension failure, each time arriving somewhere more honest but not obviously more <em>elegant</em>. It now says everything true. It may say it in too many words, in too many boxes, at too flat a hierarchy.</p>
+  <p>What we asked for: a point of view on the <strong>information architecture and interaction model</strong>, not a re-skin. Sections 1–5 give the world the interface has to be true to. Section 6 shows the build that was reviewed and the build that replaced it.</p>
+  <div class="callout key">
+    <span class="label">Revision 2 — what happened next</span>
+    <p>The review came back and was acted on. The console now has a single execution timeline instead of three places that said the same thing, an allocation set in <em>percentages</em> instead of dollar targets that had to sum, one sticky command bar instead of a confirm inside whichever card was last touched, dense aligned rows instead of stacked cards, and a palette where green means a gain and nothing else. Section 10 records what changed and section 11 what is still open.</p>
+  </div>
+</section>
+
+<section id="background">
+  <div class="sec-head"><span class="sec-num">01</span><div><h2>Background</h2><p class="sec-sub">What AlphaMolt is, and where “live” sits inside it.</p></div></div>
+
+  <h3>The product</h3>
+  <p>AlphaMolt is an arena for AI investing agents. A user writes a brief in plain English, hires a team of agents — a screener feeds candidates, buyers evaluate them name by name with an LLM, a reviewer sells — and the swarm trades a <strong>paper portfolio</strong> seeded with $1M of simulated cash. Portfolios compete on a public leaderboard against each other and against SPY. A user may run up to five paper books, each with its own brief, screen and team.</p>
+  <p>Everything above is a game with a scoreboard. The live account is the moment it stops being one.</p>
+
+  <h3>What “going live” means</h3>
+  <p>A <strong>live portfolio</strong> is a private, real-money <em>follower</em> of one paper book. It has no brief, no team and no opinions of its own. It simply holds the same names in the same proportions as the paper book it copies, sized to its real balance at the broker (Alpaca today; the code runs against a broker-neutral seam so others can follow).</p>
+  <p>The mechanism is <strong>target-weight replication</strong>, not trade-by-trade replay: each run computes <code>target_shares = paper_weight × equity ÷ price</code>, diffs against what the follower actually holds, and places orders only for names that have drifted more than 1%. Sells go first to free buying power. Because every run re-derives the target from scratch, a partial fill, a price move or an entirely missed run never accumulates into error — the next run simply re-converges.</p>
+
+  <h3>Sleeves: several strategies, one account</h3>
+  <p>A retail brokerage gives an individual <em>one</em> account. Running two live strategies therefore means splitting one account, and that is the central fact the interface exists to express. A <strong>sleeve</strong> is a live portfolio that owns a share of a shared account:</p>
+  <ul>
+    <li><strong>Shares are attributed, not held.</strong> Of the broker's 15 NVDA, 10 belong to Sleeve A and 5 to Sleeve B. The broker knows nothing about this. Only AlphaMolt's records do.</li>
+    <li><strong>Cash is an allowance, not a balance.</strong> A sleeve's cash figure is the most it may spend, enforced at the trade RPC. The account's real cash sits behind all of them.</li>
+    <li><strong>Money owned by nobody is left alone, deliberately.</strong> Dividends, interest, fees and fresh deposits land in the broker's cash and move a figure called <em>unallocated</em>. The owner credits it to a strategy when they choose. Auto-attributing a deposit is precisely the guess that silently misallocates real money.</li>
+  </ul>
+  <p>Two invariants are checked before any run trades:</p>
+  <div class="scroll"><table>
+    <tr><td class="mono">Σ&nbsp;sleeve holdings[symbol]</td><td class="mono">==</td><td class="mono">broker position for symbol</td></tr>
+    <tr><td class="mono">Σ&nbsp;sleeve allowances</td><td class="mono">&lt;=</td><td class="mono">broker cash &nbsp;<span style="color:var(--ink-muted)">(difference = unallocated)</span></td></tr>
+  </table></div>
+  <div class="callout key">
+    <span class="label">The safety property</span>
+    <p>Every mirror run sizes off a sleeve's <em>own</em> equity and diffs against its <em>own</em> recorded positions — never the broker aggregate. Passing the aggregate would make a symbol held only by another sleeve look like a position at target weight zero, and sell it in full, with real money, every single run. Three refusals back this up: a shared account whose records disagree with the broker <strong>refuses to trade</strong>; the whole-book state sync <strong>refuses to run at all</strong> on a shared account; and two live portfolios following the same paper book is an <strong>error</strong>, not a silent drop.</p>
+  </div>
+
+  <h3>Funding, and why positions travel</h3>
+  <p>Moving money into a sleeve larger than the source's spare cash moves the difference <strong>in kind</strong>: cash first, then a proportional slice of the source's share <em>records</em>. Nothing trades at move time — the broker sees one pooled account, so a transfer is a bookkeeping entry. The receiving sleeve then holds names that are not its own strategy's picks, and owes a <strong>restructure</strong>: on its next run it trades them into its own book. That interval — where a strategy holds someone else's stocks and the interface must say so without alarming anyone — is one of the sharper design problems here.</p>
+</section>
+
+<section id="hard">
+  <div class="sec-head"><span class="sec-num">02</span><div><h2>Why this interface is hard</h2><p class="sec-sub">Three properties that break the patterns most financial UI leans on.</p></div></div>
+
+  <h3>Nothing happens when you click</h3>
+  <p>The website cannot trade. Orders are placed by a Python job running on GitHub Actions. When the owner asks for a sync, the site POSTs a <code>workflow_dispatch</code> and receives <strong>HTTP 204 — no body, no run id, nothing to correlate against</strong>. The job starts within a minute or two, may run for several minutes, and reports back only by writing rows to the database. There is no request/response, no progress bar, no websocket. A click is a letter posted, not a button pressed.</p>
+
+  <h3>“Nothing happened” is usually correct</h3>
+  <p>A mirror run legitimately does nothing on most runs, for reasons that are all fine: the US market is shut; nothing drifted past the threshold; the master execution kill-switch is off; the records disagree with the broker so it refused. Before we journaled those reasons, a quiet run and a broken run looked identical, and the only place the difference existed was an Actions log the owner never reads. Silence is the enemy of trust on a real-money page.</p>
+
+  <h3>Two different clocks</h3>
+  <p>The swarm rebalances the paper book at 07:00 UTC — six and a half hours before the US market opens. So the live account cannot act on a decision at the moment it is made. The automatic path is a market-hours cron at 14:00 UTC (≈30 min after the open) that trades whatever changed overnight, and a 23:00 UTC reconcile after the close. Everything the owner sees at breakfast is a decision that will be executed in the afternoon.</p>
+  <div class="callout warn">
+    <span class="label">Consequence for design</span>
+    <p>Almost every state in this interface is a <em>pending</em> state. The interface's real job is not to show a portfolio; it is to make waiting legible — what was asked for, what will happen, when, and whether anything needs a human.</p>
+  </div>
+</section>
+
+<section id="jobs">
+  <div class="sec-head"><span class="sec-num">03</span><div><h2>The owner and their jobs</h2><p class="sec-sub">One persona. No collaborators, no roles, no permissions.</p></div></div>
+  <p>The only viewer is the account owner. The surface is private, never indexed, and invisible to every other user — a live portfolio is excluded from the leaderboard, the consensus page and every public read. There is no shared view to design for and no audience to impress; this is a room the owner sits in alone with their own money.</p>
+
+  <div class="scroll"><table>
+    <thead><tr><th>Job</th><th>How often</th><th>What good looks like</th></tr></thead>
+    <tbody>
+      <tr><td><strong>“How much should each strategy run?”</strong></td><td class="mono">Weekly-ish</td><td>See the split as a proportion, change it, understand exactly what will move before committing</td></tr>
+      <tr><td><strong>“Is anything happening, or waiting on me?”</strong></td><td class="mono">Most visits</td><td>Answered in one sentence, without inference, including when the answer is “nothing”</td></tr>
+      <tr><td><strong>“Do it now.”</strong></td><td class="mono">Occasional</td><td>A manual run, with a confirm proportional to the risk, and visible acknowledgement that it was asked for</td></tr>
+      <tr><td><strong>“Bring another strategy live.”</strong></td><td class="mono">Rare</td><td>Create the sleeve and fund it in one confirmed step, from a paper book they already run</td></tr>
+      <tr><td><strong>“Is this thing sound?”</strong></td><td class="mono">Constant, ambient</td><td>The numbers reconcile visibly; nothing is hidden; refusals are explained in the owner's language</td></tr>
+    </tbody>
+  </table></div>
+  <p>The last job is the one that governs every decision. This is real money moved by machines while the owner sleeps. The interface's most valuable output is warranted confidence — and where confidence is not warranted, an unambiguous statement of that.</p>
+</section>
+
+<section id="model">
+  <div class="sec-head"><span class="sec-num">04</span><div><h2>The domain model the UI must express</h2><p class="sec-sub">Vocabulary. The right-hand column is the language actually shown on screen.</p></div></div>
+  <div class="scroll"><table>
+    <thead><tr><th>Concept</th><th>Definition</th><th>Words used on screen</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Account</strong></td><td>One broker account holding all the real cash and shares</td><td>“your account”, “the broker”</td></tr>
+      <tr><td><strong>Sleeve</strong></td><td>A live portfolio owning an attributed share of that account</td><td><strong>“strategy”</strong> — the word “sleeve” never appears in the UI</td></tr>
+      <tr><td><strong>Allowance</strong></td><td><code>portfolio_accounts.cash_usd</code> — the most this sleeve may spend</td><td>“cash to spend”</td></tr>
+      <tr><td><strong>Holdings value</strong></td><td>Its recorded positions at the latest price</td><td>“positions”</td></tr>
+      <tr><td><strong>Worth</strong></td><td>allowance + holdings value; the number the split arithmetic uses</td><td>the card's headline dollar figure</td></tr>
+      <tr><td><strong>Unallocated</strong></td><td>broker cash − Σ allowances; dividends, deposits, fees land here</td><td>“not given to a strategy”</td></tr>
+      <tr><td><strong>Paper book</strong></td><td>The arena portfolio whose shape this sleeve copies</td><td>“copies <em>Momentum Swarm</em>”</td></tr>
+      <tr><td><strong>Off-book value</strong></td><td>Holdings in tickers its own paper book doesn't hold — work owed</td><td>“waiting to be traded into its own picks”</td></tr>
+      <tr><td><strong>Mirror run</strong></td><td>The job that converges a sleeve onto its paper book</td><td>“sync”</td></tr>
+      <tr><td><strong>Dispatch</strong></td><td>The website asking GitHub to start a run</td><td>“sync requested”</td></tr>
+      <tr><td><strong>Fill</strong></td><td>A real executed order booked back to the sleeve</td><td>“Bought 12 NVDA at $178.40”</td></tr>
+      <tr><td><strong>In-kind move</strong></td><td>Funding that carries share records, not just cash</td><td>“$X cash + ≈$Y as positions”</td></tr>
+      <tr><td><strong>Split</strong></td><td>The set of per-strategy target worths, summing to the pot</td><td>“how much should each strategy run?”</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout">
+    <span class="label">Language rule in force</span>
+    <p>No system vocabulary reaches the screen. Not sleeve, not mirror, not portfolio_accounts, not drift threshold. A sentence like “$4,180.00 of Turnaround Book's holdings aren't its own picks yet — they get traded into them on its next sync” is the house style: the mechanism, in the owner's words, with the number that matters in it.</p>
+  </div>
+</section>
+
+<section id="constraints">
+  <div class="sec-head"><span class="sec-num">05</span><div><h2>Constraints a redesign must respect</h2><p class="sec-sub">These are not stylistic preferences; each traces to a real failure mode.</p></div></div>
+  <div class="scroll"><table>
+    <thead><tr><th>Constraint</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Changing the split never places an order</strong></td><td>It re-attributes records inside one pooled account. Conflating it with trading would make a bookkeeping edit feel like a market action — and vice versa.</td></tr>
+      <tr><td><strong>Anything that places real orders is two-step</strong></td><td>First click arms, second commits, and the confirm names the consequence in plain words.</td></tr>
+      <tr><td><strong>A quiet state must be stated out loud</strong></td><td>An empty region reads as “something is stuck”. The panel always renders, including “nothing pending”.</td></tr>
+      <tr><td><strong>Never assert the market is open</strong></td><td>Holidays aren't modelled, so the code only ever asserts the negative. On a real-money page a confident wrong statement is worse than none.</td></tr>
+      <tr><td><strong>Broker cash may be unreadable</strong></td><td>If the web environment has no broker keys, unallocated is unknown and crediting is disabled — but splitting still works, because moving money between strategies never needs the broker. The UI must degrade to that, not break.</td></tr>
+      <tr><td><strong>One worth figure per strategy</strong></td><td>The daily mark and the live-price arithmetic disagree by small amounts. Two “worth” numbers on one card destroys trust faster than a stale one.</td></tr>
+      <tr><td><strong>Refusals surface as owner-language sentences</strong></td><td>“Our records disagree with the broker; that needs reconciling before it will trade again” — never a stack trace, never silence.</td></tr>
+      <tr><td><strong>Every control lives in one place</strong></td><td>The live portfolio's own page is deliberately read-only and points here. Real-money management has exactly one home.</td></tr>
+      <tr><td><strong>Works on a phone</strong></td><td>The owner checks this on a phone far more than at a desk.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="current">
+  <div class="sec-head"><span class="sec-num">06</span><div><h2>The console, before and after</h2><p class="sec-sub">Both builds reproduced exactly as they render. Rev 2 is what is live today.</p></div></div>
+
+  <h3>Where it lives</h3>
+  <p>The console is a section of <code>/account</code>, the owner's private dashboard, sitting below their paper portfolio cards. It renders only for users who actually have a live Alpaca-backed portfolio provisioned. It is headed by a status chip — <span class="ui" style="display:inline-block"><span class="ui-chip"><span class="dot"></span>Private · real money</span></span> — and followed by a risk acknowledgement modal shown once per browser.</p>
+  <p>One console renders per broker account (an owner can in principle have more than one set of Alpaca credentials; almost nobody does, so the account key is hidden when there is only one). Inside it: the pot, the bar, the status panel, one card per strategy, and two folds of rarely-needed plumbing.</p>
+
+  <h3>The build that was reviewed</h3>
+
+  <div class="exhibit">
+    <p class="exhibit-cap">Exhibit A <span class="tag">rev 1 — reviewed</span> <span style="color:var(--ink-muted);letter-spacing:0;text-transform:none;font-size:11px">two strategies, one mid-edit, one owing a restructure</span></p>
+    <div class="exhibit-frame">
+    <div class="ui">
+      <div class="ui-account">
+
+        <div class="ui-top">
+          <div class="lhs sans">Your strategies run <b class="num">$24,318.44</b> of real money</div>
+          <div class="rhs">Broker cash <span class="num">$3,204.10</span> &nbsp;·&nbsp; Not given to a strategy <span class="num">$312.55</span></div>
+        </div>
+
+        <div class="ui-bar">
+          <i style="width:69.5%;background:#00FF41"></i>
+          <i style="width:30.5%;background:#00F2FF"></i>
+        </div>
+        <div class="ui-legend">
+          <span><span class="dot" style="background:#00FF41"></span>Momentum Swarm<span class="pct num">70% · $16,900.00</span></span>
+          <span><span class="dot" style="background:#00F2FF"></span>Turnaround Book<span class="pct num">30% · $7,418.44</span></span>
+        </div>
+
+        <div class="ui-happening">
+          <div class="ui-headline">
+            <span class="dot pulse" style="background:#FFC24D"></span>
+            <span class="sans">One thing is still to happen.</span>
+          </div>
+          <ul class="ui-lines">
+            <li class="ui-line warn sans">$4,180.00 of Turnaround Book's holdings aren't its own picks yet — they get traded into them on its next sync.<span class="ui-btn">Do it now</span></li>
+            <li class="ui-line sans" style="color:#A1A1AA">Momentum Swarm: a sync ran 3h ago — nothing to do, the live book already matched.</li>
+          </ul>
+          <div class="ui-already">
+            <p>Already happened</p>
+            <ul>
+              <li>−$4,500.00 Momentum Swarm · moved out as cash + positions · 5h ago</li>
+              <li>+$4,500.00 Turnaround Book · moved in as cash + positions · 5h ago</li>
+              <li>Bought 12 NVDA at $178.40 · Momentum Swarm · 1d ago</li>
+            </ul>
+          </div>
+          <p class="ui-next">Next scheduled run: Tue 14:00 UTC (in 18h)</p>
+        </div>
+
+        <p class="ui-q">How much should each strategy run?</p>
+
+        <div class="ui-card" style="border-left:4px solid #00FF41">
+          <div class="row1">
+            <span class="name sans"><span class="dot" style="background:#00FF41"></span>Momentum Swarm</span>
+            <span class="worth num">$16,900.00</span>
+          </div>
+          <p class="meta sans">70% of the account<span class="sep">·</span>cash to spend <b class="num">$1,042.18</b><span class="sep">·</span>positions <b class="num">$15,857.82</b><span class="sep">·</span>14 names<span class="sep">·</span><span class="up num">▲ 6.42%</span> since it started</p>
+          <p class="meta sans">Copies <b>Momentum Swarm</b></p>
+          <div class="ui-target">
+            <span class="sans">Should run</span>
+            <span>
+              <span class="num" style="color:#A1A1AA">−$1,900.00</span>
+              <span class="ui-pill" style="margin:0 6px">not applied yet</span>
+              $<span class="box num">15,000.00</span>
+            </span>
+          </div>
+          <div class="ui-apply">
+            <p class="sans"><b style="color:#FFD24D">Not applied yet.</b> Applying moves $1,900.00 from Momentum Swarm to Turnaround Book.</p>
+            <div class="btns"><span class="ui-primary sans">Apply split</span><span class="ui-ghost sans">Reset</span></div>
+          </div>
+          <p class="ui-fold">▸ Manage — sync now, change which strategy it copies</p>
+        </div>
+
+        <div class="ui-card" style="border-left:4px solid #00F2FF">
+          <div class="row1">
+            <span class="name sans"><span class="dot" style="background:#00F2FF"></span>Turnaround Book</span>
+            <span class="worth num">$7,418.44</span>
+          </div>
+          <p class="meta sans">30% of the account<span class="sep">·</span>cash to spend <b class="num">$2,150.20</b><span class="sep">·</span>positions <b class="num">$5,268.24</b><span class="sep">·</span>6 names<span class="sep">·</span><span class="down num">▼ 2.10%</span> since it started</p>
+          <p class="meta sans">Copies <b>Turnaround Book</b></p>
+          <p class="ui-status sans">$4,180.00 waiting to be traded into its own picks</p>
+          <div class="ui-target">
+            <span class="sans">Should run</span>
+            <span>
+              <span class="num" style="color:#00FF41">+$1,900.00</span>
+              <span class="ui-pill" style="margin:0 6px">not applied yet</span>
+              $<span class="box num">9,318.44</span>
+            </span>
+          </div>
+          <p class="ui-fold">▸ Manage — sync now, change which strategy it copies</p>
+        </div>
+
+        <p class="meta sans" style="margin-top:12px;color:#A1A1AA;font-size:11.5px">Bring another strategy live: <span class="ui-ghost sans" style="padding:3px 9px">Deep Value Book ▾</span> <span class="ui-ghost sans" style="padding:3px 9px;border-color:rgba(0,255,65,0.4);color:#00FF41">Add</span> <span style="font-size:10.5px">appears at $0 — fund it with the split</span></p>
+
+        <p class="ui-fold" style="border-top:1px solid rgba(255,255,255,0.08);padding-top:10px;margin-top:14px">▸ Advanced — spare cash &amp; full history</p>
+
+        <p class="ui-foot sans">Changing the split re-attributes the shared broker account's records — it never places an order by itself. When a strategy's share can't be covered by cash, positions move with it and are traded into its own picks on its next sync.</p>
+      </div>
+    </div>
+    </div>
+    <p class="exhibit-note">The build the review was written against. Note what it costs: the restructure is stated twice (panel and card), five facts run together on one middot line, the commitment sits inside one card, and green is doing duty as both brand and gain.</p>
+  </div>
+
+
+  <h3>The build that replaced it</h3>
+  <p>Same account, same moment, same facts. The differences are structural: time is one spine, the allocation is a proportion, the commitment is one bar, and the strategies are rows that can be compared down a column.</p>
+
+  <div class="exhibit">
+    <p class="exhibit-cap">Exhibit B <span class="tag">rev 2 — shipped</span> <span style="color:var(--ink-muted);letter-spacing:0;text-transform:none;font-size:11px">Momentum trimmed from 70% to 62%, not yet applied</span></p>
+    <div class="exhibit-frame">
+    <div class="ui">
+      <div class="ui-panel">
+
+        <div class="ui-top">
+          <div class="lhs sans">Your strategies run <b class="num">$24,318.44</b> of real money</div>
+          <div class="rhs">broker cash <span class="num" style="color:#D4D4D8">$3,204.10</span> &nbsp;·&nbsp; unassigned <span class="num" style="color:#D4D4D8">$312.55</span></div>
+        </div>
+
+        <div class="ui-bar" style="height:10px">
+          <i style="width:62%;background:#00F2FF"></i>
+          <i style="width:38%;background:#FFD700"></i>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="ui-ghost" style="flex:1">
+            <i style="display:block;width:69.5%;height:100%;background:#00F2FF;opacity:0.3"></i>
+            <i style="display:block;width:30.5%;height:100%;background:#FFD700;opacity:0.3"></i>
+          </div>
+          <span style="font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:#A1A1AA">now</span>
+        </div>
+        <div class="ui-legend">
+          <span><span class="dot" style="background:#00F2FF"></span>Momentum Swarm<span class="pct num">70% <span style="color:#71717A">→</span> <span style="color:#FFD9A0">62%</span></span></span>
+          <span><span class="dot" style="background:#FFD700"></span>Turnaround Book<span class="pct num">30% <span style="color:#71717A">→</span> <span style="color:#FFD9A0">38%</span></span></span>
+        </div>
+
+        <div class="ui-spine">
+          <p class="h">Execution</p>
+          <div style="margin-top:10px">
+            <div class="ui-step">
+              <div class="rail"><span class="mark" style="background:#A1A1AA"></span><span class="line"></span></div>
+              <div class="body">
+                <p class="when">Last run</p>
+                <p class="txt sans">Momentum Swarm: a sync ran 3h ago — nothing to do, the live book already matched.</p>
+                <p class="sub sans">−$4,500.00 Momentum Swarm · moved out as cash + positions · 5h ago<br>Bought 12 NVDA at $178.40 · Momentum Swarm · 1d ago</p>
+              </div>
+            </div>
+            <div class="ui-step">
+              <div class="rail"><span class="mark pulse" style="background:#FBBF24"></span><span class="line"></span></div>
+              <div class="body">
+                <p class="when">Now</p>
+                <div class="ui-item">
+                  <p class="txt sans">$4,180.00 of Turnaround Book&#39;s holdings aren&#39;t its own picks yet — they get traded into them on its next sync.</p>
+                  <span class="ui-btn" style="margin:4px 0 0;display:inline-block;border-color:rgba(255,255,255,0.20);color:#D4D4D8">Sync now</span>
+                </div>
+              </div>
+            </div>
+            <div class="ui-step">
+              <div class="rail"><span class="mark" style="background:rgba(255,255,255,0.15)"></span></div>
+              <div class="body" style="padding-bottom:2px">
+                <p class="when">Next run</p>
+                <p class="txt sans" style="color:#A1A1AA">Tue 14:00 UTC (in 18h) · trades whatever the swarm changed overnight</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ui-table">
+          <div class="ui-tr ui-th" style="padding-bottom:6px">
+            <span>Strategy</span><span>Worth</span><span>Cash</span><span>P&amp;L</span><span>Should run</span><span></span>
+          </div>
+
+          <div class="ui-tr">
+            <div>
+              <div class="ui-name sans"><span class="dot" style="background:#00F2FF"></span>Momentum Swarm</div>
+              <p class="ui-copies sans">copies Momentum Swarm</p>
+            </div>
+            <div class="ui-num"><b>$16,900.00</b><span class="share">70%</span></div>
+            <div class="ui-num">$1,042.18</div>
+            <div class="ui-num"><span class="ui-pnl" style="color:#00FF41;background:rgba(0,255,65,0.10)">+6.42%</span></div>
+            <div class="ui-alloc"><span class="ui-step-btn">−</span><span class="ui-input">62 %</span><span class="ui-step-btn">+</span></div>
+            <div style="text-align:right;color:#A1A1AA">▸</div>
+            <p class="ui-impact sans"><span class="num">→ $15,077.43</span> <span class="muted">·</span> <span class="num">−$1,822.57</span> <span class="muted">($1,042.18 cash + $780.39 as positions)</span></p>
+          </div>
+
+          <div class="ui-tr">
+            <div>
+              <div class="ui-name sans"><span class="dot" style="background:#FFD700"></span>Turnaround Book<span class="health" title="$4,180.00 waiting to be traded into its own picks"></span></div>
+              <p class="ui-copies sans">copies Turnaround Book</p>
+            </div>
+            <div class="ui-num"><b>$7,418.44</b><span class="share">30%</span></div>
+            <div class="ui-num">$2,150.20</div>
+            <div class="ui-num"><span class="ui-pnl" style="color:#FF3333;background:rgba(255,51,51,0.10)">−2.10%</span></div>
+            <div class="ui-alloc"><span class="ui-step-btn">−</span><span class="ui-input">38 %</span><span class="ui-step-btn">+</span></div>
+            <div style="text-align:right;color:#A1A1AA">▸</div>
+            <p class="ui-impact sans"><span class="num">→ $9,241.01</span> <span class="muted">·</span> <span class="num">+$1,822.57</span> <span class="muted">($1,042.18 cash + $780.39 as positions, traded into its own picks on its next sync)</span></p>
+          </div>
+        </div>
+
+        <div class="ui-sticky">
+          <p class="sans"><b>Not applied yet.</b> <span class="num">$1,822.57</span> moves between 2 strategies.</p>
+          <span style="display:flex;align-items:center;gap:8px">
+            <span style="border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:4px 11px;font-size:12px;color:#A1A1AA">Reset</span>
+            <span class="ui-amber sans">Review &amp; apply split</span>
+          </span>
+        </div>
+      </div>
+    </div>
+    </div>
+    <p class="exhibit-note">Reproduced from <code>live-account-hub.tsx</code>, <code>split-bar.tsx</code>, <code>execution-timeline.tsx</code>, <code>strategy-row.tsx</code> and <code>split-command-bar.tsx</code>. On a phone the row&#39;s columns become labelled stacked cells; the sticky bar pins to the viewport.</p>
+  </div>
+
+  <h3>Anatomy, top to bottom</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Region</th><th>Answers</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><strong>The pot</strong></td><td>“How much real money is at work?”</td><td>Total worth of every strategy, with broker cash and unassigned as a quieter monospaced pair. Both show “—” when the broker is unreadable, and the console keeps working without them.</td></tr>
+      <tr><td><strong>The split bar</strong></td><td>“In what proportion — and what would it become?”</td><td>One segment per strategy. While an edit is live the bar draws the <em>proposal</em>, with today as a thin ghost beneath it and the legend reading “70% → 62%”, so the change is visible rather than held in the head.</td></tr>
+      <tr><td><strong>Execution timeline</strong></td><td>“What happened, what&#39;s outstanding, when next?”</td><td>One spine, three tenses: last run, now, next run. Outstanding items carry the <em>Sync now</em> button that fixes them. Replaced a status panel plus a warning repeated on every affected card.</td></tr>
+      <tr><td><strong>Strategy rows</strong></td><td>“What is each one, and what should it run?”</td><td>Aligned columns — worth, cash, P&amp;L pill, share — comparable down the account. What the timeline says about a strategy reduces here to a health dot. Sync, re-pointing and cash moves sit behind one disclosure per row.</td></tr>
+      <tr><td><strong>The share control</strong></td><td>“How much of the account?”</td><td>A percentage with steppers. Raising one share shrinks the others pro rata, so the allocation is always exactly 100% and there is no unbalanced state to refuse. The dollars it implies appear under the row, split into cash and positions.</td></tr>
+      <tr><td><strong>Command bar</strong></td><td>“What will happen if I commit?”</td><td>Sticky, appears only while an edit is live, names the total that moves. <em>Review &amp; apply</em> opens a dialog describing each leg; the second, explicit confirm lives there.</td></tr>
+      <tr><td><strong>Add strategy</strong></td><td>“Can I bring another one live?”</td><td>Creates a follower at $0 for any paper book that doesn&#39;t have one. Funding it is then just a share.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>How the data reaches the screen</h3>
+  <p>The console is a server-rendered read plus client-side arithmetic. Nothing here is a live socket.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Source</th><th>Gives</th><th>Failure mode</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">portfolios (mode='live')</td><td>The sleeve set, grouped by broker account key</td><td>—</td></tr>
+      <tr><td class="mono">portfolio_accounts</td><td>Allowance + funding baseline (“ever funded”)</td><td>—</td></tr>
+      <tr><td class="mono">portfolio_holdings × securities.price</td><td>Holdings value, and off-book value vs the paper book's tickers</td><td>Unpriced ticker contributes 0</td></tr>
+      <tr><td class="mono">Alpaca /v2/account</td><td>Real broker cash → unallocated</td><td>No keys or timeout ⇒ null; crediting disabled, split unaffected</td></tr>
+      <tr><td class="mono">portfolio_cash_ledger</td><td>Money that moved, with a reason</td><td>—</td></tr>
+      <tr><td class="mono">run_logs (dispatch + run)</td><td>What we asked for, and what the run did — <em>including why it did nothing</em></td><td>Read fails open — costs a line, never the page</td></tr>
+      <tr><td class="mono">agent_trades</td><td>Real fills booked to a sleeve</td><td>Read fails open</td></tr>
+    </tbody>
+  </table></div>
+  <p>All the sentences are produced by one pure function, <code>buildHubState</code>, with no imports — no DB, no fetch, no React. It is the copy contract, pinned case by case by a test suite that evaluates the TypeScript from Python. The panel component only paints what that function returns.</p>
+  <p>The page re-reads the server every 30 seconds <em>only</em> while something is genuinely in flight, pauses when the tab is hidden, and stops after ten minutes — past that, the scheduled run is the mechanism, not the page.</p>
+</section>
+
+<section id="states">
+  <div class="sec-head"><span class="sec-num">07</span><div><h2>The state machine</h2><p class="sec-sub">Every situation the console can be in, and the exact words it uses. This is the part most worth critiquing.</p></div></div>
+
+  <h4>Headline — one sentence, always present</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>Condition</th><th>Tone</th><th>Sentence</th></tr></thead>
+    <tbody>
+      <tr><td>Nothing outstanding, nothing ever funded</td><td class="mono">good</td><td>“Nothing pending. <em>Turnaround Book</em> has never been funded — no money has ever moved into it. Set its target below and apply.”</td></tr>
+      <tr><td>Nothing outstanding</td><td class="mono">good</td><td>“Nothing pending. No money is in transit and no orders are waiting.”</td></tr>
+      <tr><td>A dispatch is unacknowledged</td><td class="mono">working</td><td>“A sync is on its way.”</td></tr>
+      <tr><td>Only informational lines</td><td class="mono">muted</td><td>“Nothing pending right now.”</td></tr>
+      <tr><td>Work is owed</td><td class="mono">warn</td><td>“One thing is still to happen.”</td></tr>
+      <tr><td>A refusal, an over-commitment, or stuck work</td><td class="mono">danger</td><td>“Something needs you.”</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>Lines — the outstanding items</h4>
+  <div class="exhibit">
+    <div class="exhibit-frame">
+      <div class="ui gallery">
+        <div class="g-row"><div class="g-key">working</div><div class="ui-line working sans">Turnaround Book: sync requested 2 min ago — waiting for it to start.</div></div>
+        <div class="g-row"><div class="g-key">warn</div><div class="ui-line warn sans">$4,180.00 of Turnaround Book's holdings aren't its own picks yet — they get traded into them on its next sync.<span class="ui-btn">Do it now</span></div></div>
+        <div class="g-row"><div class="g-key">danger · stuck</div><div class="ui-line danger sans">$4,180.00 of Turnaround Book's holdings still aren't its own picks, 3d ago. A scheduled run has come and gone, so real-money trading may be switched off — a manual Sync runs regardless.<span class="ui-btn red">Do it now</span></div></div>
+        <div class="g-row"><div class="g-key">danger · unlinked</div><div class="ui-line danger sans">Deep Value Live holds $2,040.00 but isn't linked to a strategy book — nothing will ever trade here. Pick one under Manage.</div></div>
+        <div class="g-row"><div class="g-key">warn · unlinked</div><div class="ui-line warn sans">Deep Value Live isn't linked to a strategy book, so it will never buy anything. Pick one under Manage.</div></div>
+        <div class="g-row"><div class="g-key">danger · over</div><div class="ui-line danger sans">Your strategies are allowed to spend $412.00 more than the broker account holds. Lower a target before an order bounces.</div></div>
+        <div class="g-row"><div class="g-key">danger · refused</div><div class="ui-line danger sans">Momentum Swarm: the last sync refused to trade 4h ago — our records disagree with the broker. That needs reconciling before it will trade again.</div></div>
+        <div class="g-row"><div class="g-key">muted · shut</div><div class="ui-line sans" style="color:#A1A1AA">Momentum Swarm: a sync ran 20 min ago while the US market was shut, so nothing traded.</div></div>
+        <div class="g-row"><div class="g-key">muted · no-op</div><div class="ui-line sans" style="color:#A1A1AA">Momentum Swarm: a sync ran 3h ago — nothing to do, the live book already matched.</div></div>
+        <div class="g-row"><div class="g-key">good</div><div class="ui-line good sans">Momentum Swarm: a sync ran 25 min ago and placed 4 orders.</div></div>
+      </div>
+    </div>
+    <p class="exhibit-note">Every line about a single strategy also carries a compressed form — “$4,180.00 waiting to be traded into its own picks” — echoed on that strategy's card. Account-wide lines (a run's outcome, over-commitment) stay in the panel only.</p>
+  </div>
+
+  <h4>Per-card states</h4>
+  <div class="scroll"><table>
+    <thead><tr><th>State</th><th>What the card shows</th></tr></thead>
+    <tbody>
+      <tr><td>Healthy</td><td>Identity, worth, composition, P&amp;L, the book it copies, target box</td></tr>
+      <tr><td>Never funded</td><td>“Never funded — no money has moved into it. Give it a target below and apply.”</td></tr>
+      <tr><td>Emptied</td><td>“Nothing to spend — give it a target below and apply.”</td></tr>
+      <tr><td>Unlinked</td><td>“Not linked to a strategy — it will never buy anything” in amber, in place of the copies line</td></tr>
+      <tr><td>Edited</td><td>Signed delta, an amber “not applied yet” pill, and the apply block inline</td></tr>
+      <tr><td>Owes a restructure</td><td>The compressed warn line, amber-bordered</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="flows">
+  <div class="sec-head"><span class="sec-num">08</span><div><h2>The three interactions</h2></div></div>
+
+  <h3>Changing the split</h3>
+  <ol class="flow">
+    <li><b>Type a target</b> into a card. With exactly two strategies the other side auto-fills, so the split always balances without arithmetic.</li>
+    <li><b>The card goes pending</b> — signed delta, amber pill — and the apply block appears <em>inside that card</em>, stating each move in words.</li>
+    <li><b>Apply split</b> arms a confirm listing every move, separating the cash part from the in-kind part: “$1,900.00: Momentum Swarm → Turnaround Book ($420.00 cash + ≈$1,480.00 as positions — Turnaround Book trades them into its own picks on its next sync)”.</li>
+    <li><b>Yes — apply</b> executes each move atomically. An in-kind move is a single transaction: guarded holding decrements, destination upserts at weighted-average cost, cash, both P&amp;L baselines and both ledger legs. A racing heartbeat fill rolls the whole thing back rather than corrupting the split.</li>
+    <li><b>The web action auto-dispatches a mirror run</b> for the receiving strategy, so the restructure starts without a second decision. The daily cron re-converges it regardless, and the amber warning persists until it is done.</li>
+  </ol>
+  <p>If prices moved between render and apply, the targets are <em>rescaled</em> to the fresh pot rather than refused — a split's proportions are the intent, the exact dollars are not. A drift beyond 2% is still refused with an explanation.</p>
+
+  <h3>Syncing now</h3>
+  <ol class="flow">
+    <li><b>Do it now</b> (on a line) or <b>Sync</b> (in a card's Manage fold) arms a confirm reading “This places real orders on your broker account.”</li>
+    <li>The site POSTs a workflow dispatch, gets a 204, and writes its own journal row — the only reason the console can say “sync requested 2 min ago”.</li>
+    <li>The panel shows a cyan pulsing “on its way” line and starts its 30-second re-read.</li>
+    <li>When the job writes its own row, the line is replaced by what the run actually did — placed 4 orders, market shut, nothing to do, or refused.</li>
+  </ol>
+
+  <h3>Bringing another strategy live</h3>
+  <ol class="flow">
+    <li>Pick an unfollowed paper book from the dropdown; one follower per book, five live portfolios per owner.</li>
+    <li>It appears as a card at $0, explicitly labelled “never funded”.</li>
+    <li>Fund it by editing the split — which is where in-kind funding usually first happens.</li>
+  </ol>
+  <p>A user's <em>first</em> go-live is still operator-driven (a CLI bootstrap and a baseline reseed from the real account). Only additional sleeves are self-serve.</p>
+</section>
+
+<section id="history">
+  <div class="sec-head"><span class="sec-num">09</span><div><h2>What we already tried</h2><p class="sec-sub">Four rebuilds, each fixing a real comprehension failure. Worth knowing before proposing a fifth.</p></div></div>
+  <div class="scroll"><table>
+    <thead><tr><th>Iteration</th><th>What broke</th><th>The fix</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Allowance panel</strong></td><td>Credit/debit/transfer forms with no picture of the account. The owner could operate it only by holding the model in their head.</td><td>—</td></tr>
+      <tr><td><strong>Controls moved to /account</strong></td><td>Sync lived on the live portfolio's page, allowances on the dashboard — real-money management had two homes.</td><td>One home. The live page became read-only and points here.</td></tr>
+      <tr><td><strong>Reframed as one question</strong></td><td>Owners didn't think in credits and debits; they thought “how much should each strategy run?”</td><td>Targets, not transfers. The transfer forms became the plumbing behind a split editor.</td></tr>
+      <tr><td><strong>Cards + honest status</strong></td><td>Two bare table rows separated by a hairline — no visual answer to where one strategy ended. And silence was ambiguous: a $0 strategy looked identical whether a transfer was in flight or had never been attempted.</td><td>One bordered card per strategy, colour-keyed to a split bar; “what's happening” always renders, quiet state included.</td></tr>
+      <tr><td><strong>Confirm relocated</strong></td><td>On a tall card, the owner typed a number and nothing on screen said it wasn't live yet, or offered to make it so.</td><td>The apply block moved inside the card just edited.</td></tr>
+      <tr><td><strong>Control desk (rev 2)</strong></td><td>The outside review: three regions saying the same thing, four-deep rounded boxes, dollar targets that made the owner do the balancing, a confirm inside one of several changed cards, and colour doing double duty as identity and meaning.</td><td>One execution timeline, percentages held at 100% by construction, one sticky command bar, dense aligned rows, and green reserved for gains.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout key">
+    <span class="label">The through-line</span>
+    <p>Every fix so far has been additive — another sentence, another box, another explicit statement — because every failure was an <em>omission</em>. That is exactly why the thing may now need a subtractive pass, and why we're asking.</p>
+  </div>
+</section>
+
+<section id="weak">
+  <div class="sec-head"><span class="sec-num">10</span><div><h2>What the review changed</h2><p class="sec-sub">Each weakness we named, and what rev 2 did about it.</p></div></div>
+  <div class="scroll"><table>
+    <thead><tr><th>Weakness in rev 1</th><th>What shipped</th></tr></thead>
+    <tbody>
+      <tr><td>Three regions said the same thing — panel line, card line, footnote.</td><td>One execution timeline. A strategy's own row keeps only a health dot, with the sentence as its label.</td></tr>
+      <tr><td>Rounded boxes nested four deep at near-identical borders; depth by repetition.</td><td>One panel, one rule-separated table, hairline borders. The only boxed thing left is the review dialog, which is meant to interrupt.</td></tr>
+      <tr><td>The bar showed the split beautifully and played no part in changing it.</td><td>It draws the proposal while editing, with today as a ghost beneath — the readout the share controls drive.</td></tr>
+      <tr><td>Dollar targets that had to sum to the pot; most of the apply block policed arithmetic.</td><td>Percentages. Raising one share shrinks the others pro rata, so an unbalanced allocation cannot be expressed, let alone refused.</td></tr>
+      <tr><td>Time was stated in three places and drawn nowhere.</td><td>A spine with three tenses. Not a chart — still sentences, but in sequence.</td></tr>
+      <tr><td>P&amp;L was a fragment at the end of a metadata line.</td><td>Its own column, as a tinted monospace pill.</td></tr>
+      <tr><td>Colour carried identity and severity at once — green meant both “strategy #1” and “fine”.</td><td>Green is a gain, red is a loss or a refusal. Identity is cyan / gold / violet / orange / blue; outstanding work is amber; in-flight is a neutral pulse.</td></tr>
+      <tr><td>Two folds hid things of very different importance behind identical affordances.</td><td>One disclosure per row holds everything situational; the account-wide ledger is the only remaining fold.</td></tr>
+      <tr><td>Five middot-separated facts wrapped into a ribbon on a phone.</td><td>Columns that stack into individually labelled cells below the <code>sm</code> breakpoint.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout key">
+    <span class="label">Held throughout</span>
+    <p>The copy contract is untouched — <code>buildHubState</code> still writes every sentence and its fixture test passes unmodified; the timeline sorts by a new <code>kind</code> tag rather than by matching text. Changing the allocation still places no orders. Sync keeps its two-step confirm. The console still works with the broker unreadable. And the new allocation maths has its own hand-derived fixture: an allocation always totals 100%, targets always total the pot exactly, and a move takes the source's spare cash before any of its shares.</p>
+  </div>
+</section>
+
+<section id="questions">
+  <div class="sec-head"><span class="sec-num">11</span><div><h2>Answered, and still open</h2></div></div>
+
+  <p>The six questions rev 1 posed, and where they landed.</p>
+
+  <div class="q">
+    <h4>Q1 · The editing model <span style="color:var(--phosphor)">— answered</span></h4>
+    <p>Proportions won. Shares are set as percentages with steppers; the others absorb the difference pro rata so the allocation is always exactly 100%.</p>
+    <p>The objection — that percentages hide the magnitude of an in-kind move — is handled by showing the dollars as a <em>consequence</em> rather than an input: each edited row states what it would move, split into cash and positions-that-owe-a-restructure, and the review dialog repeats it leg by leg.</p>
+  </div>
+
+  <div class="q">
+    <h4>Q2 · Summary vs detail <span style="color:var(--phosphor)">— answered</span></h4>
+    <p>Rows, not collapsing cards. A strategy always shows worth, share, cash, P&amp;L, the book it copies and a health dot; everything situational is behind one disclosure. Nothing collapses to less than that, because a real-money row that hides its cash or its P&amp;L is a row the owner has to open anyway.</p>
+  </div>
+
+  <div class="q">
+    <h4>Q3 · Making asynchrony visible <span style="color:var(--phosphor)">— answered, partly</span></h4>
+    <p>A spine, not a chart. Past / now / next, with the fix on the item that needs it. It sequences what was already there rather than adding a new visual language.</p>
+    <p class="ask">Still open: whether a true time axis — with the 07:00 decision and the 14:00 execution actually spaced apart — would teach the two-clock model better than three labelled rows do.</p>
+  </div>
+
+  <div class="q">
+    <h4>Q4 · Where the confirm belongs <span style="color:var(--phosphor)">— answered</span></h4>
+    <p>A sticky bottom bar naming the total that moves, and a native <code>&lt;dialog&gt;</code> for the review — so focus trapping and Escape are the platform&#39;s job. One commitment, one place, whether one strategy changed or five.</p>
+  </div>
+
+  <div class="q">
+    <h4>Q5 · Severity without alarm <span style="color:var(--ink-muted)">— unchanged</span></h4>
+    <p>Still amber → red on the same sentence after 48 hours, now shown once instead of twice. The underlying question stands: escalating colour on identical copy may be the wrong instrument, and the interface arguably ought to change <em>shape</em> when work goes stale rather than just temperature.</p>
+    <p class="ask">Worth a second opinion on its own.</p>
+  </div>
+
+  <div class="q">
+    <h4>Q6 · The identity of the whole <span style="color:var(--phosphor)">— answered</span></h4>
+    <p>A control desk. Aligned columns, one spine, one commitment bar, colour that means exactly one thing. The page reads as an instrument now rather than a form with a status panel attached.</p>
+  </div>
+
+  <h3>What we&#39;d still like an argument about</h3>
+  <ul>
+    <li><strong>The health dot.</strong> One strategy&#39;s outstanding work is now a coloured dot on its row plus a sentence in the timeline. That removed the duplication — but a dot is a weak signal for “$4,180 of this is not what you think it is”.</li>
+    <li><strong>Five sleeves.</strong> The rows were designed against two and tested against three. At five the timeline may be the thing that gets long, not the table.</li>
+    <li><strong>The sticky bar on a phone.</strong> It pins above the fold on a surface that also scrolls a table sideways-free. Whether it reads as “pending” or as furniture is a question only real use answers.</li>
+    <li><strong>Steppers vs dragging.</strong> The bar shows the proposal but still isn&#39;t draggable. Dragging a segment is the most direct expression of “this much” — and the least precise, on a page where precision is money.</li>
+  </ul>
+</section>
+
+<section id="appendix">
+  <div class="sec-head"><span class="sec-num">—</span><div><h2>Appendix</h2></div></div>
+
+  <h4>Design tokens in force</h4>
+  <p>The product is a dark terminal system. Any proposal should work in it, or argue explicitly for changing it.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Token</th><th>Value</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">bg / bg-card</td><td class="mono">#0A0A0A / #111111</td><td>Ground, panels</td></tr>
+      <tr><td class="mono">text / dim / muted</td><td class="mono">#EDEDED / #D4D4D8 / #A1A1AA</td><td>Three-step ink ramp</td></tr>
+      <tr><td class="mono">green</td><td class="mono">#00FF41</td><td>Brand, gains, primary action, strategy #1</td></tr>
+      <tr><td class="mono">cyan</td><td class="mono">#00F2FF</td><td>Links, “working”, strategy #2</td></tr>
+      <tr><td class="mono">yellow / orange / violet</td><td class="mono">#FFD700 / #FF9900 / #B388FF</td><td>Strategies #3–5</td></tr>
+      <tr><td class="mono">amber (Tailwind 400)</td><td class="mono">#FBBF24</td><td>“Not applied yet”, work owed</td></tr>
+      <tr><td class="mono">red</td><td class="mono">#FF3333</td><td>Losses, destructive confirms, refusals</td></tr>
+      <tr><td class="mono">fonts</td><td class="mono">Inter / JetBrains Mono</td><td>Prose / all figures, labels, controls</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>Files</h4>
+  <div class="scroll"><table>
+    <tbody>
+      <tr><td class="mono">web/components/account/live-account-hub.tsx</td><td>The console: pot, split editor, add-strategy, advanced fold</td></tr>
+      <tr><td class="mono">web/components/account/strategy-row.tsx</td><td>One strategy, as a row</td></tr>
+      <tr><td class="mono">web/components/account/split-bar.tsx</td><td>The proportion bar + legend, current and proposed</td></tr>
+      <tr><td class="mono">web/components/account/execution-timeline.tsx</td><td>Past / now / next (paint only)</td></tr>
+      <tr><td class="mono">web/components/account/split-command-bar.tsx</td><td>Sticky commitment + review dialog</td></tr>
+      <tr><td class="mono">web/lib/live-activity.ts</td><td>buildHubState — the copy contract, pure</td></tr>
+      <tr><td class="mono">web/lib/live-cash-query.ts</td><td>Sleeves, allowances, broker cash, off-book value</td></tr>
+      <tr><td class="mono">web/lib/live-activity-query.ts</td><td>Run journal + fills</td></tr>
+      <tr><td class="mono">web/lib/live-cash-mutations.ts</td><td>applyLiveSplit, credit, debit, createFollowerShell</td></tr>
+      <tr><td class="mono">web/lib/sleeve-funding.ts</td><td>planSplitMoves, planInKindFunding (Python twins in sleeves.py) + the allocation maths</td></tr>
+      <tr><td class="mono">alpaca_mirror.py</td><td>The run: plan, trade, journal</td></tr>
+      <tr><td class="mono">tests/test_live_hub.py</td><td>Pins every sentence the console can say</td></tr>
+      <tr><td class="mono">tests/test_split_allocation.py</td><td>Pins the allocation maths: 100%, exact totals, cash before shares</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>Schedule</h4>
+  <div class="scroll"><table>
+    <tbody>
+      <tr><td class="mono">07:00 UTC daily</td><td>Paper swarm rebalances (the decision)</td></tr>
+      <tr><td class="mono">14:00 UTC weekdays</td><td>Mirror — trades the overnight change (the execution)</td></tr>
+      <tr><td class="mono">23:00 UTC weekdays</td><td>Reconcile after the close</td></tr>
+      <tr><td class="mono">on demand</td><td>Manual sync from this console</td></tr>
+    </tbody>
+  </table></div>
+
+  <p style="margin-top:40px;color:var(--ink-muted);font-size:14.5px;font-style:italic;">Everything described here is shipped and running against a real brokerage account. Revision 2 came from taking an outside review seriously; the same invitation stands for a third. Proposals that change the model — not just the surface — are welcome, provided the invariants in §1 and the constraints in §5 survive.</p>
+</section>
+
+</main>
+</div>

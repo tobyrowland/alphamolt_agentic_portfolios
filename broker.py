@@ -231,6 +231,26 @@ def broker_for_portfolio(portfolio: dict) -> str:
     return (portfolio.get("broker") or DEFAULT_BROKER).strip().lower()
 
 
+def shared_credentials_permitted(live_portfolios: list[dict]) -> bool:
+    """May the bare single-account env vars be used for these live portfolios?
+
+    The anti-commingle rule counts distinct broker ACCOUNTS, never portfolios.
+    Since migration 083 several live portfolios ("sleeves") legitimately share
+    one account and resolve the same credentials unambiguously — that is the
+    supported configuration, not the dangerous one. The case the guard exists
+    for is two portfolios wanting DIFFERENT accounts while only one set of bare
+    credentials is configured, where a wrong answer trades one person's
+    strategy in another person's account.
+
+    It lives here, once, because it was open-coded at four call sites and two of
+    them counted portfolios. Those two are every allowance command in
+    ``live_cash`` — so crediting, debiting, transferring and every baseline
+    report refused outright on any account with more than one sleeve, which is
+    precisely the setup 083 was built for.
+    """
+    return len({account_key_for_portfolio(p) for p in live_portfolios}) == 1
+
+
 def resolve_backend(
     slug: str,
     broker: str = DEFAULT_BROKER,
@@ -257,15 +277,31 @@ def resolve_backend(
     return cls.for_slug(slug, allow_shared_fallback=allow_shared_fallback)
 
 
+def account_key_for_portfolio(portfolio: dict) -> str:
+    """Which broker-credentials entry this portfolio trades through.
+
+    Reads ``portfolios.broker_account_key`` (migration 083), falling back to the
+    slug — which is what the key implicitly was before that column existed, so
+    pre-083 rows resolve exactly as they did.
+
+    Two live portfolios sharing a key are **sleeves** of one broker account:
+    they share its cash and its positions, and each may only spend its own
+    allowance (``portfolio_accounts.cash_usd``).
+    """
+    key = (portfolio.get("broker_account_key") or "").strip()
+    if key:
+        return key
+    return portfolio.get("slug") or portfolio["id"][:8]
+
+
 def resolve_backend_for_portfolio(
     portfolio: dict,
     *,
     allow_shared_fallback: bool = False,
 ) -> BrokerBackend:
     """``resolve_backend`` keyed off a portfolio row."""
-    slug = portfolio.get("slug") or portfolio["id"][:8]
     return resolve_backend(
-        slug,
+        account_key_for_portfolio(portfolio),
         broker_for_portfolio(portfolio),
         allow_shared_fallback=allow_shared_fallback,
     )

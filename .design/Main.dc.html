@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+  <style>
+    body { margin: 0; background: #0A0A0A; color: #EDEDED;
+           font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    a { color: #00F2FF; } a:hover { color: #00C2CC; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, monospace;
+            font-variant-numeric: tabular-nums; }
+    .lbl { font-family: "JetBrains Mono", ui-monospace, monospace;
+           font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+           color: #A1A1AA; }
+  </style>
+</helmet>
+
+<div style="padding: 26px 28px; display: flex; flex-direction: column; gap: 20px;">
+
+  <!-- Identity -->
+  <div style="display: flex; align-items: center; gap: 10px;">
+    <span class="lbl">Live account</span>
+    <span class="mono" style="font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #00FF41; border: 1px solid rgba(0,255,65,0.35); border-radius: 999px; padding: 2px 9px;">private · real money</span>
+  </div>
+
+  <!-- The one decomposition: what the account holds, by owner -->
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    <div style="display: flex; align-items: baseline; gap: 10px;">
+      <span class="mono" style="font-size: 30px; font-weight: 700; letter-spacing: -0.5px;">$39,749.17</span>
+      <span style="font-size: 13px; color: #A1A1AA;">at your broker</span>
+    </div>
+    <div style="display: flex; gap: 3px; height: 8px; border-radius: 999px; overflow: hidden;">
+      <div style="width: 69.4%; background: #00F2FF;"></div>
+      <div style="width: 30.6%; background: #3A3A3A;"></div>
+    </div>
+  </div>
+
+  <!-- THE VERB. One box, always open, above everything it changes. -->
+  <div style="border: 1px solid #222222; border-radius: 12px; background: #111111; padding: 16px 18px; display: flex; flex-direction: column; gap: 13px;">
+    <span class="lbl">Move money</span>
+    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+      <div style="display: flex; flex-direction: column; gap: 3px; border: 1px solid #333333; border-radius: 8px; padding: 8px 12px; min-width: 188px;">
+        <span style="font-size: 11px; color: #A1A1AA;">From</span>
+        <span style="font-size: 14px; font-weight: 500;">Not assigned</span>
+        <span class="mono" style="font-size: 11.5px; color: #A1A1AA;">$12,149.18</span>
+      </div>
+      <span class="mono" style="font-size: 18px; color: #A1A1AA;">&#8594;</span>
+      <div style="display: flex; flex-direction: column; gap: 3px; border: 1px solid #333333; border-radius: 8px; padding: 8px 12px; min-width: 188px;">
+        <span style="font-size: 11px; color: #A1A1AA;">To</span>
+        <span style="font-size: 14px; font-weight: 500;">Scrappy Fightback!</span>
+        <span class="mono" style="font-size: 11.5px; color: #A1A1AA;">$27,599.99</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
+        <div class="mono" style="border: 1px solid #333333; border-radius: 8px; padding: 11px 14px; font-size: 15px; color: #6B6B72; min-width: 116px;">$0.00</div>
+        <div style="border: 1px solid #2A2A2A; border-radius: 8px; padding: 11px 22px; font-size: 13.5px; font-weight: 600; color: #6B6B72; background: #151515;">Move</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Every bucket, same shape. "Not assigned" is one of them. -->
+  <div style="display: flex; flex-direction: column; gap: 2px;">
+    <div style="display: flex; align-items: center; gap: 14px; padding: 13px 4px; border-bottom: 1px solid #1A1A1A;">
+      <span style="width: 8px; height: 8px; border-radius: 999px; background: #00F2FF; flex-shrink: 0;"></span>
+      <div style="display: flex; flex-direction: column; gap: 3px; flex-grow: 1;">
+        <span style="font-size: 15px; font-weight: 600;">Scrappy Fightback!</span>
+        <span class="mono" style="font-size: 11.5px; color: #A1A1AA;">stock $26,239.51 &#183; cash $1,360.48 &#183; copies your arena book</span>
+      </div>
+      <span class="mono" style="font-size: 16px; font-weight: 500;">$27,599.99</span>
+      <span class="mono" style="font-size: 12px; color: #00FF41; border: 1px solid rgba(0,255,65,0.3); border-radius: 5px; padding: 3px 7px;">+0.54%</span>
+      <div style="border: 1px solid rgba(251,191,36,0.5); background: rgba(251,191,36,0.1); border-radius: 8px; padding: 6px 13px; font-size: 12.5px; font-weight: 600; color: #FDE68A;">Sync</div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 14px; padding: 13px 4px; border-bottom: 1px solid #1A1A1A;">
+      <span style="width: 8px; height: 8px; border-radius: 999px; background: #FFD700; flex-shrink: 0;"></span>
+      <div style="display: flex; flex-direction: column; gap: 3px; flex-grow: 1;">
+        <span style="font-size: 15px; font-weight: 600;">Alphamolt (House)</span>
+        <span class="mono" style="font-size: 11.5px; color: #A1A1AA;">never funded &#183; move money in to start it</span>
+      </div>
+      <span class="mono" style="font-size: 16px; font-weight: 500; color: #6B6B72;">$0.00</span>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 14px; padding: 13px 4px;">
+      <span style="width: 8px; height: 8px; border-radius: 999px; background: #3A3A3A; flex-shrink: 0;"></span>
+      <div style="display: flex; flex-direction: column; gap: 3px; flex-grow: 1;">
+        <span style="font-size: 15px; font-weight: 600; color: #D4D4D8;">Not assigned</span>
+        <span class="mono" style="font-size: 11.5px; color: #A1A1AA;">sitting as cash &#183; no strategy is trading it</span>
+      </div>
+      <span class="mono" style="font-size: 16px; font-weight: 500;">$12,149.18</span>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 8px; border-top: 1px solid #1A1A1A; padding-top: 13px;">
+    <span style="width: 6px; height: 6px; border-radius: 999px; background: #00FF41; flex-shrink: 0;"></span>
+    <span style="font-size: 12.5px; color: #A1A1AA;">Synced 4 min ago &#183; 40 orders placed &#183; next automatic run 14:00 UTC</span>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

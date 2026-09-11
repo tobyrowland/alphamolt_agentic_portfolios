@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any
 
 from agent_strategies import RebalanceContext, RebalanceResult
+import thesis_policy as _policy
 from db import SupabaseDB
 from llm_picker import (
     _mandate_block,
@@ -110,7 +111,22 @@ logger = logging.getLogger("llm_watchlist_buyer")
 
 LLM_WATCHLIST_BUYER_DEFAULTS: dict[str, Any] = {
     "provider": "google",
-    "model": "gemini-2.5-pro",
+    "model": "gemini-3.1-pro-preview",
+    # Reasoning depth per call, for models that expose it (Gemini 3.x today;
+    # ignored elsewhere). Phase 1 runs once PER CANDIDATE — up to MAX_SWARM_EVAL
+    # (40) names per portfolio per day — so it is the knob that decides the
+    # daily bill. `medium` rather than the Pro tier's own `high` default
+    # because the deep, equity-intrinsic analysis already happened ONCE in the
+    # shared research card (migration 055); this call is a mandate-fit
+    # judgment over pre-digested work, not a fresh teardown.
+    "thinking_level": "medium",
+    # Phase 2 only ORDERS an already-vetted shortlist — a comparison, not
+    # analysis — so it stays shallow whatever phase 1 is set to.
+    "thinking_level_phase2": "low",
+    # Used ONLY if `model` turns out not to exist (a retired preview id).
+    # Without it the buyer would evaluate nothing while cheerfully reporting
+    # "no candidates met the conviction threshold".
+    "fallback_model": "gemini-3.7-flash",
     "min_cash_pct": 2.0,            # below this, exit before any LLM work
     "target_position_pct": 4.0,     # target weight per BUY
     "min_position_pct": 2.0,        # floor on the last (partial) BUY
@@ -130,10 +146,14 @@ LLM_WATCHLIST_BUYER_DEFAULTS: dict[str, Any] = {
     # post-SELL re-buy cooldown stays 90d — see get_recently_sold_tickers.)
     "rejection_window_days": 30,
     "concurrency": 5,               # ThreadPoolExecutor max_workers for Phase 1
-    "per_call_timeout_sec": 90,     # per-future timeout for Phase 1
-    # Per-ticker output is small (~500 tokens) but Gemini 2.5 Pro's thinking
-    # tokens count toward max_output_tokens. 65536 is Gemini's hard ceiling
-    # and avoids the truncation trap the curator hit (PR #1045).
+    # Per-future timeout for Phase 1. A timeout here is SILENT — the future is
+    # cancelled and the name is simply never considered — so it has to clear a
+    # deep-thinking call comfortably. 90s was sized for Gemini 2.5 Pro.
+    "per_call_timeout_sec": 180,
+    # Per-ticker output is small (~500 tokens) but thinking tokens count toward
+    # max_output_tokens. 65536 is Gemini's hard ceiling and avoids the
+    # truncation trap the curator hit (PR #1045). It is a CAP, not a spend —
+    # `thinking_level` is what actually governs how much reasoning is bought.
     "max_tokens": 65536,
     # Phase 2 is just a list of tickers; thinking still happens but output
     # is tiny.
@@ -203,6 +223,10 @@ Thesis discipline (BUY only):
 - field MUST be one of the allowed numeric fields listed below; signals on unknown fields will be dropped.
 - op MUST be one of: >, >=, <, <=, ==, !=, change_pct_lt, change_pct_gt.
 - value MUST be a number (e.g. 40, -3.5). Never a string with "%" or "pp".
+- A break signal must be FALSE TODAY. It is a tripwire for what would have to CHANGE for you to be wrong — not a description of the situation you are buying into. A signal that is already true at purchase is dropped, and the thesis is recorded without it.
+- PRICE-RELATIVE fields (perf_52w_vs_spy, price_pct_of_52w_high, ps_now, composite_score) may NOT carry a static DOWNSIDE threshold (<, <=). "Down 20% vs the market" describes where the stock already IS (and on a mandate that buys fallen names, it is true of everything you will ever see). Write the deterioration as change_pct_lt instead — "lost a FURTHER 15 points vs the market since we bought" is a real signal. A static UPSIDE threshold on these fields (>, >=) IS allowed on a break signal, because that is a take-profit: "ps_now > 15" means sell if the multiple re-rates that far, which cannot already be true on a name you are buying cheap. Downside static thresholds on these fields are dropped.
+- `price` is NOT in that set: a static price stop below your entry ("price < 45" on a $52 name) is the correct way to write a price stop, and is allowed. Do NOT use change_pct_* on `price` — those operators compare an ABSOLUTE dollar difference, so the same number is a 9.6% stop on a $52 name and 0.28% on an $1,800 one.
+- Extend signals must be reachable within a normal holding period, and take NO static threshold on a price-relative field — not even an upside one. "perf_52w_vs_spy > 0" on a name currently at -30 needs a 30-point swing in a trailing-twelve-month number — that is not a confirmation signal, it is a wish, and it is dropped. Prefer operating evidence (growth re-accelerating, margins expanding, cash conversion improving) over price outcomes.
 
 IMPORTANT — change_pct_* semantics. These compare the CURRENT value against the VALUE AT BUY (snapshot), as a PERCENTAGE-POINT DELTA (not a relative percent). Example:
   {"field": "gross_margin_pct", "op": "change_pct_lt", "value": -3, "description": "Margin dropped >3pp"}
@@ -213,10 +237,21 @@ Allowed signal fields (use exactly these names — anything else is silently dro
 Output strict JSON only — no prose, no markdown fences."""
 
 
+# NOTE — no cash figure here, deliberately. This call answers "does THIS
+# equity fit THIS mandate at TODAY's price"; affordability is decided
+# downstream by the draft, which sizes against the shared pot. Telling the
+# model "Cash available: $467 (0.0% of portfolio)" while asking whether to buy
+# invites it to answer PASS for a reason that is not about the equity — and a
+# PASS is recorded as a 30-day screener rejection, indistinguishable from "this
+# business is bad". It was doing exactly that: of 84 hidden names on the
+# Scrappy Fightback book, 15 cited the cash position in their rationale
+# ("...and the portfolio lacks sufficient cash ($467) to purchase a
+# significant position"). A name the buyer would want if it had money must stay
+# eligible for the day it does. PRIORITISATION_USER_TEMPLATE keeps its cash
+# line — ordering names under scarcity is precisely that call's job.
 BUYER_USER_TEMPLATE = """\
 {portfolio_mandate_block}PORTFOLIO STATE:
 - Total value: ${total_value_usd:,.0f}
-- Cash available: ${cash_usd:,.0f} ({cash_pct:.1f}% of portfolio)
 - Current holdings: {current_holdings}
 
 EQUITY UNDER REVIEW: {ticker}
@@ -424,9 +459,16 @@ def _evaluate_ticker(
     max_tokens: int,
     temperature: float,
     max_signals: int,
+    policy: dict,
+    thinking_level: str | None = None,
+    fallback_model: str | None = None,
 ) -> dict:
     """Call the LLM for one ticker. Returns either the parsed verdict dict
     or a dict with ``error`` set (never raises).
+
+    ``policy`` is the resolved owner sell discipline (``thesis_policy``); it
+    shapes the prompt's signal guidance and filters the signals the model
+    returns.
     """
     bull_eval = (equity_data.get("narrative") or {}).get("bull_eval") or "—"
     bear_eval = (equity_data.get("narrative") or {}).get("bear_eval") or "—"
@@ -437,13 +479,10 @@ def _evaluate_ticker(
     equity_for_json = {k: v for k, v in equity_data.items() if k != "recent_news"}
 
     pc = _portfolio_context(portfolio)
-    cash_pct = (pc["cash_usd"] / pc["total_value_usd"] * 100) if pc["total_value_usd"] else 0.0
 
     user = BUYER_USER_TEMPLATE.format(
         portfolio_mandate_block=_mandate_block(portfolio_mandate),
         total_value_usd=pc["total_value_usd"],
-        cash_usd=pc["cash_usd"],
-        cash_pct=cash_pct,
         current_holdings=pc["current_holdings"],
         ticker=ticker,
         curator_rationale=(curator_rationale or "(no rationale on watchlist row)").strip(),
@@ -462,6 +501,8 @@ def _evaluate_ticker(
             user=user,
             max_tokens=max_tokens,
             temperature=temperature,
+            thinking_level=thinking_level,
+            fallback_model=fallback_model,
         )
     except LLMProviderError as exc:
         return {"ticker": ticker, "error": f"LLM call failed: {exc}"}
@@ -469,6 +510,7 @@ def _evaluate_ticker(
     try:
         parsed, _retry = _parse_with_retry(
             provider, model, resp.text, system=BUYER_SYSTEM_PROMPT,
+            fallback_model=fallback_model,
         )
     except LLMProviderError as exc:
         return {
@@ -497,6 +539,23 @@ def _evaluate_ticker(
         # Inherit the shared card's base break signals so every holding carries a
         # consistent set for the reviewer, even if the buyer authored none.
         break_signals = _merge_break_signals(break_signals, research, max_count=max_signals + 5)
+    extend_signals = _validate_signals(parsed.get("extend_signals"), max_count=max_signals)
+
+    # Owner policy (migration 086): price-relative fields may only carry
+    # change-since-buy operators. A DOWNSIDE static threshold on such a field
+    # says where the stock IS, which on a screen that selects beaten-down names
+    # is often already true at purchase — the born-broken thesis. Applied AFTER
+    # the card merge so inherited signals are policed too, and to extend signals
+    # as well, since an unsatisfiable extend ("beat the market over 12 months")
+    # is what the reviewer reached for when no break signal had fired. The two
+    # kinds are filtered under different rules — an upside threshold is a
+    # take-profit on a break signal and the unreachable wish on an extend one,
+    # so `kind` is passed explicitly at both sites.
+    break_signals, dropped_breaks = _policy.filter_signals(
+        break_signals, policy, kind="break")
+    extend_signals, dropped_extends = _policy.filter_signals(
+        extend_signals, policy, kind="extend")
+    dropped = dropped_breaks + dropped_extends
 
     return {
         "ticker": ticker,
@@ -504,8 +563,9 @@ def _evaluate_ticker(
         "conviction": conviction,
         "rationale": str(parsed.get("rationale") or "").strip(),
         "thesis_text": str(parsed.get("thesis_text") or "").strip(),
-        "extend_signals": _validate_signals(parsed.get("extend_signals"), max_count=max_signals),
+        "extend_signals": extend_signals,
         "break_signals": break_signals,
+        "policy_dropped_signals": _policy.describe_dropped(dropped),
         "input_tokens": resp.input_tokens,
         "output_tokens": resp.output_tokens,
     }
@@ -525,6 +585,8 @@ def _prioritise(
     portfolio_mandate: str | None,
     max_tokens: int,
     temperature: float,
+    thinking_level: str | None = None,
+    fallback_model: str | None = None,
 ) -> tuple[list[str], dict]:
     """Single LLM call that orders the conviction-5 candidates.
 
@@ -559,9 +621,12 @@ def _prioritise(
             user=user,
             max_tokens=max_tokens,
             temperature=temperature,
+            thinking_level=thinking_level,
+            fallback_model=fallback_model,
         )
         parsed, _retry = _parse_with_retry(
             provider, model, resp.text, system=PRIORITISATION_SYSTEM_PROMPT,
+            fallback_model=fallback_model,
         )
     except LLMProviderError as exc:
         notes["phase2_error"] = f"prioritisation LLM call failed: {exc}"
@@ -731,6 +796,7 @@ def evaluate_candidates(
     portfolio: dict,
     portfolio_mandate: str | None,
     params: dict,
+    policy: dict | None = None,
     label: str = "buyer",
 ) -> tuple[list[dict], dict]:
     """Phase-1 per-ticker BUY/PASS evaluation, run in parallel.
@@ -749,6 +815,11 @@ def evaluate_candidates(
     max_tokens = int(params["max_tokens"])
     temperature = float(params["temperature"])
     max_signals = int(params["max_signals_per_kind"])
+    thinking_level = params.get("thinking_level")
+    fallback_model = params.get("fallback_model")
+    # Callers that know the portfolio pass its resolved policy; the rest get
+    # DEFAULTS, so the discipline applies even on paths that predate 086.
+    policy = _policy.resolve_policy(policy if policy is not None else {})
 
     evaluations: list[dict] = []
     parse_failures: dict[str, str] = {}
@@ -773,6 +844,9 @@ def evaluate_candidates(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 max_signals=max_signals,
+                policy=policy,
+                thinking_level=thinking_level,
+                fallback_model=fallback_model,
             ): ticker
             for ticker in candidates
             if ticker in by_ticker_data
@@ -924,7 +998,7 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
     # position, the buyer is not allowed to immediately re-establish
     # it — gives the owner time to act on the exit decision without
     # the buyer churning straight back in.
-    recently_sold = ctx.db.get_recently_sold_tickers(ctx.portfolio_id, days=90)
+    recently_sold = _policy.recently_sold_for_cooldown(ctx.db, ctx.portfolio_id)
     skipped_cooldown: list[str] = [t for t in candidates if t in recently_sold]
     if skipped_cooldown:
         result.notes["skipped_recent_sell_cooldown"] = skipped_cooldown
@@ -1043,6 +1117,8 @@ def rebalance_llm_watchlist_buyer(ctx: RebalanceContext) -> RebalanceResult:
         portfolio_mandate=portfolio_mandate,
         max_tokens=int(params["max_tokens_phase2"]),
         temperature=temperature,
+        thinking_level=params.get("thinking_level_phase2"),
+        fallback_model=params.get("fallback_model"),
     )
     result.notes.update(phase2_notes)
 

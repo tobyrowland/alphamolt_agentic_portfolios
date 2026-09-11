@@ -5,15 +5,17 @@ import Nav from "@/components/nav";
 import HoldingsList from "@/components/holdings-list";
 import { TradeTape, type Trade } from "@/components/trade-tape";
 import VisibilityToggle from "@/components/portfolio/visibility-toggle";
+import ExportButton from "@/components/portfolio/export-button";
 import RebalanceCadenceToggle from "@/components/portfolio/rebalance-cadence-toggle";
-import SyncLiveButton from "@/components/portfolio/sync-live-button";
 import TeamBuilder from "@/components/portfolio/team-builder";
+import SellDisciplinePanel from "@/components/portfolio/sell-discipline-panel";
+import CashPolicyPanel from "@/components/portfolio/cash-policy-panel";
 import TeamScheduleNote from "@/components/portfolio/team-schedule-note";
 import BetaDisclaimer from "@/components/beta-disclaimer";
 import ActivityDrawer from "@/components/activity-drawer";
 import SectorChip from "@/components/portfolio/sector-chip";
 import PortfolioTabs from "@/components/portfolio/portfolio-tabs";
-import FollowTargetPicker from "@/components/portfolio/follow-target-picker";
+import UniverseSummaryCard from "@/components/portfolio/universe-summary-card";
 import PortfolioDetailsEditor from "@/components/portfolio/portfolio-details-editor";
 import BuildRunLive from "@/components/portfolio/build-run-live";
 import EditablePortfolioName from "@/components/portfolio/editable-portfolio-name";
@@ -48,6 +50,8 @@ import {
   type InvestmentThesis,
 } from "@/lib/theses-query";
 import { getNextEarningsBulk } from "@/lib/earnings-query";
+import { getUniverseSummary } from "@/lib/portfolio-universe-query";
+import { showsUniverse, type UniverseSummary } from "@/lib/portfolio-universe";
 import {
   isViewerOwner,
   resolveVisiblePortfolio,
@@ -114,6 +118,9 @@ async function getPortfolioPageData(slug: string): Promise<{
   holdingsCount: number;
   /** Earned badges (public — shown to every viewer). */
   earnedBadges: EarnedBadge[];
+  /** Public summary of the screen the buyers draft from; null when the book
+   *  has no screen-drafting buyer (see `@/lib/portfolio-universe`). */
+  universe: UniverseSummary | null;
   /** Owner-only, live followers only: the followed paper book + the owner's
    *  paper books to re-point at (follows_portfolio_id, migration 070). */
   liveFollow: {
@@ -137,6 +144,7 @@ async function getPortfolioPageData(slug: string): Promise<{
       totalTrades: 0,
       holdingsCount: 0,
       earnedBadges: [],
+      universe: null,
       liveFollow: null,
     };
   }
@@ -212,6 +220,19 @@ async function getPortfolioPageData(slug: string): Promise<{
   ]);
   const { trades, totalTrades } = recent;
 
+  // The public screen summary needs the roster — only a screen-drafting buyer
+  // makes it a true statement about this book — so it starts once the team has
+  // resolved, in parallel with the holdings-shaped reads below. A live follower
+  // runs no agents of its own (it mirrors the paper sibling), so it has no
+  // screen to describe. Fail-soft: a summary is not worth a 500.
+  const universePromise: Promise<UniverseSummary | null> =
+    mode === "live"
+      ? Promise.resolve(null)
+      : getUniverseSummary(portfolio.screen_config, team).catch((err) => {
+          console.error("getUniverseSummary failed for", slug, err);
+          return null;
+        });
+
   // Live values for the thesis panels' signal gauges — where each holding
   // sits today vs its recorded break/extend trip-wires. Needs the holdings
   // list, so it runs after the snapshot resolves. Fail-open ({}).
@@ -228,6 +249,7 @@ async function getPortfolioPageData(slug: string): Promise<{
         ),
       ])
     : [{} as Record<string, Record<string, number>>, {} as Record<string, string>];
+  const universe = await universePromise;
 
   return {
     portfolio,
@@ -243,6 +265,7 @@ async function getPortfolioPageData(slug: string): Promise<{
     totalTrades,
     holdingsCount,
     earnedBadges,
+    universe,
     liveFollow,
   };
 }
@@ -267,6 +290,7 @@ export default async function PortfolioPage({ params }: PageParams) {
     totalTrades,
     holdingsCount,
     earnedBadges,
+    universe,
     liveFollow,
   } = await getPortfolioPageData(slug);
   if (!portfolio) notFound();
@@ -348,12 +372,24 @@ export default async function PortfolioPage({ params }: PageParams) {
         </section>
       )}
 
+      {/* UNIVERSE — what the buyers are allowed to pick from. Sits between
+          the numbers and the team on purpose: read in this order, a visitor
+          can ask whether the book reflects the pond it fishes; read after the
+          holdings, it can only take the positions as given. Summary only —
+          the filters themselves stay on the owner-only Universe tab. */}
+      {showsUniverse(universe) && (
+        <UniverseSummaryCard
+          summary={universe}
+          slug={portfolio.slug}
+          isOwner={isOwner}
+        />
+      )}
+
       {/* TEAM — the build + manage surface (owner) or a read-only roster
           (visitor). A live follower has no team of its own: it mirrors the
           paper portfolio's positions, so it shows an explainer instead. */}
       {mode === "live" ? (
         <LiveFollowerNote
-          portfolioId={portfolio.id}
           isOwner={isOwner}
           liveFollow={liveFollow}
         />
@@ -364,6 +400,25 @@ export default async function PortfolioPage({ params }: PageParams) {
             team={team}
             library={library}
           />
+          {/* The rules the whole team sells under (migration 086). Sits with
+              the team because it binds BOTH sides of it — the buyer that
+              writes a position's sell triggers and the reviewer that acts on
+              them — which is exactly why it can't live on an agent card. */}
+          <div className="mt-6 flex flex-col gap-3">
+            <SellDisciplinePanel
+              portfolioId={portfolio.id}
+              policy={portfolio.thesis_policy}
+            />
+            {/* How the shared pot is split between the buyers (migration 088).
+                Portfolio-level for the same reason as the sell discipline: it
+                is a rule about the POT, so it cannot live on one buyer's card
+                — there it would bind only that buyer. */}
+            <CashPolicyPanel
+              portfolioId={portfolio.id}
+              policy={portfolio.cash_policy}
+              totalValueUsd={totalValue}
+            />
+          </div>
         </section>
       ) : (
         <ReadOnlyTeam team={team} />
@@ -517,6 +572,20 @@ export default async function PortfolioPage({ params }: PageParams) {
                 </>
               )}
             </div>
+            {/* Take your own book elsewhere for a second opinion. OWNER ONLY:
+                most of the pack is on this page for any viewer, but bundling a
+                competitor's whole strategy, theses and trade tape into one file
+                built for a model to read is a different act from reading the
+                page, and appearing on a public leaderboard is not consent to
+                it. The API enforces the same rule. Paper books only — a live
+                follower holds no decisions of its own, it copies its paper
+                twin, so its pack would be that twin's with the reasoning
+                stripped out. */}
+            {isOwner && mode !== "live" && (
+              <div className="mt-3">
+                <ExportButton slug={portfolio.slug} />
+              </div>
+            )}
             {/* Earned badges — public, shown to every viewer, near the chips.
                 Renders nothing when none earned (no empty sockets). */}
             {earnedBadges.length > 0 && (
@@ -645,11 +714,9 @@ function PaperValueCard({
 // runs no agents of its own and is never public, so instead of the team
 // builder it shows a short explainer of how it's driven.
 function LiveFollowerNote({
-  portfolioId,
   isOwner,
   liveFollow,
 }: {
-  portfolioId: string;
   isOwner: boolean;
   liveFollow: {
     currentId: string | null;
@@ -682,18 +749,20 @@ function LiveFollowerNote({
           portfolio&apos;s agents do the deciding, and this account follows
           automatically after each rebalance.
         </p>
-        {/* Manual trigger: converge the Alpaca account onto the paper book now,
-            rather than waiting for the scheduled mirror. Owner-only; the action
-            re-verifies ownership + live mode server-side. */}
-        {isOwner && <SyncLiveButton portfolioId={portfolioId} />}
-        {/* Which paper book to mirror (migration 070) — with several books
-            the link must be visible and changeable. Owner-only. */}
-        {isOwner && liveFollow && liveFollow.options.length > 0 && (
-          <FollowTargetPicker
-            portfolioId={portfolioId}
-            currentId={liveFollow.currentId}
-            options={liveFollow.options}
-          />
+        {/* This page is a read-only view. Every live control — Sync to
+            Alpaca, the mirrors picker, cash allowances — lives in the hub on
+            /account, so real-money management has one home. */}
+        {isOwner && (
+          <p className="mt-3 text-[13px] text-text-dim leading-relaxed">
+            Controls for this account — sync, mirror target, cash allowances —
+            live on{" "}
+            <Link
+              href="/account"
+              className="text-[var(--color-cyan)] hover:brightness-110 transition-[filter]"
+            >
+              your account page →
+            </Link>
+          </p>
         )}
       </div>
     </section>

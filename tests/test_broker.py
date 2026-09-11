@@ -116,8 +116,11 @@ class _FakeDB:
     """The handful of read/write methods broker_sync touches."""
 
     def __init__(self, portfolio=None, holdings=None, account=None,
-                 securities=("AAA", "BBB", "CCC")):
+                 securities=("AAA", "BBB", "CCC"), human_portfolios=None):
         self.portfolio = portfolio
+        # Explicit override so a test can build a SHARED account (several live
+        # portfolios on one broker key); None means "just this one".
+        self.human_portfolios = human_portfolios
         self.holdings = list(holdings or [])
         self.account = account or {"cash_usd": 500.0}
         self.securities = set(securities)
@@ -127,6 +130,16 @@ class _FakeDB:
 
     def get_portfolio_by_slug(self, slug):
         return self.portfolio
+
+    def get_human_portfolios(self):
+        # Sleeve grouping (migration 083) reads this to decide whether a broker
+        # account is shared. One portfolio here => sole occupant => sync allowed.
+        if self.human_portfolios is not None:
+            return list(self.human_portfolios)
+        return [self.portfolio] if self.portfolio else []
+
+    def get_agent_by_handle(self, handle):
+        return {"id": f"agent-{handle}"}
 
     def get_portfolio_holdings(self, pid):
         return list(self.holdings)
@@ -457,12 +470,24 @@ class _FakePM:
     def __init__(self, book, prices):
         self.book = book
         self.prices = prices
+        self.buys: list[tuple] = []
+        self.sells: list[tuple] = []
 
     def get_portfolio_book(self, pid):
         return self.book
 
     def get_price(self, ticker):
         return self.prices[ticker]
+
+    # The mirror books each fill against the portfolio that ordered it
+    # (migration 083) rather than syncing the whole book from the broker.
+    def buy_portfolio_atomic(self, pid, agent_id, ticker, qty, note="", **kw):
+        self.buys.append((pid, ticker, qty, kw.get("price_override")))
+        return {"status": "ok"}
+
+    def sell_portfolio_atomic(self, pid, agent_id, ticker, qty, note="", **kw):
+        self.sells.append((pid, ticker, qty, kw.get("price_override")))
+        return {"status": "ok"}
 
 
 class TestMirrorIsBrokerNeutral(unittest.TestCase):
@@ -477,6 +502,10 @@ class TestMirrorIsBrokerNeutral(unittest.TestCase):
         self.mirror = mirror_paper_to_broker
         self.book = {
             "total_value_usd": 1000.0,
+            # The sleeve's allowance. Orders are now checked against it before
+            # they are placed, so a book without one can fund nothing — see
+            # TestMirrorRespectsTheAllowance.
+            "cash_usd": 1100.0,
             "holdings": [{"ticker": "AAA", "market_value_usd": 1000.0}],
         }
         self.pm = _FakePM(self.book, {"AAA": 10.0})
@@ -522,6 +551,384 @@ class TestMirrorIsBrokerNeutral(unittest.TestCase):
         self.assertIs(
             alpaca_mirror.mirror_paper_to_alpaca,
             alpaca_mirror.mirror_paper_to_broker,
+        )
+
+
+class _RejectingPM(_FakePM):
+    """A PM whose buy RPC REFUSES, the way the real one does over-allowance.
+
+    ``buy_portfolio_atomic`` returns the rejection rather than raising it, which
+    is precisely what made the 2026-08-26 failure invisible.
+    """
+
+    def __init__(self, book, prices, reject_status="insufficient_cash"):
+        super().__init__(book, prices)
+        self.reject_status = reject_status
+
+    def buy_portfolio_atomic(self, pid, agent_id, ticker, qty, note="", **kw):
+        self.buys.append((pid, ticker, qty, kw.get("price_override")))
+        return {"status": self.reject_status}
+
+
+class TestFillsThatTheDbRefuses(unittest.TestCase):
+    """A fill the DB rejects must never be reported as recorded.
+
+    The 2026-08-26 halt in full: the last buy of a 40-order rebalance filled at
+    the broker, the atomic RPC refused to book it (the sleeve's allowance was
+    ~$77 short after slippage), and the run still reported ``placed: 40``. Real
+    shares existed that no sleeve's records owned, so the next run's alignment
+    gate refused to trade and stayed refusing.
+    """
+
+    def setUp(self):
+        from alpaca_mirror import mirror_paper_to_broker
+        self.mirror = mirror_paper_to_broker
+        self.book = {
+            "total_value_usd": 1000.0,
+            "cash_usd": 1100.0,
+            "holdings": [{"ticker": "AAA", "market_value_usd": 1000.0}],
+        }
+
+    def test_a_rejected_buy_is_not_counted_as_placed(self):
+        pm = _RejectingPM(self.book, {"AAA": 10.0})
+        be = _FakeBackend(equity=1000.0, positions={})
+        out = self.mirror(
+            _FakeDB(portfolio=_live_portfolio()), pm, be,
+            _live_portfolio(), {"id": "paper", "slug": "p"},
+        )
+        # The order really was sent to the broker...
+        self.assertEqual(be.orders, [("buy", "AAA", 100.0)])
+        # ...and the DB really did refuse it, so it is NOT a success.
+        self.assertEqual(out["placed"], 0)
+        self.assertEqual(out["orders"], 1)
+
+    def test_a_rejection_does_not_move_the_tracked_allowance(self):
+        """An unbooked buy has not spent the sleeve's allowance.
+
+        Deducting it anyway would starve every later order in the same run of
+        money it still has.
+        """
+        book = dict(self.book, cash_usd=100_000.0, total_value_usd=1000.0)
+        pm = _RejectingPM(book, {"AAA": 10.0})
+        be = _FakeBackend(equity=1000.0, positions={})
+        self.mirror(
+            _FakeDB(portfolio=_live_portfolio()), pm, be,
+            _live_portfolio(), {"id": "paper", "slug": "p"},
+        )
+        self.assertEqual(len(pm.buys), 1)
+
+    def test_an_accepted_buy_is_counted(self):
+        pm = _FakePM(self.book, {"AAA": 10.0})
+        be = _FakeBackend(equity=1000.0, positions={})
+        out = self.mirror(
+            _FakeDB(portfolio=_live_portfolio()), pm, be,
+            _live_portfolio(), {"id": "paper", "slug": "p"},
+        )
+        self.assertEqual(out["placed"], 1)
+
+
+class TestMirrorRespectsTheAllowance(unittest.TestCase):
+    """No buy is placed for more than the sleeve can pay for.
+
+    The broker's pooled cash is bigger than any one sleeve's allowance, so the
+    broker will happily fill an order the DB then refuses. The check has to
+    happen before the order goes out, and against the *limit* price — the
+    marketable limit can fill anywhere up to it.
+    """
+
+    def setUp(self):
+        from alpaca_mirror import mirror_paper_to_broker
+        self.mirror = mirror_paper_to_broker
+
+    def _run(self, cash):
+        book = {
+            "total_value_usd": 1000.0,
+            "cash_usd": cash,
+            "holdings": [{"ticker": "AAA", "market_value_usd": 1000.0}],
+        }
+        pm = _FakePM(book, {"AAA": 10.0})
+        be = _FakeBackend(equity=1000.0, positions={})
+        out = self.mirror(
+            _FakeDB(portfolio=_live_portfolio()), pm, be,
+            _live_portfolio(), {"id": "paper", "slug": "p"},
+        )
+        return out, be, pm
+
+    def test_an_affordable_buy_goes_out_whole(self):
+        out, be, _ = self._run(cash=100_000.0)
+        self.assertEqual(be.orders, [("buy", "AAA", 100.0)])
+        self.assertEqual(out.get("unaffordable"), 0)
+
+    def test_a_short_allowance_trims_the_order(self):
+        # 100 sh planned; the 3% band puts the limit at $10.30, so $600 buys
+        # 58.2524 sh. The trimmed order must cost no more than the allowance.
+        out, be, _ = self._run(cash=600.0)
+        self.assertEqual(len(be.orders), 1)
+        _, _, qty = be.orders[0]
+        self.assertLess(qty, 100.0)
+        self.assertLessEqual(qty * 10.30, 600.0)
+
+    def test_an_empty_allowance_places_nothing(self):
+        out, be, pm = self._run(cash=0.0)
+        self.assertEqual(be.orders, [])
+        self.assertEqual(pm.buys, [])
+        self.assertEqual(out.get("unaffordable"), 1)
+
+
+class TestDriftRefusalJournalsTheReason(unittest.TestCase):
+    """A refusal caused by sharing must say the account is shared.
+
+    The journal row is what the owner's hub reads to explain a quiet run, and
+    it recorded ``shared_account: false`` for a refusal that happened precisely
+    *because* the account was shared.
+    """
+
+    def test_shared_account_is_reported_on_the_refusal(self):
+        import alpaca_mirror
+        from broker import Position
+
+        live_a = _live_portfolio(slug="a-live", pid="pid-a")
+        live_b = _live_portfolio(slug="b-live", pid="pid-b")
+        for pf in (live_a, live_b):
+            pf["broker_account_key"] = "shared"
+
+        db = _FakeDB(portfolio=live_a)
+        db.human_portfolios = [live_a, live_b]
+        book = {
+            "total_value_usd": 100.0,
+            "cash_usd": 100.0,
+            "holdings": [{"ticker": "AAA", "quantity": 1.0,
+                          "market_value_usd": 100.0}],
+        }
+        pm = _FakePM(book, {"AAA": 10.0})
+        be = _FakeBackend(
+            equity=1000.0, positions={"AAA": Position("AAA", 9.0, 10.0)},
+        )
+        out = alpaca_mirror.mirror_paper_to_broker(
+            db, pm, be, live_a, {"id": "paper", "slug": "p"},
+        )
+        self.assertEqual(out["status"], "drift_refused")
+        self.assertTrue(out["shared_account"])
+
+
+class _PagingSession:
+    """A stub Alpaca HTTP session that enforces the real page-size cap."""
+
+    PAGE_MAX = 100
+
+    def __init__(self, rows, *, cap=PAGE_MAX):
+        self.rows = rows
+        self.cap = cap
+        self.requests: list[dict] = []
+
+    def request(self, method, url, params=None, json=None, timeout=None):
+        params = dict(params or {})
+        self.requests.append(params)
+
+        class _Resp:
+            def __init__(self, status, payload, text=""):
+                self.status_code = status
+                self._payload = payload
+                self.content = b"x" if payload is not None else b""
+                self.text = text
+
+            def json(self):
+                return self._payload
+
+        size = int(params.get("page_size") or 0)
+        if size > self.cap:
+            return _Resp(
+                422,
+                {"message": f"tried to set the page size to {size}, "
+                            f"but the maximum is {self.cap}"},
+                "422",
+            )
+        start = 0
+        token = params.get("page_token")
+        if token:
+            ids = [r["id"] for r in self.rows]
+            start = ids.index(token) + 1 if token in ids else len(self.rows)
+        return _Resp(200, self.rows[start:start + size])
+
+
+def _fill_row(i, symbol="ZBRA", side="buy", price="360.11"):
+    return {"id": f"a{i}", "symbol": symbol, "side": side,
+            "qty": "1", "price": price, "order_id": f"ord-{i}"}
+
+
+class TestFillTapeReading(unittest.TestCase):
+    """Reading the broker's fill tape — the input a repair prices against.
+
+    The 2026-08-27 failure: ``get_fills`` asked for ``page_size=500``, Alpaca
+    caps it at 100 and answers 422, the error was swallowed into ``[]``, and
+    the repair then told its operator the fill did not exist — when the truth
+    was that we never looked.
+    """
+
+    def _client(self, rows, cap=100):
+        from alpaca_client import AlpacaClient
+        client = AlpacaClient.__new__(AlpacaClient)
+        client.base_url = "https://example.test"
+        client._session = _PagingSession(rows, cap=cap)
+        return client
+
+    def test_it_never_asks_for_more_than_the_page_cap(self):
+        client = self._client([_fill_row(i) for i in range(250)])
+        client.get_fills(limit=500)
+        sizes = [int(r["page_size"]) for r in client._session.requests]
+        self.assertTrue(sizes, "no request was made")
+        self.assertLessEqual(max(sizes), 100)
+
+    def test_it_pages_to_collect_more_than_one_page(self):
+        client = self._client([_fill_row(i) for i in range(250)])
+        rows = client.get_fills(limit=250)
+        self.assertEqual(len(rows), 250)
+        self.assertGreater(len(client._session.requests), 1)
+
+    def test_an_unreadable_tape_raises_rather_than_returning_empty(self):
+        """The distinction the repair's refusal wording depends on."""
+        from alpaca_client import AlpacaError
+        client = self._client([_fill_row(0)], cap=1)
+        client._session.cap = 0   # every page size is rejected
+        with self.assertRaises(AlpacaError):
+            client.get_fills(limit=10)
+
+    def test_a_genuinely_empty_tape_is_an_empty_list(self):
+        client = self._client([])
+        self.assertEqual(client.get_fills(limit=10), [])
+
+    def test_the_symbol_filter_is_applied(self):
+        rows = [_fill_row(0, "ZBRA"), _fill_row(1, "AAPL")]
+        client = self._client(rows)
+        got = client.get_fills(symbol="zbra", limit=10)
+        self.assertEqual([r["symbol"] for r in got], ["ZBRA"])
+
+    def test_a_lookback_window_is_passed_through(self):
+        client = self._client([_fill_row(0)])
+        client.get_fills(after="2026-07-28T00:00:00+00:00", limit=10)
+        self.assertEqual(
+            client._session.requests[0].get("after"),
+            "2026-07-28T00:00:00+00:00",
+        )
+
+    def test_it_asks_for_newest_first_explicitly(self):
+        """Which fill gets picked decides a real-money cost basis."""
+        client = self._client([_fill_row(0)])
+        client.get_fills(after="2026-07-28T00:00:00+00:00", limit=10)
+        self.assertEqual(client._session.requests[0].get("direction"), "desc")
+
+    def test_cash_transfers_respect_the_same_cap(self):
+        """The sibling reader carried the identical 500 — silently."""
+        client = self._client([_fill_row(i) for i in range(150)])
+        client.get_cash_transfers(limit=500)
+        sizes = [int(r["page_size"]) for r in client._session.requests]
+        self.assertLessEqual(max(sizes), 100)
+
+
+class TestRepairRefusesLoudlyOnAnUnreadableTape(unittest.TestCase):
+    """"Could not look" must never be reported as "does not exist"."""
+
+    class _Backend(_FakeBackend):
+        broker_name = "alpaca"
+
+        def recent_fills(self, *, symbol=None, after=None):
+            raise RuntimeError("422: page size")
+
+    def test_it_raises_instead_of_reporting_a_missing_fill(self):
+        from broker import Position
+        db = _FakeDB(
+            portfolio=_live_portfolio(),
+            account={"cash_usd": 500.0, "starting_cash": 500.0},
+        )
+        # No recorded holdings, a broker position: drift, with nothing to
+        # price it against until the tape is read.
+        be = self._Backend(positions={"AAA": Position("AAA", 9.0, 10.0)})
+        with self.assertRaises(BrokerError) as ctx:
+            broker_sync.repair(be, db, "x-live")
+        message = str(ctx.exception)
+        self.assertIn("could not read", message.lower())
+        self.assertNotIn("no unrecorded", message.lower())
+
+
+class TestLiveCashScopesTheGuardToTheWholeAccountSet(unittest.TestCase):
+    """The guard must see EVERY live portfolio, not one account's sleeves.
+
+    Scoping it to `pfs` is not merely a missed fix — it inverts the guard. Every
+    sleeve in `pfs` shares one key by construction, so the answer is always
+    "one account, go ahead", INCLUDING when a second, different account exists.
+    That is the commingling case the rule was written to prevent: one owner's
+    strategy resolving another owner's bare credentials.
+    """
+
+    @staticmethod
+    def _pf(slug, key=None):
+        pf = {"id": slug, "slug": slug, "mode": "live", "broker": "alpaca"}
+        if key is not None:
+            pf["broker_account_key"] = key
+        return pf
+
+    def _guard_value_for(self, pfs, all_live):
+        import live_cash
+        seen = {}
+        original = live_cash.resolve_backend
+
+        def _spy(key, broker="alpaca", *, allow_shared_fallback=False):
+            seen["allow"] = allow_shared_fallback
+            return object()
+
+        live_cash.resolve_backend = _spy
+        try:
+            live_cash._account_backend("acct-a", pfs, all_live=all_live)
+        finally:
+            live_cash.resolve_backend = original
+        return seen["allow"]
+
+    def test_sleeves_of_the_only_account_may_share_credentials(self):
+        sleeves_ = [self._pf("a1-live", "acct-a"), self._pf("a2-live", "acct-a")]
+        self.assertTrue(self._guard_value_for(sleeves_, sleeves_))
+
+    def test_sleeves_may_not_when_a_second_account_also_exists(self):
+        """The inversion: `pfs` alone would say yes and permit commingling."""
+        account_a = [self._pf("a1-live", "acct-a"), self._pf("a2-live", "acct-a")]
+        account_b = [self._pf("b1-live", "acct-b")]
+        self.assertFalse(self._guard_value_for(account_a, account_a + account_b))
+
+
+class TestRepairReusesItsOwnBackend(unittest.TestCase):
+    """The top-up must not re-resolve the broker from different inputs.
+
+    On 2026-08-27 `repair` read this account's positions, cash and fill tape,
+    produced a correct plan — then the allowance top-up resolved its own
+    backend, decided the credentials were ambiguous, and booked nothing.
+    """
+
+    def test_apply_delta_is_handed_the_backend(self):
+        import inspect
+        import live_cash
+        params = inspect.signature(live_cash.apply_delta).parameters
+        self.assertIn(
+            "backend", params,
+            "apply_delta must accept an already-resolved backend",
+        )
+        source = inspect.getsource(broker_sync.repair)
+        self.assertIn(
+            "backend=backend", source,
+            "repair must hand its own backend to the top-up rather than "
+            "letting it resolve one",
+        )
+
+    def test_a_supplied_backend_short_circuits_resolution(self):
+        """No resolution happens at all when a backend is given."""
+        import live_cash
+
+        class _Boom:
+            def get_cash(self):
+                return 4321.0
+
+        # If this tried to resolve, it would raise on the unknown broker.
+        self.assertEqual(
+            live_cash._broker_cash("k", [{"broker": "nonsuch"}], backend=_Boom()),
+            4321.0,
         )
 
 

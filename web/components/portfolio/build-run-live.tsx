@@ -20,8 +20,10 @@
  * workflow hasn't produced anything to report yet).
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+
+import { runCompleteLine, runOutcomes } from "@/lib/run-outcome";
 
 interface ActivityEvent {
   id: string;
@@ -279,9 +281,16 @@ export default function BuildRunLive({
       ? Math.min(95, (elapsed / TYPICAL_MS) * 100)
       : 100;
 
+  // Only the outcomes that happened — see web/lib/run-outcome.ts. A sell-only
+  // agent has no buys or passes to report, and a row of zeroes is not a report.
+  const counts = {
+    buys: buys.length, sells: sells.length, passes: passes.length,
+  };
+  const outcomes = runOutcomes(counts);
+
   const statusLine =
     phase === "done"
-      ? `Run complete in ${fmtElapsed(elapsed)} — ${buys.length} buy${buys.length === 1 ? "" : "s"}, ${sells.length ? `${sells.length} sell${sells.length === 1 ? "" : "s"}, ` : ""}${passes.length} pass${passes.length === 1 ? "" : "es"}.`
+      ? runCompleteLine(fmtElapsed(elapsed), counts)
       : phase === "error"
         ? "The run hit an error — details below and in the Activity log."
         : phase === "timeout"
@@ -366,13 +375,24 @@ export default function BuildRunLive({
         >
           {statusLine}
         </p>
-        {(buys.length > 0 || passes.length > 0 || sells.length > 0) && (
+        {outcomes.length > 0 && (
           <p className="font-mono text-[11px] text-text-muted tabular-nums shrink-0">
-            <span className="text-[var(--color-green)]">{buys.length} bought</span>
-            {sells.length > 0 && (
-              <span className="text-[var(--color-red)]"> · {sells.length} sold</span>
-            )}
-            <span> · {passes.length} passed</span>
+            {outcomes.map((o, i) => (
+              <Fragment key={o.key}>
+                {i > 0 && " · "}
+                <span
+                  className={
+                    o.tone === "positive"
+                      ? "text-[var(--color-green)]"
+                      : o.tone === "negative"
+                        ? "text-[var(--color-red)]"
+                        : undefined
+                  }
+                >
+                  {o.chip}
+                </span>
+              </Fragment>
+            ))}
           </p>
         )}
       </div>

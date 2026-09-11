@@ -1,0 +1,60 @@
+name: Backfill Time-Weighted Returns
+
+# Operator tool — recompute `agent_portfolio_history.flow_usd` + `twr_index`
+# for every portfolio from its snapshots and the cash ledger (migration 090).
+#
+# Run once after applying migration 090. Safe to re-run at any time: it
+# recomputes each series from scratch, so it is also the repair tool if a
+# day's writer was interrupted or a historical row was corrected.
+#
+# Until this has run, every `twr_index` is NULL and `agent_leaderboard` falls
+# back to the old value-based arithmetic — which is exactly the pre-090
+# behaviour, so applying the migration alone changes nothing.
+#
+# Defaults to a dry run that prints each portfolio's recomputed return without
+# writing. Expect the paper books to be unchanged (no cash-ledger rows, so the
+# index is mathematically identical to the value ratio) and only live sleeves
+# to move.
+
+on:
+  workflow_dispatch:
+    inputs:
+      portfolio:
+        description: "Portfolio id (leave blank for ALL portfolios)"
+        required: false
+        type: string
+      dry_run:
+        description: "Compute and print only — write nothing"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Run backfill
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          BACKFILL_PORTFOLIO: ${{ inputs.portfolio }}
+          BACKFILL_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -u
+          pip install -r requirements.txt
+          ARGS=()
+          PORTFOLIO="$(printf '%s' "${BACKFILL_PORTFOLIO}" | tr -d '[:space:]')"
+          if [ -n "${PORTFOLIO}" ]; then ARGS+=(--portfolio "${PORTFOLIO}"); fi
+          if [ "${BACKFILL_DRY_RUN}" = "true" ]; then ARGS+=(--dry-run); fi
+          python backfill_twr.py ${ARGS[@]+"${ARGS[@]}"}

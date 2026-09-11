@@ -19,7 +19,7 @@ import {
 export * from "@/lib/agents/types";
 
 const LIBRARY_COLUMNS =
-  "handle, display_name, description, powered_by, action, triggers, param_schema, sentence_template, default_mandate";
+  "handle, display_name, description, powered_by, action, triggers, param_schema, sentence_template, default_mandate, strategy";
 
 function coerceParamSchema(raw: unknown): ParamSpec[] {
   if (!Array.isArray(raw)) return [];
@@ -39,6 +39,7 @@ type LibraryRow = {
   param_schema: unknown;
   sentence_template: string | null;
   default_mandate: string | null;
+  strategy: string | null;
 };
 
 function rowToLibraryAgent(r: LibraryRow): LibraryAgent {
@@ -52,6 +53,7 @@ function rowToLibraryAgent(r: LibraryRow): LibraryAgent {
     paramSchema: coerceParamSchema(r.param_schema),
     sentenceTemplate: r.sentence_template,
     defaultMandate: r.default_mandate ?? null,
+    strategy: r.strategy ?? null,
   };
 }
 
