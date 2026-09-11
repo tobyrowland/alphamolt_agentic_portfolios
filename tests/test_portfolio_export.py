@@ -305,6 +305,123 @@ class EmptyBookTests(unittest.TestCase):
         self.assertIn("closing marks", self.empty)
 
 
+class FixesSectionTests(unittest.TestCase):
+    """What has already been fixed — the half a reviewer cannot infer.
+
+    Handed only the current state, every reviewer re-derives the same closed
+    defects: the born-broken thesis, the same-minute sell. Those findings cost
+    a round of reading and change nothing. The section exists so the attention
+    goes somewhere new instead.
+
+    Its one way to be actively harmful is to claim a defence that this book
+    does not have, so the status of every remedy is read from the portfolio's
+    own config rather than asserted.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        out = _run_ts()
+        cls.doc = out["doc"]
+        cls.off = out["policyOff"]
+        cls.empty = out["empty"]
+        cls.default_policy = out["defaultPolicy"]
+        cls.mixed = out["mixedPolicy"]
+        cls.buyer_only = out["buyerOnly"]
+
+    def test_it_names_the_failures_concretely(self):
+        """A reviewer cannot match a vague 'sell timing was improved' against
+        anything it sees. The screen filter that became a break signal, and
+        the sells inside one run, are recognisable."""
+        self.assertIn("## What has already been fixed", self.doc)
+        self.assertIn("perf_52w_vs_spy < -20", self.doc)
+        self.assertIn("80 to 86 seconds", self.doc)
+
+    def test_it_says_where_each_remedy_is_enforced(self):
+        """The point is that the reviewer can go and read the code, and go
+        looking for the same shape elsewhere."""
+        for where in (
+            "theses._drop_already_true",
+            "thesis_policy.signal_permitted",
+            "thesis_policy.sell_is_permitted",
+            "cash_policy.reserve_pct",
+        ):
+            self.assertIn(where, self.doc)
+
+    def test_it_comes_before_the_positions(self):
+        """Read after the book, it is an epilogue — the reviewer has already
+        spent its attention re-deriving the closed issues."""
+        self.assertLess(
+            self.doc.index("## What has already been fixed"),
+            self.doc.index("\n## Positions\n"),
+        )
+
+    def test_a_defence_in_force_is_reported_with_its_setting(self):
+        self.assertIn("**Active on this book.** 30 days.", self.doc)
+        self.assertIn("**Active on this book.** 2%.", self.doc)
+
+    def test_a_defence_switched_off_is_reported_as_off(self):
+        """The one failure that would make this section worse than nothing:
+        telling a reviewer the book is protected by a rule it has disabled."""
+        self.assertIn("Set to 0 on this book", self.off)
+        self.assertIn(
+            "**Not active on this book** — treat the failure above as live here.",
+            self.off,
+        )
+        self.assertNotIn("**Active on this book.** 30 days.", self.off)
+
+    def test_an_unused_corrective_tool_is_not_reported_as_a_missing_defence(self):
+        """The cooldown exemption is an operator correction, not a standing
+        preference. A book that never needed one is not unprotected."""
+        self.assertIn("**Not used on this book.**", self.doc)
+        self.assertIn("2026-08-20T00:00:00Z", self.off)
+
+    def test_it_tells_the_reviewer_not_to_restate_these(self):
+        self.assertIn("Findings that restate one of these are not useful", self.doc)
+
+    def test_it_generalises_the_root_cause(self):
+        """The transferable part: one agent writing the criteria another
+        enforces, and ordering inside a run that leaves no trace."""
+        self.assertIn("### The shape these share", self.doc)
+        self.assertIn("criteria a different agent enforces", self.doc)
+        self.assertIn("Ordering inside a single run", self.doc)
+
+    def test_an_untouched_policy_is_the_defaults_not_an_absence(self):
+        """`portfolios.thesis_policy` is `{}` on almost every real book, and
+        `{}` is not 'no sell discipline' — resolve_policy fills every key from
+        DEFAULTS, so those books run a 30-day grace period and a fired-break
+        requirement. Reading the raw object reported them as unprotected."""
+        self.assertIn("**Active on this book.** 30 days.", self.default_policy)
+        self.assertIn(
+            "Positions are not reviewed for sale in their first **30 days**",
+            self.default_policy,
+        )
+        self.assertIn("they are the system defaults", self.default_policy)
+
+    def test_a_deliberate_setting_is_distinguished_from_an_inherited_one(self):
+        """The same 30 days means something different to a reviewer depending
+        on whether the owner chose it. On a book that set some keys and not
+        others, the untouched ones say so."""
+        self.assertIn("**30 days** (default)", self.mixed)
+        self.assertIn("**10% cash**.", self.mixed)  # stored — no marker
+        self.assertNotIn("they are the system defaults", self.mixed)
+
+    def test_entries_needing_an_agent_the_book_has_not_hired_are_dropped(self):
+        """The grace period is a rule about the reviewer and the cash reserve
+        is about a self-sourced buyer starved by the draft. On a book with
+        neither, both describe a failure it structurally cannot have."""
+        self.assertIn("## What has already been fixed", self.buyer_only)
+        self.assertNotIn("Positions bought and sold within seconds", self.buyer_only)
+        self.assertNotIn("Sells with nothing actually broken", self.buyer_only)
+        self.assertNotIn("A buyer that never had any money", self.buyer_only)
+        # The thesis-authoring ones still apply — it has a buyer.
+        self.assertIn("Theses that were false the moment", self.buyer_only)
+
+    def test_a_portfolio_with_no_team_gets_no_fixes_section(self):
+        """Four real books have hired nobody. A page of remedies about buyers
+        and reviewers they do not have is noise."""
+        self.assertNotIn("## What has already been fixed", self.empty)
+
+
 class FilenameTests(unittest.TestCase):
     def test_it_is_dated_and_slugged(self):
         self.assertEqual(_run_ts()["filename"], "portfolio-2-portfolio-2026-09-02.md")

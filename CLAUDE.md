@@ -1351,6 +1351,38 @@ the design (`web/lib/portfolio-export.ts`, pure, `tests/test_portfolio_export.py
   **one name at a time** and is **not told the cash position**, the reviewer
   exits whole positions and never trims, and the owner can override all of it
   by hand.
+- **A "what has already been fixed" section, before the positions.** A
+  reviewer handed only the current state re-derives the same closed defects
+  every time — the thesis that was false when it was written, the position
+  sold 86 seconds after it was bought — and a finding that restates one costs
+  the owner a round of reading for nothing. Each entry carries the failure,
+  the remedy, the symbol that enforces it, and a **status read from THIS
+  book's config**: a defence switched off here is reported as off, which is
+  the one way the section could be worse than absent. Four status states,
+  deliberately distinct — active / not active / unconditional (not a setting)
+  / not used (a corrective tool like `rebuy_cooldown_ignores_sells_before`,
+  whose absence is normal and must not read as a missing defence). It closes
+  by naming the two root causes the entries share — one agent authoring the
+  criteria another enforces, and ordering inside a single run that leaves no
+  trace in the book — which is the part a third party can use to find the
+  NEXT one. Placed before the positions because a reviewer forms its findings
+  while reading them. Entries are **gated on the team actually hired**
+  (`appliesTo` over `ExportAgent.kind`, plus `judgesPerName` for the two
+  strategies that run the per-name LLM call): the grace period is a rule about
+  the reviewer and the cash reserve about a self-sourced buyer starved by the
+  draft, so on a book with neither they describe a failure it structurally
+  cannot have. A portfolio with no members renders no section at all, as the
+  methodology already does.
+- **Policies are RESOLVED against their defaults, not read raw.**
+  `portfolios.thesis_policy` is `{}` on 11 of 13 real books, and `{}` is not
+  "no sell discipline" — `resolve_policy` fills every key from `DEFAULTS`, so
+  an untouched portfolio runs the 30-day grace period and the fired-break
+  requirement exactly as if they had been typed in. Reading the stored object
+  omitted the whole Sell-discipline block for those books, which reads as a
+  portfolio with no sell rules. The pack now imports the same TS twins the
+  owner UI uses (`web/lib/thesis-policy.ts`, `web/lib/cash-policy.ts`) and
+  marks a value `(default)` where the owner never set it — the same 30 days
+  means something different depending on whether it was chosen or inherited.
 - **A limitations section** The limitations are MEASURED from the pack's own data
   where possible — "N of M recorded signals cannot be evaluated (fields: …)"
   counts the inert tripwires rather than asserting a sentence that would go
