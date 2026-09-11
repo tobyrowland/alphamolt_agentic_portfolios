@@ -1,12 +1,12 @@
 name: Intraday 15-min prices
 
-# PAUSED — EOD-first price policy. securities.price is now maintained for the
-# WHOLE Tier-1 universe by prices_daily_updater (daily EOD close), so the 15-min
-# intraday overlay (liquid subset only) isn't needed right now. The scheduled
-# run is disabled; manual dispatch stays. Re-enable by restoring the schedule:
-#   schedule:
-#     - cron: "*/15 13-22 * * 1-5"   # every 15 min, 13:00–22:00 UTC, Mon–Fri
+# Every 15 min during US market hours, overlays EODHD 15-min-delayed quotes onto
+# securities.price (Level 0) so the leaderboard / portfolio marks feel live
+# intraday. Outside these hours securities.price settles on the daily EOD close
+# written by prices_daily_updater.
 on:
+  schedule:
+    - cron: "*/15 13-22 * * 1-5"   # every 15 min, 13:00–22:00 UTC, Mon–Fri
   workflow_dispatch:
 
 jobs:
