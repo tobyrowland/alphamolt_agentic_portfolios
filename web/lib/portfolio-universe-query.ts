@@ -8,9 +8,8 @@
  *    count derived from it would report the buyer's private pass history as a
  *    universe size. The number here is the pond — what the screen selects
  *    before any per-portfolio hiding.
- *  - It never surfaces the filters or weights. The label, the size and the
- *    draft depth describe the pond; the recipe stays owner-only (the review
- *    pack is owner-gated for exactly this reason).
+ *  - It never applies a portfolio's own `screen_config` sort or paging: the
+ *    numbers here describe the whole filtered set, not a page of it.
  *
  * Cost: `runScreen` scores the whole Tier 1 set in memory over the facts
  * cache that the screener already keeps (5-minute TTL, ~3.1k rows), and the
@@ -18,7 +17,12 @@
  */
 
 import { runScreen } from "@/lib/screen/query";
-import { PRESETS, screenConfigSchema } from "@/lib/screen/config";
+import {
+  isHousePreset,
+  PRESETS,
+  screenConfigSchema,
+  screenFilterLabel,
+} from "@/lib/screen/config";
 import {
   SELF_SOURCED_BUYERS,
   strategyKind,
@@ -66,10 +70,18 @@ export async function getUniverseSummary(
   // book never fishes. `showsUniverse` enforces the same rule at render.
   if (screenBuyers.length === 0) return null;
 
+  // The label is derived from what the config IS, never from the preset id it
+  // still carries: `saveUniverseScreenConfig` keeps the id when the owner edits
+  // the filters, so three of the four live "Quality Growth" books had deleted
+  // everything but `P/S ≤ 15` and kept the name. `isHousePreset` is the same
+  // comparison the screener uses to decide index policy.
   const preset = config.preset ? PRESETS[config.preset] : undefined;
   const base = {
-    presetLabel: preset?.label ?? (config.preset ? config.preset : "Custom screen"),
+    presetLabel: preset?.label ?? "Custom screen",
     isCustom: !preset,
+    modified: !!preset && !isHousePreset(config),
+    filters: config.filters.map((f) => screenFilterLabel(f)),
+    weights: config.weights,
     topN: config.topN,
     screenBuyers,
     selfSourced,
