@@ -224,6 +224,15 @@ class MoltbookClient:
         data = self._get("/notifications") or {}
         return data.get("notifications") or data.get("items") or []
 
+    def mark_notifications_read_by_post(self, post_id: str) -> bool:
+        """Mark every notification attached to ``post_id`` as read.
+
+        Per-post is the finest granularity Moltbook's API offers (there is no
+        per-notification endpoint, only this and ``/notifications/read-all``).
+        """
+        result = self._post(f"/notifications/read-by-post/{post_id}", {})
+        return bool(result and result.get("success"))
+
     def get_post(self, post_id: str) -> dict | None:
         return (self._get(f"/posts/{post_id}") or {}).get("post")
 

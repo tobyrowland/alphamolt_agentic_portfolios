@@ -266,6 +266,32 @@ def _render_failure_issue(
     return title, "\n".join(body_parts)
 
 
+def _notification_post_id(notif: dict) -> str | None:
+    return notif.get("relatedPostId") or (notif.get("post") or {}).get("id")
+
+
+def _posts_fully_handled(
+    actionable: list[dict], replied: set[str]
+) -> list[str]:
+    """Post ids whose visible actionable notifications are ALL handled.
+
+    Moltbook's mark-read endpoint is per-post, so marking a post read sweeps
+    every notification on it. Only nominate a post once everything we can see
+    for it is in the handled set — an unhandled comment on the same post must
+    never be swept out of the unread feed before we've replied to it.
+    """
+    by_post: dict[str, list[dict]] = {}
+    for n in actionable:
+        post_id = _notification_post_id(n)
+        if post_id:
+            by_post.setdefault(post_id, []).append(n)
+    return [
+        pid
+        for pid, notifs in by_post.items()
+        if all(n.get("id") in replied for n in notifs)
+    ]
+
+
 def _process_notifications(
     client: MoltbookClient,
     gh: GitHubIssuer | None,
@@ -299,12 +325,22 @@ def _process_notifications(
     failed = 0
     skipped = 0
 
-    for notif in actionable[: args.max]:
-        if notif["id"] in replied:
-            log.info("skip %s — already processed", notif["id"][:8])
-            skipped += 1
-            continue
+    # Already-handled notifications must not consume the --max reply budget.
+    # Nothing marks Moltbook notifications read until the end of this run, so
+    # the newest unread items are usually ones a prior run already replied to;
+    # slicing `actionable` directly starved the phase — every budget slot went
+    # to an "already processed" skip and genuinely new notifications further
+    # down the list were never examined (posted=0 run after run).
+    pending = [n for n in actionable if n["id"] not in replied]
+    already_handled = len(actionable) - len(pending)
+    if already_handled:
+        log.info(
+            "%d already processed (not charged against --max %d)",
+            already_handled, args.max,
+        )
+        skipped += already_handled
 
+    for notif in pending[: args.max]:
         ctx = _build_context(client, notif)
         if ctx is None:
             log.warning("skip %s — could not build context", notif["id"][:8])
@@ -320,6 +356,9 @@ def _process_notifications(
                 "SILENCED — skip @%s (status=%s)",
                 author, rel.get("status", "?"),
             )
+            # Terminal decision — we will never reply to this notification, so
+            # record it as handled or it re-consumes reply budget every run.
+            _mark_replied(ledger, replied, notif["id"])
             skipped += 1
             continue
 
@@ -339,7 +378,8 @@ def _process_notifications(
                 )
 
                 if severity == "mild":
-                    # Auto-mute, no apology, no post.
+                    # Auto-mute, no apology, no post. Terminal for this
+                    # notification too — mark handled.
                     record_hostility(
                         ledger, author,
                         excerpt=ctx["comment_content"],
@@ -348,6 +388,7 @@ def _process_notifications(
                         apologized=False,
                     )
                     log.info("muted @%s — no apology sent", author)
+                    _mark_replied(ledger, replied, notif["id"])
                     skipped += 1
                     continue
 
@@ -372,7 +413,7 @@ def _process_notifications(
 
                 if not apology:
                     # Generation failed — auto-mute without apology rather
-                    # than send a bad reply.
+                    # than send a bad reply. Muted = terminal, mark handled.
                     record_hostility(
                         ledger, author,
                         excerpt=ctx["comment_content"],
@@ -380,6 +421,7 @@ def _process_notifications(
                         severity=severity,
                         apologized=False,
                     )
+                    _mark_replied(ledger, replied, notif["id"])
                     skipped += 1
                     continue
 
@@ -525,6 +567,16 @@ def _process_notifications(
             # manual retry path (edit draft + add the approve label).
             _mark_replied(ledger, replied, notif["id"])
             failed += 1
+
+    # Read hygiene: Moltbook never marks these read server-side, so handled
+    # notifications otherwise sit in the unread feed forever, crowding the
+    # ~20-item fetch window (unread was 1000+ before this landed). Per-post is
+    # the API's granularity; _posts_fully_handled guarantees an unhandled
+    # notification on the same post is never swept along.
+    if not args.dry_run:
+        for post_id in _posts_fully_handled(actionable, replied):
+            if client.mark_notifications_read_by_post(post_id):
+                log.info("marked notifications read for post %s", post_id[:8])
 
     return {"posted": posted, "failed": failed, "skipped": skipped}
 
