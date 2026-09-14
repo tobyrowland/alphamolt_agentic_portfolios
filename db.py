@@ -696,6 +696,33 @@ class SupabaseDB:
             page += 1
         return tickers
 
+    def get_valuation_dates_since(self, since: str) -> dict[str, str]:
+        """Return {ticker: newest valuation `date`} over rows dated on/after
+        `since` (ISO date). Bounded read for the data-freshness report — the
+        whole table is one row per ticker per day, so it is never paginated in
+        full here. A ticker absent from the result has no row in the span."""
+        latest: dict[str, str] = {}
+        page = 0
+        page_size = 1000
+        while True:
+            resp = (
+                self.client.table("valuation")
+                .select("ticker, date")
+                .gte("date", since)
+                .order("date", desc=True)
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            batch = resp.data or []
+            for row in batch:  # newest-first, so the first sighting wins
+                t = row.get("ticker")
+                if t and t not in latest and row.get("date"):
+                    latest[t] = row["date"]
+            if len(batch) < page_size:
+                break
+            page += 1
+        return latest
+
     # --- derived views ---
 
     def refresh_screen_facts(self) -> None:
