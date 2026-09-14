@@ -454,6 +454,15 @@ class RendererTests(unittest.TestCase):
         self.assertIn("python weekly_review_emails.py", wf)
         self.assertIn('cron: "0 22 * * 0"', wf)
 
+    def test_workflow_can_switch_a_user_on_from_the_actions_page(self):
+        """The operator's opt-in needs the service key, which only the runner
+        has — so the switch must be reachable without a terminal."""
+        wf = (ROOT / ".github" / "workflows" / "weekly-review-emails.yml").read_text()
+        self.assertIn("opt_in:", wf)
+        self.assertIn("opt_out:", wf)
+        self.assertIn('python weekly_review_emails.py --opt-in "$e"', wf)
+        self.assertIn('python weekly_review_emails.py --opt-out "$e"', wf)
+
 
 if __name__ == "__main__":
     unittest.main()

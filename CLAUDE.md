@@ -1406,7 +1406,10 @@ equivalent write in `createPortfolio`:
 `weekly_review_decided_at` is stamped on ANY answer, either way: it is what
 makes the prompt disappear for good, and what stops the fallback A3 email
 going to someone who said no. `--opt-in EMAIL` / `--opt-out EMAIL` are the
-operator's versions (a collaborator who asked in person) and stamp it too.
+operator's versions (a collaborator who asked in person) and stamp it too —
+also reachable without a terminal as the `opt_in` / `opt_out` inputs
+(comma-separated emails) on the workflow's manual dispatch, which flip the
+flags and stop; the service key lives on the runner, nowhere else.
 `fetch_profiles` fails soft AND CLOSED on a pre-092 schema: no column, nobody
 has opted in, nothing is sent — the one direction a consent bug may fail in.
 

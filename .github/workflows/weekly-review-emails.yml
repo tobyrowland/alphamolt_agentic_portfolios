@@ -40,6 +40,14 @@ on:
         description: "Only the profile with this email"
         required: false
         type: string
+      opt_in:
+        description: "Switch the weekly review ON for these emails (comma-separated) and stop — for someone who asked in person. No review is sent by this run."
+        required: false
+        type: string
+      opt_out:
+        description: "Switch the weekly review OFF for these emails (comma-separated) and stop."
+        required: false
+        type: string
 
 jobs:
   send:
@@ -87,6 +95,23 @@ jobs:
           # Optional: route replies ("no more reviews") to a personal inbox.
           LIFECYCLE_EMAIL_REPLY_TO: ${{ secrets.LIFECYCLE_EMAIL_REPLY_TO }}
         run: |
+          # Operator switches: flip the flags and stop, never send. Both may be
+          # given; each address is one script call so a typo fails loudly on
+          # its own line rather than aborting the rest.
+          if [ -n "${{ inputs.opt_in }}" ] || [ -n "${{ inputs.opt_out }}" ]; then
+            rc=0
+            IFS=',' read -ra ON <<< "${{ inputs.opt_in }}"
+            for e in "${ON[@]}"; do
+              e="$(echo "$e" | xargs)"; [ -z "$e" ] && continue
+              python weekly_review_emails.py --opt-in "$e" || rc=1
+            done
+            IFS=',' read -ra OFF <<< "${{ inputs.opt_out }}"
+            for e in "${OFF[@]}"; do
+              e="$(echo "$e" | xargs)"; [ -z "$e" ] && continue
+              python weekly_review_emails.py --opt-out "$e" || rc=1
+            done
+            exit $rc
+          fi
           ARGS=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
