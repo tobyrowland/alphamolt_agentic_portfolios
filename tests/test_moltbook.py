@@ -296,3 +296,171 @@ def test_bear_persona_is_distinct_and_disclosed():
     assert "same operator" in bear.system_prompt
     # the anti-fabrication section must exist in every persona
     assert "Anti-fabrication rules" in bear.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Deleted-parent handling — a 404 from the comments endpoint is a permanent,
+# external condition (the comment we were replying to is gone). It must read
+# as a SKIP, not a failure: heartbeat run 34041749434 (2026-09-06) filed a
+# "retryable" FAILED issue and exited 1 over a reply that had nowhere to go,
+# and the log showed the useless 'post failed: None' because post_comment
+# discarded the error body (same visibility bug verify() fixed in #743).
+# ---------------------------------------------------------------------------
+
+
+class _StubPostClient:
+    """Stands in for MoltbookClient in post_and_verify tests."""
+
+    def __init__(self, post_comment_result):
+        self._result = post_comment_result
+        self.calls = []
+
+    def post_comment(self, post_id, content, parent_id=None):
+        self.calls.append((post_id, content, parent_id))
+        return self._result
+
+
+def test_post_and_verify_surfaces_http_status_on_structured_error():
+    from moltbook_lib import post_and_verify
+
+    client = _StubPostClient(
+        {"success": False, "status": 404, "message": "Parent comment not found"}
+    )
+    success, outcome, comment_id = post_and_verify(client, "p1", "hi", "c1")
+    assert not success
+    assert comment_id is None
+    assert outcome == "post failed (HTTP 404): Parent comment not found"
+
+
+def test_post_and_verify_legacy_none_result_still_reports():
+    from moltbook_lib import post_and_verify
+
+    client = _StubPostClient(None)
+    success, outcome, _ = post_and_verify(client, "p1", "hi", None)
+    assert not success
+    assert outcome == "post failed: None"
+
+
+def test_is_content_gone_only_matches_the_404_post_failure():
+    from moltbook_lib import is_content_gone
+
+    assert is_content_gone("post failed (HTTP 404): Parent comment not found")
+    # a server blip is retryable, not gone
+    assert not is_content_gone("post failed (HTTP 500): Internal error")
+    # a verification failure is a different animal entirely
+    assert not is_content_gone(
+        "posted abc but verification failed (answer=16.00): {...}"
+    )
+    assert not is_content_gone("post failed: None")
+    assert not is_content_gone("")
+
+
+def test_post_comment_returns_error_body_on_4xx():
+    """MoltbookClient.post_comment must return the structured error, not None."""
+    from moltbook_lib import MoltbookClient
+
+    class _Resp:
+        status_code = 404
+        text = '{"message": "Parent comment not found"}'
+
+        @staticmethod
+        def json():
+            return {"message": "Parent comment not found"}
+
+    class _Session:
+        headers: dict = {}
+
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            return _Resp()
+
+    client = MoltbookClient(api_key="test-key")
+    client.session = _Session()
+    result = client.post_comment("p1", "hello", parent_id="c1")
+    assert result == {
+        "success": False,
+        "status": 404,
+        "message": "Parent comment not found",
+    }
+
+
+def test_heartbeat_skips_notif_when_parent_comment_deleted():
+    """End-to-end wiring: a deleted parent → skipped + marked replied, with no
+    FAILED issue and failed=0 (so the run exits 0)."""
+    import argparse
+
+    from moltbook_agents import get_profile
+
+    notif = {
+        "id": "notif-gone-1",
+        "type": "comment_reply",
+        "isRead": False,
+        "relatedPostId": "post-1",
+        "relatedCommentId": "c-1",
+        "post": {"id": "post-1", "title": "A post", "content": "body"},
+    }
+
+    class _Client:
+        @staticmethod
+        def notifications():
+            return [notif]
+
+        @staticmethod
+        def get_comment_thread(post_id, limit=50):
+            return [{
+                "id": "c-1",
+                "content": "interesting take",
+                "author": {"name": "someone", "karma": 5},
+                "replies": [],
+            }]
+
+        @staticmethod
+        def post_comment(post_id, content, parent_id=None):
+            return {
+                "success": False,
+                "status": 404,
+                "message": "Parent comment not found",
+            }
+
+    class _GH:
+        def __init__(self):
+            self.issues = []
+
+        def create_issue(self, title, body, labels):
+            self.issues.append((title, labels))
+            return {"number": 1}
+
+        def close_issue(self, number):
+            pass
+
+    gh = _GH()
+    ledger: dict = {}
+    args = argparse.Namespace(
+        max=10, no_draft=True, dry_run=False, require_approval=False
+    )
+    stats = mh._process_notifications(
+        _Client(), gh, set(), ledger, args, get_profile(None)
+    )
+
+    assert stats == {"posted": 0, "failed": 0, "skipped": 1}
+    assert ledger.get("replied_notifs") == ["notif-gone-1"]
+    assert gh.issues == []  # no FAILED issue for an unretryable condition
+
+
+def test_heartbeat_aborts_loudly_when_home_fails(monkeypatch):
+    """An auth outage must exit 1, not masquerade as a quiet day (previously
+    notifications() returned [] and the run exited 0)."""
+    import sys
+
+    class _DeadClient:
+        def __init__(self, api_key=None):
+            pass
+
+        @staticmethod
+        def home():
+            return None
+
+    monkeypatch.setattr(mh, "MoltbookClient", _DeadClient)
+    monkeypatch.setenv("MOLTBOOK_API_KEY", "test-key")
+    monkeypatch.setattr(sys, "argv", ["moltbook_heartbeat.py", "--dry-run"])
+    assert mh.main() == 1

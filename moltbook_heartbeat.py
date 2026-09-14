@@ -48,6 +48,7 @@ from moltbook_lib import (
     draft_feed_comment,
     draft_original_post,
     draft_reply,
+    is_content_gone,
     notification_marker,
     post_and_verify,
     prune_ledger,
@@ -422,6 +423,13 @@ def _process_notifications(
                         gh.close_issue(issue["number"])
                     _mark_replied(ledger, replied, notif["id"])
                     posted += 1
+                elif is_content_gone(outcome):
+                    log.info(
+                        "skip apology to @%s — target content deleted (%s)",
+                        author, outcome,
+                    )
+                    _mark_replied(ledger, replied, notif["id"])
+                    skipped += 1
                 else:
                     log.error("apology post failed: %s", outcome)
                     failed += 1
@@ -517,6 +525,17 @@ def _process_notifications(
                     log.warning("summary refresh failed for @%s: %s",
                                 author, exc)
             posted += 1
+        elif is_content_gone(outcome):
+            # The comment we were replying to was deleted (404). Permanent and
+            # external — no retry can succeed, so a FAILED issue with a manual
+            # retry path would be a dead end and exiting 1 would page over
+            # nothing. Mark handled and move on.
+            log.info(
+                "skip %s — target content deleted on Moltbook (%s)",
+                notif["id"][:8], outcome,
+            )
+            _mark_replied(ledger, replied, notif["id"])
+            skipped += 1
         else:
             log.error("post failed for %s: %s", notif["id"][:8], outcome)
             title, body = _render_failure_issue(ctx, draft, outcome, profile.slug)
@@ -1313,19 +1332,31 @@ def main() -> int:
         )
     client = MoltbookClient(api_key=api_key)
 
-    # Account stats
+    # Account stats — doubles as the auth/liveness probe. If /home fails
+    # (bad or rotated API key, Moltbook down), every later call would also
+    # fail — but SILENTLY: notifications() returns [] and the run used to
+    # log "no replyable notifications" and exit 0, making an auth outage
+    # indistinguishable from a quiet day. Abort loudly instead so the
+    # Actions run goes red and the next cron retries.
     home = client.home()
-    if home:
-        acct = home.get("your_account") or {}
-        dms = (home.get("your_direct_messages") or {}).get(
-            "pending_request_count", "0"
+    if home is None:
+        log.error(
+            "GET /home failed — Moltbook unreachable or %s invalid for "
+            "agent %s; aborting before any phase runs (see the GET error "
+            "above for the status code)",
+            profile.api_key_env, profile.slug,
         )
-        log.info(
-            "account: karma=%s unread=%s dm_requests=%s",
-            acct.get("karma", "?"),
-            acct.get("unread_notification_count", "?"),
-            dms,
-        )
+        return 1
+    acct = home.get("your_account") or {}
+    dms = (home.get("your_direct_messages") or {}).get(
+        "pending_request_count", "0"
+    )
+    log.info(
+        "account: karma=%s unread=%s dm_requests=%s",
+        acct.get("karma", "?"),
+        acct.get("unread_notification_count", "?"),
+        dms,
+    )
 
     # GitHub issuer + engagement ledger (shared across all phases)
     gh: GitHubIssuer | None = None
