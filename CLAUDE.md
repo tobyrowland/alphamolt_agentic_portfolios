@@ -805,6 +805,24 @@ importable engines + local scripts; their standalone workflows were removed —
 other's verdicts. Writes ONLY `ai_analysis`; logs `run_logs`. Flags:
 `--dry-run`, `--only bull|bear`.
 
+**Each side runs in chunks, then re-asks for what it missed** (`eval_chunking.py`,
+pure, `tests/test_eval_chunking.py`). The batch used to go to each model as ONE
+~300k-char prompt. Claude answered ~291 of 300 but took ~5 minutes — right at
+the curl timeout — so on three of fourteen days every retry timed out and the
+bull side wrote nothing. Gemini Flash answered the same prompt with ~6k chars
+and ~40 verdicts, every day for weeks. Because the batch is keyed on the OLDER
+clock, the ~260 names bear skipped came straight back the next day: bear
+coverage never caught up (351 Tier-1 names with no bear verdict, 1,266 older
+than 30 days) and Claude re-scored the same names daily for nothing. Now each
+engine's `evaluate_batch` sends `CHUNK_SIZE` names per call (bull 100, bear
+50), keeps only verdicts for tickers it actually asked about, and runs a second
+pass over any name still missing. A shortfall is loud: `coverage_shortfall`
+warns below 90% per side and the count lands in `run_logs.errors` +
+`details.{bull,bear}_missing` (it was always 0 before, which is how ~15%
+coverage went unnoticed). The Gemini adapter also joins EVERY non-thought text
+part of the response — it kept only the last part, which drops every verdict
+line in the earlier ones when Gemini splits an answer.
+
 ### update_ai_narratives.py (legacy local script — no workflow)
 Legacy Gemini narrative refresher over the `companies` table. **The Tier-1 page
 narrative (short/full outlook + key risks) is now produced by

@@ -24,6 +24,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+import eval_chunking
 from db import SupabaseDB
 
 # ---------------------------------------------------------------------------
@@ -36,6 +37,10 @@ MAX_RETRIES = 3
 RETRY_DELAY = 15
 DELAY_BETWEEN_CALLS = 2
 TOP_N = 300  # stalest Tier-1 names refreshed per run (rotation batch)
+# Names per Gemini call. Sent the whole 300-name batch in one ~300k-char
+# prompt, Flash answered ~40 lines and stopped — every day, for weeks. At 50 it
+# answers every line; `evaluate_batch` re-asks for any it still skips.
+CHUNK_SIZE = 50
 NULL_VALUE = "\u2014"
 
 # Columns to EXCLUDE from the data sent to Gemini
@@ -270,13 +275,20 @@ def call_gemini_bear(prompt, api_key, logger):
             for i, p in enumerate(parts):
                 is_thought = p.get("thought", False)
                 logger.info("  Part %d: thought=%s, length=%d", i, is_thought, len(p.get("text", "")))
-            text_parts = [p["text"] for p in parts if not p.get("thought")]
+            text_parts = [p.get("text", "") for p in parts if not p.get("thought")]
             if not text_parts:
                 # Fallback: use all parts if none lack the thought flag
-                text_parts = [p["text"] for p in parts]
-            text = text_parts[-1].strip() if text_parts else ""
+                text_parts = [p.get("text", "") for p in parts]
+            # Join EVERY answer part: Gemini can split one answer over several
+            # non-thought parts, and keeping only the last silently dropped
+            # every verdict line in the earlier ones.
+            text = "\n".join(t for t in text_parts if t).strip()
             if not text:
                 raise Exception("Empty response text after parsing parts")
+            finish = data["candidates"][0].get("finishReason", "")
+            logger.info("Gemini finishReason: %s", finish or "?")
+            if finish == "MAX_TOKENS":
+                logger.warning("Response was truncated (hit maxOutputTokens)!")
             return text
 
         except Exception as exc:
@@ -330,6 +342,31 @@ def parse_bear_results(response_text):
     return results
 
 
+def evaluate_chunk(equities: list[dict], api_key: str, logger) -> dict[str, dict]:
+    """One Gemini call over `equities`: build the prompt, call, parse.
+    Returns {} when the call fails (the chunked runner retries the names)."""
+    blocks = [build_equity_block(c) for c in equities]
+    prompt = build_bear_prompt(blocks)
+    logger.info("Bear (Gemini %s): prompt %d chars for %d equities",
+                GEMINI_MODEL, len(prompt), len(blocks))
+    text = call_gemini_bear(prompt, api_key, logger)
+    if text is None:
+        logger.error("Bear: Gemini call failed for a %d-name chunk", len(blocks))
+        return {}
+    return parse_bear_results(text)
+
+
+def evaluate_batch(equities: list[dict], api_key: str, logger, *,
+                   chunk_size: int = CHUNK_SIZE,
+                   passes: int = eval_chunking.DEFAULT_PASSES) -> dict[str, dict]:
+    """Bear verdicts for a whole rotation batch, in chunks of `chunk_size`
+    with a re-ask pass over any name still missing (see `eval_chunking`).
+    Returns {ticker: {"eval": text, "score": 1-5|None}}."""
+    return eval_chunking.run_chunked(
+        equities, lambda chunk: evaluate_chunk(chunk, api_key, logger),
+        chunk_size=chunk_size, passes=passes, side="bear", logger=logger)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -371,41 +408,25 @@ def main():
         logger.warning("No in-screen non-excluded tickers found. Nothing to do.")
         return
 
-    # Build equity data blocks
-    equity_blocks = []
     for company in top_equities:
-        ticker = (company.get("ticker") or "").strip()
-        block = build_equity_block(company)
-        equity_blocks.append(block)
-        logger.info("  %s", ticker)
-
-    # Build prompt
-    prompt = build_bear_prompt(equity_blocks)
-    logger.info("Prompt length: %d chars for %d equities", len(prompt), len(equity_blocks))
+        logger.info("  %s", (company.get("ticker") or "").strip())
 
     if args.dry_run:
-        logger.info("[DRY RUN] Prompt:\n%s", prompt[:2000] + "..." if len(prompt) > 2000 else prompt)
+        preview = build_bear_prompt(
+            [build_equity_block(c) for c in top_equities[:CHUNK_SIZE]])
+        logger.info("[DRY RUN] First-chunk prompt:\n%s",
+                    preview[:2000] + "..." if len(preview) > 2000 else preview)
 
-    # Call Gemini
-    logger.info("Calling Gemini %s...", GEMINI_MODEL)
-    response_text = call_gemini_bear(prompt, gemini_key, logger)
-    if response_text is None:
-        logger.error("Gemini call failed. No results to write.")
-        sys.exit(1)
-
-    logger.info("Gemini response length: %d chars", len(response_text))
-    logger.info("Gemini response preview: %s", response_text[:1000])
-
-    if args.dry_run:
-        logger.info("[DRY RUN] Gemini response:\n%s", response_text)
-
-    # Parse results
-    verdicts = parse_bear_results(response_text)
-    logger.info("Parsed %d verdicts from Gemini response", len(verdicts))
+    # Call Gemini — in chunks, with a re-ask pass over anything it skips.
+    logger.info("Calling Gemini %s in chunks of %d...", GEMINI_MODEL, CHUNK_SIZE)
+    verdicts = evaluate_batch(top_equities, gemini_key, logger)
+    logger.info("Parsed %d verdicts from Gemini", len(verdicts))
+    eval_chunking.coverage_shortfall(len(top_equities), verdicts,
+                                     side="bear", logger=logger)
 
     if not verdicts:
-        logger.error("No verdicts parsed! Response may not match expected format.")
-        logger.error("First 2000 chars of response:\n%s", response_text[:2000])
+        logger.error("No verdicts parsed! Every chunk failed or the response "
+                     "did not match the expected format.")
         sys.exit(1)
 
     passed = sum(1 for v in verdicts.values() if "\u2705" in v["eval"])

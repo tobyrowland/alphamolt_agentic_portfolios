@@ -37,11 +37,15 @@ from datetime import date
 from dotenv import load_dotenv
 
 from db import SupabaseDB
+import eval_chunking
 import level0_eval
 import bull_evaluation as bull
 import bear_evaluation as bear
 
 TOP_N = 300  # stalest Tier-1 names refreshed per run (shared rotation batch)
+# Each side runs in chunks (bull.CHUNK_SIZE / bear.CHUNK_SIZE names per call)
+# with a re-ask pass over anything a model skips — see eval_chunking.py for the
+# weeks of ~15% bear coverage that made this necessary.
 
 
 def setup_logging() -> logging.Logger:
@@ -55,34 +59,20 @@ def setup_logging() -> logging.Logger:
 
 def _run_bull(top_equities: list[dict], api_key: str,
               logger: logging.Logger) -> dict[str, dict]:
-    """Claude bull pass over the shared batch.
+    """Claude bull pass over the shared batch — chunked (`bull.CHUNK_SIZE`
+    names per call) with a re-ask pass over any name still missing.
     Returns {ticker: {"eval": text, "score": 1-5|None}}."""
-    blocks = [bull.build_equity_block(c) for c in top_equities]
-    prompt = bull.build_bull_prompt(blocks)
-    logger.info("Bull (Claude %s): prompt %d chars for %d equities",
-                bull.CLAUDE_MODEL, len(prompt), len(blocks))
-    text = bull.call_claude_bull(prompt, api_key, logger)
-    if text is None:
-        logger.error("Bull: Claude call failed")
-        return {}
-    verdicts = bull.parse_bull_results(text)
+    verdicts = bull.evaluate_batch(top_equities, api_key, logger)
     logger.info("Bull: parsed %d verdicts", len(verdicts))
     return verdicts
 
 
 def _run_bear(top_equities: list[dict], api_key: str,
               logger: logging.Logger) -> dict[str, dict]:
-    """Gemini bear pass over the shared batch.
+    """Gemini bear pass over the shared batch — chunked (`bear.CHUNK_SIZE`
+    names per call) with a re-ask pass over any name still missing.
     Returns {ticker: {"eval": text, "score": 1-5|None}}."""
-    blocks = [bear.build_equity_block(c) for c in top_equities]
-    prompt = bear.build_bear_prompt(blocks)
-    logger.info("Bear (Gemini %s): prompt %d chars for %d equities",
-                bear.GEMINI_MODEL, len(prompt), len(blocks))
-    text = bear.call_gemini_bear(prompt, api_key, logger)
-    if text is None:
-        logger.error("Bear: Gemini call failed")
-        return {}
-    verdicts = bear.parse_bear_results(text)
+    verdicts = bear.evaluate_batch(top_equities, api_key, logger)
     logger.info("Bear: parsed %d verdicts", len(verdicts))
     return verdicts
 
@@ -142,6 +132,15 @@ def main() -> int:
     bear_pass = sum(1 for v in bear_verdicts.values() if "✅" in v["eval"])
     logger.info("Bull: %d verdicts (%d ✅) · Bear: %d verdicts (%d ✅)",
                 len(bull_verdicts), bull_pass, len(bear_verdicts), bear_pass)
+    # A side that quietly covers a fraction of the batch is the failure mode
+    # this job had for weeks (bear at ~15%). Count the shortfall as errors so
+    # run_logs shows it, and warn loudly.
+    bull_missing = (eval_chunking.coverage_shortfall(
+        len(top_equities), bull_verdicts, side="bull", logger=logger)
+        if want_bull else 0)
+    bear_missing = (eval_chunking.coverage_shortfall(
+        len(top_equities), bear_verdicts, side="bear", logger=logger)
+        if want_bear else 0)
 
     if not bull_verdicts and not bear_verdicts:
         logger.error("Both sides produced no verdicts. Nothing to write.")
@@ -182,14 +181,19 @@ def main() -> int:
     db.log_run("verdict_evaluation", {
         "updated": len(rows),
         "skipped": len(top_equities) - len(rows),
-        "errors": 0,
+        # Names a wanted side left without a verdict — the coverage shortfall.
+        "errors": bull_missing + bear_missing,
         "duration_secs": elapsed,
         "details": {
             "batch_size": len(top_equities),
             "bull_verdicts": len(bull_verdicts),
             "bear_verdicts": len(bear_verdicts),
+            "bull_missing": bull_missing,
+            "bear_missing": bear_missing,
             "bull_pass": bull_pass,
             "bear_pass": bear_pass,
+            "bull_chunk_size": bull.CHUNK_SIZE,
+            "bear_chunk_size": bear.CHUNK_SIZE,
         },
     })
     logger.info("=== Verdict Evaluation complete: %d rows (%.1fs) ===",
