@@ -272,6 +272,7 @@ function Dashboard({
       <WeeklyReviewCard
         enabled={weeklyReview ? weeklyReview.enabled : null}
         hasPositions={portfolios.some((p) => p.numPositions > 0)}
+        anchor={!(weeklyReview && !weeklyReview.decided)}
       />
 
       {/* Doors out */}

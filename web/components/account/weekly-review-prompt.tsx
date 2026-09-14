@@ -38,8 +38,9 @@ export default function WeeklyReviewPrompt() {
 
   return (
     <section
+      id="weekly-review"
       aria-label="Weekly review email"
-      className="rounded-xl border border-[var(--color-green,#00FF41)]/30 bg-[var(--color-green,#00FF41)]/[0.04] p-4 sm:p-5"
+      className="rounded-xl border border-[var(--color-green,#00FF41)]/30 bg-[var(--color-green,#00FF41)]/[0.04] p-4 sm:p-5 scroll-mt-24"
     >
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="max-w-[60ch]">
