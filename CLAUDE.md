@@ -1324,9 +1324,10 @@ Cron: `lifecycle-emails.yml`, every 30 min.
 
 ### weekly_review_emails.py (Mondays 08:00 UTC — `weekly-review-emails.yml`)
 The weekly portfolio review: every human running a paper portfolio gets one
-email a week with a model's critique of their book. The document the model
-reads is **the review pack itself** — the same Markdown the portfolio page's
-"Copy for AI review" button produces (`web/lib/portfolio-export.ts` over
+email a week — a 30-day chart of the book against the S&P 500, the week's
+trades, and a model's short critique. The document the model reads is **the
+review pack itself** — the same Markdown the portfolio page's "Copy for AI
+review" button produces (`web/lib/portfolio-export.ts` over
 `web/lib/portfolio-export-query.ts`), rendered here by
 `web/scripts/review-pack.mjs`, a plain-node wrapper the Python script spawns
 per portfolio (`render_packs`). Neither module imports anything from Next, so
@@ -1337,24 +1338,32 @@ re-deriving a summary in Python: every honesty rule the pack enforces —
 closed positions and their losses included, marks stated as closes, the sell
 discipline resolved against its defaults, the already-fixed defects declared
 — reaches the email for free, and the email can never describe a book
-differently from the button.
+differently from the button. The renderer also hands over the pack's trade
+tape, so the email's trade table is the pack's own rows (realised P&L per
+sell included).
 
-`REVIEW_SYSTEM` is the brief: open with the one thing that matters, say
-whether the positions match the mandate (naming the misfits), name the
-weakest thesis and any break signal that is firing / cannot be evaluated /
-was already true, say where the process is most likely to fail next, close
-with one or two changes the owner can make on the portfolio page. Body only,
-plain text; the greeting, a **computed** week line (value, positions, return
-on the week vs the S&P 500 off `agent_portfolio_history.twr_index` and
-`benchmark_prices`, since-inception return — figures the model is not asked
-to derive, so it cannot misquote them), the provenance line ("written by
-<model> from the same pack you can copy…") and the footer are added around
-it. The prompt is pinned to section names the pack actually emits
+**What the model writes, and what it does not.** `REVIEW_SYSTEM` asks for one
+JSON object — a `headline`, exactly two paragraphs under 60 words (does the
+book match the mandate, naming the misfits and the weakest thesis with any
+break signal that is firing / cannot be evaluated / was already true; then
+where the process fails next), and two to four `recommendations`, each an
+imperative the owner can act on from the portfolio page plus one sentence of
+why — parsed and shape-checked by `parse_review` (wrong shape is an error,
+not an email). Everything else in the email is **computed, never asked
+for**: the stats line (value, return on the week vs the S&P 500 off
+`agent_portfolio_history.twr_index` and `benchmark_prices`, since-inception,
+positions), the chart (`render_chart_png`, matplotlib Agg, both lines rebased
+to 100; the portfolio line reads the time-weighted index only when EVERY row
+carries one, so a deposit is never drawn as a jump and a lagging backfill
+never mixes two curves — `rebased_points`), and the trade table. The chart
+travels as a Resend inline attachment referenced by `cid:`
+(`chart_attachment`; mail clients block data URIs), and
+`lifecycle_emails.send_via_resend` grew an optional `attachments` argument
+for it. The prompt is pinned to section names the pack actually emits
 (`tests/test_weekly_review_emails.py`). Reviewer brain: `google` /
 `gemini-3.1-pro-preview` at `medium` depth with `gemini-2.5-pro` as the
 retired-id fallback; `REVIEW_EMAIL_LLM_PROVIDER` / `_MODEL` / `_FALLBACK` /
-`_THINKING_LEVEL` override it. A review under 200 chars or a pack over
-`MAX_PACK_CHARS` is an error, not an email.
+`_THINKING_LEVEL` override it. A pack over `MAX_PACK_CHARS` is refused.
 
 **Who, and how often.** One email per user per ISO week, covering every
 `mode='paper'` portfolio they own that holds ≥1 position (oldest first). A
@@ -1367,8 +1376,10 @@ standing opt-out, which the one-shot lifecycle emails never did:
 `profiles.weekly_review_emails` (migration 092, `--opt-out EMAIL` sets it),
 read fail-soft — before the migration is applied everyone is opted in and a
 warning says so. Resend delivery + masked logs are shared with
-`lifecycle_emails.py`. Flags: `--dry-run` (renders + prints the reviews —
-they name the user's book, so keep that to manual runs), `--to ADDR`
+`lifecycle_emails.py`. Flags: `--dry-run` (renders every due review, sends
+nothing), `--preview-dir DIR` (writes each email as `<slug>.html` with the
+chart inlined + `.txt` — the way to look at one before it goes out; the
+files name the user's book, so keep them out of public logs), `--to ADDR`
 (redirect, ledger untouched), `--user EMAIL`, `--mark-only`, `--week-end`,
 `--limit N`, `--opt-out EMAIL`.
 
@@ -2841,7 +2852,8 @@ python lifecycle_emails.py --to me@test.com # redirect to a test inbox (ledger u
 python lifecycle_emails.py --mark-only      # seed ledger for existing users without emailing
 
 # Weekly portfolio review email (Mondays)
-python weekly_review_emails.py --dry-run          # render + print every due review, send nothing
+python weekly_review_emails.py --dry-run          # render every due review, send nothing
+python weekly_review_emails.py --dry-run --preview-dir out/   # ...and write each as .html/.txt to look at
 python weekly_review_emails.py --to me@test.com --user a@b.com   # one user's review to a test inbox
 python weekly_review_emails.py                    # send this week's (ledger-gated, rerun-safe)
 python weekly_review_emails.py --opt-out a@b.com  # honour a "no more reviews" reply

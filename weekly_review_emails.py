@@ -3,10 +3,12 @@
 weekly_review_emails.py — the weekly portfolio review, emailed to each owner.
 
 Every week, each human who is running a paper portfolio gets one email: a
-model's critique of their book, written from the SAME review pack the
-portfolio page's "Copy for AI review" button produces. The pack was designed
-to be handed to a different model and asked "what do you think?"; this is
-that act, done for the owner, on a schedule.
+30-day chart of the book against the S&P 500, the week's trades, and a
+model's short critique — a headline, two paragraphs and a numbered list of
+changes to make — written from the SAME review pack the portfolio page's
+"Copy for AI review" button produces. The pack was designed to be handed to
+a different model and asked "what do you think?"; this is that act, done
+for the owner, on a schedule.
 
 Why the pack and not a fresh summary: the pack already enforces the honesty
 rules a review needs — closed positions and their losses included, marks
@@ -15,7 +17,11 @@ the already-fixed defects declared so the reviewer does not re-derive them —
 and it ends with the questions worth asking. Rendering it here
 (web/scripts/review-pack.mjs, a plain-node wrapper over
 web/lib/portfolio-export.ts) means the email and the button can never
-describe one book two ways.
+describe one book two ways. The chart and the trade table are NOT the
+model's: the chart is drawn from `agent_portfolio_history` + `benchmark_
+prices`, the trades are the pack's own tape rows, and the numbers in the
+header are computed here — figures the model is never asked to derive, so
+it cannot misquote them.
 
 Delivery is gated by the send-once ledger (`lifecycle_email_sends`,
 migration 050) under a per-ISO-week key (`weekly_review_2026-W38`), so the
@@ -28,8 +34,10 @@ nothing to review, and the A2 setup nudge covers users who never started.
 
 Usage:
     python weekly_review_emails.py                   # send this week's reviews
-    python weekly_review_emails.py --dry-run         # plan + render + write the
-                                                     # reviews to stdout, send nothing
+    python weekly_review_emails.py --dry-run         # plan + render, send nothing
+    python weekly_review_emails.py --dry-run --preview-dir out/
+                                                     # ...and write each email as
+                                                     # .html/.txt to look at
     python weekly_review_emails.py --to me@test.com  # redirect sends to a test inbox
                                                      # (ledger NOT written)
     python weekly_review_emails.py --user a@b.com    # only this profile
@@ -52,10 +60,13 @@ Env vars:
 from __future__ import annotations
 
 import argparse
+import base64
 import html
+import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -72,7 +83,7 @@ from lifecycle_emails import (
     record_send,
     send_via_resend,
 )
-from llm_providers import LLMProviderError, call_llm
+from llm_providers import LLMProviderError, call_llm, parse_json_response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("weekly_review_emails")
@@ -82,6 +93,7 @@ RENDERER = os.path.join(ROOT, "web", "scripts", "review-pack.mjs")
 
 WEEK_KEY_PREFIX = "weekly_review_"
 OPT_OUT_COLUMN = "weekly_review_emails"
+CHART_DAYS = 30
 
 # The reviewing brain. Gemini 3.1 Pro at medium depth is the house reviewer's
 # own setting (migration 087): deep enough to read a 30k-token pack properly,
@@ -112,40 +124,44 @@ REVIEW_FOOTER_HTML = (
 # ---------------------------------------------------------------------------
 
 REVIEW_SYSTEM = """\
-You write the weekly review email that AlphaMolt sends to the human owner of a \
-paper portfolio run by a team of AI agents. You are given the portfolio's review \
-pack: its mandate, the agents and their briefs, the screen they pick from, the \
-sell discipline, every position with its thesis and break signals, every trade, \
-the closed positions, what the record cannot tell you, and a list of questions \
-worth asking a reviewer. The pack also says how the book is run — read that \
-before judging any single position.
+You write the weekly review that AlphaMolt emails to the human owner of a paper \
+portfolio run by a team of AI agents. You are given the portfolio's review pack: \
+its mandate, the agents and their briefs, the screen they pick from, the sell \
+discipline, every position with its thesis and break signals, every trade, the \
+closed positions, what the record cannot tell you, and a list of questions worth \
+asking a reviewer. The pack also says how the book is run — read that before \
+judging any single position.
 
-Write the BODY of the email only: plain text, no markdown, no headings, no \
-bullet symbols, no subject line, no greeting, no sign-off (those are added \
-around your text). 250-450 words in short paragraphs.
+The owner reads this on a phone. The email already shows them a chart, the \
+week's numbers and the week's trades, so do not restate those. Be short.
 
-What the review must do, in this order:
-1. Open with the single most important thing about this book right now, in the \
-first sentence.
-2. Say whether the positions match the mandate. Name the tickers that do not \
-fit and say why.
-3. Name the weakest thesis on the evidence in the pack and what would have to be \
-true for it to hold. Call out any break signal that is firing, that cannot be \
-evaluated, or that was already true when it was written.
-4. Say where this process is most likely to go wrong next: the screen's filters, \
-the ranking weights, the per-name judgement, or the sell rules.
-5. Close with one or two concrete changes the owner can make on their portfolio \
-page: edit an agent's brief, change a screen filter or weight, adjust the sell \
-discipline, or sell a name by hand.
+Answer with ONE JSON object and nothing else:
+{
+  "headline": "one sentence — the single most important thing about this book right now",
+  "paragraphs": ["...", "..."],
+  "recommendations": [{"action": "...", "why": "..."}]
+}
+
+"paragraphs": exactly two, each under 60 words, plain text, no markdown. The \
+first says whether the positions match the mandate (name the tickers that do \
+not fit) and names the weakest thesis on the evidence, including any break \
+signal that is firing, cannot be evaluated, or was already true when written. \
+The second says where this process is most likely to go wrong next: the \
+screen's filters, the ranking weights, the per-name judgement, or the sell rules.
+
+"recommendations": two to four. Each "action" is an imperative under 15 words \
+the owner can do on their portfolio page — edit an agent's brief, add or change \
+a screen filter or weight, adjust the sell discipline, or sell a name by hand. \
+Each "why" is one sentence. Most important first.
 
 Rules. Use only what is in the pack; where it cannot tell you something, say so \
 rather than guess. Quote figures as they appear and remember the prices are \
 closing marks, not live. Trades dated inside the week named below are this \
-week's; refer to them as such. Do not restate the pack's "What has already been \
-fixed" entries as findings. Do not praise for its own sake and do not pad. Be \
-direct, specific and plain-spoken, like a sharp friend who has run money. Do not \
-say that you are an AI or that you are reading a document. This is a paper \
-portfolio: never give advice about real money.
+week's. Do not restate the pack's "What has already been fixed" entries as \
+findings. No praise for its own sake, no padding. Direct, specific, plain-spoken, \
+like a sharp friend who has run money. Do not say that you are an AI or that you \
+are reading a document. This is a paper portfolio: never give advice about real \
+money.
 """
 
 
@@ -209,7 +225,7 @@ def plan_sends(
 
 
 # ---------------------------------------------------------------------------
-# The week's numbers — pure
+# The week's numbers, the chart series, the trades — pure
 # ---------------------------------------------------------------------------
 
 def _num(v) -> float | None:
@@ -242,6 +258,37 @@ def window_change_pct(
     return (b / a - 1) * 100
 
 
+def rebased_points(
+    snapshots: list[dict], value_key: str = "total_value_usd", index_key: str = "twr_index"
+) -> list[tuple[str, float]]:
+    """[(date, level)] with the first point at 100 — the chart's portfolio line.
+
+    Reads the time-weighted index when EVERY row carries one (so a deposit
+    is not drawn as a jump), otherwise the raw value: the index backfill can
+    lag, and on a paper book the two are the same curve.
+    """
+    rows = sorted((r for r in snapshots if r.get("snapshot_date")),
+                  key=lambda r: r["snapshot_date"])
+    key = index_key if rows and all(_num(r.get(index_key)) is not None for r in rows) else value_key
+    pts = [(r["snapshot_date"], _num(r.get(key))) for r in rows]
+    pts = [(d, v) for d, v in pts if v is not None and v > 0]
+    if not pts:
+        return []
+    base = pts[0][1]
+    return [(d, v / base * 100) for d, v in pts]
+
+
+def series_points(series: dict[str, float], start: date, end: date) -> list[tuple[str, float]]:
+    """[(date, level)] from a {date_iso: close} series inside [start, end],
+    rebased to 100 at the first point — the chart's benchmark line."""
+    pts = sorted((d, c) for d, c in series.items()
+                 if start.isoformat() <= d <= end.isoformat() and c and c > 0)
+    if not pts:
+        return []
+    base = pts[0][1]
+    return [(d, c / base * 100) for d, c in pts]
+
+
 def series_change_pct(series: dict[str, float], start: date, end: date) -> float | None:
     """Change in a {date_iso: close} series between the last closes on or
     before `start` and `end` — Friday's close still answers a Monday email."""
@@ -258,37 +305,89 @@ def series_change_pct(series: dict[str, float], start: date, end: date) -> float
     return (b / a - 1) * 100
 
 
-def week_line(
-    total_value: float | None,
-    week_pct: float | None,
-    spy_pct: float | None,
-    since_inception_pct: float | None,
-    holdings: int | None,
-) -> str:
-    """The one computed sentence above the model's text — figures the model
-    is not asked to derive, so they cannot be misquoted."""
+def week_trades(trades: list[dict], start: date, end: date) -> list[dict]:
+    """The pack's tape rows executed inside [start, end], oldest first."""
+    lo, hi = start.isoformat(), end.isoformat()
+    rows = [t for t in trades if lo <= str(t.get("executedAt") or "")[:10] <= hi]
+    return sorted(rows, key=lambda t: str(t.get("executedAt") or ""))
+
+
+def stats_line(stats: dict) -> str:
+    """The computed figures under the portfolio name, as one line."""
     parts: list[str] = []
-    if total_value is not None:
-        parts.append(f"Value ${total_value:,.0f}")
-    if holdings is not None:
-        parts.append(f"{holdings} position{'s' if holdings != 1 else ''}")
-    if week_pct is not None:
-        wk = f"{week_pct:+.1f}% on the week"
-        if spy_pct is not None:
-            wk += f" (S&P 500 {spy_pct:+.1f}%)"
+    if stats.get("total_value") is not None:
+        parts.append(f"${stats['total_value']:,.0f}")
+    if stats.get("week_pct") is not None:
+        wk = f"{stats['week_pct']:+.1f}% this week"
+        if stats.get("spy_pct") is not None:
+            wk += f" (S&P 500 {stats['spy_pct']:+.1f}%)"
         parts.append(wk)
-    if since_inception_pct is not None:
-        parts.append(f"{since_inception_pct:+.1f}% since inception")
-    return ". ".join(parts) + "." if parts else ""
+    if stats.get("since_pct") is not None:
+        parts.append(f"{stats['since_pct']:+.1f}% since inception")
+    if stats.get("holdings") is not None:
+        n = stats["holdings"]
+        parts.append(f"{n} position{'s' if n != 1 else ''}")
+    return " · ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# The chart — a PNG the email carries inline
+# ---------------------------------------------------------------------------
+
+def render_chart_png(
+    portfolio: list[tuple[str, float]],
+    benchmark: list[tuple[str, float]],
+    name: str,
+) -> bytes | None:
+    """30-day line of the book against the S&P 500, both rebased to 100.
+
+    Returns PNG bytes, or None when there is nothing worth drawing (fewer
+    than two portfolio points) or matplotlib is unavailable — the email
+    then simply has no chart rather than no email.
+    """
+    if len(portfolio) < 2:
+        return None
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.dates as mdates
+        import matplotlib.pyplot as plt
+    except Exception as exc:  # noqa: BLE001 — the chart is a nicety
+        logger.warning("chart skipped: matplotlib unavailable (%s)", exc)
+        return None
+
+    def to_dt(d: str) -> datetime:
+        return datetime.fromisoformat(d)
+
+    fig, ax = plt.subplots(figsize=(6.4, 2.4), dpi=160)
+    ax.plot([to_dt(d) for d, _ in portfolio], [v for _, v in portfolio],
+            color="#111111", linewidth=1.8, label=name)
+    if len(benchmark) >= 2:
+        ax.plot([to_dt(d) for d, _ in benchmark], [v for _, v in benchmark],
+                color="#8a8a8a", linewidth=1.2, linestyle="--", label="S&P 500")
+    ax.axhline(100, color="#dddddd", linewidth=0.8)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color("#cccccc")
+    ax.tick_params(colors="#666666", labelsize=8)
+    ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=mdates.MO))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+    ax.yaxis.set_major_formatter(lambda v, _: f"{v:.0f}")
+    ax.grid(axis="y", color="#eeeeee", linewidth=0.8)
+    ax.set_title(f"Last {CHART_DAYS} days, rebased to 100", fontsize=9,
+                 color="#666666", loc="left")
+    ax.legend(frameon=False, fontsize=8, loc="best")
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
 # Email rendering — pure
 # ---------------------------------------------------------------------------
-
-def _paragraphs(text: str) -> list[str]:
-    return [p.strip() for p in text.replace("\r\n", "\n").split("\n\n") if p.strip()]
-
 
 def email_subject(reviews: list[dict]) -> str:
     if len(reviews) == 1:
@@ -296,45 +395,153 @@ def email_subject(reviews: list[dict]) -> str:
     return f"this week's review of your {len(reviews)} portfolios"
 
 
+def _money(n: float | None, signed: bool = False) -> str:
+    if n is None:
+        return "—"
+    sign = "-" if n < 0 else ("+" if signed and n > 0 else "")
+    return f"{sign}${abs(n):,.0f}"
+
+
+def _trade_line(t: dict) -> str:
+    side = str(t.get("side", "")).upper()
+    qty = _num(t.get("quantity")) or 0
+    px = _num(t.get("price")) or 0
+    who = t.get("agent") or "—"
+    line = (f"{str(t.get('executedAt', ''))[:10]}  {side:<4} "
+            f"{str(t.get('ticker', '')):<6} {qty:,.0f} @ ${px:,.2f}")
+    if side == "SELL":
+        line += f"  realised {_money(_num(t.get('realisedUsd')), signed=True)}"
+    return f"{line}  ({who})"
+
+
 def email_text(first_name: str | None, reviews: list[dict], model_label: str) -> str:
     greeting = f"Hi {first_name} —" if first_name else "Hi —"
-    blocks = [greeting, ""]
+    out = [greeting, ""]
     for r in reviews:
-        blocks.append(f"{r['name']} — {SITE_URL}/portfolios/{r['slug']}")
-        if r.get("week_line"):
-            blocks.append(r["week_line"])
-        blocks.append("")
-        blocks.append(r["review"].strip())
-        blocks.append("")
-    blocks.append(
-        f"This review was written by {model_label} from the same review pack you can "
-        'copy from your portfolio page ("Copy for AI review") — paste it into any model '
-        "for a second opinion. Paper portfolio; nothing here is advice about real money."
+        rv = r["review"]
+        out.append(f"{r['name']} — {SITE_URL}/portfolios/{r['slug']}")
+        line = stats_line(r.get("stats") or {})
+        if line:
+            out.append(line)
+        out += ["", "This week's trades"]
+        trades = r.get("trades") or []
+        out += [_trade_line(t) for t in trades] if trades else ["None."]
+        out += ["", rv["headline"], ""]
+        for para in rv["paragraphs"]:
+            out += [para, ""]
+        out.append("What I'd change")
+        for i, rec in enumerate(rv["recommendations"], 1):
+            out.append(f"{i}. {rec['action']} — {rec['why']}")
+        out.append("")
+    out.append(
+        f"Written by {model_label} from the same review pack you can copy from your "
+        'portfolio page ("Copy for AI review") — paste it into any model for a second '
+        "opinion. Paper portfolio; nothing here is advice about real money."
     )
-    blocks += ["", "— Toby", "", REVIEW_FOOTER_TEXT, ""]
-    return "\n".join(blocks)
+    out += ["", "— Toby", "", REVIEW_FOOTER_TEXT, ""]
+    return "\n".join(out)
 
 
-def email_html(first_name: str | None, reviews: list[dict], model_label: str) -> str:
-    greeting = f"Hi {html.escape(first_name)} &mdash;" if first_name else "Hi &mdash;"
-    out = [f"<p>{greeting}</p>"]
+_H = html.escape
+_MUTED = 'style="color:#666666;font-size:14px;"'
+_LABEL = ('style="color:#999999;font-size:11px;letter-spacing:0.08em;'
+          'text-transform:uppercase;margin:22px 0 6px;"')
+_TD = 'style="padding:4px 8px 4px 0;border-bottom:1px solid #eeeeee;font-size:13px;"'
+
+
+def _trades_table_html(trades: list[dict]) -> str:
+    if not trades:
+        return f"<p {_MUTED}>None.</p>"
+    rows = []
+    for t in trades:
+        side = str(t.get("side", "")).upper()
+        qty = _num(t.get("quantity")) or 0
+        px = _num(t.get("price")) or 0
+        colour = "#1a7f37" if side == "BUY" else "#b42318"
+        pnl = ""
+        if side == "SELL":
+            realised = _num(t.get("realisedUsd"))
+            pnl_colour = "#b42318" if (realised or 0) < 0 else "#1a7f37"
+            pnl = f'<span style="color:{pnl_colour};">{_H(_money(realised, signed=True))}</span>'
+        rows.append(
+            "<tr>"
+            f"<td {_TD}>{_H(str(t.get('executedAt', ''))[:10])}</td>"
+            f'<td {_TD}><span style="color:{colour};font-weight:600;">{_H(side)}</span> '
+            f"<strong>{_H(str(t.get('ticker', '')))}</strong></td>"
+            f"<td {_TD}>{qty:,.0f} @ ${px:,.2f}</td>"
+            f'<td {_TD} align="right">{pnl}</td>'
+            f'<td {_TD}><span style="color:#666666;">{_H(t.get("agent") or "")}</span></td>'
+            "</tr>"
+        )
+    return ('<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;'
+            'width:100%;">' + "".join(rows) + "</table>")
+
+
+def email_html(
+    first_name: str | None, reviews: list[dict], model_label: str,
+    inline_charts: bool = False,
+) -> str:
+    """The HTML body. Charts are referenced as `cid:` inline attachments; with
+    `inline_charts` they are embedded as data URIs instead (for a preview
+    file — mail clients block data URIs, Resend carries the cid)."""
+    greeting = f"Hi {_H(first_name)} &mdash;" if first_name else "Hi &mdash;"
+    out = ['<div style="max-width:600px;font-family:-apple-system,Segoe UI,Helvetica,Arial,'
+           'sans-serif;font-size:15px;line-height:1.5;color:#111111;">',
+           f"<p>{greeting}</p>"]
     for r in reviews:
+        rv = r["review"]
         url = f"{SITE_URL}/portfolios/{r['slug']}"
         out.append(
-            f'<p><strong><a href="{url}">{html.escape(r["name"])}</a></strong>'
-            + (f"<br>{html.escape(r['week_line'])}" if r.get("week_line") else "")
-            + "</p>"
+            f'<p style="margin:18px 0 2px;font-size:18px;"><strong>'
+            f'<a href="{url}" style="color:#111111;">{_H(r["name"])}</a></strong></p>'
         )
-        for para in _paragraphs(r["review"]):
-            out.append(f"<p>{html.escape(para)}</p>")
+        line = stats_line(r.get("stats") or {})
+        if line:
+            out.append(f'<p {_MUTED.replace("font-size", "margin:0 0 8px;font-size")}>'
+                       f"{_H(line)}</p>")
+        chart = r.get("chart")
+        if chart and chart.get("png"):
+            src = (f"data:image/png;base64,{base64.b64encode(chart['png']).decode()}"
+                   if inline_charts else f"cid:{chart['cid']}")
+            out.append(f'<img src="{src}" alt="{_H(r["name"])} — last {CHART_DAYS} days vs the '
+                       f'S&amp;P 500" width="600" style="display:block;width:100%;max-width:600px;'
+                       f'height:auto;margin:6px 0 4px;">')
+        out.append(f"<p {_LABEL}>This week's trades</p>")
+        out.append(_trades_table_html(r.get("trades") or []))
+        out.append(f'<p style="margin-top:22px;"><strong>{_H(rv["headline"])}</strong></p>')
+        for para in rv["paragraphs"]:
+            out.append(f"<p>{_H(para)}</p>")
+        out.append(f"<p {_LABEL}>What I'd change</p>")
+        out.append('<ol style="padding-left:20px;margin:0;">')
+        for rec in rv["recommendations"]:
+            out.append(f'<li style="margin-bottom:8px;"><strong>{_H(rec["action"])}</strong>'
+                       f' <span {_MUTED}>{_H(rec["why"])}</span></li>')
+        out.append("</ol>")
     out.append(
-        f"<p>This review was written by {html.escape(model_label)} from the same review "
-        "pack you can copy from your portfolio page (&quot;Copy for AI review&quot;) "
-        "&mdash; paste it into any model for a second opinion. Paper portfolio; nothing "
-        "here is advice about real money.</p>"
+        f'<p style="margin-top:26px;color:#666666;font-size:13px;">Written by {_H(model_label)} '
+        "from the same review pack you can copy from your portfolio page (&quot;Copy for AI "
+        "review&quot;) &mdash; paste it into any model for a second opinion. Paper portfolio; "
+        "nothing here is advice about real money.</p>"
     )
-    out += ["<p>&mdash; Toby</p>", REVIEW_FOOTER_HTML]
+    out += ["<p>&mdash; Toby</p>", REVIEW_FOOTER_HTML, "</div>"]
     return "\n".join(out) + "\n"
+
+
+def chart_attachment(review: dict) -> dict | None:
+    """Resend attachment object for a review's chart, or None."""
+    chart = review.get("chart")
+    if not chart or not chart.get("png"):
+        return None
+    return {
+        "filename": f"{review['slug']}-{CHART_DAYS}d.png",
+        "content": base64.b64encode(chart["png"]).decode(),
+        "content_type": "image/png",
+        "content_id": chart["cid"],
+    }
+
+
+def chart_cid(slug: str) -> str:
+    return "chart-" + re.sub(r"[^a-z0-9-]", "-", slug.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +549,7 @@ def email_html(first_name: str | None, reviews: list[dict], model_label: str) ->
 # ---------------------------------------------------------------------------
 
 def render_packs(slugs: list[str], timeout: int = 300) -> dict[str, dict]:
-    """{slug: {markdown, ...} | {error}} via web/scripts/review-pack.mjs."""
+    """{slug: {markdown, trades, ...} | {error}} via web/scripts/review-pack.mjs."""
     if not slugs:
         return {}
     node = shutil.which("node")
@@ -384,8 +591,31 @@ def reviewer_config() -> dict:
     }
 
 
-def write_review(pack_markdown: str, week_end: date, cfg: dict) -> tuple[str, str]:
-    """(review text, model that wrote it). Raises LLMProviderError."""
+def parse_review(text: str) -> dict:
+    """The model's JSON, checked for shape: a headline, the paragraphs asked
+    for (1-3 tolerated), 2-4 recommendations each with action + why.
+    Anything else is an error, not an email."""
+    data = parse_json_response(text)
+    headline = str(data.get("headline") or "").strip()
+    paragraphs = [str(p).strip() for p in (data.get("paragraphs") or []) if str(p).strip()]
+    recs = []
+    for r in data.get("recommendations") or []:
+        if not isinstance(r, dict):
+            continue
+        action = str(r.get("action") or "").strip().rstrip(".")
+        why = str(r.get("why") or "").strip()
+        if action and why:
+            recs.append({"action": action, "why": why})
+    if not headline or not 1 <= len(paragraphs) <= 3 or not 2 <= len(recs) <= 4:
+        raise LLMProviderError(
+            f"review has the wrong shape: headline={bool(headline)} "
+            f"paragraphs={len(paragraphs)} recommendations={len(recs)}"
+        )
+    return {"headline": headline, "paragraphs": paragraphs, "recommendations": recs}
+
+
+def write_review(pack_markdown: str, week_end: date, cfg: dict) -> tuple[dict, str]:
+    """(review dict, model that wrote it). Raises LLMProviderError."""
     if len(pack_markdown) > MAX_PACK_CHARS:
         raise LLMProviderError(f"pack is {len(pack_markdown)} chars — refusing to send")
     resp = call_llm(
@@ -394,10 +624,7 @@ def write_review(pack_markdown: str, week_end: date, cfg: dict) -> tuple[str, st
         max_tokens=MAX_REVIEW_TOKENS, temperature=0.7,
         thinking_level=cfg.get("thinking_level"), fallback_model=cfg.get("fallback_model"),
     )
-    text = (resp.text or "").strip()
-    if len(text) < 200:
-        raise LLMProviderError(f"review too short ({len(text)} chars): {text[:120]!r}")
-    return text, resp.model
+    return parse_review(resp.text), resp.model
 
 
 # ---------------------------------------------------------------------------
@@ -463,13 +690,13 @@ def fetch_sent_for_key(db: SupabaseDB, key: str) -> set[tuple[str, str]]:
     return {(r["user_id"], r["email_key"]) for r in (resp.data or [])}
 
 
-def fetch_week_snapshots(db: SupabaseDB, portfolio_id: str, week_end: date) -> list[dict]:
+def fetch_snapshots(db: SupabaseDB, portfolio_id: str, start: date, end: date) -> list[dict]:
     resp = (
         db.client.table("agent_portfolio_history")
         .select("snapshot_date, total_value_usd, twr_index")
         .eq("portfolio_id", portfolio_id)
-        .gte("snapshot_date", (week_end - timedelta(days=7)).isoformat())
-        .lte("snapshot_date", week_end.isoformat())
+        .gte("snapshot_date", start.isoformat())
+        .lte("snapshot_date", end.isoformat())
         .order("snapshot_date")
         .execute()
     )
@@ -487,6 +714,42 @@ def set_opt_out(db: SupabaseDB, email: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Assembling one book's review
+# ---------------------------------------------------------------------------
+
+def build_review(
+    book: dict, pack: dict, snapshots: list[dict], spy: dict[str, float],
+    week_end: date, cfg: dict,
+) -> tuple[dict, str]:
+    """Everything the email shows for one portfolio. Raises LLMProviderError."""
+    week_start = week_end - timedelta(days=6)
+    review, model = write_review(pack["markdown"], week_end, cfg)
+    week_snaps = [s for s in snapshots
+                  if s.get("snapshot_date", "") >= (week_end - timedelta(days=7)).isoformat()]
+    stats = {
+        "total_value": _num(pack.get("totalValue")),
+        "week_pct": window_change_pct(week_snaps),
+        "spy_pct": series_change_pct(spy, week_end - timedelta(days=7), week_end),
+        "since_pct": _num(pack.get("returnPct")),
+        "holdings": pack.get("holdings"),
+    }
+    name = book.get("display_name") or book["slug"]
+    png = render_chart_png(
+        rebased_points(snapshots),
+        series_points(spy, week_end - timedelta(days=CHART_DAYS), week_end),
+        name,
+    )
+    return {
+        "name": name,
+        "slug": book["slug"],
+        "stats": stats,
+        "chart": {"cid": chart_cid(book["slug"]), "png": png} if png else None,
+        "trades": week_trades(pack.get("trades") or [], week_start, week_end),
+        "review": review,
+    }, model
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -494,8 +757,9 @@ def main() -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true",
-                        help="Plan, render and write the reviews to stdout; send nothing, "
-                             "write nothing")
+                        help="Plan and render every due review; send nothing, write nothing")
+    parser.add_argument("--preview-dir", default=None, metavar="DIR",
+                        help="Also write each email as <slug>.html / .txt here")
     parser.add_argument("--to", default=None, metavar="ADDR",
                         help="Redirect all sends to a test address; ledger NOT written")
     parser.add_argument("--user", default=None, metavar="EMAIL",
@@ -521,7 +785,8 @@ def main() -> int:
 
     now = datetime.now(timezone.utc)
     key = week_key(now)
-    week_end = date.fromisoformat(args.week_end) if args.week_end else (now - timedelta(days=1)).date()
+    week_end = (date.fromisoformat(args.week_end) if args.week_end
+                else (now - timedelta(days=1)).date())
 
     profiles = fetch_profiles(db, args.user)
     portfolios = fetch_paper_portfolios(db)
@@ -546,10 +811,11 @@ def main() -> int:
     cfg = reviewer_config()
     try:
         spy = db.get_benchmark_series("SPY.US")
-    except Exception as exc:  # noqa: BLE001 — the benchmark line is a nicety
+    except Exception as exc:  # noqa: BLE001 — the benchmark is a nicety
         logger.warning("SPY series unavailable: %s", exc)
         spy = {}
-    spy_pct = series_change_pct(spy, week_end - timedelta(days=7), week_end)
+    if args.preview_dir:
+        os.makedirs(args.preview_dir, exist_ok=True)
 
     sent_n = skipped = errors = 0
     for prof, books in plan:
@@ -563,24 +829,16 @@ def main() -> int:
                 logger.error("Pack for %s failed: %s", b["slug"], pack.get("error", "empty"))
                 continue
             try:
-                snaps = fetch_week_snapshots(db, b["id"], week_end)
+                snaps = fetch_snapshots(db, b["id"], week_end - timedelta(days=CHART_DAYS), week_end)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Snapshots for %s unavailable: %s", b["slug"], exc)
                 snaps = []
             try:
-                text, model_used = write_review(pack["markdown"], week_end, cfg)
+                review, model_used = build_review(b, pack, snaps, spy, week_end, cfg)
             except LLMProviderError as exc:
                 logger.error("Review for %s failed: %s", b["slug"], exc)
                 continue
-            reviews.append({
-                "name": b.get("display_name") or b["slug"],
-                "slug": b["slug"],
-                "review": text,
-                "week_line": week_line(
-                    pack.get("totalValue"), window_change_pct(snaps), spy_pct,
-                    pack.get("returnPct"), pack.get("holdings"),
-                ),
-            })
+            reviews.append(review)
         if not reviews:
             # Nothing rendered → no ledger row, so the next run retries them.
             errors += 1
@@ -590,13 +848,22 @@ def main() -> int:
         name = first_name_of(prof)
         text = email_text(name, reviews, model_used)
         body_html = email_html(name, reviews, model_used)
+        attachments = [a for a in (chart_attachment(r) for r in reviews) if a]
+        if args.preview_dir:
+            stem = os.path.join(args.preview_dir, reviews[0]["slug"])
+            with open(f"{stem}.html", "w", encoding="utf-8") as fh:
+                fh.write(email_html(name, reviews, model_used, inline_charts=True))
+            with open(f"{stem}.txt", "w", encoding="utf-8") as fh:
+                fh.write(f"Subject: {subject}\n\n{text}")
+            logger.info("Preview written: %s.html", stem)
         if args.dry_run:
-            logger.info("[dry-run] would send %r to %s (%d review(s))",
-                        subject, _mask(recipient), len(reviews))
-            sys.stdout.write(f"\n===== {_mask(recipient)} · {subject} =====\n{text}\n")
+            logger.info("[dry-run] would send %r to %s (%d review(s), %d chart(s))",
+                        subject, _mask(recipient), len(reviews), len(attachments))
+            if not args.preview_dir:
+                sys.stdout.write(f"\n===== {_mask(recipient)} · {subject} =====\n{text}\n")
             skipped += 1
             continue
-        if send_via_resend(recipient, subject, text, body_html):
+        if send_via_resend(recipient, subject, text, body_html, attachments=attachments):
             if not args.to:  # a test redirect must not burn the user's week
                 record_send(db, prof["id"], key, prof["email"])
             sent_n += 1

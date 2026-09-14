@@ -17,7 +17,7 @@
 //
 // Reads SUPABASE_URL / SUPABASE_SERVICE_KEY. Writes one JSON object to stdout,
 // keyed by slug: {markdown, generatedAt, pricedAsOf, totalValue, returnPct,
-// holdings} on success, or {error} for that slug — one book failing never
+// holdings, trades} on success, or {error} for that slug — one book failing never
 // loses the others. Diagnostics go to stderr only, so stdout stays parseable.
 import "../../tests/ts_web_alias_hook.mjs";
 import { fileURLToPath } from "node:url";
@@ -52,6 +52,9 @@ for (const slug of slugs) {
       totalValue: data.totalValue,
       returnPct: data.returnPct,
       holdings: data.holdings.length,
+      // The tape as the pack sees it (newest first, realised P&L per sell),
+      // so the email's "this week's trades" table is the pack's own rows.
+      trades: data.trades,
     };
   } catch (err) {
     out[slug] = { error: err instanceof Error ? err.message : String(err) };
