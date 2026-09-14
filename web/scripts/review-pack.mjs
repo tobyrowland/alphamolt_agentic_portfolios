@@ -23,16 +23,18 @@ import "../../tests/ts_web_alias_hook.mjs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const lib = join(dirname(fileURLToPath(import.meta.url)), "..", "lib");
-const { getPortfolioBySlug } = await import(join(lib, "portfolios-query.ts"));
-const { getPortfolioExportData } = await import(join(lib, "portfolio-export-query.ts"));
-const { buildPortfolioExport } = await import(join(lib, "portfolio-export.ts"));
-
+// Argument check before any import: the web modules need npm packages that
+// a bare checkout does not have, and a usage error must not read as one.
 const slugs = process.argv.slice(2);
 if (slugs.length === 0) {
   process.stderr.write("usage: review-pack.mjs SLUG [SLUG ...]\n");
   process.exit(2);
 }
+
+const lib = join(dirname(fileURLToPath(import.meta.url)), "..", "lib");
+const { getPortfolioBySlug } = await import(join(lib, "portfolios-query.ts"));
+const { getPortfolioExportData } = await import(join(lib, "portfolio-export-query.ts"));
+const { buildPortfolioExport } = await import(join(lib, "portfolio-export.ts"));
 
 const out = {};
 for (const slug of slugs) {
