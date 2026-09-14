@@ -1246,6 +1246,39 @@ Recipient addresses are masked in logs (public Actions logs). Flags:
 `--user EMAIL`, `--mark-only` (seed ledger rows without sending).
 Cron: `lifecycle-emails.yml`, every 30 min.
 
+### data_freshness_report.py (12:30 UTC daily — `data-freshness-report.yml`)
+One email a day answering "is every Level 0 fact still being kept fresh?":
+per data type, coverage of the active Tier-1 universe, freshest and stalest
+stamp, how many names sit past the feed's window, rows written in 24h, and a
+RAG status. `--email` (Resend → SMTP fallback, `REPORT_EMAIL_*`), `--slack`.
+Pure `classify` + `summarize` are unit-tested (`tests/test_data_freshness_report.py`).
+
+**Green is the designed state; red/amber mean an Action broke.** The first
+version flagged four rows on every email for weeks while every pipeline ran as
+designed, for three reasons, each now closed:
+- **It judged a feed by its single stalest name.** Every real feed carries a
+  tail — seven Tier-1 names EODHD last priced on Aug 21, thirteen without a
+  valuation row in a week — and one such name turned the whole row red. The
+  status now turns on the FRACTION of maintained names inside the feed's
+  window (`ok_fraction` 0.97 daily / 0.95 rotation; below 0.8 is STALE), and
+  the tail is shown in its own **Past window** column instead.
+- **Two rotation feeds were read unscoped.** `fundamentals` and `ai_analysis`
+  keep a row for every name that ever passed the gate, so their stalest (a
+  Jun 04 delisted name) was WATCH by construction. Both are now filtered to
+  active Tier-1, like valuation already was.
+- **The valuation row never had a timestamp.** It reused the updater's own
+  state read (`get_all_valuation_latest`), and neither its paginated fallback
+  nor the migration-091 RPC — which is not deployed on the project anyway —
+  selects `fetched_at`, so the row printed "—" and STALE regardless of the
+  data. It now reads dates directly through the bounded
+  `db.get_valuation_dates_since` (14 days; names absent from the span are
+  "not covered", names inside 5 days are fresh).
+Also: a daily feed is "alive" while its newest stamp is under `ALIVE_DAYS`
+(1.5) old, not 24h — every cron here lands 3-6h late and the lag varies, so a
+09:30 run yesterday and a 17:00 run today is an ordinary day, not an outage;
+and price windows are 5 days so Friday's close is still fresh on the Tuesday
+after a Monday holiday.
+
 ### benchmarks_updater.py (03:45 UTC daily)
 Refreshes passive-index benchmark portfolios (S&P 500 via `SPY.US`, MSCI World
 via `URTH.US`) that appear inline on the `/leaderboard`. For each row in the
