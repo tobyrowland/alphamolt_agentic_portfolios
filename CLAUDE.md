@@ -1132,7 +1132,22 @@ classifier flags: `is_option` (asset-type `[OP]`) and `is_gift` (charitable
 contribution / gift — **not** a market signal, dropped by the mirror). Upserts
 into `congress_trades` idempotent on a content `dedupe_hash`, only fetching
 filings it hasn't seen. Never trades. Requires `pypdf` (added to
-requirements.txt). Cron: `congress-trades.yml` (06:30 UTC, before the 07:00
+requirements.txt).
+
+**The row regex accepts both date layouts** (`tests/test_congress_trades.py`).
+The transaction and notification dates come out of the PDF either glued
+(`07/24/202607/24/2026`) or space-separated (`07/24/2026 07/24/2026`) depending
+on the filing's layout; the parser accepted only the glued form, so Pelosi's
+2026-08-21 PTR (DocID 20035143 — six Bloom Energy and Intel purchases, $250k-$5M
+bands) parsed to **zero** rows and the mirror was blind from June while the
+daily cron reported success (`txns_parsed: 0`, `errors: 0`). Because a filing
+is only "known" once a row from it lands, a zero-row filing is re-fetched on
+the next run, so the fix picks it up without any backfill. Two more from the
+same filing: the `dedupe_hash` now includes `asset_type` — a share purchase and
+a call-option purchase of the same name, same day, same band otherwise hash
+equal and the UNIQUE index silently drops one (that filing has two such
+pairs) — and a description no longer swallows the page-break header
+(`Filing ID #… ID Owner Asset …`) that follows the last row on a page. Cron: `congress-trades.yml` (06:30 UTC, before the 07:00
 heartbeat). Flags: `--politician`, `--last`, `--first`, `--years`, `--limit`,
 `--dry-run`.
 
