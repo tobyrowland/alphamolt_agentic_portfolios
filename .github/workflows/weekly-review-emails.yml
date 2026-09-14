@@ -1,0 +1,94 @@
+name: Weekly Review Emails
+
+# Every owner running a paper portfolio gets one email a week: a model's
+# critique of their book (weekly_review_emails.py), written from the same
+# review pack the portfolio page's "Copy for AI review" button produces
+# (web/lib/portfolio-export.ts, rendered here by web/scripts/review-pack.mjs
+# under plain node — hence the Node + `npm ci` steps).
+#
+# Schedule: Mondays 08:00 UTC — after the 05:30 mark-to-market and the 07:00
+# heartbeat have settled, so the pack carries Friday's closes and any Monday
+# rebalance. The send is gated by the lifecycle_email_sends ledger under a
+# per-ISO-week key, so a failed Monday can be re-run on Tuesday (or
+# dispatched by hand) and only whoever was missed gets it.
+#
+# Recipient addresses are masked in the script's log output, so these public
+# Actions logs never contain user emails. A dry run prints the reviews
+# themselves, which name the user's portfolio — keep that to manual runs.
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan + render the reviews to the log — no emails, no ledger writes"
+        required: false
+        type: boolean
+        default: true
+      to:
+        description: "Redirect all sends to this test address (ledger not written)"
+        required: false
+        type: string
+      user:
+        description: "Only the profile with this email"
+        required: false
+        type: string
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # The pack is rendered by the web app's own TypeScript, run under node
+      # with type stripping (>= 22.6). Only the runtime deps are needed.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web runtime dependencies
+        working-directory: web
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      - name: Send weekly reviews
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # The reviewing model (google / gemini-3.1-pro-preview by default;
+          # REVIEW_EMAIL_LLM_PROVIDER / _MODEL override it).
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          # FROM must be on the Resend-verified alphamolt.ai domain,
+          # e.g. "Toby Rowland <toby@alphamolt.ai>".
+          LIFECYCLE_EMAIL_FROM: ${{ secrets.LIFECYCLE_EMAIL_FROM }}
+          # Optional: route replies ("no more reviews") to a personal inbox.
+          LIFECYCLE_EMAIL_REPLY_TO: ${{ secrets.LIFECYCLE_EMAIL_REPLY_TO }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ -n "${{ inputs.to }}" ]; then
+            ARGS="$ARGS --to ${{ inputs.to }}"
+          fi
+          if [ -n "${{ inputs.user }}" ]; then
+            ARGS="$ARGS --user ${{ inputs.user }}"
+          fi
+          python weekly_review_emails.py $ARGS

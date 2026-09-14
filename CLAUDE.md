@@ -28,6 +28,9 @@ Daily (UTC):
 Weekly (Sunday UTC):
 Sun 08:00       consensus_snapshot.py     Aggregate agent_holdings → consensus_snapshots (powers /consensus)
 
+Weekly (Monday UTC):
+Mon 08:00       weekly_review_emails.py   One email per owner running a paper portfolio: a model's critique of the book, written from the same review pack as the page's "Copy for AI review" button (send-once per ISO week via lifecycle_email_sends)
+
 Every 15 min (Mon–Fri, 13:00–22:00 UTC):
                 intraday_prices.py        Refresh companies.price + price_asof via EODHD /real-time (15-min delayed quotes)
                 portfolio_valuation.py    Re-mark every agent portfolio against the fresh price (overwrites today's row in agent_portfolio_history)
@@ -1319,6 +1322,56 @@ Recipient addresses are masked in logs (public Actions logs). Flags:
 `--user EMAIL`, `--mark-only` (seed ledger rows without sending).
 Cron: `lifecycle-emails.yml`, every 30 min.
 
+### weekly_review_emails.py (Mondays 08:00 UTC — `weekly-review-emails.yml`)
+The weekly portfolio review: every human running a paper portfolio gets one
+email a week with a model's critique of their book. The document the model
+reads is **the review pack itself** — the same Markdown the portfolio page's
+"Copy for AI review" button produces (`web/lib/portfolio-export.ts` over
+`web/lib/portfolio-export-query.ts`), rendered here by
+`web/scripts/review-pack.mjs`, a plain-node wrapper the Python script spawns
+per portfolio (`render_packs`). Neither module imports anything from Next, so
+they run under node with type stripping and the web app's runtime deps
+(`npm ci --omit=dev` in `web/`, which the workflow installs); `@/` imports
+resolve through `tests/ts_web_alias_hook.mjs`. That is the point of not
+re-deriving a summary in Python: every honesty rule the pack enforces —
+closed positions and their losses included, marks stated as closes, the sell
+discipline resolved against its defaults, the already-fixed defects declared
+— reaches the email for free, and the email can never describe a book
+differently from the button.
+
+`REVIEW_SYSTEM` is the brief: open with the one thing that matters, say
+whether the positions match the mandate (naming the misfits), name the
+weakest thesis and any break signal that is firing / cannot be evaluated /
+was already true, say where the process is most likely to fail next, close
+with one or two changes the owner can make on the portfolio page. Body only,
+plain text; the greeting, a **computed** week line (value, positions, return
+on the week vs the S&P 500 off `agent_portfolio_history.twr_index` and
+`benchmark_prices`, since-inception return — figures the model is not asked
+to derive, so it cannot misquote them), the provenance line ("written by
+<model> from the same pack you can copy…") and the footer are added around
+it. The prompt is pinned to section names the pack actually emits
+(`tests/test_weekly_review_emails.py`). Reviewer brain: `google` /
+`gemini-3.1-pro-preview` at `medium` depth with `gemini-2.5-pro` as the
+retired-id fallback; `REVIEW_EMAIL_LLM_PROVIDER` / `_MODEL` / `_FALLBACK` /
+`_THINKING_LEVEL` override it. A review under 200 chars or a pack over
+`MAX_PACK_CHARS` is an error, not an email.
+
+**Who, and how often.** One email per user per ISO week, covering every
+`mode='paper'` portfolio they own that holds ≥1 position (oldest first). A
+live follower is never reviewed — it holds no decisions of its own and it is
+real money. Gated by the same send-once ledger as the lifecycle emails
+(`lifecycle_email_sends`, key `weekly_review_2026-W38`), so a failed Monday
+is re-run on Tuesday and only whoever was missed gets it; a user whose pack
+or review failed gets no ledger row and is retried. A recurring email needs a
+standing opt-out, which the one-shot lifecycle emails never did:
+`profiles.weekly_review_emails` (migration 092, `--opt-out EMAIL` sets it),
+read fail-soft — before the migration is applied everyone is opted in and a
+warning says so. Resend delivery + masked logs are shared with
+`lifecycle_emails.py`. Flags: `--dry-run` (renders + prints the reviews —
+they name the user's book, so keep that to manual runs), `--to ADDR`
+(redirect, ledger untouched), `--user EMAIL`, `--mark-only`, `--week-end`,
+`--limit N`, `--opt-out EMAIL`.
+
 ### data_freshness_report.py (12:30 UTC daily — `data-freshness-report.yml`)
 One email a day answering "is every Level 0 fact still being kept fresh?":
 per data type, coverage of the active Tier-1 universe, freshest and stalest
@@ -1810,11 +1863,13 @@ agent being added to other people's portfolios — see migration 026.
 ### profiles (human users — magic-link auth)
 ```
 id (UUID PK, FK → auth.users), email, display_name, live_access,
-created_at, updated_at
+weekly_review_emails, created_at, updated_at
 ```
 One row per signed-in human (migration 023). Auto-provisioned by a trigger on
 `auth.users` insert. Private RLS — a user reads/updates only their own row.
-`live_access` (BOOLEAN, default false; migration 089) is the operator grant for
+`weekly_review_emails` (BOOLEAN, default true; migration 092) is the standing
+opt-out for `weekly_review_emails.py` — FALSE and the weekly review is never
+sent. `live_access` (BOOLEAN, default false; migration 089) is the operator grant for
 the `/live` real-money console, set with one UPDATE. It is deliberately not a
 role or a permissions table — it gates one page — and it is only ever ORed with
 "owns a live portfolio", so revoking it does not lock an owner out of their own
@@ -2152,7 +2207,12 @@ LIFECYCLE_EMAIL_FROM        From for lifecycle_emails.py (the user-facing
                             welcome). Must be on the Resend-verified domain,
                             e.g. "Toby Rowland <toby@alphamolt.ai>".
 LIFECYCLE_EMAIL_REPLY_TO    Optional Reply-To for lifecycle emails — routes
-                            replies to a personal inbox.
+                            replies to a personal inbox. Shared with the
+                            weekly review email.
+REVIEW_EMAIL_LLM_PROVIDER   Optional. Reviewer brain for weekly_review_emails.py
+REVIEW_EMAIL_LLM_MODEL      (defaults google / gemini-3.1-pro-preview; the
+REVIEW_EMAIL_LLM_FALLBACK   fallback, default gemini-2.5-pro, is used only when
+REVIEW_EMAIL_THINKING_LEVEL the primary model id is retired).
 SMTP_HOST / SMTP_PORT       Optional SMTP fallback for `--email` when
 SMTP_USER / SMTP_PASSWORD   RESEND_API_KEY is unset (port default 587,
                             STARTTLS; Gmail needs an App Password).
@@ -2779,6 +2839,13 @@ python lifecycle_emails.py                  # send A1 welcome to eligible new si
 python lifecycle_emails.py --dry-run        # plan only
 python lifecycle_emails.py --to me@test.com # redirect to a test inbox (ledger untouched)
 python lifecycle_emails.py --mark-only      # seed ledger for existing users without emailing
+
+# Weekly portfolio review email (Mondays)
+python weekly_review_emails.py --dry-run          # render + print every due review, send nothing
+python weekly_review_emails.py --to me@test.com --user a@b.com   # one user's review to a test inbox
+python weekly_review_emails.py                    # send this week's (ledger-gated, rerun-safe)
+python weekly_review_emails.py --opt-out a@b.com  # honour a "no more reviews" reply
+node --experimental-strip-types web/scripts/review-pack.mjs SLUG   # the pack the email is fed (needs npm ci in web/)
 
 # Operator user report (on-demand)
 python user_report.py                       # full digest of every signed-up user
