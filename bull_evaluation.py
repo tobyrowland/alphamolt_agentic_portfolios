@@ -24,6 +24,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+import eval_chunking
 from db import SupabaseDB, NULL_VALUE
 
 # ---------------------------------------------------------------------------
@@ -32,6 +33,12 @@ from db import SupabaseDB, NULL_VALUE
 
 CLAUDE_MODEL = "claude-opus-4-6"
 CLAUDE_TIMEOUT = 300  # seconds
+# Names per Claude call. The whole 300-name batch in one ~300k-char prompt took
+# ~5 minutes — right at CLAUDE_TIMEOUT — so on bad days every retry timed out
+# and the bull side wrote nothing (2026-09-04, 09-09, 09-10). A third of the
+# batch per call keeps each well inside the timeout; `evaluate_batch` re-asks
+# for any name a call skips.
+CHUNK_SIZE = 100
 MAX_RETRIES = 3
 RETRY_DELAY = 15
 TOP_N = 300  # stalest Tier-1 names refreshed per run (rotation batch)
@@ -330,6 +337,31 @@ def parse_bull_results(response_text):
     return results
 
 
+def evaluate_chunk(equities: list[dict], api_key: str, logger) -> dict[str, dict]:
+    """One Claude call over `equities`: build the prompt, call, parse.
+    Returns {} when the call fails (the chunked runner retries the names)."""
+    blocks = [build_equity_block(c) for c in equities]
+    prompt = build_bull_prompt(blocks)
+    logger.info("Bull (Claude %s): prompt %d chars for %d equities",
+                CLAUDE_MODEL, len(prompt), len(blocks))
+    text = call_claude_bull(prompt, api_key, logger)
+    if text is None:
+        logger.error("Bull: Claude call failed for a %d-name chunk", len(blocks))
+        return {}
+    return parse_bull_results(text)
+
+
+def evaluate_batch(equities: list[dict], api_key: str, logger, *,
+                   chunk_size: int = CHUNK_SIZE,
+                   passes: int = eval_chunking.DEFAULT_PASSES) -> dict[str, dict]:
+    """Bull verdicts for a whole rotation batch, in chunks of `chunk_size`
+    with a re-ask pass over any name still missing (see `eval_chunking`).
+    Returns {ticker: {"eval": text, "score": 1-5|None}}."""
+    return eval_chunking.run_chunked(
+        equities, lambda chunk: evaluate_chunk(chunk, api_key, logger),
+        chunk_size=chunk_size, passes=passes, side="bull", logger=logger)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -370,41 +402,26 @@ def main():
         logger.warning("No in-screen non-excluded tickers found. Nothing to do.")
         return
 
-    # Build equity data blocks
-    equity_blocks = []
     for company in top_equities:
-        ticker = company["ticker"]
-        block = build_equity_block(company)
-        equity_blocks.append(block)
-        logger.info("  %s  (last bull_eval_at: %s)", ticker, company.get("bull_eval_at") or "never")
-
-    # Build prompt
-    prompt = build_bull_prompt(equity_blocks)
-    logger.info("Prompt length: %d chars for %d equities", len(prompt), len(equity_blocks))
+        logger.info("  %s  (last bull_eval_at: %s)", company["ticker"],
+                    company.get("bull_eval_at") or "never")
 
     if args.dry_run:
-        logger.info("[DRY RUN] Prompt:\n%s", prompt[:2000] + "..." if len(prompt) > 2000 else prompt)
+        preview = build_bull_prompt(
+            [build_equity_block(c) for c in top_equities[:CHUNK_SIZE]])
+        logger.info("[DRY RUN] First-chunk prompt:\n%s",
+                    preview[:2000] + "..." if len(preview) > 2000 else preview)
 
-    # Call Claude
-    logger.info("Calling Claude %s...", CLAUDE_MODEL)
-    response_text = call_claude_bull(prompt, claude_key, logger)
-    if response_text is None:
-        logger.error("Claude call failed. No results to write.")
-        sys.exit(1)
-
-    logger.info("Claude response length: %d chars", len(response_text))
-    logger.info("Claude response preview: %s", response_text[:1000])
-
-    if args.dry_run:
-        logger.info("[DRY RUN] Claude response:\n%s", response_text)
-
-    # Parse results
-    verdicts = parse_bull_results(response_text)
-    logger.info("Parsed %d verdicts from Claude response", len(verdicts))
+    # Call Claude — in chunks, with a re-ask pass over anything it skips.
+    logger.info("Calling Claude %s in chunks of %d...", CLAUDE_MODEL, CHUNK_SIZE)
+    verdicts = evaluate_batch(top_equities, claude_key, logger)
+    logger.info("Parsed %d verdicts from Claude", len(verdicts))
+    eval_chunking.coverage_shortfall(len(top_equities), verdicts,
+                                     side="bull", logger=logger)
 
     if not verdicts:
-        logger.error("No verdicts parsed! Response may not match expected format.")
-        logger.error("First 2000 chars of response:\n%s", response_text[:2000])
+        logger.error("No verdicts parsed! Every chunk failed or the response "
+                     "did not match the expected format.")
         sys.exit(1)
 
     passed = sum(1 for v in verdicts.values() if "\u2705" in v["eval"])

@@ -29,7 +29,10 @@ on:
 jobs:
   verdict-eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Each side now runs in chunks (bull 3 × 100, bear 6 × 50) plus a re-ask
+    # pass, each call with its own 5-minute curl timeout and retries — the old
+    # 20-minute cap was sized for two whole-batch calls.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
