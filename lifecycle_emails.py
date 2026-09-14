@@ -26,13 +26,13 @@ Sequence steps implemented:
   a fresh deploy from nudging long-dormant accounts.
 
   A3 'a3_review_invite' — the invitation to the weekly portfolio review
-  (weekly_review_emails.py), sent once to each owner whose paper book
-  holds at least one position and who has not already opted in. The
-  review is OPT-IN and the consent is a double confirm: this email to the
-  signup address, then the user's own switch on /account, reached by
-  signing in with a magic link to that same address. No age window — an
-  owner with positions is active by definition — but a 2-day minimum
-  profile age so it never lands in the same day as the welcome.
+  (weekly_review_emails.py), the FALLBACK for owners who never come back
+  to the site: the choice is put in front of them there (a checkbox on the
+  first-portfolio form, a prompt at the top of /account), so this goes
+  once to each owner whose paper book holds at least one position and who
+  has not yet answered either way, and points at that prompt. No age
+  window — an owner with positions is active by definition — but a 2-day
+  minimum profile age so it never lands in the same day as the welcome.
 
 Styled as minimal HTML that reads as plain text (no images / buttons /
 branding) — the goal is replies, not clicks. Delivery is Resend-only
@@ -380,7 +380,8 @@ def fetch_invite_candidates(db: SupabaseDB, only_email: str | None) -> list[dict
     try:
         resp = (
             db.client.table("profiles")
-            .select("id, email, display_name, created_at, weekly_review_emails")
+            .select("id, email, display_name, created_at, weekly_review_emails, "
+                    "weekly_review_decided_at")
             .in_("id", list(book_of))
             .execute()
         )
@@ -451,15 +452,16 @@ def plan_invites(
     now: datetime | None = None,
     min_age_days: int = A3_MIN_AGE_DAYS,
 ) -> list[tuple[dict, str]]:
-    """A3 for every candidate not yet invited, not already opted in, old
-    enough, and not already getting another step this run (one email per
-    user per run — the earlier sequence step wins)."""
+    """A3 for every candidate not yet invited, who has not yet ANSWERED
+    (either way — a "no thanks" on the site is an answer), old enough, and
+    not already getting another step this run (one email per user per run
+    — the earlier sequence step wins)."""
     now = now or datetime.now(timezone.utc)
     plan: list[tuple[dict, str]] = []
     for p in candidates:
         if p["id"] in already_planned or (p["id"], A3_KEY) in sent:
             continue
-        if p.get("weekly_review_emails") is True:
+        if p.get("weekly_review_emails") is True or p.get("weekly_review_decided_at"):
             continue
         created = _parse_dt(p.get("created_at"))
         if created is None or now - created < timedelta(days=min_age_days):

@@ -15,11 +15,12 @@ import lifecycle_emails as l
 NOW = datetime(2026, 9, 14, 12, tzinfo=timezone.utc)
 
 
-def cand(uid, days_old=10, opted_in=False, book="sonofchucky", email="a@b.com"):
+def cand(uid, days_old=10, opted_in=False, decided=None, book="sonofchucky", email="a@b.com"):
     return {
         "id": uid, "email": email, "display_name": "Simon D",
         "created_at": (NOW - timedelta(days=days_old)).isoformat(),
-        "weekly_review_emails": opted_in, "book_name": book,
+        "weekly_review_emails": opted_in, "weekly_review_decided_at": decided,
+        "book_name": book,
     }
 
 
@@ -34,6 +35,14 @@ class ReviewInviteTests(unittest.TestCase):
 
     def test_already_opted_in_needs_no_invitation(self):
         plan = l.plan_invites([cand("u1", opted_in=True)], set(), set(), now=NOW)
+        self.assertEqual(plan, [])
+
+    def test_a_no_thanks_on_the_site_is_an_answer(self):
+        """The prompt on /account records a decision either way; an email
+        asking again would be the nag the prompt exists to avoid."""
+        plan = l.plan_invites(
+            [cand("u1", opted_in=False, decided="2026-09-10T10:00:00Z")], set(), set(), now=NOW
+        )
         self.assertEqual(plan, [])
 
     def test_never_the_same_day_as_the_welcome(self):

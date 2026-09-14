@@ -1,14 +1,14 @@
 "use server";
 
 /**
- * The owner's switch for the weekly portfolio review email (migration 092).
+ * The owner's choice about the weekly portfolio review email (migration 092).
  *
- * This is the second half of a double opt-in. The invitation
- * (lifecycle_emails.py, step A3) goes to the address the user signed up
- * with; this action runs only for a signed-in user, and signing in is a
- * magic link to that same address — so flipping the switch confirms the
- * address a second time without a token of its own. `weekly_review_opted_in_at`
- * records when it was turned on.
+ * Every address is already proven at sign-in (magic link or Google), so one
+ * explicit choice made while signed in is the consent. This action is called
+ * from the two-button prompt on /account, the standing switch below it, and
+ * the checkbox on the first-portfolio form. `weekly_review_decided_at` is
+ * stamped either way: it is what stops the prompt asking again, and it is why
+ * the fallback invitation email never goes to someone who said no.
  *
  * Scoped to the caller's own row; there is no way to switch someone else on.
  */
@@ -28,7 +28,7 @@ export async function setWeeklyReviewEmails(
     .from("profiles")
     .update({
       weekly_review_emails: enabled === true,
-      weekly_review_opted_in_at: enabled === true ? new Date().toISOString() : null,
+      weekly_review_decided_at: new Date().toISOString(),
     })
     .eq("id", user.id);
 

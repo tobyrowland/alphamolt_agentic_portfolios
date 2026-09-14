@@ -33,11 +33,13 @@ run date — so a Sunday outage is recovered by running it again on Monday,
 which sends only to whoever was missed rather than a second copy to all.
 
 OPT-IN ONLY. Nothing goes to a user whose `profiles.weekly_review_emails`
-is not TRUE (migration 092). The consent is a double confirm: an invitation
-(lifecycle_emails.py, step A3) to the signup address, then the user's own
-switch on /account, reached by signing in with a magic link to that same
-address. `--opt-in EMAIL` sets the flag for an operator (a collaborator who
-asked in person); `--opt-out EMAIL` clears it. At most one email per user
+is not TRUE (migration 092). Every address is already proven at sign-in, so
+the consent is one explicit choice made while signed in: a checkbox on the
+first-portfolio form, a two-button prompt at the top of /account until they
+answer, and a standing switch there to change their mind; owners who never
+come back get ONE invitation email (lifecycle_emails.py, step A3) pointing
+at the prompt. `--opt-in EMAIL` sets the flag for an operator (a
+collaborator who asked in person); `--opt-out EMAIL` clears it. At most one email per user
 per week, covering every paper portfolio they own that holds at least one
 position — a book with nothing in it has nothing to review.
 
@@ -103,7 +105,7 @@ RENDERER = os.path.join(ROOT, "web", "scripts", "review-pack.mjs")
 
 WEEK_KEY_PREFIX = "weekly_review_"
 OPT_IN_COLUMN = "weekly_review_emails"
-OPT_IN_AT_COLUMN = "weekly_review_opted_in_at"
+DECIDED_AT_COLUMN = "weekly_review_decided_at"
 CHART_DAYS = 30
 
 # The reviewing brain. Gemini 3.1 Pro at medium depth is the house reviewer's
@@ -744,13 +746,13 @@ def fetch_snapshots(db: SupabaseDB, portfolio_id: str, start: date, end: date) -
 
 
 def set_opt_in(db: SupabaseDB, email: str, enabled: bool) -> bool:
-    """Operator switch. Stamps the opt-in time so the audit trail says when
-    (and, being the CLI, by whom) a user was switched on."""
+    """Operator switch. Stamps the decision time either way, so the /account
+    prompt stops asking and the audit trail says when."""
     resp = (
         db.client.table("profiles")
         .update({
             OPT_IN_COLUMN: enabled,
-            OPT_IN_AT_COLUMN: datetime.now(timezone.utc).isoformat() if enabled else None,
+            DECIDED_AT_COLUMN: datetime.now(timezone.utc).isoformat(),
         })
         .eq("email", email.strip().lower())
         .execute()

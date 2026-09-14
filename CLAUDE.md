@@ -1315,16 +1315,16 @@ implemented:
   `/leaderboard`. Users who progress on their own never see it.
 
 - **A3 `a3_review_invite`** — the invitation to the weekly portfolio review
-  (`weekly_review_emails.py`), sent once to each owner whose paper book
-  holds ≥1 position and who has not already opted in (no age window — an
-  owner with positions is active by definition — but ≥2 days old so it
-  never shares a day with A1). It is the first half of that email's double
-  opt-in: this goes to the signup address and links to
-  `/account#weekly-review`, where the user's own switch — behind a magic-link
-  login to that same address — is the second. `plan_invites` (pure,
+  (`weekly_review_emails.py`), the FALLBACK for owners who never come back
+  to the site (the choice is put in front of them there — see the opt-in
+  section under `weekly_review_emails.py`). Sent once to each owner whose
+  paper book holds ≥1 position and who has not yet **answered either way**
+  (`weekly_review_decided_at` NULL — a "No thanks" on the site is an
+  answer, and an email asking again would be the nag the prompt exists to
+  avoid); no age window, but ≥2 days old so it never shares a day with A1.
+  Links to `/account#weekly-review`. `plan_invites` (pure,
   `tests/test_lifecycle_emails.py`); candidates come from
-  `fetch_invite_candidates`, which fails closed on a pre-092 schema (no
-  switch to invite anyone to).
+  `fetch_invite_candidates`, which fails closed on a pre-092 schema.
 
 All are minimal HTML that reads as plain text. Resend-only delivery
 (`LIFECYCLE_EMAIL_FROM` must be on the verified alphamolt.ai domain;
@@ -1387,20 +1387,28 @@ that Sunday (`last_sunday`, today included — paper trades happen at weekends
 because the heartbeat runs daily, so a Sunday-morning add must be in the
 table as well as the positions).
 
-**Opt-in only — a double confirm (migration 092).** Nothing is sent to a
-user whose `profiles.weekly_review_emails` is not TRUE; False and a missing
-flag are both "no". The consent has two halves: the A3 invitation
-(`lifecycle_emails.py`) goes to the address the user signed up with, and the
-switch itself is the **Weekly review** card on `/account`
-(`web/components/account/weekly-review-card.tsx` →
-`setWeeklyReviewEmails` in `web/lib/weekly-review-mutations.ts`, scoped to
-the caller's own row), reached by signing in — a magic link to that same
-address — so flipping it confirms the address a second time without a token
-of its own. `weekly_review_opted_in_at` records when. The same switch turns
-it off, and `--opt-in EMAIL` / `--opt-out EMAIL` are the operator's versions
-(a collaborator who asked in person). `fetch_profiles` fails soft AND CLOSED
-on a pre-092 schema: no column, nobody has opted in, nothing is sent — the
-one direction a consent bug may fail in.
+**Opt-in only — one explicit choice, put in front of them (migration 092).**
+Nothing is sent to a user whose `profiles.weekly_review_emails` is not TRUE;
+False and a missing flag are both "no". Every address is already proven at
+sign-in (magic link or Google), so one choice made while signed in IS the
+consent — no confirmation token, no second email. The choice is asked where
+the user actually is, by three surfaces that all call `setWeeklyReviewEmails`
+(`web/lib/weekly-review-mutations.ts`, scoped to the caller's own row) or the
+equivalent write in `createPortfolio`:
+- a **checkbox on the "Brief your team" form** when the first portfolio is
+  created (`brief-team-form.tsx` → `createPortfolio({weeklyReview})`) —
+  unticked by default, because a pre-ticked box is not consent;
+- a **two-button prompt at the top of `/account`**
+  (`web/components/account/weekly-review-prompt.tsx`: "Email me the review" /
+  "No thanks") for anyone who has never answered;
+- the **standing switch** further down `/account`
+  (`web/components/account/weekly-review-card.tsx`) to change their mind.
+`weekly_review_decided_at` is stamped on ANY answer, either way: it is what
+makes the prompt disappear for good, and what stops the fallback A3 email
+going to someone who said no. `--opt-in EMAIL` / `--opt-out EMAIL` are the
+operator's versions (a collaborator who asked in person) and stamp it too.
+`fetch_profiles` fails soft AND CLOSED on a pre-092 schema: no column, nobody
+has opted in, nothing is sent — the one direction a consent bug may fail in.
 
 **Who, and how often.** One email per opted-in user per reviewed week,
 covering every `mode='paper'` portfolio they own that holds ≥1 position
@@ -1911,14 +1919,15 @@ agent being added to other people's portfolios — see migration 026.
 ### profiles (human users — magic-link auth)
 ```
 id (UUID PK, FK → auth.users), email, display_name, live_access,
-weekly_review_emails, weekly_review_opted_in_at, created_at, updated_at
+weekly_review_emails, weekly_review_decided_at, created_at, updated_at
 ```
 One row per signed-in human (migration 023). Auto-provisioned by a trigger on
 `auth.users` insert. Private RLS — a user reads/updates only their own row.
 `weekly_review_emails` (BOOLEAN, default **false**; migration 092) is the
-OPT-IN for `weekly_review_emails.py` — only TRUE sends, set by the user on
-`/account` (the second half of a double confirm) or by an operator;
-`weekly_review_opted_in_at` stamps when. `live_access` (BOOLEAN, default false; migration 089) is the operator grant for
+OPT-IN for `weekly_review_emails.py` — only TRUE sends, set by the user (the
+first-portfolio form, the `/account` prompt or switch) or by an operator;
+`weekly_review_decided_at` stamps any answer either way, and NULL is what
+makes the `/account` prompt show. `live_access` (BOOLEAN, default false; migration 089) is the operator grant for
 the `/live` real-money console, set with one UPDATE. It is deliberately not a
 role or a permissions table — it gates one page — and it is only ever ORed with
 "owns a live portfolio", so revoking it does not lock an owner out of their own
