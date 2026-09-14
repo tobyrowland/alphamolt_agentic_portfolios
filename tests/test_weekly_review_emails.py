@@ -249,21 +249,23 @@ REVIEWS = [{
 class EmailTests(unittest.TestCase):
     def test_text_carries_every_section(self):
         text = w.email_text("Ada", REVIEWS, "gemini-3.1-pro-preview")
-        self.assertIn("Hi Ada —", text)
+        self.assertTrue(text.startswith("Hi Ada —\n\nToby here with your weekly review."))
         self.assertIn("Scrappy Fightback! — https://www.alphamolt.ai/portfolios/portfolio-2", text)
         self.assertIn("$985,462 · -4.7% this week (S&P 500 -0.8%) · -1.5% since inception · "
                       "14 positions", text)
         self.assertIn("This week's trades\n2026-09-11  SELL BSY", text)
-        self.assertIn("The book is drifting", text)
+        self.assertIn("The review\nThe book is drifting", text)
         self.assertIn("What I'd change\n1. Add a 30% drawdown floor to the screen — So fallen "
                       "means fallen.\n2. Sell FNF by hand — Its $45 stop is firing.", text)
-        self.assertIn("Written by gemini-3.1-pro-preview", text)
+        self.assertIn("The reviewer was gemini-3.1-pro-preview", text)
         self.assertIn("Copy for AI review", text)
         self.assertIn("nothing here is advice about real money", text)
         self.assertIn('Reply "no more reviews"', text)
 
     def test_html_references_the_chart_by_cid_and_escapes_prose(self):
         body = w.email_html("Ada", REVIEWS, "m")
+        self.assertIn("<p>Toby here with your weekly review.", body)
+        self.assertIn(">The review</p>", body)
         self.assertIn('<img src="cid:chart-portfolio-2"', body)
         self.assertNotIn("data:image/png", body)
         self.assertIn("MELI &amp; SE are not &lt;fallen&gt; names.", body)

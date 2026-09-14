@@ -118,6 +118,20 @@ REVIEW_FOOTER_HTML = (
     "I'll stop these.</p>"
 )
 
+# The framing, in Toby's voice — what this is and who wrote the opinion. One
+# short paragraph: the chart and the trades speak for themselves below it.
+INTRO_TEXT = (
+    "Toby here with your weekly review. Every Monday a model that isn't one of "
+    "your agents reads your whole book — the brief, the screen, every position "
+    "and its thesis, every trade — and says what it thinks. Here's this week's."
+)
+INTRO_HTML = (
+    "<p>Toby here with your weekly review. Every Monday a model that isn't one of "
+    "your agents reads your whole book &mdash; the brief, the screen, every "
+    "position and its thesis, every trade &mdash; and says what it thinks. "
+    "Here's this week's.</p>"
+)
+
 
 # ---------------------------------------------------------------------------
 # The prompt — what a weekly review has to do with the pack
@@ -416,7 +430,7 @@ def _trade_line(t: dict) -> str:
 
 def email_text(first_name: str | None, reviews: list[dict], model_label: str) -> str:
     greeting = f"Hi {first_name} —" if first_name else "Hi —"
-    out = [greeting, ""]
+    out = [greeting, "", INTRO_TEXT, ""]
     for r in reviews:
         rv = r["review"]
         out.append(f"{r['name']} — {SITE_URL}/portfolios/{r['slug']}")
@@ -426,7 +440,7 @@ def email_text(first_name: str | None, reviews: list[dict], model_label: str) ->
         out += ["", "This week's trades"]
         trades = r.get("trades") or []
         out += [_trade_line(t) for t in trades] if trades else ["None."]
-        out += ["", rv["headline"], ""]
+        out += ["", "The review", rv["headline"], ""]
         for para in rv["paragraphs"]:
             out += [para, ""]
         out.append("What I'd change")
@@ -434,9 +448,9 @@ def email_text(first_name: str | None, reviews: list[dict], model_label: str) ->
             out.append(f"{i}. {rec['action']} — {rec['why']}")
         out.append("")
     out.append(
-        f"Written by {model_label} from the same review pack you can copy from your "
-        'portfolio page ("Copy for AI review") — paste it into any model for a second '
-        "opinion. Paper portfolio; nothing here is advice about real money."
+        f"The reviewer was {model_label}, reading the same pack you get from "
+        '"Copy for AI review" on your portfolio page — paste it into any model for a '
+        "second opinion. Paper portfolio; nothing here is advice about real money."
     )
     out += ["", "— Toby", "", REVIEW_FOOTER_TEXT, ""]
     return "\n".join(out)
@@ -487,7 +501,7 @@ def email_html(
     greeting = f"Hi {_H(first_name)} &mdash;" if first_name else "Hi &mdash;"
     out = ['<div style="max-width:600px;font-family:-apple-system,Segoe UI,Helvetica,Arial,'
            'sans-serif;font-size:15px;line-height:1.5;color:#111111;">',
-           f"<p>{greeting}</p>"]
+           f"<p>{greeting}</p>", INTRO_HTML]
     for r in reviews:
         rv = r["review"]
         url = f"{SITE_URL}/portfolios/{r['slug']}"
@@ -508,7 +522,8 @@ def email_html(
                        f'height:auto;margin:6px 0 4px;">')
         out.append(f"<p {_LABEL}>This week's trades</p>")
         out.append(_trades_table_html(r.get("trades") or []))
-        out.append(f'<p style="margin-top:22px;"><strong>{_H(rv["headline"])}</strong></p>')
+        out.append(f"<p {_LABEL}>The review</p>")
+        out.append(f'<p style="margin:0 0 10px;"><strong>{_H(rv["headline"])}</strong></p>')
         for para in rv["paragraphs"]:
             out.append(f"<p>{_H(para)}</p>")
         out.append(f"<p {_LABEL}>What I'd change</p>")
@@ -518,10 +533,10 @@ def email_html(
                        f' <span {_MUTED}>{_H(rec["why"])}</span></li>')
         out.append("</ol>")
     out.append(
-        f'<p style="margin-top:26px;color:#666666;font-size:13px;">Written by {_H(model_label)} '
-        "from the same review pack you can copy from your portfolio page (&quot;Copy for AI "
-        "review&quot;) &mdash; paste it into any model for a second opinion. Paper portfolio; "
-        "nothing here is advice about real money.</p>"
+        f'<p style="margin-top:26px;color:#666666;font-size:13px;">The reviewer was '
+        f"{_H(model_label)}, reading the same pack you get from &quot;Copy for AI review&quot; "
+        "on your portfolio page &mdash; paste it into any model for a second opinion. Paper "
+        "portfolio; nothing here is advice about real money.</p>"
     )
     out += ["<p>&mdash; Toby</p>", REVIEW_FOOTER_HTML, "</div>"]
     return "\n".join(out) + "\n"
