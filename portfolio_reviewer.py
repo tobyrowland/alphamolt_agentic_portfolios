@@ -25,7 +25,7 @@ import thesis_policy as _policy
 from agent_strategies import RebalanceContext, RebalanceResult
 from llm_picker import _mandate_block, _parse_with_retry
 from llm_providers import LLMProviderError, call_llm
-from portfolio import PortfolioError
+from portfolio import CycleConflict, PortfolioError
 
 logger = logging.getLogger("portfolio_reviewer")
 
@@ -667,6 +667,14 @@ def rebalance_portfolio_reviewer(ctx: RebalanceContext) -> RebalanceResult:
         try:
             ctx.sell(ticker, qty, note=note)
             result.sells += 1
+        except CycleConflict as exc:
+            # A buyer bought this name earlier in the same cycle. A thesis
+            # break cannot credibly fire minutes after a conviction buy on
+            # unchanged data, so the exit waits for the next cycle rather than
+            # round-tripping the position.
+            result.notes.setdefault("blocked_same_cycle", []).append(
+                {"ticker": ticker, "reason": str(exc)}
+            )
         except PortfolioError as exc:
             result.errors.append(f"sell {ticker} x{qty}: {exc}")
 

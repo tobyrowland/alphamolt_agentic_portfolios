@@ -45,7 +45,8 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from portfolio import PortfolioError
+from portfolio import CycleConflict, PortfolioError
+from sector_caps import SectorBudget
 
 if TYPE_CHECKING:  # avoid a runtime import cycle with agent_strategies
     from agent_strategies import RebalanceContext, RebalanceResult
@@ -126,6 +127,7 @@ def plan_double_down(
     max_position_pct: float,
     cash_reserve_pct: float,
     min_add_usd: float,
+    sector_budget: SectorBudget | None = None,
 ) -> DoubleDownPlan:
     """Decide how much to add to each high-conviction holding. Pure.
 
@@ -140,6 +142,18 @@ def plan_double_down(
     names. A name already at/above the ceiling, or too small an add to clear
     ``min_add_usd``, is skipped with a reason. Every input name lands in exactly
     one of buys / skips.
+
+    ``sector_budget`` is the hired Sector Rebalancer's cap, seen from the buy
+    side (`sector_caps.SectorBudget`). Without it this planner was blind to a
+    constraint another agent enforces, and because self-sourced buyers run
+    BEFORE the draft and before the reviewers, the blind buyer went first: on
+    11 Sep 2026 this agent added $14,700 of INTU into a Technology Services
+    sleeve already at its cap, and the Rebalancer sold the same 47 shares back
+    at the same $312.77 seven minutes later. An add is now sized DOWN to the
+    sector's remaining headroom and skipped outright when there is none, with
+    a reason that says *sector* rather than *cash* — they are different
+    problems and only one of them is fixed by waiting. None disables it, which
+    is the correct behaviour for a book with no Rebalancer hired.
     """
     plan = DoubleDownPlan()
     total_value = float(book.get("total_value_usd") or 0)
@@ -182,6 +196,18 @@ def plan_double_down(
             plan.skips.append({"ticker": ticker, "reason": "unpriced"})
             continue
 
+        if sector_budget is not None and sector_budget.at_cap(
+            ticker, price, min_order_usd=min_add_usd
+        ):
+            plan.skips.append({
+                "ticker": ticker,
+                "reason": (
+                    f"{sector_budget.sector_name(ticker)} is at its sector cap "
+                    f"— adding here would only be trimmed back"
+                ),
+            })
+            continue
+
         gap_usd = ceiling_usd - current_value
         if gap_usd < min_add_usd:
             plan.skips.append({"ticker": ticker,
@@ -193,6 +219,8 @@ def plan_double_down(
 
         budget = min(step_usd, gap_usd, spendable)
         qty = int(math.floor(budget / price))
+        if sector_budget is not None:
+            qty = sector_budget.cap_qty(ticker, qty, price)
         if qty < 1 or qty * price < min_add_usd:
             plan.skips.append({"ticker": ticker, "reason": "add too small after rounding"})
             continue
@@ -204,6 +232,8 @@ def plan_double_down(
             "why": ev.get("rationale") or "",
         })
         spendable -= qty * price
+        if sector_budget is not None:
+            sector_budget.record(ticker, qty, price)
 
     return plan
 
@@ -424,12 +454,31 @@ def rebalance_double_down(ctx: "RebalanceContext") -> "RebalanceResult":
         return result
 
     # 4. Size the adds (pure planner) and execute.
+    #    The sector cap belongs to the hired Rebalancer but binds the BUYERS —
+    #    this agent runs before the draft and before every reviewer, so without
+    #    it the first buyer of the cycle is the only one that cannot see the
+    #    constraint. Built from this agent's own book so it can never be stale.
+    #    Sectors are read for EVERY holding, not just the candidates: a name at
+    #    its position ceiling or inside the post-sell cooldown is not addable
+    #    but still fills its sector, and seeding from the candidates alone would
+    #    under-count the very concentration the cap exists to stop.
+    sector_budget = SectorBudget.from_book(
+        book,
+        ctx.db.get_sectors(
+            [str(h.get("ticker") or "") for h in holdings]
+        ) if ctx.sector_cap_pct else {},
+        cap_pct=ctx.sector_cap_pct,
+        total_value=total_value,
+    )
+    if sector_budget.enabled:
+        result.notes["sector_cap_pct"] = ctx.sector_cap_pct
     plan = plan_double_down(
         qualifying, book, prices,
         add_position_pct=float(params["add_position_pct"]),
         max_position_pct=max_position_pct,
         cash_reserve_pct=float(params["cash_reserve_pct"]),
         min_add_usd=float(params["min_add_usd"]),
+        sector_budget=sector_budget,
     )
     by_ticker_eval = {e["ticker"]: e for e in qualifying}
 
@@ -468,6 +517,13 @@ def rebalance_double_down(ctx: "RebalanceContext") -> "RebalanceResult":
         try:
             ctx.buy(ticker, b["qty"], note=note, thesis=thesis)
             result.buys += 1
+        except CycleConflict as exc:
+            # Not a failure: another member already sold this name in this
+            # cycle, and buying it back would pay the spread twice. Journalled
+            # as a skip so the refusal is visible rather than silent.
+            result.notes.setdefault("blocked_same_cycle", []).append(
+                {"ticker": ticker, "reason": str(exc)}
+            )
         except PortfolioError as exc:
             result.errors.append(f"add {ticker} x{b['qty']}: {exc}")
         except Exception as exc:  # noqa: BLE001 — one bad add must not abort the batch
