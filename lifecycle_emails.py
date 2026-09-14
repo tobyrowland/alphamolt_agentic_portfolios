@@ -328,7 +328,13 @@ def plan_sends(
 # Delivery (Resend)
 # ---------------------------------------------------------------------------
 
-def send_via_resend(recipient: str, subject: str, text: str, html: str) -> bool:
+def send_via_resend(
+    recipient: str, subject: str, text: str, html: str,
+    attachments: list[dict] | None = None,
+) -> bool:
+    """POST one email to Resend. `attachments` are Resend attachment objects
+    ({filename, content (base64), content_type, content_id}); an entry with a
+    `content_id` is an inline image the HTML references as `cid:<id>`."""
     api_key = os.environ.get("RESEND_API_KEY", "").strip()
     sender = os.environ.get("LIFECYCLE_EMAIL_FROM", "").strip()
     reply_to = os.environ.get("LIFECYCLE_EMAIL_REPLY_TO", "").strip()
@@ -351,6 +357,8 @@ def send_via_resend(recipient: str, subject: str, text: str, html: str) -> bool:
     }
     if reply_to:
         body["reply_to"] = reply_to
+    if attachments:
+        body["attachments"] = attachments
 
     req = urllib.request.Request(
         "https://api.resend.com/emails",

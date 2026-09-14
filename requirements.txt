@@ -13,3 +13,5 @@ google-genai>=2.0.0
 google-generativeai>=0.8.0
 atproto>=0.0.55
 pypdf>=4.0.0
+# weekly_review_emails.py — the 30-day chart at the top of the review email.
+matplotlib>=3.8.0
