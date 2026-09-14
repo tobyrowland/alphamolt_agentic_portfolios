@@ -30,11 +30,16 @@ is Monday to that Sunday (`last_sunday`), and delivery is gated by the
 send-once ledger (`lifecycle_email_sends`, migration 050) under a key
 derived from THAT Sunday's ISO week (`weekly_review_2026-W37`), never the
 run date — so a Sunday outage is recovered by running it again on Monday,
-which sends only to whoever was missed rather than a second copy to all. A user can opt out via
-`profiles.weekly_review_emails` (migration 092; `--opt-out EMAIL` sets it).
-At most one email per user per week, covering every paper portfolio they
-own that holds at least one position — a book with nothing in it has
-nothing to review, and the A2 setup nudge covers users who never started.
+which sends only to whoever was missed rather than a second copy to all.
+
+OPT-IN ONLY. Nothing goes to a user whose `profiles.weekly_review_emails`
+is not TRUE (migration 092). The consent is a double confirm: an invitation
+(lifecycle_emails.py, step A3) to the signup address, then the user's own
+switch on /account, reached by signing in with a magic link to that same
+address. `--opt-in EMAIL` sets the flag for an operator (a collaborator who
+asked in person); `--opt-out EMAIL` clears it. At most one email per user
+per week, covering every paper portfolio they own that holds at least one
+position — a book with nothing in it has nothing to review.
 
 Usage:
     python weekly_review_emails.py                   # send this week's reviews
@@ -46,7 +51,8 @@ Usage:
                                                      # (ledger NOT written)
     python weekly_review_emails.py --user a@b.com    # only this profile
     python weekly_review_emails.py --mark-only       # ledger rows, no emails
-    python weekly_review_emails.py --opt-out a@b.com # stop this user's reviews
+    python weekly_review_emails.py --opt-in a@b.com  # switch a user on (operator)
+    python weekly_review_emails.py --opt-out a@b.com # switch a user off
 
 Env vars:
     SUPABASE_URL / SUPABASE_SERVICE_KEY  Supabase (service role — reads profiles)
@@ -96,7 +102,8 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 RENDERER = os.path.join(ROOT, "web", "scripts", "review-pack.mjs")
 
 WEEK_KEY_PREFIX = "weekly_review_"
-OPT_OUT_COLUMN = "weekly_review_emails"
+OPT_IN_COLUMN = "weekly_review_emails"
+OPT_IN_AT_COLUMN = "weekly_review_opted_in_at"
 CHART_DAYS = 30
 
 # The reviewing brain. Gemini 3.1 Pro at medium depth is the house reviewer's
@@ -223,9 +230,9 @@ def plan_sends(
 ) -> list[tuple[dict, list[dict]]]:
     """Who gets an email this week, and which of their books it covers.
 
-    A user is due when they have an email, have not opted out, have not
-    already received this week's key, and own at least one PAPER portfolio
-    holding a position. Live followers are excluded twice over: they hold no
+    A user is due when they have an email, have OPTED IN (the flag must be
+    True — missing or False is not consent), have not already received this
+    week's key, and own at least one PAPER portfolio holding a position. Live followers are excluded twice over: they hold no
     decisions of their own (their pack would be the paper twin's with the
     reasoning removed) and they are real money, which the email must never
     discuss.
@@ -243,7 +250,7 @@ def plan_sends(
     for prof in profiles:
         if not prof.get("email"):
             continue
-        if prof.get(OPT_OUT_COLUMN) is False:
+        if prof.get(OPT_IN_COLUMN) is not True:
             continue
         if (prof["id"], key) in sent:
             continue
@@ -663,20 +670,22 @@ def write_review(pack_markdown: str, week_end: date, cfg: dict) -> tuple[dict, s
 # ---------------------------------------------------------------------------
 
 def fetch_profiles(db: SupabaseDB, only_email: str | None) -> list[dict]:
-    """All profiles with the opt-out flag. Fails soft if migration 092 has not
-    been applied yet: the flag is read as opted-in for everyone and a warning
-    says so, rather than the whole run dying on a missing column."""
+    """All profiles with the opt-in flag. Fails soft — and CLOSED — if
+    migration 092 has not been applied yet: without the column nobody has
+    opted in, so the run sends nothing and a warning says why, rather than
+    dying on a missing column or, worse, treating everyone as consenting."""
     base = "id, email, display_name, created_at"
     try:
-        resp = db.client.table("profiles").select(f"{base}, {OPT_OUT_COLUMN}").execute()
+        resp = db.client.table("profiles").select(f"{base}, {OPT_IN_COLUMN}").execute()
     except Exception as exc:  # noqa: BLE001 — PostgREST 42703 on a pre-092 schema
-        if OPT_OUT_COLUMN not in str(exc):
+        if OPT_IN_COLUMN not in str(exc):
             raise
         logger.warning(
-            "profiles.%s missing — migration 092 not applied; nobody can opt out yet",
-            OPT_OUT_COLUMN,
+            "profiles.%s missing — migration 092 not applied; nobody has opted in, "
+            "nothing to send",
+            OPT_IN_COLUMN,
         )
-        resp = db.client.table("profiles").select(base).execute()
+        return []
     out = []
     for p in resp.data or []:
         if not p.get("email"):
@@ -734,10 +743,15 @@ def fetch_snapshots(db: SupabaseDB, portfolio_id: str, start: date, end: date) -
     return resp.data or []
 
 
-def set_opt_out(db: SupabaseDB, email: str) -> bool:
+def set_opt_in(db: SupabaseDB, email: str, enabled: bool) -> bool:
+    """Operator switch. Stamps the opt-in time so the audit trail says when
+    (and, being the CLI, by whom) a user was switched on."""
     resp = (
         db.client.table("profiles")
-        .update({OPT_OUT_COLUMN: False})
+        .update({
+            OPT_IN_COLUMN: enabled,
+            OPT_IN_AT_COLUMN: datetime.now(timezone.utc).isoformat() if enabled else None,
+        })
         .eq("email", email.strip().lower())
         .execute()
     )
@@ -797,8 +811,11 @@ def main() -> int:
                         help="Only the profile with this email")
     parser.add_argument("--mark-only", action="store_true",
                         help="Write this week's ledger rows without emailing")
+    parser.add_argument("--opt-in", default=None, metavar="EMAIL",
+                        help="Switch the weekly review ON for this user and exit (operator — "
+                             "for someone who asked in person)")
     parser.add_argument("--opt-out", default=None, metavar="EMAIL",
-                        help="Set profiles.weekly_review_emails=false for this user and exit")
+                        help="Switch the weekly review OFF for this user and exit")
     parser.add_argument("--week-end", default=None, metavar="YYYY-MM-DD",
                         help="The Sunday the week under review ends on "
                              "(default: the most recent Sunday, today included)")
@@ -808,10 +825,11 @@ def main() -> int:
 
     db = SupabaseDB()
 
-    if args.opt_out:
-        ok = set_opt_out(db, args.opt_out)
-        logger.info("Opt-out %s for %s", "recorded" if ok else "found no profile",
-                    _mask(args.opt_out))
+    if args.opt_in or args.opt_out:
+        email, enabled = (args.opt_in, True) if args.opt_in else (args.opt_out, False)
+        ok = set_opt_in(db, email, enabled)
+        logger.info("Opt-%s %s for %s", "in" if enabled else "out",
+                    "recorded" if ok else "found no profile", _mask(email))
         return 0 if ok else 1
 
     now = datetime.now(timezone.utc)

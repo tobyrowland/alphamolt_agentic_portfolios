@@ -26,8 +26,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 KEY = "weekly_review_2026-W37"  # the week ending Sunday 13 Sep 2026
 
 
-def profile(uid, email="a@b.com", **extra):
-    return {"id": uid, "email": email, "display_name": "Ada Lovelace", **extra}
+def profile(uid, email="a@b.com", opted_in=True, **extra):
+    return {"id": uid, "email": email, "display_name": "Ada Lovelace",
+            "weekly_review_emails": opted_in, **extra}
 
 
 def book(pid, owner, mode="paper", created="2026-08-01", slug=None):
@@ -92,18 +93,16 @@ class PlanTests(unittest.TestCase):
         )
         self.assertEqual(len(plan), 1)
 
-    def test_opted_out_user_is_skipped_for_good(self):
-        plan = w.plan_sends(
-            [profile("u1", weekly_review_emails=False)], [book("p1", "u1")], {"p1": 3},
-            set(), KEY,
-        )
-        self.assertEqual(plan, [])
-
-    def test_pre_migration_profile_without_the_flag_is_opted_in(self):
-        """Fail-soft on a schema without migration 092: a missing key is not
-        an opt-out."""
-        plan = w.plan_sends([profile("u1")], [book("p1", "u1")], {"p1": 3}, set(), KEY)
-        self.assertEqual(len(plan), 1)
+    def test_only_an_opted_in_user_is_due(self):
+        """Opt-in, not opt-out: False is not consent and neither is a missing
+        flag (a pre-092 row) — nothing but True sends."""
+        for flag in (False, None):
+            plan = w.plan_sends(
+                [profile("u1", opted_in=flag)], [book("p1", "u1")], {"p1": 3}, set(), KEY,
+            )
+            self.assertEqual(plan, [], f"flag={flag!r}")
+        missing = {k: v for k, v in profile("u1").items() if k != "weekly_review_emails"}
+        self.assertEqual(w.plan_sends([missing], [book("p1", "u1")], {"p1": 3}, set(), KEY), [])
 
     def test_profile_without_email_is_skipped(self):
         plan = w.plan_sends(
