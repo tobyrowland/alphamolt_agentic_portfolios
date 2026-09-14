@@ -89,6 +89,12 @@ export async function createPortfolio(input: {
   mandate: string;
   /** House universe preset (onboarding brief §3). Defaults, never blocks. */
   presetId?: string;
+  /**
+   * The weekly-review email checkbox on the first-portfolio form (migration
+   * 092). `undefined` = the form did not ask; a boolean is the user's answer
+   * and is recorded either way so the /account prompt never asks again.
+   */
+  weeklyReview?: boolean;
 }): Promise<ActionResult> {
   const { user } = await requireUser();
   const displayName = input.displayName.trim();
@@ -151,6 +157,20 @@ export async function createPortfolio(input: {
 
     // No default roster: the team builder (brief v2) starts empty so the owner
     // drags their first agent in. Each save deploys that agent live.
+  }
+
+  // The weekly-review choice, if the form asked. Best-effort like the
+  // universe above: the portfolio exists either way, and the /account prompt
+  // re-asks if this write is lost (decided_at stays NULL).
+  if (typeof input.weeklyReview === "boolean") {
+    const { error: wrErr } = await supabase
+      .from("profiles")
+      .update({
+        weekly_review_emails: input.weeklyReview,
+        weekly_review_decided_at: new Date().toISOString(),
+      })
+      .eq("id", user.id);
+    if (wrErr) console.error("createPortfolio: weekly review choice failed:", wrErr);
   }
 
   revalidate(slug);

@@ -10,6 +10,8 @@ import PulseSection from "@/components/dashboard/pulse-section";
 import NeedsAttention, {
   type AttentionItem,
 } from "@/components/dashboard/needs-attention";
+import WeeklyReviewCard from "@/components/account/weekly-review-card";
+import WeeklyReviewPrompt from "@/components/account/weekly-review-prompt";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
   getLiveCashOverview,
@@ -61,6 +63,28 @@ export default async function AccountPage() {
     /* ignore — greeting falls back to the email local-part */
   }
 
+  // The weekly-review choice (migration 092): the flag, and whether the user
+  // has ever answered. `null` = could not be read (the column is not there
+  // yet), which the card shows as unavailable rather than as a switch that
+  // would fail on click, and which suppresses the prompt. Read separately
+  // from the display name so a pre-092 schema still greets the user by name.
+  let weeklyReview: { enabled: boolean; decided: boolean } | null = null;
+  try {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("weekly_review_emails, weekly_review_decided_at")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (!error && data) {
+      weeklyReview = {
+        enabled: data.weekly_review_emails === true,
+        decided: data.weekly_review_decided_at != null,
+      };
+    }
+  } catch {
+    /* ignore — the card renders its unavailable state */
+  }
+
   const { portfolios, livePortfolios, activity, spyValues } =
     await getDashboardData(user.id);
 
@@ -90,6 +114,7 @@ export default async function AccountPage() {
               liveAccounts={liveAccounts}
               activity={activity}
               spyValues={spyValues}
+              weeklyReview={weeklyReview}
             />
           )}
           {/* Live (real-money) risk acknowledgement — shown ONLY to users
@@ -115,6 +140,7 @@ function Dashboard({
   liveAccounts,
   activity,
   spyValues,
+  weeklyReview,
 }: {
   displayName: string;
   portfolios: DashPortfolio[];
@@ -122,6 +148,7 @@ function Dashboard({
   liveAccounts: LiveCashSummary[];
   activity: DashTrade[];
   spyValues: DashValuePoint[];
+  weeklyReview: { enabled: boolean; decided: boolean } | null;
 }) {
   const best = [...portfolios].sort(
     (a, b) => (b.pnlPct ?? -1e9) - (a.pnlPct ?? -1e9),
@@ -155,6 +182,10 @@ function Dashboard({
           )}
         </p>
       </header>
+
+      {/* The weekly-review question, asked once, where they will see it
+          (migration 092). Gone for good once answered either way. */}
+      {weeklyReview && !weeklyReview.decided && <WeeklyReviewPrompt />}
 
       {/* Pulse */}
       <PulseSection portfolios={portfolios} spyValues={spyValues} />
@@ -234,6 +265,14 @@ function Dashboard({
           </p>
         )}
       </section>
+
+      {/* Weekly review email — the owner's half of the double opt-in
+          (migration 092). The invitation email links straight to this
+          card's anchor. */}
+      <WeeklyReviewCard
+        enabled={weeklyReview ? weeklyReview.enabled : null}
+        hasPositions={portfolios.some((p) => p.numPositions > 0)}
+      />
 
       {/* Doors out */}
       <nav

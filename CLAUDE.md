@@ -1314,7 +1314,19 @@ implemented:
   slugless redirect that always resolves correctly), `/screener` and
   `/leaderboard`. Users who progress on their own never see it.
 
-Both are minimal HTML that reads as plain text. Resend-only delivery
+- **A3 `a3_review_invite`** — the invitation to the weekly portfolio review
+  (`weekly_review_emails.py`), the FALLBACK for owners who never come back
+  to the site (the choice is put in front of them there — see the opt-in
+  section under `weekly_review_emails.py`). Sent once to each owner whose
+  paper book holds ≥1 position and who has not yet **answered either way**
+  (`weekly_review_decided_at` NULL — a "No thanks" on the site is an
+  answer, and an email asking again would be the nag the prompt exists to
+  avoid); no age window, but ≥2 days old so it never shares a day with A1.
+  Links to `/account#weekly-review`. `plan_invites` (pure,
+  `tests/test_lifecycle_emails.py`); candidates come from
+  `fetch_invite_candidates`, which fails closed on a pre-092 schema.
+
+All are minimal HTML that reads as plain text. Resend-only delivery
 (`LIFECYCLE_EMAIL_FROM` must be on the verified alphamolt.ai domain;
 optional `LIFECYCLE_EMAIL_REPLY_TO` routes replies to a personal inbox).
 Recipient addresses are masked in logs (public Actions logs). Flags:
@@ -1375,26 +1387,46 @@ that Sunday (`last_sunday`, today included — paper trades happen at weekends
 because the heartbeat runs daily, so a Sunday-morning add must be in the
 table as well as the positions).
 
-**Who, and how often.** One email per user per reviewed week, covering every
-`mode='paper'` portfolio they own that holds ≥1 position (oldest first). A
-live follower is never reviewed — it holds no decisions of its own and it is
-real money. Gated by the same send-once ledger as the lifecycle emails
-(`lifecycle_email_sends`), under a key derived from the reviewed week's ISO
-week (`weekly_review_2026-W37`) and NEVER the run date: Sunday is the last
-day of its ISO week and Monday the first of the next, so a clock-derived key
-would let a Monday recovery run email everyone a second copy. As it is, a
-failed Sunday is re-run on Monday and only whoever was missed gets it; a
-user whose pack or review failed gets no ledger row and is retried. A recurring email needs a
-standing opt-out, which the one-shot lifecycle emails never did:
-`profiles.weekly_review_emails` (migration 092, `--opt-out EMAIL` sets it),
-read fail-soft — before the migration is applied everyone is opted in and a
-warning says so. Resend delivery + masked logs are shared with
+**Opt-in only — one explicit choice, put in front of them (migration 092).**
+Nothing is sent to a user whose `profiles.weekly_review_emails` is not TRUE;
+False and a missing flag are both "no". Every address is already proven at
+sign-in (magic link or Google), so one choice made while signed in IS the
+consent — no confirmation token, no second email. The choice is asked where
+the user actually is, by three surfaces that all call `setWeeklyReviewEmails`
+(`web/lib/weekly-review-mutations.ts`, scoped to the caller's own row) or the
+equivalent write in `createPortfolio`:
+- a **checkbox on the "Brief your team" form** when the first portfolio is
+  created (`brief-team-form.tsx` → `createPortfolio({weeklyReview})`) —
+  unticked by default, because a pre-ticked box is not consent;
+- a **two-button prompt at the top of `/account`**
+  (`web/components/account/weekly-review-prompt.tsx`: "Email me the review" /
+  "No thanks") for anyone who has never answered;
+- the **standing switch** further down `/account`
+  (`web/components/account/weekly-review-card.tsx`) to change their mind.
+`weekly_review_decided_at` is stamped on ANY answer, either way: it is what
+makes the prompt disappear for good, and what stops the fallback A3 email
+going to someone who said no. `--opt-in EMAIL` / `--opt-out EMAIL` are the
+operator's versions (a collaborator who asked in person) and stamp it too.
+`fetch_profiles` fails soft AND CLOSED on a pre-092 schema: no column, nobody
+has opted in, nothing is sent — the one direction a consent bug may fail in.
+
+**Who, and how often.** One email per opted-in user per reviewed week,
+covering every `mode='paper'` portfolio they own that holds ≥1 position
+(oldest first). A live follower is never reviewed — it holds no decisions of
+its own and it is real money. Gated by the same send-once ledger as the
+lifecycle emails (`lifecycle_email_sends`), under a key derived from the
+reviewed week's ISO week (`weekly_review_2026-W37`) and NEVER the run date:
+Sunday is the last day of its ISO week and Monday the first of the next, so
+a clock-derived key would let a Monday recovery run email everyone a second
+copy. As it is, a failed Sunday is re-run on Monday and only whoever was
+missed gets it; a user whose pack or review failed gets no ledger row and is
+retried. Resend delivery + masked logs are shared with
 `lifecycle_emails.py`. Flags: `--dry-run` (renders every due review, sends
 nothing), `--preview-dir DIR` (writes each email as `<slug>.html` with the
 chart inlined + `.txt` — the way to look at one before it goes out; the
 files name the user's book, so keep them out of public logs), `--to ADDR`
 (redirect, ledger untouched), `--user EMAIL`, `--mark-only`, `--week-end`,
-`--limit N`, `--opt-out EMAIL`.
+`--limit N`, `--opt-in EMAIL`, `--opt-out EMAIL`.
 
 ### data_freshness_report.py (12:30 UTC daily — `data-freshness-report.yml`)
 One email a day answering "is every Level 0 fact still being kept fresh?":
@@ -1887,13 +1919,15 @@ agent being added to other people's portfolios — see migration 026.
 ### profiles (human users — magic-link auth)
 ```
 id (UUID PK, FK → auth.users), email, display_name, live_access,
-weekly_review_emails, created_at, updated_at
+weekly_review_emails, weekly_review_decided_at, created_at, updated_at
 ```
 One row per signed-in human (migration 023). Auto-provisioned by a trigger on
 `auth.users` insert. Private RLS — a user reads/updates only their own row.
-`weekly_review_emails` (BOOLEAN, default true; migration 092) is the standing
-opt-out for `weekly_review_emails.py` — FALSE and the weekly review is never
-sent. `live_access` (BOOLEAN, default false; migration 089) is the operator grant for
+`weekly_review_emails` (BOOLEAN, default **false**; migration 092) is the
+OPT-IN for `weekly_review_emails.py` — only TRUE sends, set by the user (the
+first-portfolio form, the `/account` prompt or switch) or by an operator;
+`weekly_review_decided_at` stamps any answer either way, and NULL is what
+makes the `/account` prompt show. `live_access` (BOOLEAN, default false; migration 089) is the operator grant for
 the `/live` real-money console, set with one UPDATE. It is deliberately not a
 role or a permissions table — it gates one page — and it is only ever ORed with
 "owns a live portfolio", so revoking it does not lock an owner out of their own
@@ -2869,6 +2903,7 @@ python weekly_review_emails.py --dry-run          # render every due review, sen
 python weekly_review_emails.py --dry-run --preview-dir out/   # ...and write each as .html/.txt to look at
 python weekly_review_emails.py --to me@test.com --user a@b.com   # one user's review to a test inbox
 python weekly_review_emails.py                    # send this week's (ledger-gated, rerun-safe)
+python weekly_review_emails.py --opt-in a@b.com   # switch a user on (someone who asked in person)
 python weekly_review_emails.py --opt-out a@b.com  # honour a "no more reviews" reply
 node --experimental-strip-types web/scripts/review-pack.mjs SLUG   # the pack the email is fed (needs npm ci in web/)
 
