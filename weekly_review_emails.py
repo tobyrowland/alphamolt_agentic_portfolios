@@ -23,10 +23,14 @@ prices`, the trades are the pack's own tape rows, and the numbers in the
 header are computed here — figures the model is never asked to derive, so
 it cannot misquote them.
 
-Delivery is gated by the send-once ledger (`lifecycle_email_sends`,
-migration 050) under a per-ISO-week key (`weekly_review_2026-W38`), so the
-job is safe to rerun: a Monday outage is recovered by running it again on
-Tuesday, which sends only to whoever was missed. A user can opt out via
+Sent Sunday evening US time (22:00 UTC), after the week has settled and
+before Monday's 07:00 UTC heartbeat — so a brief or screen change the owner
+makes on reading it is what the agents run on Monday. The week under review
+is Monday to that Sunday (`last_sunday`), and delivery is gated by the
+send-once ledger (`lifecycle_email_sends`, migration 050) under a key
+derived from THAT Sunday's ISO week (`weekly_review_2026-W37`), never the
+run date — so a Sunday outage is recovered by running it again on Monday,
+which sends only to whoever was missed rather than a second copy to all. A user can opt out via
 `profiles.weekly_review_emails` (migration 092; `--opt-out EMAIL` sets it).
 At most one email per user per week, covering every paper portfolio they
 own that holds at least one position — a book with nothing in it has
@@ -121,12 +125,12 @@ REVIEW_FOOTER_HTML = (
 # The framing, in Toby's voice — what this is and who wrote the opinion. One
 # short paragraph: the chart and the trades speak for themselves below it.
 INTRO_TEXT = (
-    "Toby here with your weekly review. Every Monday a model that isn't one of "
+    "Toby here with your weekly review. Every Sunday a model that isn't one of "
     "your agents reads your whole book — the brief, the screen, every position "
     "and its thesis, every trade — and says what it thinks. Here's this week's."
 )
 INTRO_HTML = (
-    "<p>Toby here with your weekly review. Every Monday a model that isn't one of "
+    "<p>Toby here with your weekly review. Every Sunday a model that isn't one of "
     "your agents reads your whole book &mdash; the brief, the screen, every "
     "position and its thesis, every trade &mdash; and says what it thinks. "
     "Here's this week's.</p>"
@@ -179,9 +183,21 @@ money.
 """
 
 
-def week_key(now: datetime) -> str:
-    """`weekly_review_2026-W38` — one send per user per ISO week."""
-    year, week, _ = now.isocalendar()
+def last_sunday(today: date) -> date:
+    """The week under review ends on the most recent Sunday, today included.
+
+    The send is Sunday evening, so on the day it is that Sunday; a Monday
+    recovery run reviews the SAME week rather than a one-day-old window."""
+    return today - timedelta(days=(today.weekday() + 1) % 7)
+
+
+def week_key(week_end: date) -> str:
+    """`weekly_review_2026-W37` — one send per user per reviewed week.
+
+    Keyed on the week END, not the run date: Sunday is the last day of its
+    ISO week and Monday the first of the next, so a key taken from the clock
+    would let a Monday rerun after a Sunday failure email everyone twice."""
+    year, week, _ = week_end.isocalendar()
     return f"{WEEK_KEY_PREFIX}{year}-W{week:02d}"
 
 
@@ -784,8 +800,8 @@ def main() -> int:
     parser.add_argument("--opt-out", default=None, metavar="EMAIL",
                         help="Set profiles.weekly_review_emails=false for this user and exit")
     parser.add_argument("--week-end", default=None, metavar="YYYY-MM-DD",
-                        help="Treat this date as the end of the week under review "
-                             "(default: yesterday)")
+                        help="The Sunday the week under review ends on "
+                             "(default: the most recent Sunday, today included)")
     parser.add_argument("--limit", type=int, default=None,
                         help="Send to at most N users this run")
     args = parser.parse_args()
@@ -799,9 +815,9 @@ def main() -> int:
         return 0 if ok else 1
 
     now = datetime.now(timezone.utc)
-    key = week_key(now)
     week_end = (date.fromisoformat(args.week_end) if args.week_end
-                else (now - timedelta(days=1)).date())
+                else last_sunday(now.date()))
+    key = week_key(week_end)
 
     profiles = fetch_profiles(db, args.user)
     portfolios = fetch_paper_portfolios(db)

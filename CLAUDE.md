@@ -28,8 +28,8 @@ Daily (UTC):
 Weekly (Sunday UTC):
 Sun 08:00       consensus_snapshot.py     Aggregate agent_holdings → consensus_snapshots (powers /consensus)
 
-Weekly (Monday UTC):
-Mon 08:00       weekly_review_emails.py   One email per owner running a paper portfolio: a model's critique of the book, written from the same review pack as the page's "Copy for AI review" button (send-once per ISO week via lifecycle_email_sends)
+Weekly (Sunday UTC):
+Sun 22:00       weekly_review_emails.py   One email per owner running a paper portfolio — Sunday evening US time, before Monday's heartbeat: 30-day chart vs the S&P, the week's trades, a model's short critique written from the same review pack as the page's "Copy for AI review" button (send-once per reviewed week via lifecycle_email_sends)
 
 Every 15 min (Mon–Fri, 13:00–22:00 UTC):
                 intraday_prices.py        Refresh companies.price + price_asof via EODHD /real-time (15-min delayed quotes)
@@ -1322,7 +1322,7 @@ Recipient addresses are masked in logs (public Actions logs). Flags:
 `--user EMAIL`, `--mark-only` (seed ledger rows without sending).
 Cron: `lifecycle-emails.yml`, every 30 min.
 
-### weekly_review_emails.py (Mondays 08:00 UTC — `weekly-review-emails.yml`)
+### weekly_review_emails.py (Sundays 22:00 UTC — `weekly-review-emails.yml`)
 The weekly portfolio review: every human running a paper portfolio gets one
 email a week — a 30-day chart of the book against the S&P 500, the week's
 trades, and a model's short critique. The document the model reads is **the
@@ -1365,13 +1365,26 @@ for it. The prompt is pinned to section names the pack actually emits
 retired-id fallback; `REVIEW_EMAIL_LLM_PROVIDER` / `_MODEL` / `_FALLBACK` /
 `_THINKING_LEVEL` override it. A pack over `MAX_PACK_CHARS` is refused.
 
-**Who, and how often.** One email per user per ISO week, covering every
+**When.** Sunday 22:00 UTC — Sunday evening in the US (18:00 Eastern in
+summer, 17:00 in winter). The week has settled (Friday's close was marked
+Saturday 05:30, Sunday's 07:00 heartbeat has run) and it lands BEFORE
+Monday's 07:00 heartbeat, so a brief or screen change the owner makes on
+reading it is what the agents run on Monday; the recommendations are
+actionable at the moment they are read. The week under review is Monday to
+that Sunday (`last_sunday`, today included — paper trades happen at weekends
+because the heartbeat runs daily, so a Sunday-morning add must be in the
+table as well as the positions).
+
+**Who, and how often.** One email per user per reviewed week, covering every
 `mode='paper'` portfolio they own that holds ≥1 position (oldest first). A
 live follower is never reviewed — it holds no decisions of its own and it is
 real money. Gated by the same send-once ledger as the lifecycle emails
-(`lifecycle_email_sends`, key `weekly_review_2026-W38`), so a failed Monday
-is re-run on Tuesday and only whoever was missed gets it; a user whose pack
-or review failed gets no ledger row and is retried. A recurring email needs a
+(`lifecycle_email_sends`), under a key derived from the reviewed week's ISO
+week (`weekly_review_2026-W37`) and NEVER the run date: Sunday is the last
+day of its ISO week and Monday the first of the next, so a clock-derived key
+would let a Monday recovery run email everyone a second copy. As it is, a
+failed Sunday is re-run on Monday and only whoever was missed gets it; a
+user whose pack or review failed gets no ledger row and is retried. A recurring email needs a
 standing opt-out, which the one-shot lifecycle emails never did:
 `profiles.weekly_review_emails` (migration 092, `--opt-out EMAIL` sets it),
 read fail-soft — before the migration is applied everyone is opted in and a
@@ -2851,7 +2864,7 @@ python lifecycle_emails.py --dry-run        # plan only
 python lifecycle_emails.py --to me@test.com # redirect to a test inbox (ledger untouched)
 python lifecycle_emails.py --mark-only      # seed ledger for existing users without emailing
 
-# Weekly portfolio review email (Mondays)
+# Weekly portfolio review email (Sundays, 22:00 UTC)
 python weekly_review_emails.py --dry-run          # render every due review, send nothing
 python weekly_review_emails.py --dry-run --preview-dir out/   # ...and write each as .html/.txt to look at
 python weekly_review_emails.py --to me@test.com --user a@b.com   # one user's review to a test inbox

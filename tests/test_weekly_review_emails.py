@@ -15,7 +15,7 @@ import pathlib
 import shutil
 import subprocess
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date
 from unittest import mock
 
 import weekly_review_emails as w
@@ -23,7 +23,7 @@ from llm_providers import LLMProviderError, LLMResponse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-KEY = "weekly_review_2026-W38"
+KEY = "weekly_review_2026-W37"  # the week ending Sunday 13 Sep 2026
 
 
 def profile(uid, email="a@b.com", **extra):
@@ -37,21 +37,29 @@ def book(pid, owner, mode="paper", created="2026-08-01", slug=None):
     }
 
 
-class WeekKeyTests(unittest.TestCase):
-    def test_iso_week_of_the_run(self):
-        self.assertEqual(w.week_key(datetime(2026, 9, 14, 8, tzinfo=timezone.utc)), KEY)
+class WeekTests(unittest.TestCase):
+    def test_the_week_ends_on_the_most_recent_sunday_today_included(self):
+        sunday = date(2026, 9, 13)
+        self.assertEqual(w.last_sunday(sunday), sunday)             # the send day
+        self.assertEqual(w.last_sunday(date(2026, 9, 14)), sunday)  # a Monday rerun
+        self.assertEqual(w.last_sunday(date(2026, 9, 19)), sunday)  # Saturday, still
+        self.assertEqual(w.last_sunday(date(2026, 9, 20)), date(2026, 9, 20))
+
+    def test_key_is_the_reviewed_weeks_iso_week(self):
+        self.assertEqual(w.week_key(date(2026, 9, 13)), KEY)
+
+    def test_monday_rerun_shares_sundays_key(self):
+        """Sunday is the LAST day of its ISO week and Monday the first of the
+        next. A key taken from the run date would let a Monday recovery run
+        email everyone a second copy; keyed on the reviewed week it cannot."""
+        sunday_run = w.week_key(w.last_sunday(date(2026, 9, 13)))
+        monday_run = w.week_key(w.last_sunday(date(2026, 9, 14)))
+        self.assertEqual(sunday_run, monday_run)
+        self.assertNotEqual(sunday_run, w.week_key(w.last_sunday(date(2026, 9, 20))))
 
     def test_iso_year_not_calendar_year_at_the_boundary(self):
-        """3 Jan 2027 is a Sunday in ISO week 53 of 2026. A calendar-year key
-        would let a Monday rerun on 4 Jan send the same review twice."""
-        self.assertEqual(
-            w.week_key(datetime(2027, 1, 3, tzinfo=timezone.utc)), "weekly_review_2026-W53"
-        )
-
-    def test_tuesday_rerun_shares_mondays_key(self):
-        mon = w.week_key(datetime(2026, 9, 14, tzinfo=timezone.utc))
-        tue = w.week_key(datetime(2026, 9, 15, tzinfo=timezone.utc))
-        self.assertEqual(mon, tue)
+        """The week ending Sunday 3 Jan 2027 is ISO week 53 of 2026."""
+        self.assertEqual(w.week_key(date(2027, 1, 3)), "weekly_review_2026-W53")
 
 
 class PlanTests(unittest.TestCase):
@@ -80,7 +88,7 @@ class PlanTests(unittest.TestCase):
     def test_last_weeks_send_does_not_block_this_week(self):
         plan = w.plan_sends(
             [profile("u1")], [book("p1", "u1")], {"p1": 3},
-            {("u1", "weekly_review_2026-W37")}, KEY,
+            {("u1", "weekly_review_2026-W36")}, KEY,
         )
         self.assertEqual(len(plan), 1)
 
@@ -249,7 +257,7 @@ REVIEWS = [{
 class EmailTests(unittest.TestCase):
     def test_text_carries_every_section(self):
         text = w.email_text("Ada", REVIEWS, "gemini-3.1-pro-preview")
-        self.assertTrue(text.startswith("Hi Ada —\n\nToby here with your weekly review."))
+        self.assertTrue(text.startswith("Hi Ada —\n\nToby here with your weekly review. Every Sunday"))
         self.assertIn("Scrappy Fightback! — https://www.alphamolt.ai/portfolios/portfolio-2", text)
         self.assertIn("$985,462 · -4.7% this week (S&P 500 -0.8%) · -1.5% since inception · "
                       "14 positions", text)
@@ -445,7 +453,7 @@ class RendererTests(unittest.TestCase):
         self.assertIn('node-version: "22"', wf)
         self.assertIn("npm ci --omit=dev", wf)
         self.assertIn("python weekly_review_emails.py", wf)
-        self.assertIn('cron: "0 8 * * 1"', wf)
+        self.assertIn('cron: "0 22 * * 0"', wf)
 
 
 if __name__ == "__main__":

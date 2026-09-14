@@ -6,11 +6,17 @@ name: Weekly Review Emails
 # (web/lib/portfolio-export.ts, rendered here by web/scripts/review-pack.mjs
 # under plain node — hence the Node + `npm ci` steps).
 #
-# Schedule: Mondays 08:00 UTC — after the 05:30 mark-to-market and the 07:00
-# heartbeat have settled, so the pack carries Friday's closes and any Monday
-# rebalance. The send is gated by the lifecycle_email_sends ledger under a
-# per-ISO-week key, so a failed Monday can be re-run on Tuesday (or
-# dispatched by hand) and only whoever was missed gets it.
+# Schedule: Sundays 22:00 UTC — Sunday evening in the US (18:00 Eastern in
+# summer, 17:00 in winter; 15:00 / 14:00 Pacific). The week has settled
+# (Friday's close was marked Saturday 05:30, Sunday's 07:00 heartbeat has
+# run), and it lands BEFORE Monday's 07:00 heartbeat, so a brief or screen
+# change the owner makes on reading it is what the agents run on Monday.
+# GitHub cron has no DST, so the US hour shifts by one across the year.
+#
+# The send is gated by the lifecycle_email_sends ledger under a key derived
+# from the reviewed week (Monday to that Sunday), not the run date, so a
+# failed Sunday can be re-run on Monday (or dispatched by hand) and only
+# whoever was missed gets it.
 #
 # Recipient addresses are masked in the script's log output, so these public
 # Actions logs never contain user emails. A dry run prints the reviews
@@ -18,7 +24,7 @@ name: Weekly Review Emails
 
 on:
   schedule:
-    - cron: "0 8 * * 1"
+    - cron: "0 22 * * 0"
   workflow_dispatch:
     inputs:
       dry_run:
