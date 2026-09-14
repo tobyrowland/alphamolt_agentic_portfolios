@@ -65,6 +65,22 @@ class PortfolioError(Exception):
     """Raised when a portfolio operation cannot be executed."""
 
 
+class CycleConflict(PortfolioError):
+    """This trade would reverse one the same swarm cycle already made.
+
+    Raised by `agent_strategies.RebalanceContext` before any order is placed
+    (see `swarm.TradeCycle`). A `PortfolioError` subclass on purpose: every
+    ctx.buy / ctx.sell call site already catches that, so a strategy that has
+    not been taught about cycles degrades to "this trade did not happen"
+    rather than crashing a heartbeat. Sites that want to tell a refusal apart
+    from a genuine failure catch this FIRST and journal it as a skip — a
+    blocked reversal is not an error.
+
+    It lives here rather than in `agent_strategies` because the strategies that
+    catch it are imported BY that module; importing it back would be a cycle.
+    """
+
+
 class PortfolioManager:
     """Thin trading layer on top of SupabaseDB."""
 

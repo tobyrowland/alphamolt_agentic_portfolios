@@ -21,12 +21,85 @@ Selling — first valid sell wins:
   * Any reviewer can trigger a sell on a name it covers; the first reviewer (in
     order) that says SELL executes it. Not consensus. Each sell is tagged with
     the reviewer + reason.
+
+Churn — no reversing a trade inside its own cycle (`TradeCycle`):
+  * Buyers run before reviewers over one shared book, so a reviewer can undo a
+    buy the same cycle made. It happened: Double-Down bought INTU at 12:01:33
+    and the Sector Rebalancer sold the same 47 shares at the same $312.77 at
+    12:08:34. A cycle that reverses itself pays the spread twice and reports a
+    realised loss for holding a position for seven minutes.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+
+from sector_caps import SectorBudget
+
+
+@dataclass
+class TradeCycle:
+    """What this swarm cycle has already traded, so it cannot reverse itself.
+
+    Buyers run before reviewers over one shared book. Nothing stopped a
+    reviewer from selling, minutes later, a name a buyer had just bought — and
+    on 11 Sep 2026 the Sector Rebalancer did exactly that to Double-Down's INTU
+    add: same 47 shares, same $312.77, seven minutes apart, inside one cycle.
+
+    The rule is deliberately narrow: **a ticker traded this cycle may not be
+    traded in the OPPOSITE direction this cycle.** Not "no selling what we
+    hold" — a real thesis break should still exit. But a break cannot credibly
+    fire minutes after a 5/5 conviction add on unchanged data, and a mechanical
+    cap trim is a constraint that belongs at the buy (see `sector_caps`), not a
+    repair at the sell. Blocking the reversal costs at most one cycle of delay:
+    the next heartbeat sees a fresh cycle and acts normally.
+
+    Same-direction repeats stay allowed — two buyers topping up one name, or a
+    reviewer trimming after another reviewer trimmed, are not reversals.
+
+    Held by `agent_heartbeat` for one `_run_portfolio_swarm` call and shared by
+    every member's `RebalanceContext`; the guard sits in `ctx.buy`/`ctx.sell`
+    so it covers every strategy, including ones not yet written. A cycle of
+    None (the legacy 1:1 agent path) disables it entirely.
+    """
+
+    bought: set[str] = field(default_factory=set)
+    sold: set[str] = field(default_factory=set)
+    # Every refusal, for the heartbeat journal: a blocked reversal is a
+    # decision the owner should be able to see, not a silent no-op.
+    blocked: list[dict] = field(default_factory=list)
+
+    _OPPOSITE = {"buy": "sell", "sell": "buy"}
+    _PAST = {"buy": "bought", "sell": "sold"}
+
+    def blocks(self, side: str, ticker: str) -> str | None:
+        """Why this trade may not run, or None to allow it."""
+        side = (side or "").lower()
+        opposite = self._OPPOSITE.get(side)
+        if opposite is None:
+            return None
+        prior = self.sold if side == "buy" else self.bought
+        if ticker.upper() in prior:
+            return (
+                f"{ticker.upper()} was already {self._PAST[opposite]} this "
+                f"cycle — refusing to reverse it in the same run"
+            )
+        return None
+
+    def record(self, side: str, ticker: str) -> None:
+        """Note an EXECUTED trade. Never called for a plan that did not fill."""
+        side = (side or "").lower()
+        if side == "buy":
+            self.bought.add(ticker.upper())
+        elif side == "sell":
+            self.sold.add(ticker.upper())
+
+    def note_blocked(self, side: str, ticker: str, agent_id: str, reason: str) -> None:
+        self.blocked.append({
+            "side": side, "ticker": ticker.upper(),
+            "agent_id": agent_id, "reason": reason,
+        })
 
 
 @dataclass
@@ -94,17 +167,25 @@ def snake_draft_plan(
     dust guard if nothing meaningful fits), so freed cash diversifies instead of
     re-concentrating the same sector. 0 / None disables it — existing callers
     and tests are unaffected.
+
+    The cap arithmetic itself lives in `sector_caps.SectorBudget`, shared with
+    the self-sourced buyers (`double_down`, `pelosi_mirror`) that run BEFORE
+    this draft. It used to live only here, which is how a Double-Down add
+    breached a cap the draft would have respected and the Rebalancer reversed
+    it seven minutes later — see the module docstring there.
     """
     result = DraftResult(cash_remaining=cash)
     available = [t for t in candidates if prices.get(t, 0) and prices[t] > 0]
     taken: set[str] = set()
     min_cash = total_value * cash_reserve_pct
 
-    cap_on = max_sector_value > 0
-    sector_of = sector_of or {}
     # Running value per sector, seeded from what the book already holds; each
     # draft pick adds to its sector so later picks in the same cycle see it.
-    sector_value: dict[str, float] = dict(sector_start_value or {})
+    budget = SectorBudget(
+        sector_of={k.upper(): v for k, v in (sector_of or {}).items() if v},
+        max_sector_value=float(max_sector_value or 0.0),
+        sector_value=dict(sector_start_value or {}),
+    )
 
     round_idx = 0
     while available:
@@ -124,11 +205,7 @@ def snake_draft_plan(
                 target = b.max_per_name * total_value
                 spendable = min(target, result.cash_remaining - min_cash)
                 qty = int(math.floor(spendable / price))
-                if cap_on:
-                    sec = sector_of.get(t)
-                    if sec is not None:
-                        headroom = max_sector_value - sector_value.get(sec, 0.0)
-                        qty = min(qty, int(math.floor(headroom / price)))
+                qty = budget.cap_qty(t, qty, price)
                 if qty >= 1 and qty * price >= min_order_value:
                     picked = (t, qty, price)
                     break
@@ -140,10 +217,7 @@ def snake_draft_plan(
                 DraftPick(b.agent_id, t, qty, price, int(conv.get(t, 0)))
             )
             result.cash_remaining -= qty * price
-            if cap_on:
-                sec = sector_of.get(t)
-                if sec is not None:
-                    sector_value[sec] = sector_value.get(sec, 0.0) + qty * price
+            budget.record(t, qty, price)
             taken.add(t)
             drafted += 1
         available = [t for t in available if t not in taken]

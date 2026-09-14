@@ -36,7 +36,7 @@ from typing import Any, Callable
 
 import thesis_policy as _thesis_policy
 from db import SupabaseDB
-from portfolio import PortfolioError, PortfolioManager
+from portfolio import CycleConflict, PortfolioError, PortfolioManager
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,18 @@ class RebalanceContext:
     # avoid importing the broker layer into the paper path).
     mode: str = "paper"
     executor: Any = None
+    # Shared across every member of ONE swarm cycle (`swarm.TradeCycle`, typed
+    # Any to keep this module import-light). The guard in buy/sell below refuses
+    # to reverse a trade the same cycle already made — the INTU round trip of
+    # 11 Sep 2026, where a Double-Down add was sold back seven minutes later at
+    # the price just paid. None (the legacy 1:1 agent path) disables it.
+    cycle: Any = None
+    # The tightest sector cap the hired team imposes, as a PERCENT of NAV, or
+    # None when no `sector_rebalancer` is on the roster. Set by the heartbeat so
+    # a self-sourced buyer can see the constraint the Rebalancer enforces —
+    # previously visible only inside `swarm.snake_draft_plan`, which is how the
+    # buyer that runs FIRST was the one flying blind. See `sector_caps`.
+    sector_cap_pct: float | None = None
 
     # --- account-model-agnostic trading facade -------------------------
     # Strategies call ctx.buy / ctx.sell / ctx.get_book without caring
@@ -77,6 +89,19 @@ class RebalanceContext:
     # portfolio. ``ctx.agent["id"]`` is always the executing agent.
 
     def buy(
+        self,
+        ticker: str,
+        quantity: float,
+        note: str = "",
+        *,
+        thesis: dict | None = None,
+    ) -> dict:
+        self._guard_cycle("buy", ticker)
+        result = self._buy(ticker, quantity, note, thesis=thesis)
+        self._record_cycle("buy", ticker, result)
+        return result
+
+    def _buy(
         self,
         ticker: str,
         quantity: float,
@@ -102,6 +127,12 @@ class RebalanceContext:
         )
 
     def sell(self, ticker: str, quantity: float, note: str = "") -> dict:
+        self._guard_cycle("sell", ticker)
+        result = self._sell(ticker, quantity, note)
+        self._record_cycle("sell", ticker, result)
+        return result
+
+    def _sell(self, ticker: str, quantity: float, note: str = "") -> dict:
         if self._is_live():
             return self._live_trade("sell", ticker, quantity, note, None)
         if self.portfolio_id:
@@ -110,6 +141,42 @@ class RebalanceContext:
                 note=note,
             )
         return self.pm.sell(self.agent["id"], ticker, quantity, note=note)
+
+    def _guard_cycle(self, side: str, ticker: str) -> None:
+        """Refuse a trade that reverses one this cycle already made.
+
+        Raised BEFORE any order is placed, so a blocked reversal never reaches
+        the broker and never writes a row. See `swarm.TradeCycle` for why the
+        rule is scoped to reversals rather than to selling in general.
+        """
+        if self.cycle is None:
+            return
+        reason = self.cycle.blocks(side, ticker)
+        if reason:
+            self.cycle.note_blocked(side, ticker, self.agent.get("id", ""), reason)
+            raise CycleConflict(reason)
+
+    def _record_cycle(self, side: str, ticker: str, result: Any) -> None:
+        """Note a trade in the cycle — only if it actually happened.
+
+        Returning is not the same as filling. The atomic RPCs RETURN a
+        rejection rather than raising one (the shortfall that stranded a ZBRA
+        fill at the broker in Aug 2026), and the live path returns
+        ``filled_qty: 0`` when an order is rejected or queued against a closed
+        market. Recording either would block a legitimate later trade on a
+        transaction that never occurred, so a result must look like a fill:
+        an explicit ``status == "ok"``, or no status at all (the legacy
+        agent-keyed paths, which raise on failure).
+        """
+        if self.cycle is None:
+            return
+        if isinstance(result, dict):
+            status = result.get("status")
+            if status is not None and status != "ok":
+                return
+            if float(result.get("filled_qty") or 0) <= 0 and "filled_qty" in result:
+                return
+        self.cycle.record(side, ticker)
 
     def _is_live(self) -> bool:
         """Route through the broker only for a live, executor-wired portfolio."""

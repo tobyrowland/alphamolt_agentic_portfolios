@@ -46,7 +46,7 @@ from broker import (
 import cash_policy as _cash_policy
 import thesis_policy as _thesis_policy
 from db import SupabaseDB
-from portfolio import PortfolioManager
+from portfolio import CycleConflict, PortfolioManager
 
 
 def _now_utc() -> datetime:
@@ -594,6 +594,7 @@ def _run_portfolio_swarm(
     """
     import screen as _screen
     import swarm as _swarm
+    import sector_caps as _sector_caps
 
     counts = {"ok": 0, "dry-run": 0, "skipped": 0, "error": 0}
     pid = portfolio["id"]
@@ -606,6 +607,16 @@ def _run_portfolio_swarm(
     all_buyers_m = [m for m in member_rows if (m.get("role") == "buyer")]
     reviewers_m = [m for m in member_rows if (m.get("role") == "reviewer")]
     mode, executor = _resolve_live_executor(portfolio, dry_run=dry_run)
+
+    # ONE cycle object for every member of this run. The guard in ctx.buy/sell
+    # refuses to reverse a trade the cycle already made — a Double-Down add of
+    # INTU was sold back by the Rebalancer seven minutes later at the price just
+    # paid, because buyers run before reviewers over one shared book.
+    cycle = _swarm.TradeCycle()
+    # The hired Rebalancer's cap, resolved ONCE and handed to every member. It
+    # used to be computed inside the draft section below and reach nothing else,
+    # so the self-sourced buyers that run FIRST were the only ones blind to it.
+    cap_pct = _sector_caps.cap_pct_for_members(member_rows)
 
     # Self-sourced buyers (e.g. pelosi_mirror) bring their OWN candidate feed,
     # not the screen — they can't be snake-drafted over screen candidates. Run
@@ -630,6 +641,7 @@ def _run_portfolio_swarm(
             params=dict(m.get("config") or {}), portfolio_id=pid,
             members=members, mandate=_resolve_member_mandate(m, mandate),
             mode=mode, executor=executor,
+            cycle=cycle, sector_cap_pct=cap_pct,
         )
         try:
             result = strategy(ctx)
@@ -788,30 +800,20 @@ def _run_portfolio_swarm(
     # reviewer is on the team, the draft must not push any GICS sector over its
     # cap, so cash freed elsewhere (its trims, a sell, drift) can't
     # re-concentrate the same sector. Tightest cap wins if several are hired.
-    sector_caps = [
-        float((m.get("config") or {}).get("max_sector_pct", 30.0) or 30.0)
-        for m in reviewers_m
-        if m["agent"].get("strategy") == "sector_rebalancer"
-    ]
     sector_of: dict[str, str] = {}
     sector_start_value: dict[str, float] = {}
     max_sector_value = 0.0
-    if sector_caps:
-        cap_pct = min(sector_caps)
-        if 0 < cap_pct < 100 and total_value > 0:
-            max_sector_value = total_value * cap_pct / 100.0
-            sector_of = db.get_sectors(list(set(draftable) | held))
-            for h in (book.get("holdings") or []):
-                tk = str(h.get("ticker") or "").upper()
-                sec = sector_of.get(tk)
-                if sec:
-                    sector_start_value[sec] = sector_start_value.get(sec, 0.0) + float(
-                        h.get("market_value_usd") or 0
-                    )
-            logger.info(
-                "  portfolio %-22s sector cap: %.0f%% (max $%.0f/sector)",
-                slug, cap_pct, max_sector_value,
-            )
+    if cap_pct is not None and total_value > 0:
+        sector_of = db.get_sectors(list(set(draftable) | held))
+        _budget = _sector_caps.SectorBudget.from_book(
+            book, sector_of, cap_pct=cap_pct, total_value=total_value,
+        )
+        max_sector_value = _budget.max_sector_value
+        sector_start_value = _budget.sector_value
+        logger.info(
+            "  portfolio %-22s sector cap: %.0f%% (max $%.0f/sector)",
+            slug, cap_pct, max_sector_value,
+        )
 
     # Owner cash policy (migration 088). The draft is the LAST buyer to run and
     # the greedy one, so where it stops is what the buyers that run before it
@@ -853,6 +855,7 @@ def _run_portfolio_swarm(
             params=dict(m.get("config") or {}), portfolio_id=pid,
             members=members, mandate=_resolve_member_mandate(m, mandate),
             mode=mode, executor=executor,
+            cycle=cycle, sector_cap_pct=cap_pct,
         )
         ev = buyer_evals.get(pick.agent_id, {}).get(pick.ticker)
         if ev:
@@ -894,6 +897,10 @@ def _run_portfolio_swarm(
                 ).execute()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("attribution stamp failed for %s: %s", pick.ticker, exc)
+        except CycleConflict as exc:
+            # A self-sourced buyer sold this name earlier in the cycle; the
+            # draft does not buy it straight back. Next cycle it is eligible.
+            logger.info("  swarm buy %s skipped: %s", pick.ticker, exc)
         except Exception as exc:  # noqa: BLE001 — one bad buy must not abort
             logger.warning("swarm buy %s x%s failed: %s", pick.ticker, pick.qty, exc)
 
@@ -925,6 +932,7 @@ def _run_portfolio_swarm(
             params=dict(m.get("config") or {}), portfolio_id=pid,
             members=members, mandate=_resolve_member_mandate(m, mandate),
             mode=mode, executor=executor,
+            cycle=cycle, sector_cap_pct=cap_pct,
         )
         try:
             result = strategy(ctx)
@@ -949,6 +957,14 @@ def _run_portfolio_swarm(
         )
         counts[status] = counts.get(status, 0) + 1
 
+    if cycle.blocked:
+        # One line per run, so a cycle that tried to reverse itself is visible
+        # in the Actions log without reading every agent's journal.
+        logger.info(
+            "  portfolio %-22s %d same-cycle reversal(s) refused: %s",
+            slug, len(cycle.blocked),
+            ", ".join(f"{b['side']} {b['ticker']}" for b in cycle.blocked),
+        )
     if not dry_run:
         db.update_portfolio_last_heartbeat(pid, _now_utc().isoformat())
     return counts

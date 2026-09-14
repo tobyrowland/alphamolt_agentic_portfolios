@@ -635,7 +635,80 @@ strategies) still fall through to the independent per-member loop. (The dead
 
 ### swarm.py
 Pure coordination core (snake-draft + first-valid-sell), decisions injected so
-it's deterministic + unit-tested (`tests/test_swarm.py`). No DB, no LLM.
+it's deterministic + unit-tested (`tests/test_swarm.py`). No DB, no LLM. Also
+holds **`TradeCycle`** — see "Same-cycle churn" below.
+
+### sector_caps.py
+The hired Sector Rebalancer's cap, as a constraint **every buyer can see**.
+Pure: no DB, no clock (`tests/test_sector_caps.py`).
+
+**Why it exists.** The cap used to be a parameter of `swarm.snake_draft_plan`
+and of nothing else — `plan_double_down` had no sector arguments at all. Since
+self-sourced buyers run BEFORE the draft and reviewers run after it, the one
+buyer that could not see the constraint went first and the agent that enforces
+it went last. On the "Scrappy Fightback!" book, 11 Sep 2026:
+
+```
+11:33  Sector Rebalancer  SELL BSY, CLBT, AGYS   Technology Services 48% → under cap
+                                                 realises −$9,700, frees ~$174k
+12:01  Double-Down Buyer  BUY  BAM, INTU, …      spends that freed cash
+                                ↑ Technology Services → straight back over cap
+12:08  Sector Rebalancer  SELL INTU 47 @ 312.77  the same 47 shares, the same price
+```
+
+Seven minutes, inside one swarm cycle, for two lots of spread and a −$126
+realised loss on a position held for seven minutes.
+
+`cap_pct_for_members` resolves the tightest `max_sector_pct` across every hired
+`sector_rebalancer` (None = nobody hired = every buyer unconstrained, exactly
+as before). `SectorBudget` holds the running per-sector dollar headroom for one
+planning cycle: `from_book` seeds it from what the book already holds (valued
+on `market_value_usd`, the same column the Rebalancer weighs sectors with, so
+buyer and trimmer cannot disagree), `cap_qty` sizes an order down to the
+remaining room, `record` advances it so later picks in the same cycle see the
+earlier ones, and `at_cap` reports no-room-worth-using so a planner can skip
+with a reason that says **sector**, not cash — different problems, and only one
+of them is fixed by waiting. An **unclassified name is never capped**: refusing
+to buy on a missing `securities.gics_sector` row would silently shrink the
+universe every time reference data lagged a new listing.
+
+Used by `snake_draft_plan` (which now delegates its inline arithmetic to it),
+`double_down.plan_double_down` and `pelosi_mirror.plan_mirror`. The cap reaches
+the self-sourced buyers via `RebalanceContext.sector_cap_pct`, set once per run
+by `agent_heartbeat._run_portfolio_swarm`; each strategy builds its budget from
+its OWN book so it can never be stale, seeding from **every** holding rather
+than its candidates (a name at its position ceiling still fills its sector).
+
+Deliberately NOT a replacement for the Rebalancer: drift, price moves and the
+owner's own buys can still push a sector over, and trimming that back is the
+reviewer's job. This only stops the swarm breaching a cap with its own buy and
+then paying to reverse it.
+
+### Same-cycle churn — `swarm.TradeCycle`
+The second half of the same incident: nothing stopped a reviewer from selling,
+minutes later, a name a buyer had just bought. One `TradeCycle` per
+`_run_portfolio_swarm` call is shared by every member's `RebalanceContext`, and
+the rule is deliberately narrow — **a ticker traded this cycle may not be
+traded in the OPPOSITE direction this cycle.** Not "no selling what we hold": a
+real thesis break should still exit, but a break cannot credibly fire minutes
+after a 5/5 conviction add on unchanged data, and a mechanical cap trim is a
+constraint that belongs at the buy. Same-direction repeats stay allowed (two
+buyers topping up one name is not a reversal). Blocking costs at most one
+cycle of delay.
+
+The guard sits in `RebalanceContext.buy`/`.sell` rather than in each strategy,
+so it covers every member including strategies not yet written, and it raises
+**before** any order is placed — a blocked reversal never reaches the broker.
+`portfolio.CycleConflict` (a `PortfolioError` subclass, defined there because
+`agent_strategies` imports the strategies that catch it) means an untaught
+strategy degrades to "this trade did not happen" rather than crashing a
+heartbeat; `double_down`, `sector_rebalancer` and `portfolio_reviewer` catch it
+FIRST and journal `notes.blocked_same_cycle` — a refusal is not an error.
+A trade is recorded in the cycle only if it actually happened: the atomic RPCs
+RETURN a rejection rather than raising it, and the live path returns
+`filled_qty: 0` for a rejected or market-closed order, so recording either
+would block a legitimate later trade on a transaction that never occurred.
+`cycle=None` (the legacy 1:1 agent path) disables the whole thing.
 
 ## Team builder — the portfolio page as home base (migration 045)
 
@@ -2668,6 +2741,9 @@ pytest tests/test_badges.py                 # pure engine unit tests
 
 # Sell discipline (owner-configured thesis policy, migration 086)
 pytest tests/test_thesis_policy.py          # grace period + signal rules
+
+# Sector cap seen from the buy side + the same-cycle churn guard
+pytest tests/test_sector_caps.py            # the INTU round trip of 11 Sep 2026
 
 # Public Universe summary on a portfolio page
 pytest tests/test_portfolio_universe.py     # visibility, copy, strategy parity

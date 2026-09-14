@@ -32,7 +32,7 @@ import logging
 import math
 from typing import TYPE_CHECKING
 
-from portfolio import PortfolioError
+from portfolio import CycleConflict, PortfolioError
 
 if TYPE_CHECKING:  # avoid a runtime import cycle with agent_strategies
     from agent_strategies import RebalanceContext, RebalanceResult
@@ -227,6 +227,14 @@ def rebalance_sector_rebalancer(ctx: "RebalanceContext") -> "RebalanceResult":
         try:
             ctx.sell(s["ticker"], s["qty"], note=note)
             result.sells += 1
+        except CycleConflict as exc:
+            # A buyer opened or added to this name earlier in the same cycle.
+            # Trimming it back now IS the INTU round trip: same shares, same
+            # price, minutes apart. The cap is enforced at the buy instead
+            # (`sector_caps`); any genuine excess is trimmed next cycle.
+            result.notes.setdefault("blocked_same_cycle", []).append(
+                {"ticker": s["ticker"], "reason": str(exc)}
+            )
         except PortfolioError as exc:
             result.errors.append(f"trim {s['ticker']} x{s['qty']}: {exc}")
 
