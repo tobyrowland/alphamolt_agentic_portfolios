@@ -68,14 +68,19 @@ SOURCE = "house-clerk"
 # ---------------------------------------------------------------------------
 
 # Anchors on the reliable tail of every transaction row:
-#   (TICKER) [XX] <code> MM/DD/YYYYMM/DD/YYYY $min - $max
-# The two dates are concatenated and the amount band may wrap a line; \s
-# matches the intervening newlines. NUL padding in field labels is normalised
-# away by `_clean` before this runs.
+#   (TICKER) [XX] <code> MM/DD/YYYY MM/DD/YYYY $min - $max
+# The two dates come out of the PDF either concatenated (`07/24/202607/24/2026`)
+# or space-separated (`07/24/2026 07/24/2026`) depending on the filing's
+# layout — the 2026-08-21 Pelosi PTR (DocID 20035143, six BE/INTC buys) used
+# the second form and the concatenated-only pattern parsed it to ZERO rows, so
+# the mirror was blind for weeks while the cron reported success. `\s*` between
+# the dates accepts both. The amount band may wrap a line; \s matches the
+# intervening newlines. NUL padding in field labels is normalised away by
+# `_clean` before this runs.
 _CORE = re.compile(
     r"\((?P<ticker>[A-Z]{1,5}(?:\.[A-Z]+)?)\)\s*\[(?P<atype>[A-Z]{2})\]\s+"
     r"(?P<code>S \(partial\)|P|S|E)\s+"
-    r"(?P<txn>\d{2}/\d{2}/\d{4})(?P<notif>\d{2}/\d{2}/\d{4})\s*"
+    r"(?P<txn>\d{2}/\d{2}/\d{4})\s*(?P<notif>\d{2}/\d{2}/\d{4})\s*"
     r"\$?(?P<amin>[\d,]+)\s*-\s*\$?(?P<amax>[\d,]+)"
 )
 _GIFT = re.compile(r"contribut|gift|charit|donat", re.I)
@@ -93,10 +98,13 @@ def _description(block: str) -> str:
 
     Field labels render as a single leading letter + colon (``D : ...``,
     ``F S : New``, ``L : US``) after NUL normalisation. The description can wrap
-    onto continuation lines; stop at the next labelled line / next row / footer.
+    onto continuation lines; stop at the next labelled line / next row / footer,
+    and at a page break (``Filing ID #…`` followed by the repeated column
+    header ``ID Owner Asset …``) — the last row on a page otherwise swallows
+    the whole header of the next one.
     """
     m = re.search(
-        r"^\s*D\s*:\s*(.+(?:\n(?!\s*[A-Z]\s*:|\*|SP |JT |DC ).+)*)",
+        r"^\s*D\s*:\s*(.+(?:\n(?!\s*[A-Z]\s*:|\*|SP |JT |DC |Filing ID|ID Owner).+)*)",
         block, re.M,
     )
     return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
@@ -160,7 +168,11 @@ def parse_ptr_text(text: str) -> list[ParsedTxn]:
 
 
 def _dedupe_hash(politician: str, doc_id: str, t: ParsedTxn) -> str:
-    key = "|".join([politician, doc_id, t.ticker, t.raw_txn_code,
+    # asset_type is part of the identity: a filing routinely carries a share
+    # purchase AND a call-option purchase of the same name on the same day in
+    # the same band (Pelosi's 2026-08-21 PTR has two such pairs), and without
+    # it the two rows hash equal and the UNIQUE index silently drops one.
+    key = "|".join([politician, doc_id, t.ticker, t.asset_type, t.raw_txn_code,
                     t.txn_date or "", t.owner, str(t.amount_min), str(t.amount_max)])
     return hashlib.sha256(key.encode()).hexdigest()
 

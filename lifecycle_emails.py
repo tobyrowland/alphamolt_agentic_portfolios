@@ -25,6 +25,15 @@ Sequence steps implemented:
   Users who progress on their own never see it; the 14-day ceiling keeps
   a fresh deploy from nudging long-dormant accounts.
 
+  A3 'a3_review_invite' — the invitation to the weekly portfolio review
+  (weekly_review_emails.py), the FALLBACK for owners who never come back
+  to the site: the choice is put in front of them there (a checkbox on the
+  first-portfolio form, a prompt at the top of /account), so this goes
+  once to each owner whose paper book holds at least one position and who
+  has not yet answered either way, and points at that prompt. No age
+  window — an owner with positions is active by definition — but a 2-day
+  minimum profile age so it never lands in the same day as the welcome.
+
 Styled as minimal HTML that reads as plain text (no images / buttons /
 branding) — the goal is replies, not clicks. Delivery is Resend-only
 (the alphamolt.ai domain is already verified there for the magic-link
@@ -77,6 +86,10 @@ A2_KEY = "a2_setup_nudge"
 A2_SUBJECT = "three steps, three minutes"
 A2_MIN_AGE_DAYS = 3    # let them find their own way first
 A2_LOOKBACK_DAYS = 14  # never nudge long-dormant accounts on a fresh deploy
+
+A3_KEY = "a3_review_invite"
+A3_SUBJECT = "a second opinion on your portfolio, every sunday"
+A3_MIN_AGE_DAYS = 2    # never the same day as the welcome
 
 FOOTER_TEXT = (
     'You\'re getting this because you signed up at alphamolt.ai. Reply "no more '
@@ -208,11 +221,64 @@ want it to do, and I'll set it all up for you.</p>
 """
 
 
+# ---------------------------------------------------------------------------
+# A3 review-invite copy — the opt-in ask for the weekly review. One switch,
+# on the account page, behind a login to the same address this went to.
+# ---------------------------------------------------------------------------
+
+def a3_text(first_name: str | None, book: str | None = None) -> str:
+    greeting = f"Hi {first_name} —" if first_name else "Hi —"
+    what = f"trading {book}" if book else "trading your portfolio"
+    return f"""{greeting}
+
+Toby again. Your agents have been {what} for a while now, and I'd like to \
+offer you something I've started sending: a weekly review of the book.
+
+Every Sunday evening a model that isn't one of your agents reads the whole \
+thing — the brief, the screen, every position and its thesis, every trade — \
+and writes back: a chart against the S&P 500, the week's trades, what it \
+thinks is wrong, and two or three changes you could make before Monday's \
+rebalance. It is blunt. That's the point.
+
+It's opt-in. One switch on your account page:
+{SITE_URL}/account#weekly-review
+
+No switch, no email. And if you turn it on and go off it, the same switch \
+turns it off.
+
+— Toby
+
+{FOOTER_TEXT}
+"""
+
+
+def a3_html(first_name: str | None, book: str | None = None) -> str:
+    greeting = f"Hi {first_name} —" if first_name else "Hi —"
+    what = f"trading {book}" if book else "trading your portfolio"
+    return f"""\
+<p>{greeting}</p>
+<p>Toby again. Your agents have been {what} for a while now, and I'd like to \
+offer you something I've started sending: a weekly review of the book.</p>
+<p>Every Sunday evening a model that isn't one of your agents reads the whole \
+thing &mdash; the brief, the screen, every position and its thesis, every \
+trade &mdash; and writes back: a chart against the S&amp;P 500, the week's \
+trades, what it thinks is wrong, and two or three changes you could make \
+before Monday's rebalance. It is blunt. That's the point.</p>
+<p>It's opt-in. <a href="{SITE_URL}/account#weekly-review">One switch on your \
+account page.</a></p>
+<p>No switch, no email. And if you turn it on and go off it, the same switch \
+turns it off.</p>
+<p>&mdash; Toby</p>
+{FOOTER_HTML}
+"""
+
+
 # Sequence order matters: a user due for several steps gets only the
 # earliest one this run; later steps go out on subsequent runs.
 RENDERERS = {
     A1_KEY: (A1_SUBJECT, a1_text, a1_html),
     A2_KEY: (A2_SUBJECT, a2_text, a2_html),
+    A3_KEY: (A3_SUBJECT, a3_text, a3_html),
 }
 
 
@@ -280,6 +346,61 @@ def fetch_portfolio_owners(db: SupabaseDB) -> set[str]:
     return {row["owner_user_id"] for row in (resp.data or [])}
 
 
+def fetch_invite_candidates(db: SupabaseDB, only_email: str | None) -> list[dict]:
+    """Owners of a paper portfolio holding ≥1 position, with their opt-in flag
+    and the name of their oldest book (for the copy). No age window: the A3
+    invite goes to active owners however old the account.
+
+    Fails soft AND closed on a pre-092 schema: with no opt-in column there is
+    no switch to invite anyone to, so nobody is a candidate."""
+    books = (
+        db.client.table("portfolios")
+        .select("id, display_name, owner_user_id, created_at")
+        .not_.is_("owner_user_id", "null")
+        .eq("mode", "paper")
+        .order("created_at")
+        .execute()
+    ).data or []
+    if not books:
+        return []
+    held = (
+        db.client.table("portfolio_holdings")
+        .select("portfolio_id")
+        .in_("portfolio_id", [b["id"] for b in books])
+        .gt("quantity", 0)
+        .execute()
+    ).data or []
+    with_positions = {h["portfolio_id"] for h in held}
+    book_of: dict[str, str] = {}
+    for b in books:
+        if b["id"] in with_positions and b["owner_user_id"] not in book_of:
+            book_of[b["owner_user_id"]] = b.get("display_name") or ""
+    if not book_of:
+        return []
+    try:
+        resp = (
+            db.client.table("profiles")
+            .select("id, email, display_name, created_at, weekly_review_emails, "
+                    "weekly_review_decided_at")
+            .in_("id", list(book_of))
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — PostgREST 42703 on a pre-092 schema
+        if "weekly_review_emails" not in str(exc):
+            raise
+        logger.warning("profiles.weekly_review_emails missing — migration 092 not applied; "
+                       "no review invites")
+        return []
+    out = []
+    for p in resp.data or []:
+        if not p.get("email"):
+            continue
+        if only_email and p["email"].strip().lower() != only_email.strip().lower():
+            continue
+        out.append({**p, "book_name": book_of.get(p["id"]) or None})
+    return out
+
+
 def record_send(db: SupabaseDB, user_id: str, email_key: str, recipient: str) -> None:
     db.client.table("lifecycle_email_sends").upsert(
         {"user_id": user_id, "email_key": email_key, "recipient": recipient},
@@ -324,11 +445,42 @@ def plan_sends(
     return plan
 
 
+def plan_invites(
+    candidates: list[dict],
+    sent: set[tuple[str, str]],
+    already_planned: set[str],
+    now: datetime | None = None,
+    min_age_days: int = A3_MIN_AGE_DAYS,
+) -> list[tuple[dict, str]]:
+    """A3 for every candidate not yet invited, who has not yet ANSWERED
+    (either way — a "no thanks" on the site is an answer), old enough, and
+    not already getting another step this run (one email per user per run
+    — the earlier sequence step wins)."""
+    now = now or datetime.now(timezone.utc)
+    plan: list[tuple[dict, str]] = []
+    for p in candidates:
+        if p["id"] in already_planned or (p["id"], A3_KEY) in sent:
+            continue
+        if p.get("weekly_review_emails") is True or p.get("weekly_review_decided_at"):
+            continue
+        created = _parse_dt(p.get("created_at"))
+        if created is None or now - created < timedelta(days=min_age_days):
+            continue
+        plan.append((p, A3_KEY))
+    return plan
+
+
 # ---------------------------------------------------------------------------
 # Delivery (Resend)
 # ---------------------------------------------------------------------------
 
-def send_via_resend(recipient: str, subject: str, text: str, html: str) -> bool:
+def send_via_resend(
+    recipient: str, subject: str, text: str, html: str,
+    attachments: list[dict] | None = None,
+) -> bool:
+    """POST one email to Resend. `attachments` are Resend attachment objects
+    ({filename, content (base64), content_type, content_id}); an entry with a
+    `content_id` is an inline image the HTML references as `cid:<id>`."""
     api_key = os.environ.get("RESEND_API_KEY", "").strip()
     sender = os.environ.get("LIFECYCLE_EMAIL_FROM", "").strip()
     reply_to = os.environ.get("LIFECYCLE_EMAIL_REPLY_TO", "").strip()
@@ -351,6 +503,8 @@ def send_via_resend(recipient: str, subject: str, text: str, html: str) -> bool:
     }
     if reply_to:
         body["reply_to"] = reply_to
+    if attachments:
+        body["attachments"] = attachments
 
     req = urllib.request.Request(
         "https://api.resend.com/emails",
@@ -410,9 +564,15 @@ def main() -> int:
     portfolio_owners = fetch_portfolio_owners(db)
 
     plan = plan_sends(profiles, sent, portfolio_owners, args.since_hours, args.min_age_mins)
+    invites = plan_invites(
+        fetch_invite_candidates(db, args.user), sent, {p["id"] for p, _ in plan}
+    )
+    plan += invites
     logger.info(
-        "%d send(s) due across %d profile(s) in window (A1 ≤%dh, A2 %d-%dd)",
+        "%d send(s) due across %d profile(s) in window (A1 ≤%dh, A2 %d-%dd), "
+        "%d review invite(s)",
         len(plan), len(profiles), args.since_hours, A2_MIN_AGE_DAYS, A2_LOOKBACK_DAYS,
+        len(invites),
     )
 
     sent_n = skipped = errors = 0
@@ -430,7 +590,8 @@ def main() -> int:
 
         subject, text_fn, html_fn = RENDERERS[key]
         name = first_name_of(p)
-        if send_via_resend(recipient, subject, text_fn(name), html_fn(name)):
+        extra = {"book": p.get("book_name")} if key == A3_KEY else {}
+        if send_via_resend(recipient, subject, text_fn(name, **extra), html_fn(name, **extra)):
             if not args.to:  # test redirects don't burn the user's one send
                 record_send(db, p["id"], key, p["email"])
             sent_n += 1

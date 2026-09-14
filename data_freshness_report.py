@@ -7,11 +7,19 @@ how many rows were refreshed in the last 24h (the pipeline-alive signal), and a
 RAG status, then emails the digest (reusing user_report.py's Resend→SMTP
 delivery) and/or posts it to Slack.
 
-Status rules (per data type):
-  - 🔴 STALE   — no data, OR a daily-cadence feed wrote nothing in 24h, OR the
-                 stalest name is well past its expected refresh window.
-  - 🟡 WATCH   — stalest name past window, or coverage below the floor.
-  - 🟢 OK      — actively refreshing and within window.
+Status rules (per data type — see `classify`):
+  - 🔴 STALE   — no data, OR a daily-cadence feed's NEWEST stamp is older than
+                 ALIVE_DAYS (the Action has stopped writing), OR fewer than 80%
+                 of the names it maintains are inside the feed's window.
+  - 🟡 WATCH   — 80-97% (95% for rotation feeds) inside the window, or
+                 coverage of the Tier-1 universe below the feed's floor.
+  - 🟢 OK      — alive, and the names it maintains are inside the window.
+
+Green is the designed state. Every feed carries a small tail (a symbol EODHD
+stopped quoting, a name that entered Tier-1 this week, a delisted name whose
+last row stays frozen), so the status turns on FRACTIONS of the active Tier-1
+universe, never on the single stalest name — which is what made every email
+red for weeks. Red/amber should mean an Action broke.
 
 Usage:
     python data_freshness_report.py                 # print to stdout
@@ -41,18 +49,10 @@ OK, WATCH, STALE, INFO = "OK", "WATCH", "STALE", "INFO"
 _EMOJI = {OK: "🟢", WATCH: "🟡", STALE: "🔴", INFO: "⚪"}
 _COLOR = {OK: "#1a7f37", WATCH: "#9a6700", STALE: "#cf222e", INFO: "#57606a"}
 
-# Share of the worst names set aside before judging staleness. Every feed has a
-# small irreducible tail — a name whose EOD feed went dark mid-cycle, a
-# pre-revenue biotech the P/S updater deliberately skips — and the true maximum
-# age is the wrong trigger for a RAG light: 6 dead names out of 3036 turned the
-# whole row red while 99.8% of the universe was current. The tail-trimmed age
-# decides the status; the true stalest is still REPORTED, as the diagnostic.
-STALE_TAIL_PCT = 0.01
-
 # Which GitHub Action(s) keep each dataset fresh — surfaced in the report so a
 # red row points straight at the workflow to check.
 SOURCE = {
-    "Current price": "intraday-prices.yml",
+    "Current price": "prices-daily.yml (intraday-prices.yml is paused)",
     "Daily prices": "prices-daily.yml",
     "Valuation / P-S": "daily-price-sales.yml",
     "Fundamentals": "fundamentals-update.yml",
@@ -67,65 +67,61 @@ SOURCE = {
 # ---------------------------------------------------------------------------
 
 
-def tail_age_days(ages: list[float], tail_pct: float = STALE_TAIL_PCT) -> float | None:
-    """Stalest age once the worst `tail_pct` of names are set aside. Pure.
+# How long a daily feed may go without writing ANYTHING before it is declared
+# dead. 24h was wrong: every cron on this repo lands 3-6h late and the lag
+# varies day to day, so "yesterday at 09:30, today at 17:00, report at 16:30"
+# is an ordinary Tuesday — the feed is alive and the 24h window says otherwise.
+ALIVE_DAYS = 1.5
 
-    This — not the true maximum — is what the RAG status is judged on, so a
-    handful of stragglers can't red-flag an otherwise-current feed. Small feeds
-    trim nothing (`int(n * 0.01)` is 0 below 100 names), so their exact maximum
-    still decides, which is the right behaviour when every name is visible.
-    """
-    if not ages:
-        return None
-    ordered = sorted(ages)
-    drop = int(len(ordered) * tail_pct)
-    return ordered[len(ordered) - 1 - drop]
-
-
-def count_past_window(ages: list[float], max_stale_days: float) -> int:
-    """How many names are past their expected refresh window. Pure.
-
-    Reported alongside the stalest stamp so a trimmed tail stays visible rather
-    than silently swallowed — "22d · 6 past window" says both things at once.
-    """
-    return sum(1 for a in ages if a > max_stale_days)
+# How far back the valuation freshness read looks (bounded — the table holds a
+# row per ticker per day). Names with no row in this span are "not covered".
+VALUATION_RECENT_DAYS = 14
 
 
 def classify(
     *,
     have: int,
     total: int | None,
-    stalest_age_days: float | None,
-    refreshed_24h: int | None,
+    fresh: int,
+    newest_age_days: float | None,
     expected_daily: bool,
-    max_stale_days: float,
+    ok_fraction: float,
     min_coverage: float,
-    rotation: bool = False,
+    stale_fraction: float = 0.8,
 ) -> str:
     """RAG status for one data type. Pure → unit-tested.
 
-    `stalest_age_days` is the TAIL-TRIMMED age (see `tail_age_days`), not the
-    raw maximum.
+    The question is "is this feed still doing its job", judged three ways:
 
-    `rotation` feeds (fundamentals, AI) refresh a slice of the universe each day,
-    so their stalest row legitimately lags by ~a cycle. Judge those by "is it
-    still refreshing?" (24h) — a stale tail is at most WATCH, never STALE.
+    - **alive** — an `expected_daily` feed whose NEWEST stamp is older than
+      `ALIVE_DAYS` has stopped writing → STALE. The one signal that means the
+      Action is broken.
+    - **fresh** — of the `have` names the feed maintains, the fraction whose
+      stamp is inside the feed's own window (`fresh / have`). At or above
+      `ok_fraction` → OK; below `stale_fraction` → STALE; between → WATCH.
+      Judged as a FRACTION, never by the single stalest name: every real feed
+      carries a tail (a symbol EODHD stopped quoting, a name that entered
+      Tier-1 this week, a ticker change) and the old rule turned a 0.2% tail
+      into a red row on every email for weeks.
+    - **coverage** — `have / total`, the names the feed maintains at all.
+      Below `min_coverage` → WATCH (some feeds structurally skip names, e.g.
+      valuation needs revenue, so the floor is per feed).
+
+    `have == 0` is STALE outright.
     """
-    if have == 0:
+    if have <= 0:
         return STALE
-    if expected_daily and refreshed_24h is not None and refreshed_24h == 0:
+    if expected_daily and newest_age_days is not None and newest_age_days > ALIVE_DAYS:
         return STALE
-    if (
-        not rotation
-        and stalest_age_days is not None
-        and stalest_age_days > max_stale_days * 1.5
-    ):
+    frac = fresh / have
+    if frac < stale_fraction:
         return STALE
-    if stalest_age_days is not None and stalest_age_days > max_stale_days:
-        return WATCH
+    status = OK
+    if frac < ok_fraction:
+        status = WATCH
     if total and (have / total) < min_coverage:
-        return WATCH
-    return OK
+        status = WATCH
+    return status
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +135,7 @@ class Row:
     coverage: str
     freshest: str
     stalest: str
+    past_window: str
     refreshed_24h: str
     status: str
     note: str = ""
@@ -176,17 +173,29 @@ def _fmt_age(ts, now: datetime) -> str:
     return f"{datestr} ({days}d)" if days > 0 else f"{datestr} (today)"
 
 
-def _summarize_map(stamps: list[str], now: datetime):
-    """(newest_ts, oldest_ts, refreshed_24h, ages_days) over a list of stamps."""
-    parsed = [(s, _parse(s)) for s in stamps if _parse(s) is not None]
+@dataclass
+class Summary:
+    newest: str | None
+    oldest: str | None
+    refreshed_24h: int
+    fresh: int        # stamps inside the window
+    have: int         # stamps that parsed at all
+
+
+def summarize(stamps: list, now: datetime, window_days: float) -> Summary:
+    """Newest / oldest / refreshed-in-24h / inside-window over ISO stamps.
+    Pure → unit-tested."""
+    parsed = [(s, _parse(s)) for s in stamps]
+    parsed = [(s, d) for s, d in parsed if d is not None]
     if not parsed:
-        return None, None, 0, []
+        return Summary(None, None, 0, 0, 0)
     parsed.sort(key=lambda p: p[1])
     oldest, newest = parsed[0][0], parsed[-1][0]
-    cutoff = now.timestamp() - 86_400
-    refreshed = sum(1 for _, d in parsed if d.timestamp() >= cutoff)
-    ages = [(now - d).total_seconds() / 86_400 for _, d in parsed]
-    return newest, oldest, refreshed, ages
+    cutoff_24h = now.timestamp() - 86_400
+    cutoff_win = now.timestamp() - window_days * 86_400
+    refreshed = sum(1 for _, d in parsed if d.timestamp() >= cutoff_24h)
+    fresh = sum(1 for _, d in parsed if d.timestamp() >= cutoff_win)
+    return Summary(newest, oldest, refreshed, fresh, len(parsed))
 
 
 def gather(db: SupabaseDB) -> list[Row]:
@@ -200,22 +209,19 @@ def gather(db: SupabaseDB) -> list[Row]:
     rows: list[Row] = []
 
     # 1. Current price (securities.price) — the headline canary. EOD close for
-    # the WHOLE Tier-1 set (prices_daily_updater), overlaid intraday on the
-    # liquid subset. Not "expected_daily": markets close on weekends, so price
-    # freshness is judged by age (weekend-tolerant), not a 24h-refresh count —
-    # a genuinely dead feed still trips once the newest price ages past window.
+    # the WHOLE Tier-1 set (prices_daily_updater). Not "expected_daily": markets
+    # close on weekends and holidays, so freshness is judged by a 5-day window
+    # (Friday's close is still fresh on the Tuesday after a Monday holiday) and
+    # by how many names sit inside it, not by the single stalest ticker.
     priced = [s for s in tier1 if db.safe_float(s.get("price"))]
-    newest, oldest, r24, ages = _summarize_map(
-        [s.get("price_asof") for s in priced], now)
     rows.append(_row(
         "Current price", have=len(priced), total=total,
-        newest=newest, oldest=oldest, refreshed_24h=r24, ages=ages, now=now,
-        expected_daily=False, max_stale_days=5, min_coverage=0.9,
-        note="a name past window has usually gone dark at the source "
-             "(acquired / halted) while still listed",
+        summary=summarize([s.get("price_asof") for s in priced], now, 5), now=now,
+        expected_daily=False, window_days=5, ok_fraction=0.97, min_coverage=0.9,
     ))
 
     # 2. Daily prices (prices_daily) — EOD layer. Newest date + recent coverage.
+    # 5 days, for the same holiday reason as above.
     newest_pd = None
     try:
         resp = (db.client.table("prices_daily").select("date")
@@ -229,57 +235,67 @@ def gather(db: SupabaseDB) -> list[Row]:
     except Exception:  # noqa: BLE001
         recent = set()
     age = _age_days(newest_pd, now)
-    status = STALE if newest_pd is None else (WATCH if (age or 0) > 4 else OK)
+    status = STALE if newest_pd is None else (WATCH if (age or 0) > 5 else OK)
     rows.append(Row(
         "Daily prices", coverage=f"{len(recent)} (last 5d)",
-        freshest=_fmt_age(newest_pd, now), stalest="—",
+        freshest=_fmt_age(newest_pd, now), stalest="—", past_window="—",
         refreshed_24h="—", status=status,
         note="EOD; today's bar lands after the close",
     ))
 
-    # 3. Valuation / P-S (valuation) — daily full-universe via price_sales_updater.
-    # Scope to the active Tier-1 universe (like Current price): names that have
-    # left Tier-1 (delisted / dropped below the affordability gate) keep their
-    # last valuation row frozen by design — the updater only refreshes active
-    # Tier-1 — so they must not drag the stalest stamp into a false STALE.
-    val = db.get_all_valuation_latest()
-    val = {t: v for t, v in val.items() if t in tier1_tickers}
-    newest, oldest, r24, ages = _summarize_map(
-        [v.get("fetched_at") for v in val.values()], now)
+    # 3. Valuation / P-S (valuation) — daily full-universe via
+    # price_sales_updater, one row per (ticker, date). Read the DATES directly:
+    # the updater's own state read (`get_all_valuation_latest`) carries no
+    # timestamp at all — neither the paginated fallback nor the migration-091
+    # RPC selects `fetched_at` — so judging on it reported "—" and STALE on
+    # every email since the row existed, whatever the data was doing. Scoped to
+    # active Tier-1: a name that left the gate keeps its last row frozen by
+    # design. Names with no row inside the window count as past it.
+    # The read is bounded to VALUATION_RECENT_DAYS of dates (the whole table is
+    # ~230k rows): a Tier-1 name with a row in that span is one the feed
+    # maintains (`have`); inside `window` days it is fresh; a name with no row
+    # at all in the span is simply not covered (the coverage floor is 0.5
+    # because P/S needs revenue, which ~4% of Tier-1 never report).
+    window = 5
+    since = (now.date().fromordinal(
+        now.date().toordinal() - VALUATION_RECENT_DAYS)).isoformat()
+    try:
+        val_dates = db.get_valuation_dates_since(since)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("valuation freshness read failed: %s", exc)
+        val_dates = {}
+    val_stamps = [d for t, d in val_dates.items() if t in tier1_tickers]
     rows.append(_row(
-        "Valuation / P-S", have=len(val), total=total,
-        newest=newest, oldest=oldest, refreshed_24h=r24, ages=ages, now=now,
-        expected_daily=True, max_stale_days=4, min_coverage=0.5,
-        note="pre-revenue names have no computable P/S, so their row stays "
-             "frozen at its last revenue-bearing date",
+        "Valuation / P-S", have=len(val_stamps), total=total,
+        summary=summarize(val_stamps, now, window), now=now,
+        expected_daily=True, window_days=window, ok_fraction=0.97, min_coverage=0.5,
+        note="P/S needs revenue; names without it are never covered",
     ))
 
-    # 4. Fundamentals (fundamentals) — daily ROTATION (~universe/batch days).
-    # Scoped to active Tier 1, like every other row: the table also holds rows
-    # for names that have since left the universe, and those are never
-    # refreshed again by design — unscoped they read as a 72-day stale tail and
-    # pushed a healthy 14-day rotation to WATCH.
+    # 4. Fundamentals (fundamentals) — daily ROTATION of ~150 names over the
+    # Tier-1 universe (~20-day cycle), plus fresh reporters via the earnings
+    # job. Scoped to active Tier-1: the table keeps a row for every name that
+    # ever passed through the gate, and the stalest of THOSE (Jun 04, 101 days)
+    # is a delisted name nobody should refresh — it kept this row yellow for
+    # weeks. Window 30d = the cycle with margin.
     fund = db.get_fundamentals_freshness()
-    fund = {t: v for t, v in fund.items() if t in tier1_tickers}
-    newest, oldest, r24, ages = _summarize_map(list(fund.values()), now)
+    fund = {t: s for t, s in fund.items() if t in tier1_tickers}
     rows.append(_row(
         "Fundamentals", have=len(fund), total=total,
-        newest=newest, oldest=oldest, refreshed_24h=r24, ages=ages, now=now,
-        expected_daily=True, max_stale_days=30, min_coverage=0.5, rotation=True,
-        note="rotation: stalest nears the cycle length by design",
+        summary=summarize(list(fund.values()), now, 30), now=now,
+        expected_daily=True, window_days=30, ok_fraction=0.95, min_coverage=0.5,
+        note="rotation (~150/day); a name may legitimately be up to a cycle old",
     ))
 
-    # 5. AI analysis (ai_analysis) — rotation (bull/bear/narrative clocks).
-    # Tier-1-scoped for the same reason as fundamentals above.
+    # 5. AI analysis (ai_analysis) — rotation (verdict 300/day + research
+    # 300/day, both stamp analyzed_at). Same Tier-1 scoping, same reasoning.
     ai = db.get_ai_analysis_freshness()
-    ai = {t: v for t, v in ai.items() if t in tier1_tickers}
-    newest, oldest, r24, ages = _summarize_map(list(ai.values()), now)
+    ai = {t: s for t, s in ai.items() if t in tier1_tickers}
     rows.append(_row(
         "AI analysis", have=len(ai), total=total,
-        newest=newest, oldest=oldest, refreshed_24h=r24, ages=ages, now=now,
-        expected_daily=True, max_stale_days=30, min_coverage=0.3, rotation=True,
-        note="rotation: refreshing daily; the verified-data gate holds back "
-             "names without usable fundamentals",
+        summary=summarize(list(ai.values()), now, 30), now=now,
+        expected_daily=True, window_days=30, ok_fraction=0.95, min_coverage=0.3,
+        note="rotation (~300/day); a name may legitimately be up to a cycle old",
     ))
 
     # 6. Estimates — not ingested yet (informational).
@@ -289,7 +305,8 @@ def gather(db: SupabaseDB) -> list[Row]:
     except Exception:  # noqa: BLE001
         n = 0
     rows.append(Row("Estimates", coverage=f"{n} rows", freshest="—", stalest="—",
-                    refreshed_24h="—", status=INFO, note="no ingest job yet"))
+                    past_window="—", refreshed_24h="—", status=INFO,
+                    note="no ingest job yet"))
 
     # 7. Events — earnings dates, ingested by earnings_updater.py. Rows are
     # future-dated (the event date is the announcement), so freshness tracks the
@@ -303,12 +320,14 @@ def gather(db: SupabaseDB) -> list[Row]:
         n, newest = 0, None
     if n == 0:
         rows.append(Row("Events", coverage="0 rows", freshest="—", stalest="—",
-                        refreshed_24h="—", status=INFO, note="no earnings ingested yet"))
+                        past_window="—", refreshed_24h="—", status=INFO,
+                        note="no earnings ingested yet"))
     else:
         age = _age_days(newest, now)
         rows.append(Row(
             "Events", coverage=f"{n} earnings",
-            freshest=newest or "—", stalest="—", refreshed_24h="—",
+            freshest=_fmt_age(newest, now), stalest="—", past_window="—",
+            refreshed_24h="—",
             status=OK if (age is not None and age <= 2) else WATCH,
             note="earnings dates; freshness = last ingest run",
         ))
@@ -318,28 +337,22 @@ def gather(db: SupabaseDB) -> list[Row]:
     return rows
 
 
-def _row(name, *, have, total, newest, oldest, refreshed_24h, ages, now,
-         expected_daily, max_stale_days, min_coverage, rotation=False, note="") -> Row:
+def _row(name, *, have, total, summary: Summary, now, expected_daily,
+         window_days, ok_fraction, min_coverage, note="") -> Row:
     status = classify(
-        have=have, total=total,
-        stalest_age_days=tail_age_days(ages),
-        refreshed_24h=refreshed_24h, expected_daily=expected_daily,
-        max_stale_days=max_stale_days, min_coverage=min_coverage,
-        rotation=rotation,
+        have=have, total=total, fresh=summary.fresh,
+        newest_age_days=_age_days(summary.newest, now),
+        expected_daily=expected_daily,
+        ok_fraction=ok_fraction, min_coverage=min_coverage,
     )
-    # Report the TRUE stalest (the diagnostic — it names the row to go look at)
-    # even though the trimmed age decided the status, and say how many names sit
-    # past the window so a trimmed tail is never silently swallowed.
-    over = count_past_window(ages, max_stale_days)
-    stalest = _fmt_age(oldest, now)
-    if over:
-        stalest += f" · {over} past window"
+    past = max(have - summary.fresh, 0)
     return Row(
         name=name,
         coverage=f"{have} / {total}" if total else str(have),
-        freshest=_fmt_age(newest, now),
-        stalest=stalest,
-        refreshed_24h=str(refreshed_24h),
+        freshest=_fmt_age(summary.newest, now),
+        stalest=_fmt_age(summary.oldest, now),
+        past_window=f"{past} (>{window_days:g}d)",
+        refreshed_24h=str(summary.refreshed_24h),
         status=status,
         note=note,
     )
@@ -364,6 +377,7 @@ def render_text(rows: list[Row]) -> tuple[str, int]:
     w_cov = max(len("Coverage"), *(len(r.coverage) for r in rows))
     w_fresh = max(len("Freshest"), *(len(r.freshest) for r in rows))
     w_stale = max(len("Stalest"), *(len(r.stalest) for r in rows))
+    w_past = max(len("Past window"), *(len(r.past_window) for r in rows))
     w_24 = max(len("24h"), *(len(r.refreshed_24h) for r in rows))
 
     lines = [
@@ -371,13 +385,15 @@ def render_text(rows: list[Row]) -> tuple[str, int]:
         headline,
         "",
         f"  {'Data':<{w_name}}  {'Coverage':<{w_cov}}  {'Freshest':<{w_fresh}}  "
-        f"{'Stalest':<{w_stale}}  {'24h':>{w_24}}  Status",
-        f"  {'-'*w_name}  {'-'*w_cov}  {'-'*w_fresh}  {'-'*w_stale}  {'-'*w_24}  ------",
+        f"{'Stalest':<{w_stale}}  {'Past window':<{w_past}}  {'24h':>{w_24}}  Status",
+        f"  {'-'*w_name}  {'-'*w_cov}  {'-'*w_fresh}  {'-'*w_stale}  {'-'*w_past}  "
+        f"{'-'*w_24}  ------",
     ]
     for r in rows:
         lines.append(
             f"  {r.name:<{w_name}}  {r.coverage:<{w_cov}}  {r.freshest:<{w_fresh}}  "
-            f"{r.stalest:<{w_stale}}  {r.refreshed_24h:>{w_24}}  {_EMOJI[r.status]} {r.status}"
+            f"{r.stalest:<{w_stale}}  {r.past_window:<{w_past}}  {r.refreshed_24h:>{w_24}}  "
+            f"{_EMOJI[r.status]} {r.status}"
         )
     lines += ["", "Maintained by:"]
     lines += [f"  · {r.name}: {r.source}" for r in rows]
@@ -387,7 +403,11 @@ def render_text(rows: list[Row]) -> tuple[str, int]:
     lines += [
         "",
         "Legend: Coverage = names with this fact / Tier-1 universe. "
-        "24h = rows refreshed in the last day (pipeline-alive signal).",
+        "Past window = covered names whose stamp is older than the feed's window "
+        "(a small tail is normal; the status turns on the fraction). "
+        "24h = rows refreshed in the last day (informational — a daily feed is "
+        f"'alive' while its newest stamp is under {ALIVE_DAYS:g} days old, since "
+        "the crons land hours late).",
     ]
     return "\n".join(lines), issues
 
@@ -420,7 +440,8 @@ def render_html(rows: list[Row]) -> str:
         f'color:{banner_fg};font-weight:600;font-size:14px;margin-bottom:16px">{banner}</div>',
         '<table style="border-collapse:collapse;width:100%">',
         f'<tr><th {th}>Data</th><th {th}>Maintained by</th><th {th}>Coverage</th>'
-        f'<th {th}>Freshest</th><th {th}>Stalest</th><th {th}>24h</th><th {th}>Status</th></tr>',
+        f'<th {th}>Freshest</th><th {th}>Stalest</th><th {th}>Past window</th>'
+        f'<th {th}>24h</th><th {th}>Status</th></tr>',
     ]
     for r in rows:
         badge = (f'<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-weight:600;'
@@ -431,6 +452,7 @@ def render_html(rows: list[Row]) -> str:
             f"<td {td}>{_esc(r.coverage)}</td>"
             f"<td {td}>{_esc(r.freshest)}</td>"
             f"<td {td}>{_esc(r.stalest)}</td>"
+            f"<td {td}>{_esc(r.past_window)}</td>"
             f"<td {td}>{_esc(r.refreshed_24h)}</td>"
             f"<td {td}>{badge}</td></tr>"
         )
@@ -445,9 +467,12 @@ def render_html(rows: list[Row]) -> str:
     body.append(
         '<p style="margin:18px 0 0;color:#8c959f;font-size:12px">'
         "Coverage = names with this fact / Tier-1 universe. "
-        "24h = rows refreshed in the last day (pipeline-alive signal). "
-        "Rotation feeds (fundamentals, AI) refresh a slice daily, so their stalest age "
-        "nears the cycle length by design.</p>"
+        "Past window = covered names whose stamp is older than the feed's window — "
+        "a small tail is normal; the status turns on the fraction, never the single "
+        "stalest name. 24h = rows refreshed in the last day (informational: a daily feed "
+        f"is alive while its newest stamp is under {ALIVE_DAYS:g} days old, since the "
+        "crons land hours late). Rotation feeds (fundamentals, AI) refresh a slice "
+        "daily, so a name may be up to a cycle old by design.</p>"
         "</div>"
     )
     return "\n".join(body)

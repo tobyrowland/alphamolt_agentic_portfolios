@@ -7,6 +7,10 @@
 //
 // Run (from the repo root — needs Node >= 22.6 for type stripping):
 //   node --experimental-strip-types tests/ts_portfolio_export_runner.mjs
+// portfolio-export.ts imports the policy twins through the `@/` alias, so the
+// runner needs the resolver hook. Both are import-free, so nothing from npm is
+// pulled in behind them.
+import "./ts_web_alias_hook.mjs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -74,7 +78,7 @@ const DATA = {
   team: [
     {
       name: "Buyer · Gemini", role: "buyer", brief: "Find fallen leaders.",
-      kind: "screen-buyer", cadenceHours: 168, convictionGate: 5,
+      kind: "screen-buyer", judgesPerName: true, cadenceHours: 168, convictionGate: 5,
       targetPct: 4, minPct: 2,
     },
     {
@@ -84,7 +88,7 @@ const DATA = {
     },
     {
       name: "Double-Down Buyer", role: "buyer", brief: "Press the winners.",
-      kind: "self-sourced-buyer",
+      kind: "self-sourced-buyer", judgesPerName: true,
       sourcedFrom: "the portfolio's own current holdings",
       cadenceHours: 24, convictionGate: 5, addPct: 1.5, maxPct: 9,
     },
@@ -119,6 +123,43 @@ const empty = buildPortfolioExport({
   sellDiscipline: null, cashReserve: null, pricedAsOf: null, universe: null,
 });
 
+// The shape almost every real book is in: `thesis_policy` and `cash_policy`
+// are `{}`, which is not "no rules" — the defaults are what runs.
+const defaultPolicy = buildPortfolioExport({
+  ...DATA,
+  sellDiscipline: {},
+  cashReserve: {},
+});
+
+// The real Scrappy Fightback shape: a cooldown exemption and a raised reserve
+// stored, the three sell-discipline keys never touched.
+const mixedPolicy = buildPortfolioExport({
+  ...DATA,
+  sellDiscipline: { rebuy_cooldown_ignores_sells_before: "2026-08-25T00:00:00Z" },
+  cashReserve: { reserve_pct: 10 },
+});
+
+// A book that hired one screen buyer and nothing else: no reviewer, so the
+// sell-side remedies are rules about an agent it does not have.
+const buyerOnly = buildPortfolioExport({
+  ...DATA,
+  team: DATA.team.filter((a) => a.kind === "screen-buyer"),
+});
+
+// The same book with its sell discipline switched off, and a cooldown
+// exemption dated. The fixes section must read the config rather than
+// asserting the remedies are in force.
+const policyOff = buildPortfolioExport({
+  ...DATA,
+  sellDiscipline: {
+    grace_period_days: 0,
+    require_fired_break_signal: false,
+    relative_fields_change_only: false,
+    rebuy_cooldown_ignores_sells_before: "2026-08-20T00:00:00Z",
+  },
+  cashReserve: {},
+});
+
 // A screen with the Inflection lens switched off — the pre-074 default.
 const zeroWeight = buildPortfolioExport({
   ...DATA,
@@ -143,6 +184,10 @@ process.stdout.write(
     doc,
     marked,
     empty,
+    defaultPolicy,
+    mixedPolicy,
+    buyerOnly,
+    policyOff,
     zeroWeight,
     filename: exportFilename("portfolio-2", "2026-09-02T13:00:00Z"),
   }),

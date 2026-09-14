@@ -53,6 +53,8 @@ export default function BriefTeamForm({
   const [name, setName] = useState(defaultName);
   const [preset, setPreset] = useState(defaultPreset);
   const [mandate, setMandate] = useState("");
+  // Unticked on purpose: a pre-ticked box is not consent (migration 092).
+  const [weeklyReview, setWeeklyReview] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -70,6 +72,7 @@ export default function BriefTeamForm({
         displayName: name.trim() || defaultName,
         mandate,
         presetId: preset,
+        weeklyReview,
       });
       if (!result.ok) {
         setError(result.error);
@@ -170,6 +173,27 @@ export default function BriefTeamForm({
           className="w-full bg-bg border border-white/10 rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-[var(--color-green,#00FF41)]/50"
         />
       </Row>
+
+      {/* The weekly review — the one email the product sends on a schedule,
+          offered at the moment they are most engaged. Unticked by default. */}
+      <div className="px-5 py-3 border-t border-white/10">
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={weeklyReview}
+            onChange={(e) => setWeeklyReview(e.target.checked)}
+            className="mt-1 h-4 w-4 accent-[var(--color-green,#00FF41)]"
+          />
+          <span className="text-sm text-text">
+            Email me a weekly review of this portfolio.
+            <span className="block text-[12px] text-text-muted mt-0.5">
+              Every Sunday evening, a model that isn&apos;t one of your agents
+              reads the whole book and sends a short critique: what&apos;s
+              wrong, and what to change before Monday. One switch to stop.
+            </span>
+          </span>
+        </label>
+      </div>
 
       {error && (
         <div className="px-5 pt-1">

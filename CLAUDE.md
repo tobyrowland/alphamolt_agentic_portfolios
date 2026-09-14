@@ -28,6 +28,9 @@ Daily (UTC):
 Weekly (Sunday UTC):
 Sun 08:00       consensus_snapshot.py     Aggregate agent_holdings → consensus_snapshots (powers /consensus)
 
+Weekly (Sunday UTC):
+Sun 22:00       weekly_review_emails.py   One email per owner running a paper portfolio — Sunday evening US time, before Monday's heartbeat: 30-day chart vs the S&P, the week's trades, a model's short critique written from the same review pack as the page's "Copy for AI review" button (send-once per reviewed week via lifecycle_email_sends)
+
 Every 15 min (Mon–Fri, 13:00–22:00 UTC):
                 intraday_prices.py        Refresh companies.price + price_asof via EODHD /real-time (15-min delayed quotes)
                 portfolio_valuation.py    Re-mark every agent portfolio against the fresh price (overwrites today's row in agent_portfolio_history)
@@ -646,7 +649,80 @@ strategies) still fall through to the independent per-member loop. (The dead
 
 ### swarm.py
 Pure coordination core (snake-draft + first-valid-sell), decisions injected so
-it's deterministic + unit-tested (`tests/test_swarm.py`). No DB, no LLM.
+it's deterministic + unit-tested (`tests/test_swarm.py`). No DB, no LLM. Also
+holds **`TradeCycle`** — see "Same-cycle churn" below.
+
+### sector_caps.py
+The hired Sector Rebalancer's cap, as a constraint **every buyer can see**.
+Pure: no DB, no clock (`tests/test_sector_caps.py`).
+
+**Why it exists.** The cap used to be a parameter of `swarm.snake_draft_plan`
+and of nothing else — `plan_double_down` had no sector arguments at all. Since
+self-sourced buyers run BEFORE the draft and reviewers run after it, the one
+buyer that could not see the constraint went first and the agent that enforces
+it went last. On the "Scrappy Fightback!" book, 11 Sep 2026:
+
+```
+11:33  Sector Rebalancer  SELL BSY, CLBT, AGYS   Technology Services 48% → under cap
+                                                 realises −$9,700, frees ~$174k
+12:01  Double-Down Buyer  BUY  BAM, INTU, …      spends that freed cash
+                                ↑ Technology Services → straight back over cap
+12:08  Sector Rebalancer  SELL INTU 47 @ 312.77  the same 47 shares, the same price
+```
+
+Seven minutes, inside one swarm cycle, for two lots of spread and a −$126
+realised loss on a position held for seven minutes.
+
+`cap_pct_for_members` resolves the tightest `max_sector_pct` across every hired
+`sector_rebalancer` (None = nobody hired = every buyer unconstrained, exactly
+as before). `SectorBudget` holds the running per-sector dollar headroom for one
+planning cycle: `from_book` seeds it from what the book already holds (valued
+on `market_value_usd`, the same column the Rebalancer weighs sectors with, so
+buyer and trimmer cannot disagree), `cap_qty` sizes an order down to the
+remaining room, `record` advances it so later picks in the same cycle see the
+earlier ones, and `at_cap` reports no-room-worth-using so a planner can skip
+with a reason that says **sector**, not cash — different problems, and only one
+of them is fixed by waiting. An **unclassified name is never capped**: refusing
+to buy on a missing `securities.gics_sector` row would silently shrink the
+universe every time reference data lagged a new listing.
+
+Used by `snake_draft_plan` (which now delegates its inline arithmetic to it),
+`double_down.plan_double_down` and `pelosi_mirror.plan_mirror`. The cap reaches
+the self-sourced buyers via `RebalanceContext.sector_cap_pct`, set once per run
+by `agent_heartbeat._run_portfolio_swarm`; each strategy builds its budget from
+its OWN book so it can never be stale, seeding from **every** holding rather
+than its candidates (a name at its position ceiling still fills its sector).
+
+Deliberately NOT a replacement for the Rebalancer: drift, price moves and the
+owner's own buys can still push a sector over, and trimming that back is the
+reviewer's job. This only stops the swarm breaching a cap with its own buy and
+then paying to reverse it.
+
+### Same-cycle churn — `swarm.TradeCycle`
+The second half of the same incident: nothing stopped a reviewer from selling,
+minutes later, a name a buyer had just bought. One `TradeCycle` per
+`_run_portfolio_swarm` call is shared by every member's `RebalanceContext`, and
+the rule is deliberately narrow — **a ticker traded this cycle may not be
+traded in the OPPOSITE direction this cycle.** Not "no selling what we hold": a
+real thesis break should still exit, but a break cannot credibly fire minutes
+after a 5/5 conviction add on unchanged data, and a mechanical cap trim is a
+constraint that belongs at the buy. Same-direction repeats stay allowed (two
+buyers topping up one name is not a reversal). Blocking costs at most one
+cycle of delay.
+
+The guard sits in `RebalanceContext.buy`/`.sell` rather than in each strategy,
+so it covers every member including strategies not yet written, and it raises
+**before** any order is placed — a blocked reversal never reaches the broker.
+`portfolio.CycleConflict` (a `PortfolioError` subclass, defined there because
+`agent_strategies` imports the strategies that catch it) means an untaught
+strategy degrades to "this trade did not happen" rather than crashing a
+heartbeat; `double_down`, `sector_rebalancer` and `portfolio_reviewer` catch it
+FIRST and journal `notes.blocked_same_cycle` — a refusal is not an error.
+A trade is recorded in the cycle only if it actually happened: the atomic RPCs
+RETURN a rejection rather than raising it, and the live path returns
+`filled_qty: 0` for a rejected or market-closed order, so recording either
+would block a legitimate later trade on a transaction that never occurred.
+`cycle=None` (the legacy 1:1 agent path) disables the whole thing.
 
 ## Team builder — the portfolio page as home base (migration 045)
 
@@ -817,6 +893,24 @@ importable engines + local scripts; their standalone workflows were removed —
 `--only bull|bear` covers a single-side run). One engine failing never loses the
 other's verdicts. Writes ONLY `ai_analysis`; logs `run_logs`. Flags:
 `--dry-run`, `--only bull|bear`.
+
+**Each side runs in chunks, then re-asks for what it missed** (`eval_chunking.py`,
+pure, `tests/test_eval_chunking.py`). The batch used to go to each model as ONE
+~300k-char prompt. Claude answered ~291 of 300 but took ~5 minutes — right at
+the curl timeout — so on three of fourteen days every retry timed out and the
+bull side wrote nothing. Gemini Flash answered the same prompt with ~6k chars
+and ~40 verdicts, every day for weeks. Because the batch is keyed on the OLDER
+clock, the ~260 names bear skipped came straight back the next day: bear
+coverage never caught up (351 Tier-1 names with no bear verdict, 1,266 older
+than 30 days) and Claude re-scored the same names daily for nothing. Now each
+engine's `evaluate_batch` sends `CHUNK_SIZE` names per call (bull 100, bear
+50), keeps only verdicts for tickers it actually asked about, and runs a second
+pass over any name still missing. A shortfall is loud: `coverage_shortfall`
+warns below 90% per side and the count lands in `run_logs.errors` +
+`details.{bull,bear}_missing` (it was always 0 before, which is how ~15%
+coverage went unnoticed). The Gemini adapter also joins EVERY non-thought text
+part of the response — it kept only the last part, which drops every verdict
+line in the earlier ones when Gemini splits an answer.
 
 ### update_ai_narratives.py (legacy local script — no workflow)
 Legacy Gemini narrative refresher over the `companies` table. **The Tier-1 page
@@ -1127,7 +1221,22 @@ classifier flags: `is_option` (asset-type `[OP]`) and `is_gift` (charitable
 contribution / gift — **not** a market signal, dropped by the mirror). Upserts
 into `congress_trades` idempotent on a content `dedupe_hash`, only fetching
 filings it hasn't seen. Never trades. Requires `pypdf` (added to
-requirements.txt). Cron: `congress-trades.yml` (06:30 UTC, before the 07:00
+requirements.txt).
+
+**The row regex accepts both date layouts** (`tests/test_congress_trades.py`).
+The transaction and notification dates come out of the PDF either glued
+(`07/24/202607/24/2026`) or space-separated (`07/24/2026 07/24/2026`) depending
+on the filing's layout; the parser accepted only the glued form, so Pelosi's
+2026-08-21 PTR (DocID 20035143 — six Bloom Energy and Intel purchases, $250k-$5M
+bands) parsed to **zero** rows and the mirror was blind from June while the
+daily cron reported success (`txns_parsed: 0`, `errors: 0`). Because a filing
+is only "known" once a row from it lands, a zero-row filing is re-fetched on
+the next run, so the fix picks it up without any backfill. Two more from the
+same filing: the `dedupe_hash` now includes `asset_type` — a share purchase and
+a call-option purchase of the same name, same day, same band otherwise hash
+equal and the UNIQUE index silently drops one (that filing has two such
+pairs) — and a description no longer swallows the page-break header
+(`Filing ID #… ID Owner Asset …`) that follows the last row on a page. Cron: `congress-trades.yml` (06:30 UTC, before the 07:00
 heartbeat). Flags: `--politician`, `--last`, `--first`, `--years`, `--limit`,
 `--dry-run`.
 
@@ -1218,13 +1327,155 @@ implemented:
   slugless redirect that always resolves correctly), `/screener` and
   `/leaderboard`. Users who progress on their own never see it.
 
-Both are minimal HTML that reads as plain text. Resend-only delivery
+- **A3 `a3_review_invite`** — the invitation to the weekly portfolio review
+  (`weekly_review_emails.py`), the FALLBACK for owners who never come back
+  to the site (the choice is put in front of them there — see the opt-in
+  section under `weekly_review_emails.py`). Sent once to each owner whose
+  paper book holds ≥1 position and who has not yet **answered either way**
+  (`weekly_review_decided_at` NULL — a "No thanks" on the site is an
+  answer, and an email asking again would be the nag the prompt exists to
+  avoid); no age window, but ≥2 days old so it never shares a day with A1.
+  Links to `/account#weekly-review`. `plan_invites` (pure,
+  `tests/test_lifecycle_emails.py`); candidates come from
+  `fetch_invite_candidates`, which fails closed on a pre-092 schema.
+
+All are minimal HTML that reads as plain text. Resend-only delivery
 (`LIFECYCLE_EMAIL_FROM` must be on the verified alphamolt.ai domain;
 optional `LIFECYCLE_EMAIL_REPLY_TO` routes replies to a personal inbox).
 Recipient addresses are masked in logs (public Actions logs). Flags:
 `--dry-run`, `--to ADDR` (redirect to a test inbox, ledger not written),
 `--user EMAIL`, `--mark-only` (seed ledger rows without sending).
 Cron: `lifecycle-emails.yml`, every 30 min.
+
+### weekly_review_emails.py (Sundays 22:00 UTC — `weekly-review-emails.yml`)
+The weekly portfolio review: every human running a paper portfolio gets one
+email a week — a 30-day chart of the book against the S&P 500, the week's
+trades, and a model's short critique. The document the model reads is **the
+review pack itself** — the same Markdown the portfolio page's "Copy for AI
+review" button produces (`web/lib/portfolio-export.ts` over
+`web/lib/portfolio-export-query.ts`), rendered here by
+`web/scripts/review-pack.mjs`, a plain-node wrapper the Python script spawns
+per portfolio (`render_packs`). Neither module imports anything from Next, so
+they run under node with type stripping and the web app's runtime deps
+(`npm ci --omit=dev` in `web/`, which the workflow installs); `@/` imports
+resolve through `tests/ts_web_alias_hook.mjs`. That is the point of not
+re-deriving a summary in Python: every honesty rule the pack enforces —
+closed positions and their losses included, marks stated as closes, the sell
+discipline resolved against its defaults, the already-fixed defects declared
+— reaches the email for free, and the email can never describe a book
+differently from the button. The renderer also hands over the pack's trade
+tape, so the email's trade table is the pack's own rows (realised P&L per
+sell included).
+
+**What the model writes, and what it does not.** `REVIEW_SYSTEM` asks for one
+JSON object — a `headline`, exactly two paragraphs under 60 words (does the
+book match the mandate, naming the misfits and the weakest thesis with any
+break signal that is firing / cannot be evaluated / was already true; then
+where the process fails next), and two to four `recommendations`, each an
+imperative the owner can act on from the portfolio page plus one sentence of
+why — parsed and shape-checked by `parse_review` (wrong shape is an error,
+not an email). Everything else in the email is **computed, never asked
+for**: the stats line (value, return on the week vs the S&P 500 off
+`agent_portfolio_history.twr_index` and `benchmark_prices`, since-inception,
+positions), the chart (`render_chart_png`, matplotlib Agg, both lines rebased
+to 100; the portfolio line reads the time-weighted index only when EVERY row
+carries one, so a deposit is never drawn as a jump and a lagging backfill
+never mixes two curves — `rebased_points`), and the trade table. The chart
+travels as a Resend inline attachment referenced by `cid:`
+(`chart_attachment`; mail clients block data URIs), and
+`lifecycle_emails.send_via_resend` grew an optional `attachments` argument
+for it. The prompt is pinned to section names the pack actually emits
+(`tests/test_weekly_review_emails.py`). Reviewer brain: `google` /
+`gemini-3.1-pro-preview` at `medium` depth with `gemini-2.5-pro` as the
+retired-id fallback; `REVIEW_EMAIL_LLM_PROVIDER` / `_MODEL` / `_FALLBACK` /
+`_THINKING_LEVEL` override it. A pack over `MAX_PACK_CHARS` is refused.
+
+**When.** Sunday 22:00 UTC — Sunday evening in the US (18:00 Eastern in
+summer, 17:00 in winter). The week has settled (Friday's close was marked
+Saturday 05:30, Sunday's 07:00 heartbeat has run) and it lands BEFORE
+Monday's 07:00 heartbeat, so a brief or screen change the owner makes on
+reading it is what the agents run on Monday; the recommendations are
+actionable at the moment they are read. The week under review is Monday to
+that Sunday (`last_sunday`, today included — paper trades happen at weekends
+because the heartbeat runs daily, so a Sunday-morning add must be in the
+table as well as the positions).
+
+**Opt-in only — one explicit choice, put in front of them (migration 092).**
+Nothing is sent to a user whose `profiles.weekly_review_emails` is not TRUE;
+False and a missing flag are both "no". Every address is already proven at
+sign-in (magic link or Google), so one choice made while signed in IS the
+consent — no confirmation token, no second email. The choice is asked where
+the user actually is, by three surfaces that all call `setWeeklyReviewEmails`
+(`web/lib/weekly-review-mutations.ts`, scoped to the caller's own row) or the
+equivalent write in `createPortfolio`:
+- a **checkbox on the "Brief your team" form** when the first portfolio is
+  created (`brief-team-form.tsx` → `createPortfolio({weeklyReview})`) —
+  unticked by default, because a pre-ticked box is not consent;
+- a **two-button prompt at the top of `/account`**
+  (`web/components/account/weekly-review-prompt.tsx`: "Email me the review" /
+  "No thanks") for anyone who has never answered;
+- the **standing switch** further down `/account`
+  (`web/components/account/weekly-review-card.tsx`) to change their mind.
+`weekly_review_decided_at` is stamped on ANY answer, either way: it is what
+makes the prompt disappear for good, and what stops the fallback A3 email
+going to someone who said no. `--opt-in EMAIL` / `--opt-out EMAIL` are the
+operator's versions (a collaborator who asked in person) and stamp it too —
+also reachable without a terminal as the `opt_in` / `opt_out` inputs
+(comma-separated emails) on the workflow's manual dispatch, which flip the
+flags and stop; the service key lives on the runner, nowhere else.
+`fetch_profiles` fails soft AND CLOSED on a pre-092 schema: no column, nobody
+has opted in, nothing is sent — the one direction a consent bug may fail in.
+
+**Who, and how often.** One email per opted-in user per reviewed week,
+covering every `mode='paper'` portfolio they own that holds ≥1 position
+(oldest first). A live follower is never reviewed — it holds no decisions of
+its own and it is real money. Gated by the same send-once ledger as the
+lifecycle emails (`lifecycle_email_sends`), under a key derived from the
+reviewed week's ISO week (`weekly_review_2026-W37`) and NEVER the run date:
+Sunday is the last day of its ISO week and Monday the first of the next, so
+a clock-derived key would let a Monday recovery run email everyone a second
+copy. As it is, a failed Sunday is re-run on Monday and only whoever was
+missed gets it; a user whose pack or review failed gets no ledger row and is
+retried. Resend delivery + masked logs are shared with
+`lifecycle_emails.py`. Flags: `--dry-run` (renders every due review, sends
+nothing), `--preview-dir DIR` (writes each email as `<slug>.html` with the
+chart inlined + `.txt` — the way to look at one before it goes out; the
+files name the user's book, so keep them out of public logs), `--to ADDR`
+(redirect, ledger untouched), `--user EMAIL`, `--mark-only`, `--week-end`,
+`--limit N`, `--opt-in EMAIL`, `--opt-out EMAIL`.
+
+### data_freshness_report.py (12:30 UTC daily — `data-freshness-report.yml`)
+One email a day answering "is every Level 0 fact still being kept fresh?":
+per data type, coverage of the active Tier-1 universe, freshest and stalest
+stamp, how many names sit past the feed's window, rows written in 24h, and a
+RAG status. `--email` (Resend → SMTP fallback, `REPORT_EMAIL_*`), `--slack`.
+Pure `classify` + `summarize` are unit-tested (`tests/test_data_freshness_report.py`).
+
+**Green is the designed state; red/amber mean an Action broke.** The first
+version flagged four rows on every email for weeks while every pipeline ran as
+designed, for three reasons, each now closed:
+- **It judged a feed by its single stalest name.** Every real feed carries a
+  tail — seven Tier-1 names EODHD last priced on Aug 21, thirteen without a
+  valuation row in a week — and one such name turned the whole row red. The
+  status now turns on the FRACTION of maintained names inside the feed's
+  window (`ok_fraction` 0.97 daily / 0.95 rotation; below 0.8 is STALE), and
+  the tail is shown in its own **Past window** column instead.
+- **Two rotation feeds were read unscoped.** `fundamentals` and `ai_analysis`
+  keep a row for every name that ever passed the gate, so their stalest (a
+  Jun 04 delisted name) was WATCH by construction. Both are now filtered to
+  active Tier-1, like valuation already was.
+- **The valuation row never had a timestamp.** It reused the updater's own
+  state read (`get_all_valuation_latest`), and neither its paginated fallback
+  nor the migration-091 RPC — which is not deployed on the project anyway —
+  selects `fetched_at`, so the row printed "—" and STALE regardless of the
+  data. It now reads dates directly through the bounded
+  `db.get_valuation_dates_since` (14 days; names absent from the span are
+  "not covered", names inside 5 days are fresh).
+Also: a daily feed is "alive" while its newest stamp is under `ALIVE_DAYS`
+(1.5) old, not 24h — every cron here lands 3-6h late and the lag varies, so a
+09:30 run yesterday and a 17:00 run today is an ordinary day, not an outage;
+and price windows are 5 days so Friday's close is still fresh on the Tuesday
+after a Monday holiday.
 
 ### benchmarks_updater.py (03:45 UTC daily)
 Refreshes passive-index benchmark portfolios (S&P 500 via `SPY.US`, MSCI World
@@ -1364,6 +1615,38 @@ the design (`web/lib/portfolio-export.ts`, pure, `tests/test_portfolio_export.py
   **one name at a time** and is **not told the cash position**, the reviewer
   exits whole positions and never trims, and the owner can override all of it
   by hand.
+- **A "what has already been fixed" section, before the positions.** A
+  reviewer handed only the current state re-derives the same closed defects
+  every time — the thesis that was false when it was written, the position
+  sold 86 seconds after it was bought — and a finding that restates one costs
+  the owner a round of reading for nothing. Each entry carries the failure,
+  the remedy, the symbol that enforces it, and a **status read from THIS
+  book's config**: a defence switched off here is reported as off, which is
+  the one way the section could be worse than absent. Four status states,
+  deliberately distinct — active / not active / unconditional (not a setting)
+  / not used (a corrective tool like `rebuy_cooldown_ignores_sells_before`,
+  whose absence is normal and must not read as a missing defence). It closes
+  by naming the two root causes the entries share — one agent authoring the
+  criteria another enforces, and ordering inside a single run that leaves no
+  trace in the book — which is the part a third party can use to find the
+  NEXT one. Placed before the positions because a reviewer forms its findings
+  while reading them. Entries are **gated on the team actually hired**
+  (`appliesTo` over `ExportAgent.kind`, plus `judgesPerName` for the two
+  strategies that run the per-name LLM call): the grace period is a rule about
+  the reviewer and the cash reserve about a self-sourced buyer starved by the
+  draft, so on a book with neither they describe a failure it structurally
+  cannot have. A portfolio with no members renders no section at all, as the
+  methodology already does.
+- **Policies are RESOLVED against their defaults, not read raw.**
+  `portfolios.thesis_policy` is `{}` on 11 of 13 real books, and `{}` is not
+  "no sell discipline" — `resolve_policy` fills every key from `DEFAULTS`, so
+  an untouched portfolio runs the 30-day grace period and the fired-break
+  requirement exactly as if they had been typed in. Reading the stored object
+  omitted the whole Sell-discipline block for those books, which reads as a
+  portfolio with no sell rules. The pack now imports the same TS twins the
+  owner UI uses (`web/lib/thesis-policy.ts`, `web/lib/cash-policy.ts`) and
+  marks a value `(default)` where the owner never set it — the same 30 days
+  means something different depending on whether it was chosen or inherited.
 - **A limitations section** The limitations are MEASURED from the pack's own data
   where possible — "N of M recorded signals cannot be evaluated (fields: …)"
   counts the inert tripwires rather than asserting a sentence that would go
@@ -1652,11 +1935,15 @@ agent being added to other people's portfolios — see migration 026.
 ### profiles (human users — magic-link auth)
 ```
 id (UUID PK, FK → auth.users), email, display_name, live_access,
-created_at, updated_at
+weekly_review_emails, weekly_review_decided_at, created_at, updated_at
 ```
 One row per signed-in human (migration 023). Auto-provisioned by a trigger on
 `auth.users` insert. Private RLS — a user reads/updates only their own row.
-`live_access` (BOOLEAN, default false; migration 089) is the operator grant for
+`weekly_review_emails` (BOOLEAN, default **false**; migration 092) is the
+OPT-IN for `weekly_review_emails.py` — only TRUE sends, set by the user (the
+first-portfolio form, the `/account` prompt or switch) or by an operator;
+`weekly_review_decided_at` stamps any answer either way, and NULL is what
+makes the `/account` prompt show. `live_access` (BOOLEAN, default false; migration 089) is the operator grant for
 the `/live` real-money console, set with one UPDATE. It is deliberately not a
 role or a permissions table — it gates one page — and it is only ever ORed with
 "owns a live portfolio", so revoking it does not lock an owner out of their own
@@ -1994,7 +2281,12 @@ LIFECYCLE_EMAIL_FROM        From for lifecycle_emails.py (the user-facing
                             welcome). Must be on the Resend-verified domain,
                             e.g. "Toby Rowland <toby@alphamolt.ai>".
 LIFECYCLE_EMAIL_REPLY_TO    Optional Reply-To for lifecycle emails — routes
-                            replies to a personal inbox.
+                            replies to a personal inbox. Shared with the
+                            weekly review email.
+REVIEW_EMAIL_LLM_PROVIDER   Optional. Reviewer brain for weekly_review_emails.py
+REVIEW_EMAIL_LLM_MODEL      (defaults google / gemini-3.1-pro-preview; the
+REVIEW_EMAIL_LLM_FALLBACK   fallback, default gemini-2.5-pro, is used only when
+REVIEW_EMAIL_THINKING_LEVEL the primary model id is retired).
 SMTP_HOST / SMTP_PORT       Optional SMTP fallback for `--email` when
 SMTP_USER / SMTP_PASSWORD   RESEND_API_KEY is unset (port default 587,
                             STARTTLS; Gmail needs an App Password).
@@ -2584,6 +2876,9 @@ pytest tests/test_badges.py                 # pure engine unit tests
 # Sell discipline (owner-configured thesis policy, migration 086)
 pytest tests/test_thesis_policy.py          # grace period + signal rules
 
+# Sector cap seen from the buy side + the same-cycle churn guard
+pytest tests/test_sector_caps.py            # the INTU round trip of 11 Sep 2026
+
 # Public Universe summary on a portfolio page
 pytest tests/test_portfolio_universe.py     # visibility, copy, strategy parity
 
@@ -2618,6 +2913,15 @@ python lifecycle_emails.py                  # send A1 welcome to eligible new si
 python lifecycle_emails.py --dry-run        # plan only
 python lifecycle_emails.py --to me@test.com # redirect to a test inbox (ledger untouched)
 python lifecycle_emails.py --mark-only      # seed ledger for existing users without emailing
+
+# Weekly portfolio review email (Sundays, 22:00 UTC)
+python weekly_review_emails.py --dry-run          # render every due review, send nothing
+python weekly_review_emails.py --dry-run --preview-dir out/   # ...and write each as .html/.txt to look at
+python weekly_review_emails.py --to me@test.com --user a@b.com   # one user's review to a test inbox
+python weekly_review_emails.py                    # send this week's (ledger-gated, rerun-safe)
+python weekly_review_emails.py --opt-in a@b.com   # switch a user on (someone who asked in person)
+python weekly_review_emails.py --opt-out a@b.com  # honour a "no more reviews" reply
+node --experimental-strip-types web/scripts/review-pack.mjs SLUG   # the pack the email is fed (needs npm ci in web/)
 
 # Operator user report (on-demand)
 python user_report.py                       # full digest of every signed-up user

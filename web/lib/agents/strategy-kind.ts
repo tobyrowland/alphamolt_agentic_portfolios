@@ -33,6 +33,25 @@ export const SCREEN_BUYER_STRATEGIES = new Set([
 
 export const REVIEWER_STRATEGIES = new Set(["portfolio_reviewer"]);
 
+/**
+ * Buyers that put each candidate to an LLM one name at a time.
+ *
+ * Cuts across `StrategyKind`: `double_down` is self-sourced and
+ * `llm_watchlist_buyer` drafts from the screen, but both run the same
+ * per-name evaluation, and the mechanical buyers in `SCREEN_BUYER_STRATEGIES`
+ * (`watchlist_buyer`, `ma_sniper`) run none. Anything describing that call —
+ * what it is told, what a PASS costs — is true of exactly this set, so kind
+ * alone is the wrong test in both directions.
+ */
+export const PER_NAME_LLM_BUYERS = new Set([
+  "llm_watchlist_buyer",
+  "double_down",
+]);
+
+export function judgesPerName(strategy: string | null | undefined): boolean {
+  return !!strategy && PER_NAME_LLM_BUYERS.has(strategy);
+}
+
 export type StrategyKind =
   | "screen-buyer"
   | "self-sourced-buyer"

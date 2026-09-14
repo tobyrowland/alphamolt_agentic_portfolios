@@ -1,6 +1,7 @@
 import { getSupabase } from "@/lib/supabase";
 import {
   SELF_SOURCED_BUYERS,
+  judgesPerName,
   strategyKind,
 } from "@/lib/agents/strategy-kind";
 import { realizedPnlByTrade, type PnlTrade } from "@/lib/realized-pnl";
@@ -360,6 +361,7 @@ function agentShape(strategy: string | null, cfg: Record<string, unknown>) {
     case "self-sourced-buyer":
       return {
         kind: "self-sourced-buyer" as const,
+        judgesPerName: judgesPerName(strategy),
         sourcedFrom: SELF_SOURCED_BUYERS[strategy as string],
         convictionGate: n("min_conviction"),
         addPct: n("add_position_pct"),
@@ -368,6 +370,7 @@ function agentShape(strategy: string | null, cfg: Record<string, unknown>) {
     case "screen-buyer":
       return {
         kind: "screen-buyer" as const,
+        judgesPerName: judgesPerName(strategy),
         convictionGate: n("min_conviction"),
         targetPct: n("target_position_pct"),
         minPct: n("min_position_pct"),

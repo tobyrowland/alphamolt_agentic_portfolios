@@ -41,6 +41,7 @@ from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 from portfolio import PortfolioError
+from sector_caps import SectorBudget
 
 if TYPE_CHECKING:  # avoid a runtime import cycle with agent_strategies
     from agent_strategies import RebalanceContext, RebalanceResult
@@ -118,6 +119,7 @@ def plan_mirror(
     min_trade_usd: float,
     max_positions: int,
     when_held: str = "skip",
+    sector_budget: SectorBudget | None = None,
 ) -> MirrorPlan:
     """Decide what to trade to mirror a batch of disclosures. Pure.
 
@@ -128,6 +130,14 @@ def plan_mirror(
     ``when_held`` controls a disclosed BUY of a name the portfolio already
     holds: ``"skip"`` (default) never doubles up — it only opens new positions;
     ``"top_up"`` adds toward ``target_position_pct`` when currently underweight.
+
+    ``sector_budget`` is the hired Sector Rebalancer's cap seen from the buy
+    side (`sector_caps.SectorBudget`). A self-sourced buyer runs BEFORE the
+    draft and before every reviewer, so a mirror buy into a full sector would
+    be trimmed straight back — the shape that cost a real round trip on 11 Sep
+    2026. Buys are sized down to the sector's headroom; a disclosure with no
+    room is still LOGGED as handled (skipped with a sector reason), because an
+    unlogged disclosure would be replayed on every future run.
 
     Returns a :class:`MirrorPlan`; every input trade id ends up in exactly one
     of buys / sells / skips so the caller can log the whole batch as handled.
@@ -190,8 +200,21 @@ def plan_mirror(
             plan.skips.append({"ticker": ticker, "trade_ids": trade_ids,
                                "reason": "already at/above target weight"})
             continue
+        if sector_budget is not None and sector_budget.at_cap(
+            ticker, price, min_order_usd=min_trade_usd
+        ):
+            plan.skips.append({
+                "ticker": ticker, "trade_ids": trade_ids,
+                "reason": (
+                    f"{sector_budget.sector_name(ticker)} is at its sector cap "
+                    f"— buying here would only be trimmed back"
+                ),
+            })
+            continue
         budget = min(gap_usd, spendable)
         qty = int(math.floor(budget / price)) if price > 0 else 0
+        if sector_budget is not None:
+            qty = sector_budget.cap_qty(ticker, qty, price)
         if qty < 1 or qty * price < min_trade_usd:
             plan.skips.append({"ticker": ticker, "trade_ids": trade_ids,
                                "reason": "insufficient cash for a meaningful buy"})
@@ -199,6 +222,8 @@ def plan_mirror(
         plan.buys.append({"ticker": ticker, "qty": qty, "trade_ids": trade_ids,
                           "why": "Nancy Pelosi disclosed a purchase"})
         spendable -= qty * price
+        if sector_budget is not None:
+            sector_budget.record(ticker, qty, price)
         if not already_held:
             held_count += 1
 
@@ -272,6 +297,20 @@ def rebalance_pelosi_mirror(ctx: "RebalanceContext") -> "RebalanceResult":
         result.errors.append(f"total_value_usd <= 0 for {handle}")
         return result
 
+    # The hired Rebalancer's cap, seen from the buy side. A self-sourced buyer
+    # runs before the draft and before every reviewer, so without it this is the
+    # one buyer that cannot see a constraint another agent will enforce minutes
+    # later. Sectors cover the held book AND the names about to be mirrored.
+    sector_budget = SectorBudget.from_book(
+        book,
+        ctx.db.get_sectors(
+            list(prices)
+            + [str(h.get("ticker") or "") for h in (book.get("holdings") or [])]
+        ) if ctx.sector_cap_pct else {},
+        cap_pct=ctx.sector_cap_pct,
+    )
+    if sector_budget.enabled:
+        result.notes["sector_cap_pct"] = ctx.sector_cap_pct
     plan = plan_mirror(
         trades, book, prices,
         target_position_pct=float(params["target_position_pct"]),
@@ -279,6 +318,7 @@ def rebalance_pelosi_mirror(ctx: "RebalanceContext") -> "RebalanceResult":
         min_trade_usd=float(params["min_trade_usd"]),
         max_positions=int(params["max_positions"]),
         when_held=str(params["when_held"]),
+        sector_budget=sector_budget,
     )
 
     if ctx.dry_run:
