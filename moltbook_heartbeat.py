@@ -48,6 +48,7 @@ from moltbook_lib import (
     draft_feed_comment,
     draft_original_post,
     draft_reply,
+    is_content_gone,
     notification_marker,
     post_and_verify,
     prune_ledger,
@@ -422,6 +423,15 @@ def _process_notifications(
                         gh.close_issue(issue["number"])
                     _mark_replied(ledger, replied, notif["id"])
                     posted += 1
+                elif is_content_gone(outcome):
+                    # The hostile comment was deleted — nothing left to
+                    # apologise under. Same skip rule as the normal path.
+                    log.info(
+                        "skip apology for %s — target content deleted (%s)",
+                        notif["id"][:8], _first_line(outcome),
+                    )
+                    _mark_replied(ledger, replied, notif["id"])
+                    skipped += 1
                 else:
                     log.error("apology post failed: %s", outcome)
                     failed += 1
@@ -517,6 +527,17 @@ def _process_notifications(
                     log.warning("summary refresh failed for @%s: %s",
                                 author, exc)
             posted += 1
+        elif is_content_gone(outcome):
+            # The comment/post we were replying to was deleted before we got
+            # here (404 "Parent comment not found" — run 34148304249). No
+            # retry, manual or automatic, can ever post this reply, so a
+            # failure issue and a red run would both be pure noise.
+            log.info(
+                "skip %s — target content deleted (%s)",
+                notif["id"][:8], _first_line(outcome),
+            )
+            _mark_replied(ledger, replied, notif["id"])
+            skipped += 1
         else:
             log.error("post failed for %s: %s", notif["id"][:8], outcome)
             title, body = _render_failure_issue(ctx, draft, outcome, profile.slug)

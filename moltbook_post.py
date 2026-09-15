@@ -53,6 +53,10 @@ def main() -> int:
     if not result:
         print("ERROR: create_post returned no body", file=sys.stderr)
         return 1
+    if not result.get("success"):
+        # _post now returns the HTTP error body instead of None
+        print(json.dumps(result, indent=2), file=sys.stderr)
+        return 1
 
     print(json.dumps(result, indent=2))
     return 0

@@ -296,3 +296,123 @@ def test_bear_persona_is_distinct_and_disclosed():
     assert "same operator" in bear.system_prompt
     # the anti-fabrication section must exist in every persona
     assert "Anti-fabrication rules" in bear.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Verification retry + deleted-target handling (runs 34062787085 /
+# 34148304249 / 34227911193, 2026-09-06..08)
+# ---------------------------------------------------------------------------
+
+# The recurring ambiguous template: the text describes a reduction but some
+# instances' stored answer is the sum (keyed on "total"). 16.00 was ACCEPTED
+# for this text on 09-07 and REJECTED on 09-06 and 09-08.
+_CHALLENGE_AMBIG = (
+    "A] lOoO bS tEr]s Cl-Aw^ ExErTs/ tWeN tY ThReE~ nEwWtOnSs| WhIlE{ wAtEr/ "
+    "PrEsSuRe} ReDuCeS- FoRcE bY< sEvEn, >wHaT s Is- tHe/ ToTaL^ EfFeCtIvE| "
+    "FoRcE? um"
+)
+
+
+def test_alternative_answer_flips_between_sum_and_difference():
+    from moltbook_lib import alternative_answer
+    assert alternative_answer(_CHALLENGE_AMBIG, "16.00") == "30.00"
+    assert alternative_answer(_CHALLENGE_AMBIG, "30.00") == "16.00"
+
+
+def test_alternative_answer_defers_without_two_clean_operands():
+    from moltbook_lib import alternative_answer
+    # one number only -> no alternative to offer
+    assert alternative_answer("a claw of forty newtons", "40.00") is None
+    # three numbers -> ambiguous, don't guess
+    assert alternative_answer("ten and twenty and forty, total?", "70.00") is None
+
+
+class _FakeVerifyClient:
+    """Duck-typed stand-in for MoltbookClient.verify."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def verify(self, code, answer):
+        self.calls.append((code, answer))
+        return self.responses.pop(0)
+
+
+def test_verify_with_retry_recovers_with_alternative_reading():
+    from moltbook_lib import verify_with_retry
+
+    client = _FakeVerifyClient([
+        {"success": False, "status": 400, "message": "Incorrect answer"},
+        {"success": True},
+    ])
+    ok, used, _ = verify_with_retry(client, "code-1", "16.00", _CHALLENGE_AMBIG)
+    assert ok is True
+    assert used == "30.00"
+    assert [a for _, a in client.calls] == ["16.00", "30.00"]
+
+
+def test_verify_with_retry_single_attempt_when_correct_or_not_incorrect():
+    from moltbook_lib import verify_with_retry
+
+    # success first time -> one call
+    client = _FakeVerifyClient([{"success": True}])
+    ok, used, _ = verify_with_retry(client, "c", "16.00", _CHALLENGE_AMBIG)
+    assert ok is True and used == "16.00" and len(client.calls) == 1
+
+    # a non-"Incorrect answer" failure (e.g. expired code) never burns a retry
+    client = _FakeVerifyClient([
+        {"success": False, "status": 400, "message": "Verification expired"},
+    ])
+    ok, used, _ = verify_with_retry(client, "c", "16.00", _CHALLENGE_AMBIG)
+    assert ok is False and used == "16.00" and len(client.calls) == 1
+
+
+def test_verify_with_retry_reports_last_attempt_on_double_rejection():
+    from moltbook_lib import verify_with_retry
+
+    client = _FakeVerifyClient([
+        {"success": False, "status": 400, "message": "Incorrect answer"},
+        {"success": False, "status": 400, "message": "Incorrect answer"},
+    ])
+    ok, used, v = verify_with_retry(client, "c", "16.00", _CHALLENGE_AMBIG)
+    assert ok is False
+    assert used == "30.00"
+    assert v == {"success": False, "status": 400, "message": "Incorrect answer"}
+
+
+def test_is_content_gone_classifies_deleted_targets_only():
+    from moltbook_lib import is_content_gone
+
+    gone_404 = (
+        "post failed: {'success': False, 'status': 404, "
+        "'message': 'Parent comment not found'}"
+    )
+    assert is_content_gone(gone_404) is True
+    assert is_content_gone("post failed: {'message': 'Post not found'}") is True
+    # a verification rejection is NOT content-gone — it keeps the failure path
+    assert is_content_gone(
+        "posted abc but verification failed (answer=16.00): "
+        "{'message': 'Incorrect answer'}"
+    ) is False
+    assert is_content_gone("") is False
+    assert is_content_gone(None) is False
+
+
+def test_alternative_answer_handles_space_split_number_words():
+    """The obfuscator sometimes splits a number word with spaces
+    ('tWeN tY ThReE'); operand extraction must still read 23, not 3."""
+    from moltbook_lib import alternative_answer
+    # the exact challenge text from the 2026-09-06 rejection (run 34062787085)
+    sep6 = (
+        "A] lOoO bS tEr]s Cl-Aw^ ExErTs/ tWeN tY ThReE~ nEeOOtOnSs| WhIlE{ "
+        "wAtEr/ PrEsSuRe} ReDuCeS- FoRcE bY< sEvEn, >wHaT s Is- tHe/ ToTaL^ "
+        "EfFeCtIvE| FoRcE? um"
+    )
+    assert alternative_answer(sep6, "16.00") == "30.00"
+    # and the 2026-09-08 rejection (run 34227911193), unsplit words
+    sep8 = (
+        "LeT] LoObStErS- ClAw] FoRcE Is TwEnTy ThReE NoOtOnS^ BuT/ wAtEr] "
+        "PrEsS ReDuCeS It By SeVeN, HoW MuCh ToTaL FoRcE Is ThErE < }"
+    )
+    assert alternative_answer(sep8, "16.00") == "30.00"

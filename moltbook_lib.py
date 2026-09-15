@@ -209,8 +209,20 @@ class MoltbookClient:
     def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any] | None:
         r = self.session.post(f"{API_ROOT}{path}", json=body, timeout=TIMEOUT)
         if r.status_code >= 400:
+            # Return the error body (like verify()) rather than None, so
+            # callers can tell a permanently-unactionable failure apart from a
+            # transient one. Run 34148304249 (2026-09-07) failed the whole
+            # heartbeat on 404 "Parent comment not found" — the commenter had
+            # deleted their comment, so the reply could never be posted, but
+            # the caller only saw ": None" and filed it as retryable. Every
+            # caller gates on .get("success"), which stays falsy here.
             log.error("POST %s -> %s: %s", path, r.status_code, r.text[:300])
-            return None
+            try:
+                payload = r.json()
+            except ValueError:
+                payload = {"raw_text": r.text[:300]}
+            payload.pop("success", None)
+            return {"success": False, "status": r.status_code, **payload}
         try:
             return r.json()
         except ValueError:
@@ -482,6 +494,23 @@ class GitHubIssuer:
 
 def notification_marker(notif_id: str) -> str:
     return f"<!-- moltbook-notif:{notif_id} -->"
+
+
+# Moltbook error messages that mean the content we were replying to no longer
+# exists (author deleted it, or moderation removed it). Such a failure is
+# permanently unactionable — no retry, manual or automatic, can ever succeed —
+# so the heartbeat treats it as a skip instead of a failure (which used to
+# turn the whole run red and file a "retryable" issue nobody could act on).
+CONTENT_GONE_MARKERS = (
+    "Parent comment not found",
+    "Comment not found",
+    "Post not found",
+)
+
+
+def is_content_gone(outcome: str) -> bool:
+    """True when a post/verify outcome string reports deleted target content."""
+    return any(marker in (outcome or "") for marker in CONTENT_GONE_MARKERS)
 
 
 def prune_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
@@ -942,16 +971,16 @@ def create_post_and_verify(
             post_id,
         )
 
-    v = client.verify(code, answer)
-    if not v or not v.get("success"):
+    ok, used, v = verify_with_retry(client, code, answer, challenge)
+    if not ok:
         return (
             False,
-            f"posted {post_id} but verification failed (answer={answer}): {v}\n\n"
+            f"posted {post_id} but verification failed (answer={used}): {v}\n\n"
             f"challenge: {challenge!r}",
             post_id,
         )
 
-    return True, f"posted and verified (answer={answer})", post_id
+    return True, f"posted and verified (answer={used})", post_id
 
 
 _SOLVER_VOTES = 3
@@ -1203,6 +1232,92 @@ def _local_solve_challenge(text: str) -> str | None:
     return _format_answer(str(value))
 
 
+def _merge_split_number_words(tokens: list[str]) -> list[str]:
+    """Rejoin number words the obfuscator split with spaces.
+
+    Some challenge instances break a number word apart ('tWeN tY ThReE' ->
+    tokens 'twen', 'ty', 'thre'), which reads as 3 instead of 23. Merge two
+    adjacent alpha tokens when neither is a number word on its own but their
+    concatenation collapses to one ('twen'+'ty' -> 'twenty'). Conservative:
+    a token already recognised as a number is never consumed by a merge.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if (
+            t not in _NUM_WORDS_COLLAPSED
+            and not t.isdigit()
+            and i + 1 < len(tokens)
+            and tokens[i + 1] not in _NUM_WORDS_COLLAPSED
+            and not tokens[i + 1].isdigit()
+        ):
+            merged = _collapse_repeats(t + tokens[i + 1])
+            if merged in _NUM_WORDS_COLLAPSED:
+                out.append(merged)
+                i += 2
+                continue
+        out.append(t)
+        i += 1
+    return out
+
+
+def alternative_answer(challenge_text: str, tried: str) -> str | None:
+    """The other plausible arithmetic reading of a two-operand challenge.
+
+    Moltbook's challenge generator emits ambiguous templates whose stored
+    answer doesn't always match the text's semantics: "claw force is twenty
+    three newtons, water pressure REDUCES it by seven — what is the TOTAL
+    force?" was answered 16.00 (the subtraction the text describes) and
+    ACCEPTED on 2026-09-07 (run 34148304249) but REJECTED on 2026-09-06 and
+    2026-09-08 (runs 34062787085 / 34227911193) for near-identical text — the
+    generator apparently keys some instances' stored answer on "total" (the
+    sum) regardless of the reduction wording. We can't know which reading an
+    instance wants up front, so on an "Incorrect answer" rejection we retry
+    once with the alternative reading.
+
+    Conservative like ``_local_solve_challenge``: only when the collapsed text
+    yields EXACTLY two operands. Returns the first of sum / difference /
+    product that differs from ``tried``, or None.
+    """
+    collapsed = _collapse_repeats(challenge_text)
+    tokens = _merge_split_number_words(re.findall(r"[a-z]+|\d+", collapsed))
+    numbers = _extract_numbers(tokens)
+    if len(numbers) != 2:
+        return None
+    a, b = numbers
+    for value in (a + b, abs(a - b), a * b):
+        candidate = _format_answer(str(value))
+        if candidate != tried:
+            return candidate
+    return None
+
+
+def verify_with_retry(
+    client: "MoltbookClient", code: str, answer: str, challenge_text: str
+) -> tuple[bool, str, dict | None]:
+    """Verify ``answer``; on an "Incorrect answer" rejection retry once with
+    the alternative arithmetic reading of the challenge (see
+    ``alternative_answer``). Returns (success, answer_used, last_response).
+    A failed retry leaves us exactly where a single attempt would have.
+    """
+    v = client.verify(code, answer)
+    if v and v.get("success"):
+        return True, answer, v
+    if "incorrect" in str((v or {}).get("message", "")).lower():
+        alt = alternative_answer(challenge_text, answer)
+        if alt:
+            log.info(
+                "verification rejected %s; retrying with alternative "
+                "reading %s", answer, alt,
+            )
+            v2 = client.verify(code, alt)
+            if v2 and v2.get("success"):
+                return True, alt, v2
+            return False, alt, v2
+    return False, answer, v
+
+
 def solve_math_challenge(challenge_text: str) -> str:
     """Solve the verification math, refusal-hardened.
 
@@ -1312,16 +1427,16 @@ def post_and_verify(
             comment_id,
         )
 
-    v = client.verify(code, answer)
-    if not v or not v.get("success"):
+    ok, used, v = verify_with_retry(client, code, answer, challenge)
+    if not ok:
         return (
             False,
-            f"posted {comment_id} but verification failed (answer={answer}): {v}\n\n"
+            f"posted {comment_id} but verification failed (answer={used}): {v}\n\n"
             f"challenge: {challenge!r}",
             comment_id,
         )
 
-    return True, f"posted and verified (answer={answer})", comment_id
+    return True, f"posted and verified (answer={used})", comment_id
 
 
 if __name__ == "__main__":
