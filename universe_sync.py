@@ -50,6 +50,7 @@ logger = logging.getLogger("universe_sync")
 GATE_MIN_DOLLAR_VOLUME = 5_000_000   # trailing-30d avg daily $ volume
 GATE_MIN_PRICE = 1.0                 # last close
 GATE_MIN_DAYS = 15                   # min trading days of price data to judge
+GATE_MAX_DARK_DAYS = 10              # trading days since a name's last EOD bar
 ADDV_WINDOW = 30                     # trailing trading days for ADDV
 BULK_LOOKBACK_DAYS = 50              # calendar-day cap when collecting 30 days
 
@@ -166,15 +167,24 @@ def classify_security(row: dict) -> tuple[str, str | None] | None:
 
 
 def passes_gate(addv_30d: float | None, last_close: float | None,
-                days: int) -> bool:
+                days: int, days_since_last_bar: int = 0) -> bool:
     """The strategy-neutral affordability gate (spec §6).
 
     Pure decision over a security's liquidity stats: enough trading days to
-    judge it, price >= $1, and trailing-30d ADDV >= $5M. No margins / growth /
-    valuation / sector views — those are lenses downstream.
+    judge it, price >= $1, trailing-30d ADDV >= $5M, and a still-live EOD feed.
+    No margins / growth / valuation / sector views — those are lenses
+    downstream.
+
+    The liveness leg matters because EODHD's symbol list keeps carrying a name
+    for a while after it stops trading (acquired / halted / delisted), and its
+    trailing-30d ADDV decays only as the last live bars age out of the window —
+    so a dead name can sit in Tier 1 for weeks with a frozen price, poisoning
+    every freshness measure downstream. Still an affordability question, not a
+    strategy one: a name you cannot get a current price for is not tradable.
     """
     return bool(
         days >= GATE_MIN_DAYS
+        and days_since_last_bar <= GATE_MAX_DARK_DAYS
         and last_close is not None and last_close >= GATE_MIN_PRICE
         and addv_30d is not None and addv_30d >= GATE_MIN_DOLLAR_VOLUME
     )
@@ -285,12 +295,17 @@ def collect_addv(client: EODHDClient) -> dict[str, dict]:
                 last_close[code] = float(close)
 
     logger.info("Collected %d trading days of bulk EOD for ADDV", len(trading_days))
+    # Trading days newest-first, so a ticker's last bar's index IS the number of
+    # trading days its feed has been dark (0 = it printed on the latest day).
+    ordered_days = sorted(trading_days, reverse=True)
+    dark = {d: i for i, d in enumerate(ordered_days)}
     out: dict[str, dict] = {}
     for code, dvs in per_ticker_dv.items():
         out[code] = {
             "addv_30d": sum(dvs) / len(dvs),
             "last_close": last_close.get(code),
             "days": len(dvs),
+            "days_since_last_bar": dark.get(last_close_date.get(code, ""), len(ordered_days)),
         }
     return out
 
@@ -303,15 +318,22 @@ def apply_gate(db: SupabaseDB, client: EODHDClient, dry_run: bool) -> dict:
 
     updates: list[dict] = []
     promoted = 0
+    dark_names: list[str] = []
     for s in active:
         t = s["ticker"]
         stats = addv.get(t)
         addv_30d = stats["addv_30d"] if stats else None
         last_close = stats["last_close"] if stats else None
         days = stats["days"] if stats else 0
-        is_tier1 = passes_gate(addv_30d, last_close, days)
+        dark_days = stats["days_since_last_bar"] if stats else 0
+        is_tier1 = passes_gate(addv_30d, last_close, days, dark_days)
         if is_tier1:
             promoted += 1
+        elif dark_days > GATE_MAX_DARK_DAYS and passes_gate(addv_30d, last_close, days):
+            # Would have passed on liquidity alone — it is the dead feed that
+            # demoted it. Worth naming in the log, since it is usually a
+            # corporate action the symbol list hasn't caught up with.
+            dark_names.append(f"{t}({dark_days}d)")
         updates.append({
             "ticker": t,
             "addv_30d": addv_30d,
@@ -322,6 +344,9 @@ def apply_gate(db: SupabaseDB, client: EODHDClient, dry_run: bool) -> dict:
 
     logger.info("Affordability gate: %d / %d active securities promoted to Tier 1",
                 promoted, len(active))
+    if dark_names:
+        logger.info("Demoted %d liquid name(s) on a dark EOD feed: %s",
+                    len(dark_names), ", ".join(sorted(dark_names)))
     if not dry_run:
         for i in range(0, len(updates), 500):
             db.upsert_securities_batch(updates[i:i + 500])

@@ -114,6 +114,18 @@ class TestAffordabilityGate(unittest.TestCase):
             last_close=us.GATE_MIN_PRICE,
             days=us.GATE_MIN_DAYS))
 
+    def test_fails_when_eod_feed_has_gone_dark(self):
+        # Liquid on the trailing window, but no bar has printed in weeks — an
+        # acquired/halted name the symbol list still carries. Not tradable.
+        self.assertFalse(us.passes_gate(
+            addv_30d=10_000_000, last_close=42.0, days=30,
+            days_since_last_bar=us.GATE_MAX_DARK_DAYS + 1))
+
+    def test_passes_at_the_dark_boundary(self):
+        self.assertTrue(us.passes_gate(
+            addv_30d=10_000_000, last_close=42.0, days=30,
+            days_since_last_bar=us.GATE_MAX_DARK_DAYS))
+
 
 class TestPriceRowMapper(unittest.TestCase):
     def test_maps_and_computes_dollar_volume(self):
