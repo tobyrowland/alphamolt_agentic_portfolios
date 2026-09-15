@@ -296,3 +296,102 @@ def test_bear_persona_is_distinct_and_disclosed():
     assert "same operator" in bear.system_prompt
     # the anti-fabrication section must exist in every persona
     assert "Anti-fabrication rules" in bear.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Deleted-target handling — a 404 "Parent comment not found" is a SKIP,
+# never a failure (run 33270561957 turned the whole heartbeat red over one
+# comment its author deleted before we replied, and filed a manual-retry
+# issue that could never succeed).
+# ---------------------------------------------------------------------------
+
+
+def _gone_payload():
+    # Shape produced by MoltbookClient._post(return_error=True) for the real
+    # Moltbook 404 body.
+    return {
+        "success": False,
+        "status": 404,
+        "statusCode": 404,
+        "message": "Parent comment not found",
+        "error": "Not Found",
+    }
+
+
+def test_post_and_verify_flags_deleted_target():
+    from moltbook_lib import is_target_gone, post_and_verify
+
+    class Client:
+        def post_comment(self, post_id, content, parent_id=None):
+            return _gone_payload()
+
+    ok, outcome, comment_id = post_and_verify(Client(), "p1", "hi", parent_id="c1")
+    assert ok is False
+    assert comment_id is None
+    assert is_target_gone(outcome)
+    # the human-readable reason survives into the outcome
+    assert "Parent comment not found" in outcome
+
+
+def test_post_and_verify_other_failures_are_not_target_gone():
+    from moltbook_lib import is_target_gone, post_and_verify
+
+    for result in (
+        None,  # network-level / non-JSON failure path
+        {"success": False, "status": 500, "message": "Internal server error"},
+        {"success": False, "status": 401, "message": "Invalid API key"},
+        # 404 with an unrelated message must not be swallowed as a skip
+        {"success": False, "status": 404, "message": "route missing"},
+    ):
+        class Client:
+            def __init__(self, r):
+                self._r = r
+
+            def post_comment(self, post_id, content, parent_id=None):
+                return self._r
+
+        ok, outcome, _ = post_and_verify(Client(result), "p1", "hi")
+        assert ok is False
+        assert not is_target_gone(outcome), result
+
+
+def test_deleted_parent_is_skipped_not_failed():
+    """Wiring: the heartbeat marks the notif handled, counts it as skipped,
+    files no failure issue, and the run exits green (failed == 0)."""
+    import argparse
+
+    from moltbook_agents import DEFAULT_AGENT, get_profile
+
+    class Client:
+        def notifications(self):
+            return [{
+                "id": "notif-gone", "type": "comment_reply", "isRead": False,
+                "relatedPostId": "post-1", "relatedCommentId": "c-1",
+                "post": {"id": "post-1", "title": "T", "content": "body"},
+            }]
+
+        def get_comment_thread(self, post_id, limit=50):
+            return [{
+                "id": "c-1", "content": "hey",
+                "author": {"name": "bob", "karma": 1}, "replies": [],
+            }]
+
+        def post_comment(self, post_id, content, parent_id=None):
+            return _gone_payload()
+
+    class Issuer:
+        def create_issue(self, *a, **kw):  # pragma: no cover - must not fire
+            raise AssertionError(
+                "no failure issue should be filed for a deleted target"
+            )
+
+    args = argparse.Namespace(
+        max=10, dry_run=False, no_draft=True, require_approval=False,
+    )
+    ledger: dict = {}
+    stats = mh._process_notifications(
+        Client(), Issuer(), set(), ledger, args, get_profile(DEFAULT_AGENT),
+    )
+    assert stats == {"posted": 0, "failed": 0, "skipped": 1}
+    # marked handled so it never retries
+    assert "notif-gone" in ledger.get("replied_notifs", [])

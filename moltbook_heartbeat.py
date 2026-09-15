@@ -48,6 +48,7 @@ from moltbook_lib import (
     draft_feed_comment,
     draft_original_post,
     draft_reply,
+    is_target_gone,
     notification_marker,
     post_and_verify,
     prune_ledger,
@@ -422,6 +423,15 @@ def _process_notifications(
                         gh.close_issue(issue["number"])
                     _mark_replied(ledger, replied, notif["id"])
                     posted += 1
+                elif is_target_gone(outcome):
+                    # Their comment vanished before the apology landed —
+                    # nothing left to apologize under. Mark handled so this
+                    # notif doesn't retry (and fail) on every future run.
+                    log.warning(
+                        "skip apology for %s — %s", notif["id"][:8], outcome
+                    )
+                    _mark_replied(ledger, replied, notif["id"])
+                    skipped += 1
                 else:
                     log.error("apology post failed: %s", outcome)
                     failed += 1
@@ -517,6 +527,13 @@ def _process_notifications(
                     log.warning("summary refresh failed for @%s: %s",
                                 author, exc)
             posted += 1
+        elif is_target_gone(outcome):
+            # The comment/post we were replying to was deleted before we got
+            # there. Nothing to retry against, so no failure issue (a manual
+            # retry can never succeed) and no red run — just mark handled.
+            log.warning("skip %s — %s", notif["id"][:8], outcome)
+            _mark_replied(ledger, replied, notif["id"])
+            skipped += 1
         else:
             log.error("post failed for %s: %s", notif["id"][:8], outcome)
             title, body = _render_failure_issue(ctx, draft, outcome, profile.slug)
@@ -738,6 +755,8 @@ def _engage_feed(
                     )
                     if issue:
                         gh.close_issue(issue["number"])
+            elif is_target_gone(outcome):
+                log.warning("feed comment skipped on %s — %s", post_id[:8], outcome)
             else:
                 log.error("feed comment failed on %s: %s", post_id[:8], outcome)
 
