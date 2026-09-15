@@ -134,6 +134,22 @@ rejects the parameter at request time. Pinned by
 than the SDK it stood in for, which is exactly how the failure reached
 production through a green suite.
 
+**OpenAI and `temperature`.** GPT-5 and the o-series accept ONLY their
+default temperature — any other value is a hard 400 ("'temperature' does not
+support 0.2 with this model. Only the default (1) value is supported") — and
+every `agents.config` in this repo carries the pre-GPT-5 `0.2`. On 2026-09-15
+that made `buyer-chatgpt` a no-op: all 16 candidates on the Ex-Taiwan Chip
+Industry book failed with that error and the heartbeat reported "no candidates
+met the conviction threshold", indistinguishable from a quiet market. The
+OpenAI-compatible adapter now never sends the param to that family
+(`_is_openai_reasoning_model`, the same predicate that already picks
+`max_completion_tokens`), and for any other model or compatible provider that
+starts rejecting it, a temperature error (`_is_temperature_error` — the SDK's
+`param`, or the message text for providers that don't set it) drops the param,
+retries once immediately and remembers the model in `_NO_TEMPERATURE_MODELS`
+for the rest of the process, the same contract as the Anthropic path. Pinned
+by `tests/test_llm_providers_openai.py`.
+
 SDK: **`google-genai`** (`from google import genai`). The legacy
 `google-generativeai` was deprecated Nov 2025 and cannot reach the Gemini 3
 family or `thinking_level` at all; it survives as a fallback for pinned 2.5
