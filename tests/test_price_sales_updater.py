@@ -8,15 +8,21 @@ stalest names rather than an arbitrary slice, and that the pre-091 fallback
 read stays bounded instead of scanning the whole 211 MB table.
 """
 
+import logging
 import unittest
 from datetime import date, timedelta
+from unittest import mock
 
 import db as db_module
+import price_sales_updater as psu
 from price_sales_updater import (
+    REFUSED,
     get_reported_ps,
     get_revenue_currency,
+    get_revenue_ttm,
     order_by_staleness,
     resolve_ps,
+    statement_revenue_ttm,
 )
 
 
@@ -174,7 +180,11 @@ class ResolvePsTests(unittest.TestCase):
     statement in the filing currency, so mcap/revenue silently divided dollars
     by pesos for US-listed ADRs. The observed errors tracked each home FX rate
     exactly: FMX (MXN) 0.05 vs a true ~1.0, TME (CNY) 0.40 vs ~2.8, TGS (ARS)
-    rounded to 0.00.
+    rounded to 0.00. The first fix fell back to EODHD's reported multiple for
+    those names; the 2026-09-14 run proved that multiple carries the SAME
+    error (TSM "reported (TWD revenue)" → 0.51), so the resolver now converts
+    the revenue at the day's rate and never trusts the reported figure for a
+    foreign statement.
     """
 
     def test_plain_usd_name_uses_the_derived_ratio(self):
@@ -188,22 +198,42 @@ class ResolvePsTests(unittest.TestCase):
         self.assertAlmostEqual(ps, 10.0)
         self.assertEqual(reason, "derived")
 
-    def test_foreign_currency_revenue_prefers_the_reported_multiple(self):
-        # FMX: market cap USD, revenue MXN → derived 0.05, true ~1.0.
-        ps, reason = resolve_ps(1_000.0, 20_000.0, 1.0, "MXN")
-        self.assertAlmostEqual(ps, 1.0)
+    def test_foreign_currency_revenue_is_converted_at_the_rate(self):
+        # TSM, 2026-09-14: market cap ~$1.2T over TTM revenue ~TWD 4.45T at
+        # ~0.0312 USD/TWD is a P/S of ~8.6 — not the 0.51 the run wrote.
+        ps, reason = resolve_ps(1.2e12, 4.45e12, 0.51, "TWD", 0.0312)
+        self.assertAlmostEqual(ps, 1.2e12 / (4.45e12 * 0.0312))
+        self.assertAlmostEqual(ps, 8.64, places=1)
+        self.assertIn("TWD", reason)
+        self.assertTrue(reason.startswith("derived"))
+
+    def test_foreign_currency_never_falls_back_to_the_reported_multiple(self):
+        # FMX: EODHD's own PriceSalesTTM (0.05) is built from the same USD
+        # market cap and MXN revenue, so it is exactly as wrong as the division.
+        ps, reason = resolve_ps(1_000.0, 20_000.0, 0.05, "MXN", None)
+        self.assertIsNone(ps)
+        self.assertTrue(reason.startswith(REFUSED), reason)
         self.assertIn("MXN", reason)
 
-    def test_foreign_currency_revenue_refuses_when_nothing_trustworthy_exists(self):
-        # Refusing is the point: absent from the Value lens beats ranked cheap.
+    def test_foreign_currency_without_a_rate_is_a_tombstoning_refusal(self):
+        # Refusing is the point, and it must be the kind of refusal that
+        # replaces the previous (wrong) row rather than leaving it standing.
         ps, reason = resolve_ps(1_000.0, 20_000.0, None, "ARS")
         self.assertIsNone(ps)
+        self.assertTrue(reason.startswith(REFUSED), reason)
         self.assertIn("ARS", reason)
+
+    def test_zero_or_negative_rate_is_treated_as_unknown(self):
+        self.assertIsNone(resolve_ps(1_000.0, 20_000.0, None, "ARS", 0.0)[0])
+        self.assertIsNone(resolve_ps(1_000.0, 20_000.0, None, "ARS", -1.0)[0])
 
     def test_undeclared_currency_caught_by_disagreement_with_eodhd(self):
         # The currency-agnostic backstop: derived 0.05 vs reported 1.0 is 20x.
+        # Neither side can be trusted at that point, so the name is refused
+        # (and tombstoned), not ranked on whichever looks nicer.
         ps, reason = resolve_ps(1_000.0, 20_000.0, 1.0, None)
-        self.assertAlmostEqual(ps, 1.0)
+        self.assertIsNone(ps)
+        self.assertTrue(reason.startswith(REFUSED), reason)
         self.assertIn("20x", reason)
 
     def test_small_disagreement_keeps_the_derived_ratio(self):
@@ -221,16 +251,120 @@ class ResolvePsTests(unittest.TestCase):
         self.assertAlmostEqual(ps, 4.2)
         self.assertIn("no market cap", reason)
 
+    def test_reported_not_used_for_a_foreign_name_missing_market_cap(self):
+        self.assertIsNone(resolve_ps(None, 100.0, 4.2, "JPY", 0.0067)[0])
+
     def test_no_usable_input_refuses(self):
         self.assertIsNone(resolve_ps(None, 100.0, None, None)[0])
         self.assertIsNone(resolve_ps(0.0, 100.0, None, None)[0])
         self.assertIsNone(resolve_ps(1_000.0, 0.0, None, None)[0])
+
+    def test_plain_skips_are_not_tombstoning_refusals(self):
+        # No revenue (a pre-revenue biotech) is a skip: nothing wrong stands
+        # in the table, so nothing needs replacing.
+        _, reason = resolve_ps(1_000.0, 0.0, None, None)
+        self.assertFalse(reason.startswith(REFUSED), reason)
 
     def test_reported_ps_of_zero_is_not_treated_as_a_value(self):
         # get_reported_ps already filters these out, but the resolver must not
         # resurrect a zero if one reaches it.
         ps, _ = resolve_ps(1_000.0, 100.0, 0.0, None)
         self.assertAlmostEqual(ps, 10.0)
+
+
+def _twd_fundamentals(mcap: float = 1.2e12, reported_ps: float = 0.51,
+                      highlights_ttm: float = 4.45e12) -> dict:
+    """An EODHD payload shaped like TSM.US: USD market cap, TWD statements
+    whose four latest quarters sum to TWD 4.45T."""
+    quarterly = {
+        "2026-06-30": {"totalRevenue": 1.27e12},
+        "2026-03-31": {"totalRevenue": 1.13e12},
+        "2025-12-31": {"totalRevenue": 1.06e12},
+        "2025-09-30": {"totalRevenue": 0.99e12},
+        "2025-06-30": {"totalRevenue": 0.93e12},
+    }
+    return {
+        "General": {"Name": "Taiwan Semiconductor", "CurrencyCode": "USD"},
+        "Highlights": {"MarketCapitalization": mcap, "RevenueTTM": highlights_ttm},
+        "Valuation": {"PriceSalesTTM": reported_ps},
+        "Financials": {"Income_Statement": {"currency_symbol": "TWD",
+                                            "quarterly": quarterly}},
+    }
+
+
+class RevenueTtmSourceTests(unittest.TestCase):
+    """Which revenue a conversion is applied to matters as much as the rate."""
+
+    def test_usd_name_keeps_the_highlights_figure(self):
+        f = _twd_fundamentals(highlights_ttm=4.6e12)
+        self.assertEqual(get_revenue_ttm(f), 4.6e12)
+
+    def test_foreign_filer_sums_the_statement_that_declares_the_currency(self):
+        # If EODHD ever pre-converts Highlights.RevenueTTM for an issuer, a
+        # second conversion would be a ~30x error on a TWD name. The quarterly
+        # income statement is the block that says "TWD", so its sum is TWD.
+        f = _twd_fundamentals(highlights_ttm=139e9)  # a USD-looking figure
+        self.assertAlmostEqual(get_revenue_ttm(f, from_statement=True), 4.45e12)
+        self.assertAlmostEqual(statement_revenue_ttm(f), 4.45e12)
+
+    def test_fewer_than_four_quarters_falls_back_to_highlights(self):
+        f = _twd_fundamentals()
+        q = f["Financials"]["Income_Statement"]["quarterly"]
+        for k in list(q)[2:]:
+            del q[k]
+        self.assertIsNone(statement_revenue_ttm(f))
+        self.assertEqual(get_revenue_ttm(f, from_statement=True), 4.45e12)
+
+
+class ComputePsForTickerCurrencyTests(unittest.TestCase):
+    """The per-ticker path: conversion when a rate exists, a tombstone when
+    it does not, and a rebuild when the prior row carries no curve."""
+
+    def setUp(self):
+        self.logger = logging.getLogger("test_price_sales_updater")
+        self.today = date.today()
+
+    def _run(self, fundamentals, existing, rate):
+        with mock.patch.object(psu, "fetch_fundamentals", return_value=fundamentals), \
+             mock.patch.object(psu.fx, "usd_per_unit", return_value=rate), \
+             mock.patch.object(psu, "_build_weekly_history",
+                               side_effect=lambda t, e, ps, lf, lg: [[lf, ps]]):
+            return psu.compute_ps_for_ticker(
+                "TSM", "NYSE", existing, self.today, self.today, self.logger)
+
+    def test_foreign_statement_is_converted_not_reported(self):
+        out = self._run(_twd_fundamentals(), None, 0.0312)
+        self.assertEqual(out["mode"], "backfill")
+        self.assertAlmostEqual(out["ps_now"], 8.64, places=1)
+
+    def test_no_rate_writes_a_tombstone_not_nothing(self):
+        # A refusal that wrote nothing left TSM's 0.51 as the latest row the
+        # screener read. The tombstone is a dated row with every P/S NULL.
+        existing = {"history_json": [["2026-09-05", 0.5], ["2026-09-12", 0.51]],
+                    "ath": 0.55, "last_updated": "2026-09-14"}
+        out = self._run(_twd_fundamentals(), existing, None)
+        self.assertEqual(out["mode"], "tombstone")
+        for key in ("ps_now", "high_52w", "low_52w", "median_12m", "ath",
+                    "pct_of_ath", "history_json"):
+            self.assertIsNone(out[key], key)
+        self.assertIn("TWD", out["reason"])
+
+    def test_row_after_a_tombstone_rebuilds_the_curve(self):
+        # The day after a tombstone the prior row has no history. The
+        # append-only path would find nothing to append to and skip the name
+        # every non-Friday; it must rebuild from prices like a first backfill.
+        existing = {"history_json": None, "ath": None, "last_updated": "2026-09-15"}
+        out = self._run(_twd_fundamentals(), existing, 0.0312)
+        self.assertEqual(out["mode"], "update")
+        self.assertAlmostEqual(out["ps_now"], 8.64, places=1)
+        self.assertEqual(len(out["history_json"]), 1)
+        self.assertAlmostEqual(out["ath"], out["ps_now"])
+
+    def test_tombstone_row_maps_to_null_valuation_columns(self):
+        row = psu.tombstone_row("TSM", "Taiwan Semiconductor", "refused: x")
+        self.assertIsNone(row["ps_now"])
+        self.assertIsNone(row["history_json"])
+        self.assertEqual(row["mode"], "tombstone")
 
 
 class ExtractorTests(unittest.TestCase):

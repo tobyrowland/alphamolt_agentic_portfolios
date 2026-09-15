@@ -205,6 +205,7 @@ def _dispatch(
 
 # Models discovered (this process) to reject the `temperature` param, so we
 # stop sending it after the first 400 instead of paying the retry tax per call.
+# Shared by the Anthropic and OpenAI-compatible adapters (keyed by model id).
 _NO_TEMPERATURE_MODELS: set[str] = set()
 
 def _accepts_temperature(stream_fn) -> bool:
@@ -357,35 +358,40 @@ def _call_openai_compatible(
     # `max_completion_tokens`; legacy chat models and DeepSeek still
     # use `max_tokens`. Pick the right param name by model id rather
     # than discovering it via a 400 on every call.
-    model_lower = model.lower()
-    needs_completion_tokens = (
-        provider_label == "openai"
-        and (
-            model_lower.startswith("gpt-5")
-            or model_lower.startswith("o1")
-            or model_lower.startswith("o3")
-            or model_lower.startswith("o4")
-        )
-    )
+    reasoning_model = provider_label == "openai" and _is_openai_reasoning_model(model)
     token_kwarg = (
         {"max_completion_tokens": max_tokens}
-        if needs_completion_tokens
+        if reasoning_model
         else {"max_tokens": max_tokens}
     )
+    # The same family accepts ONLY its default temperature — any other value
+    # is a hard 400 ("'temperature' does not support 0.2 with this model.
+    # Only the default (1) value is supported"), and every `agents.config` in
+    # this repo carries the pre-GPT-5 0.2. On 2026-09-15 that turned
+    # `buyer-chatgpt` into a no-op: all 16 candidates on the Ex-Taiwan book
+    # failed with that error and the run reported "no candidates met the
+    # conviction threshold", indistinguishable from a quiet market. So the
+    # param is not sent to those models at all, and — for any other model or
+    # OpenAI-compatible provider that starts rejecting it — a temperature
+    # error drops it and retries once, remembering the model for the rest of
+    # the process (same contract as the Anthropic path).
+    send_temperature = not reasoning_model and model not in _NO_TEMPERATURE_MODELS
 
     last_err: Exception | None = None
     for attempt in range(2):
         try:
-            resp = client.chat.completions.create(
-                model=model,
-                temperature=temperature,
-                messages=[
+            kwargs = {
+                "model": model,
+                "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                response_format={"type": "json_object"},
+                "response_format": {"type": "json_object"},
                 **token_kwarg,
-            )
+            }
+            if send_temperature:
+                kwargs["temperature"] = temperature
+            resp = client.chat.completions.create(**kwargs)
             text = resp.choices[0].message.content or ""
             usage = getattr(resp, "usage", None)
             return LLMResponse(
@@ -401,10 +407,31 @@ def _call_openai_compatible(
                 "%s call attempt %d failed: %s",
                 provider_label, attempt + 1, exc,
             )
+            if send_temperature and _is_temperature_error(exc):
+                send_temperature = False
+                _NO_TEMPERATURE_MODELS.add(model)  # skip it for the rest of the process
+                continue  # retry immediately without the rejected param
             time.sleep(2 ** attempt)
     raise LLMProviderError(
         f"{provider_label} call failed after retries: {last_err}"
     )
+
+
+def _is_openai_reasoning_model(model: str) -> bool:
+    """GPT-5+ and the o-series: `max_completion_tokens`, default-only temperature."""
+    m = model.lower()
+    return m.startswith("gpt-5") or m.startswith(("o1", "o3", "o4"))
+
+
+def _is_temperature_error(exc: Exception) -> bool:
+    """Did the provider reject the `temperature` param specifically?
+
+    The OpenAI SDK exposes the offending param on the error (`param`); other
+    OpenAI-compatible providers only put it in the message, so both are read.
+    """
+    if getattr(exc, "param", None) == "temperature":
+        return True
+    return "temperature" in str(exc).lower()
 
 
 # ---------------------------------------------------------------------------

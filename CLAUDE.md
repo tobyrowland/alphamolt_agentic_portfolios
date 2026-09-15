@@ -134,6 +134,22 @@ rejects the parameter at request time. Pinned by
 than the SDK it stood in for, which is exactly how the failure reached
 production through a green suite.
 
+**OpenAI and `temperature`.** GPT-5 and the o-series accept ONLY their
+default temperature — any other value is a hard 400 ("'temperature' does not
+support 0.2 with this model. Only the default (1) value is supported") — and
+every `agents.config` in this repo carries the pre-GPT-5 `0.2`. On 2026-09-15
+that made `buyer-chatgpt` a no-op: all 16 candidates on the Ex-Taiwan Chip
+Industry book failed with that error and the heartbeat reported "no candidates
+met the conviction threshold", indistinguishable from a quiet market. The
+OpenAI-compatible adapter now never sends the param to that family
+(`_is_openai_reasoning_model`, the same predicate that already picks
+`max_completion_tokens`), and for any other model or compatible provider that
+starts rejecting it, a temperature error (`_is_temperature_error` — the SDK's
+`param`, or the message text for providers that don't set it) drops the param,
+retries once immediately and remembers the model in `_NO_TEMPERATURE_MODELS`
+for the rest of the process, the same contract as the Anthropic path. Pinned
+by `tests/test_llm_providers_openai.py`.
+
 SDK: **`google-genai`** (`from google import genai`). The legacy
 `google-generativeai` was deprecated Nov 2025 and cannot reach the Gemini 3
 family or `thinking_level` at all; it survives as a fallback for pinned 2.5
@@ -907,9 +923,76 @@ card (same Level 0 facts, same Gemini model — no diversity lost). The workflow
 was removed; the script remains runnable locally for the legacy companies path.
 
 ### price_sales_updater.py (04:30 UTC daily)
-Tracks P/S ratios over time. Backfills 52 weeks of history for new tickers.
-Updates `price_sales` table. Logs run stats to `run_logs` table.
-Supports `--tickers` and `--force` flags.
+The daily P/S maintainer for the Level 0 `valuation` table (the legacy
+`price_sales` table is retired). Backfills 52 weeks of history for new tickers,
+rebases the curve when the revenue denominator steps at earnings, logs run
+stats to `run_logs`. Supports `--tickers` and `--force` flags.
+
+**A P/S is only a P/S when both sides are in one currency** (`resolve_ps`,
+pure, `tests/test_price_sales_updater.py`). EODHD reports a US listing's
+market cap in USD but leaves a foreign issuer's income statement in its
+FILING currency, so `mcap / revenue` silently divided dollars by won. The
+first guard (2026-09-08) refused the division and fell back to EODHD's own
+`Valuation.PriceSalesTTM`, assumed currency-consistent by construction. The
+2026-09-14 run proved it is not: every declared-currency ADR took the
+"reported" branch and wrote the SAME number the division gives (TSM
+"reported (TWD revenue)" → 0.51 against a true ~9; JKS 0.01; FMX 0.05),
+because EODHD computes that multiple from the same two figures. Where nothing
+could be reported (KRW / JPY / ARS names) the refusal wrote nothing, which
+left each name's last bad row as the LATEST row `screen_facts` reads — 17
+Tier-1 names sat on a stranded 0.00 for a week. The Value lens ranked them
+all as the cheapest names in any screen that included them, and their zeros
+sat inside every sector's `peer_ps_median`.
+
+Three rules now, each pinned by a test:
+- **Convert, never trust the reported multiple for a foreign filer.** A
+  non-USD statement's TTM revenue is summed from the four latest quarterly
+  income statements — the block that DECLARES `currency_symbol`, so the sum
+  is in that currency by construction (`statement_revenue_ttm`; a Highlights
+  figure could be pre-converted for one issuer and not another, and a second
+  conversion is a 30x error on a TWD name) — and converted at the day's rate
+  (`fx.usd_per_unit`). With no rate the name is REFUSED. An undeclared
+  currency keeps the currency-agnostic backstop (derived vs reported
+  disagreeing more than `PS_SANITY_RATIO` = 3x), but now refuses rather than
+  picking a side.
+- **A currency refusal writes a tombstone, not nothing** (`tombstone_row`, a
+  dated row with every P/S column NULL, counted in
+  `run_logs.details.tombstoned`). A plain skip (no revenue, no fundamentals)
+  still writes nothing — nothing wrong stands in the table. A refusal's
+  reason carries the `REFUSED` prefix so the caller can tell the two apart.
+- **A row with no curve rebuilds from prices** the way a first backfill does
+  (the day after a tombstone, or a bare row); the append-only path would
+  otherwise find nothing to append to and skip the name until a Friday.
+
+### fx.py
+Currency conversion for the fact store — `usd_per_unit(code)` (USD per one
+unit of a currency, from EODHD's forex feed, both pair directions tried,
+cached once per currency per process), `revenue_currency(fundamentals)` (the
+income statement's declaration, never `General.CurrencyCode` — that is the
+LISTING currency and reads USD for exactly the ADRs this exists for),
+`normalise_currency` (GBX pence / ILA agorot / ZAC cents fold into their
+major), `to_usd`, `convert_series`. The network read is isolated in
+`fetch_usd_rate`; everything above it is pure (`tests/test_fx.py`). An
+unknown rate is `None` and every caller refuses rather than guesses.
+
+**Every absolute amount the store carries is USD.** `eodhd_updater.
+fetch_eodhd_data` localises at the source (`fx_for` / `localize_series` /
+`localize_absolutes`): the quarterly `revenue` series in
+`fundamentals.quarterly_metrics` — which both scorers sum into the
+`revenue_ttm` filter fact ("Revenue (TTM) ≥ $500M" read LG Display at $5.7
+trillion a quarter, in won, and passed every sub-scale foreign name) — plus
+the balance-sheet absolutes (`cash`, `debt`, `ebitda_ttm`,
+`interest_expense_ttm`; the ratios built from them are currency-free and
+untouched) and the "$"-rendered text blobs behind the company-page income
+chart. A foreign series records `revenue_currency` (the filing currency) and
+`fx_usd_per_unit` (the rate used) so a reader can tell converted from
+never-foreign; with no rate the machine-read amounts are NULLED (the
+missing-datum rule then excludes the name) while the text blobs stay native
+(a chart in won beats no chart). Reaches the store through the daily
+`fundamentals_updater` rotation and the earnings-triggered refresh, so
+coverage rebuilds over the ~20-day rotation; `python fundamentals_updater.py
+--batch 4000` does it in a day. `backfill_tier1_valuation.py` resolves P/S
+through the same `resolve_ps`.
 
 ### score_ai_analysis.py (05:00 UTC daily)
 Reads `companies` + `price_sales` + TradingView market data.

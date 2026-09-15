@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 from db import SupabaseDB
 from exchanges import resolve_eodhd_exchange, EXCHANGE_FALLBACKS
+import fx
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -477,6 +478,72 @@ def compute_inflection(quarterly: list[tuple[str, dict]],
     }
 
 
+# ---------------------------------------------------------------------------
+# Currency — every ABSOLUTE amount the store carries must be in USD
+# ---------------------------------------------------------------------------
+# EODHD leaves a foreign issuer's statements in its filing currency while the
+# US-listed price and market cap are in dollars. Ratios (margins, growth,
+# net debt / EBITDA) cancel the currency; absolute amounts do not — the
+# quarterly `revenue` series read LG Display at $5.7 trillion a quarter (won)
+# and TSM at 1.27 trillion (TWD), so the screener's "Revenue (TTM) ≥ $500M"
+# passed every sub-scale foreign name and P/S divided dollars by won. The
+# rate comes from fx.usd_per_unit (one fetch per currency per run); with no
+# rate the amounts are NULLED rather than left native, so the standard
+# missing-datum rule excludes the name instead of ranking it on a lie.
+
+# Absolute-amount keys fetch_eodhd_data emits (everything else is a ratio, a
+# percentage, a count or a text blob).
+ABSOLUTE_FIELDS = ("cash", "debt", "ebitda_ttm", "interest_expense_ttm")
+
+
+def fx_for(raw: dict) -> tuple[str | None, float | None]:
+    """`(filing_currency, usd_per_unit)` for an EODHD fundamentals payload.
+
+    (None, 1.0) for a USD or undeclared statement — nothing to convert.
+    (code, None) when the statement is foreign and no rate could be had.
+    """
+    code = fx.revenue_currency(raw)
+    major, _ = fx.normalise_currency(code)
+    if major is None or major == "USD":
+        return None, 1.0
+    return code, fx.usd_per_unit(code)
+
+
+def localize_series(series: dict | None, currency: str | None,
+                    rate: float | None) -> dict | None:
+    """Convert the `revenue` series of a quarterly_metrics object to USD.
+
+    Pure. Leaves a USD/undeclared statement untouched; for a foreign one it
+    converts at `rate`, or NULLs every amount when `rate` is None, and records
+    what happened (`revenue_currency` = the filing currency, `fx_usd_per_unit`
+    = the rate used) so a reader can tell converted from never-foreign. The
+    growth arrays are ratios of the same-currency series and are untouched.
+    """
+    if not series or currency is None:
+        return series
+    out = dict(series)
+    out["revenue"] = fx.convert_series(series.get("revenue"), rate)
+    out["revenue_currency"] = currency
+    out["fx_usd_per_unit"] = rate
+    return out
+
+
+def localize_absolutes(result: dict, currency: str | None, rate: float | None,
+                       keys: tuple[str, ...] = ABSOLUTE_FIELDS) -> dict:
+    """Convert the scalar absolute amounts in a metrics result to USD (pure).
+
+    Same contract as localize_series: untouched for USD/undeclared, converted
+    at `rate`, NULLed when the statement is foreign and the rate is unknown.
+    """
+    if currency is None:
+        return result
+    for key in keys:
+        if key in result:
+            v = fx.to_usd(result[key], rate)
+            result[key] = None if v is None else round(v, 2)
+    return result
+
+
 # Quarters of history stored in fundamentals.quarterly_metrics (3 years). The
 # screener's filter TRANSFORMS (streaks / deltas / slopes / own-history
 # percentiles — screen.py + web/lib/screen/transforms.ts) compute over this
@@ -709,12 +776,28 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
     cf_quarterly = _sorted_entries(cashflow_quarterly)
     eps_entries = _sorted_entries(earnings.get("History", {}))
 
+    # Filing currency + the day's USD rate (fx_for). The text blobs below are
+    # rendered with a "$" by fmt_revenue, so they are converted here at the
+    # source; when the statement is foreign and no rate exists they stay
+    # native (a chart in won beats no chart), while the MACHINE-READ amounts —
+    # the quarterly series and the balance-sheet absolutes — are NULLed at the
+    # end of this function so no filter or model reads won as dollars.
+    fx_currency, fx_rate = fx_for(raw)
+    if fx_currency:
+        logger.info("%s: statements in %s, USD rate %s", ticker, fx_currency,
+                    f"{fx_rate:.6g}" if fx_rate else "UNAVAILABLE")
+
+    def _usd(v: float | None) -> float | None:
+        if v is None or fx_currency is None or fx_rate is None:
+            return v
+        return v * fx_rate
+
     result = {}
 
     # ── Annual Revenue (5Y) ───────────────────────────────────────────
     annual_revs = []
     for date_str, entry in yearly[:5]:
-        rev = safe_float(entry.get("totalRevenue"))
+        rev = _usd(safe_float(entry.get("totalRevenue")))
         if rev is not None:
             year = date_str[:4]
             annual_revs.append(f"{year}: {fmt_revenue(rev)}")
@@ -724,7 +807,7 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
     if quarterly:
         parts = []
         for entry in quarterly[:5]:
-            rev = safe_float(entry[1].get("totalRevenue"))
+            rev = _usd(safe_float(entry[1].get("totalRevenue")))
             q_date = entry[0]
             if rev is not None:
                 parts.append(f"{fmt_revenue(rev)} ({q_date})")
@@ -738,7 +821,7 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
     # go negative. Same string shape, so the web parser is reused.
     annual_ni = []
     for date_str, entry in yearly[:5]:
-        ni = safe_float(entry.get("netIncome"))
+        ni = _usd(safe_float(entry.get("netIncome")))
         if ni is not None:
             year = date_str[:4]
             annual_ni.append(f"{year}: {fmt_revenue(ni)}")
@@ -748,7 +831,7 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
     if quarterly:
         ni_parts = []
         for entry in quarterly[:5]:
-            ni = safe_float(entry[1].get("netIncome"))
+            ni = _usd(safe_float(entry[1].get("netIncome")))
             q_date = entry[0]
             if ni is not None:
                 ni_parts.append(f"{fmt_revenue(ni)} ({q_date})")
@@ -1287,7 +1370,9 @@ def fetch_eodhd_data(ticker: str, api_key: str, logger: logging.Logger,
     result.update(compute_survivability(raw, quarterly))
     # Full per-quarter series (migration 076) — the screener's generic filter
     # transforms (streak / delta / slope / own-percentile) compute over this.
-    result["quarterly_metrics"] = compute_quarterly_series(quarterly, cf_quarterly)
+    result["quarterly_metrics"] = localize_series(
+        compute_quarterly_series(quarterly, cf_quarterly), fx_currency, fx_rate)
+    localize_absolutes(result, fx_currency, fx_rate)
 
     result["data"] = datetime.now().strftime("%Y-%m-%d")
 
