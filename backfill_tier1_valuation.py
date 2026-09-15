@@ -17,7 +17,9 @@ Per missing Tier 1 ticker:
   1. Fetch EODHD fundamentals (reusing `eodhd_updater.fetch_fundamentals_with_fallbacks`)
      to get market cap + trailing-12-month revenue (the same `get_market_cap` /
      `get_revenue_ttm` helpers `price_sales_updater` uses).
-  2. `ps_now = market_cap / revenue_ttm`.
+  2. `ps_now` via `price_sales_updater.resolve_ps` — market cap over a
+     revenue converted to USD at the day's rate when the statement is in a
+     filing currency (`fx.py`); refused when no rate exists.
   3. Build the 52-week P/S history from **Level 0 `prices_daily`** (which already
      holds 2y of daily closes for every Tier 1 name — no Yahoo round-trip),
      resampled to one point per ISO week, via the same price-ratio method
@@ -50,7 +52,10 @@ from datetime import date, timedelta
 
 from db import SupabaseDB
 from eodhd_updater import fetch_fundamentals_with_fallbacks
-from price_sales_updater import get_market_cap, get_revenue_ttm
+import fx
+from price_sales_updater import (
+    get_market_cap, get_reported_ps, get_revenue_currency, get_revenue_ttm, resolve_ps,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -169,14 +174,23 @@ def main() -> None:
         if not raw:
             no_data += 1
         else:
-            revenue_ttm = get_revenue_ttm(raw)
+            # Same currency-aware resolution as the daily updater: a filing-
+            # currency revenue is summed from the statement that declares it
+            # and converted at the day's rate, never divided into a USD market
+            # cap raw (price_sales_updater.resolve_ps).
+            currency = get_revenue_currency(raw)
+            foreign = bool(currency and currency != "USD")
+            revenue_ttm = get_revenue_ttm(raw, from_statement=foreign)
             market_cap = get_market_cap(raw)
-            if not revenue_ttm or revenue_ttm <= 0 or not market_cap or market_cap <= 0:
-                logger.info("%s: no usable mcap/revenue (mcap=%s rev=%s)",
-                            ticker, market_cap, revenue_ttm)
+            rate = fx.usd_per_unit(currency) if foreign else None
+            ps_raw, ps_reason = resolve_ps(
+                market_cap, revenue_ttm, get_reported_ps(raw), currency, rate)
+            if ps_raw is None or round(ps_raw, 2) <= 0:
+                logger.info("%s: no usable P/S (%s; mcap=%s rev=%s)",
+                            ticker, ps_reason, market_cap, revenue_ttm)
                 no_data += 1
             else:
-                ps_now = round(market_cap / revenue_ttm, 2)
+                ps_now = round(ps_raw, 2)
                 pts = _weekly_points(db.get_prices_daily(ticker, since=cutoff), db)
                 history: list[list] = []
                 if pts:

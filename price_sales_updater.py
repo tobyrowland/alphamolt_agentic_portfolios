@@ -27,6 +27,7 @@ import requests
 from dotenv import load_dotenv
 
 from db import SupabaseDB
+import fx
 from eodhd_updater import fetch_fundamentals_with_fallbacks
 from fundamentals_updater import select_stale_batch
 from exchanges import resolve_eodhd_exchange, YAHOO_SUFFIX
@@ -233,8 +234,43 @@ def fetch_weekly_prices(ticker: str, exchange: str, logger) -> list | None:
     return None
 
 
-def get_revenue_ttm(fundamentals: dict) -> float | None:
-    """Extract trailing-twelve-month revenue from EODHD fundamentals."""
+def statement_revenue_ttm(fundamentals: dict) -> float | None:
+    """TTM revenue as the sum of the latest FOUR quarterly income statements.
+
+    The Income_Statement block is the one that declares `currency_symbol`, so
+    a sum over its own quarters is unambiguously in that currency — which is
+    what a conversion needs. None unless four quarters are present.
+    """
+    financials = fundamentals.get("Financials") or {}
+    quarterly = (financials.get("Income_Statement") or {}).get("quarterly") or {}
+    if not isinstance(quarterly, dict) or len(quarterly) < 4:
+        return None
+    sorted_q = sorted(quarterly.items(), key=lambda x: x[0], reverse=True)
+    total = 0.0
+    for _date, entry in sorted_q[:4]:
+        rev = _safe_float((entry or {}).get("totalRevenue"))
+        if rev is None:
+            return None
+        total += rev
+    return total if total > 0 else None
+
+
+def get_revenue_ttm(fundamentals: dict, *, from_statement: bool = False) -> float | None:
+    """Extract trailing-twelve-month revenue from EODHD fundamentals.
+
+    `from_statement=True` (used for a non-USD filer) prefers the sum of the
+    four latest quarterly income statements over `Highlights.RevenueTTM`: the
+    statement carries the currency declaration, so its sum is in that currency
+    by construction, whereas a Highlights figure could be pre-converted for
+    some issuers and not others — converting it again would be a 30x error
+    on a TWD name. Falls back to the Highlights figure when fewer than four
+    quarters exist.
+    """
+    if from_statement:
+        stmt = statement_revenue_ttm(fundamentals)
+        if stmt:
+            return stmt
+
     # Try Highlights.RevenueTTM first
     highlights = fundamentals.get("Highlights", {})
     rev_ttm = _safe_float(highlights.get("RevenueTTM"))
@@ -302,14 +338,41 @@ def get_shares_outstanding(fundamentals: dict) -> float | None:
 # sector. The same number is quoted to the buyer LLM as a fact and gates the
 # ps_vs_median band.
 #
-# Whether a P/S disagrees with EODHD's own by more than this factor is the
-# currency-agnostic tell: normal disagreement between a derived and a reported
-# multiple is a few percent (different TTM cut-offs), never multiples.
+# The first fix (2026-09-08) refused the division and fell back to EODHD's own
+# Valuation.PriceSalesTTM on the assumption that it was currency-consistent by
+# construction. The 2026-09-14 run shows it is NOT: every declared-currency ADR
+# took the "reported" branch and wrote the SAME broken number the division
+# gives (TSM "reported (TWD revenue)" → 0.51 against a true ~9, JKS 0.01, FMX
+# 0.05), because EODHD computes that multiple from the same two figures. And
+# where nothing could be reported (KRW / JPY / ARS names) the refusal wrote
+# nothing, which left each name's last bad row as the LATEST row the screener
+# reads — 17 Tier-1 names sat on a stranded 0.00 for a week (LPL, TM, HMC, KEP,
+# WF, YPF, GGAL, TGS …).
+#
+# So: a non-USD statement is CONVERTED at the day's rate (fx.usd_per_unit), and
+# the reported multiple is never trusted for it. No rate → refuse, and the
+# caller writes a dated row with ps NULL (a tombstone) so the screener stops
+# reading the stale figure. `PS_SANITY_RATIO` remains the currency-agnostic
+# backstop for an UNDECLARED currency: normal disagreement between a derived and
+# a reported multiple is a few percent (different TTM cut-offs), never multiples,
+# and since neither side can be trusted when they disagree by that much, the
+# name is refused rather than ranked on either.
 PS_SANITY_RATIO = 3.0
+
+# Reason prefix for a refusal that should TOMBSTONE the name (write a row with
+# ps NULL) rather than leave its previous row standing. A pre-revenue biotech
+# with no revenue is a plain skip; a currency fault is not, because the row it
+# would leave behind is wrong, not merely old.
+REFUSED = "refused:"
 
 
 def get_reported_ps(fundamentals: dict) -> float | None:
-    """EODHD's own trailing P/S — currency-consistent by construction."""
+    """EODHD's own trailing P/S (Valuation.PriceSalesTTM).
+
+    Only meaningful for a USD income statement: for an ADR it is computed from
+    the same USD market cap and filing-currency revenue as the derived ratio
+    and carries the same error (TSM 0.51, JKS 0.01 on 2026-09-14).
+    """
     valuation = fundamentals.get("Valuation") or {}
     ps = _safe_float(valuation.get("PriceSalesTTM"))
     return ps if ps and ps > 0 else None
@@ -321,14 +384,9 @@ def get_revenue_currency(fundamentals: dict) -> str | None:
     Deliberately does NOT fall back to General.CurrencyCode: that is the
     LISTING currency, which reads USD for precisely the US-listed ADRs whose
     revenue is not in dollars, so using it would blind the check to the only
-    case it exists for.
+    case it exists for. (Shared with eodhd_updater via fx.revenue_currency.)
     """
-    statement = (fundamentals.get("Financials") or {}).get("Income_Statement") or {}
-    for key in ("currency_symbol", "currency"):
-        val = statement.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip().upper()
-    return None
+    return fx.revenue_currency(fundamentals)
 
 
 def resolve_ps(
@@ -336,40 +394,45 @@ def resolve_ps(
     revenue_ttm: float | None,
     reported_ps: float | None,
     revenue_currency: str | None,
+    usd_per_unit: float | None = None,
 ) -> tuple[float | None, str]:
     """Decide a ticker's P/S, or refuse. Pure — unit-tested.
 
-    Returns `(ps, reason)`; `ps` is None when no trustworthy figure exists, and
-    the caller skips the ticker. Refusing is the point: a skipped name is absent
-    from the Value lens, while a wrong one is ranked as though it were cheap and
-    pulls its whole sector's peer median with it.
+    `usd_per_unit` is the day's rate for `revenue_currency` (USD per one unit
+    of it; see fx.usd_per_unit) and is what makes a non-USD statement usable.
+
+    Returns `(ps, reason)`; `ps` is None when no trustworthy figure exists. A
+    reason starting with `REFUSED` means the name's previous row is WRONG (a
+    currency fault), not merely stale, and the caller writes a tombstone.
     """
-    derived = None
-    if market_cap and market_cap > 0 and revenue_ttm and revenue_ttm > 0:
-        derived = market_cap / revenue_ttm
-
-    # An explicitly non-USD income statement makes `derived` meaningless, no
-    # matter how plausible it looks.
-    if revenue_currency and revenue_currency != "USD":
+    if not (market_cap and market_cap > 0 and revenue_ttm and revenue_ttm > 0):
+        if reported_ps and (not revenue_currency or revenue_currency == "USD"):
+            return reported_ps, "reported (no market cap)"
         if reported_ps:
-            return reported_ps, f"reported ({revenue_currency} revenue)"
-        return None, f"revenue reported in {revenue_currency}, no USD-consistent P/S"
+            return None, f"no market cap; reported multiple unusable for {revenue_currency} revenue"
+        return None, "no market cap and no reported P/S"
 
-    # Undeclared currency: fall back to disagreement with EODHD's own multiple,
-    # which catches the same fault without needing the currency code at all.
-    if derived and reported_ps:
+    if revenue_currency and revenue_currency != "USD":
+        # A USD market cap over a filing-currency revenue: convert the revenue,
+        # and never fall back to EODHD's reported multiple — it is built from
+        # the same two figures and carries the same error.
+        if usd_per_unit and usd_per_unit > 0:
+            return (market_cap / (revenue_ttm * usd_per_unit),
+                    f"derived ({revenue_currency} revenue @ {usd_per_unit:.6g} USD)")
+        return None, f"{REFUSED} revenue reported in {revenue_currency}, no USD rate"
+
+    derived = market_cap / revenue_ttm
+    # Undeclared currency: disagreement with EODHD's own multiple is the
+    # currency-agnostic tell, and with neither side trustworthy the name is
+    # refused rather than ranked on a guess.
+    if reported_ps:
         ratio = max(derived, reported_ps) / min(derived, reported_ps)
         if ratio > PS_SANITY_RATIO:
-            return reported_ps, (
-                f"reported (derived {derived:.4g} disagrees {ratio:.0f}x — "
-                "likely non-USD revenue)"
+            return None, (
+                f"{REFUSED} derived {derived:.4g} disagrees {ratio:.0f}x with reported "
+                f"{reported_ps:.4g} — likely non-USD revenue with no declared currency"
             )
-
-    if derived:
-        return derived, "derived"
-    if reported_ps:
-        return reported_ps, "reported (no market cap)"
-    return None, "no market cap and no reported P/S"
+    return derived, "derived"
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +519,33 @@ def _build_weekly_history(
     return history
 
 
+def tombstone_row(ticker: str, company_name: str, reason: str) -> dict:
+    """The row written when a name's P/S is REFUSED on a currency fault.
+
+    A refusal used to write nothing, which left the name's previous row — the
+    wrong one the refusal exists to stop — as the latest row `screen_facts`
+    reads (17 Tier-1 names sat on a stranded 0.00 for a week). A dated row
+    with every P/S column NULL is what the missing-datum rule needs: the name
+    drops out of the Value lens and every P/S filter until a rate exists,
+    and the next successful run rebuilds its curve from scratch (an empty
+    history triggers the backfill path in compute_ps_for_ticker).
+    """
+    return {
+        "ticker": ticker,
+        "company_name": company_name,
+        "ps_now": None,
+        "high_52w": None,
+        "low_52w": None,
+        "median_12m": None,
+        "ath": None,
+        "pct_of_ath": None,
+        "history_json": None,
+        "first_recorded": None,
+        "mode": "tombstone",
+        "reason": reason,
+    }
+
+
 def compute_ps_for_ticker(
     ticker: str,
     exchange: str,
@@ -487,31 +577,42 @@ def compute_ps_for_ticker(
     general = fundamentals.get("General", {})
     company_name = general.get("Name", "")
 
-    revenue_ttm = get_revenue_ttm(fundamentals)
+    # A filing-currency statement is converted to USD at the day's rate rather
+    # than divided into a USD market cap; its TTM revenue is summed from the
+    # statement that declares the currency (see get_revenue_ttm).
+    currency = get_revenue_currency(fundamentals)
+    foreign = bool(currency and currency != "USD")
+    revenue_ttm = get_revenue_ttm(fundamentals, from_statement=foreign)
     if not revenue_ttm or revenue_ttm <= 0:
         logger.warning("SKIP %s: revenue_ttm=%s", ticker, revenue_ttm)
         return None
 
     market_cap = get_market_cap(fundamentals)
 
-    # Current P/S — refuses rather than divides USD by a filing currency.
+    # Current P/S — refuses when the revenue cannot be brought into USD.
+    rate = fx.usd_per_unit(currency) if foreign else None
     ps_raw, ps_reason = resolve_ps(
-        market_cap, revenue_ttm,
-        get_reported_ps(fundamentals), get_revenue_currency(fundamentals),
+        market_cap, revenue_ttm, get_reported_ps(fundamentals), currency, rate,
     )
     if ps_raw is None:
+        if ps_reason.startswith(REFUSED):
+            # The previous row is WRONG, not stale: leave a dated row with
+            # ps NULL so the screener stops reading it (see tombstone_row).
+            logger.warning("TOMBSTONE %s: %s", ticker, ps_reason)
+            return tombstone_row(ticker, company_name, ps_reason)
         logger.warning("SKIP %s: %s", ticker, ps_reason)
         return None
-    if not ps_reason.startswith("derived"):
+    if ps_reason != "derived":
         logger.info("%s: P/S from %s", ticker, ps_reason)
 
     ps_current = round(ps_raw, 2)
     if ps_current <= 0:
         # A P/S that rounds to zero is never a real multiple — it is a units or
         # currency fault (TGS wrote 0.00 for months). Writing it puts a literal
-        # zero into ps, ps_ath and the sector's peer median.
-        logger.warning("SKIP %s: P/S %.6g rounds to zero (%s)", ticker, ps_raw, ps_reason)
-        return None
+        # zero into ps, ps_ath and the sector's peer median; leaving the old
+        # row standing keeps whatever wrong figure it carried.
+        logger.warning("TOMBSTONE %s: P/S %.6g rounds to zero (%s)", ticker, ps_raw, ps_reason)
+        return tombstone_row(ticker, company_name, f"{REFUSED} P/S {ps_raw:.6g} rounds to zero")
 
     # --- Build history ---
     # Decide between an append-only weekly update and a full rebuild of the
@@ -524,6 +625,12 @@ def compute_ps_for_ticker(
 
     rebuild = mode == "backfill"
     rebased = False
+    if mode == "update" and not existing_history:
+        # The prior row carries no curve to append to — a tombstone left by a
+        # refusal, or a bare row. Rebuild from prices, exactly as a first
+        # backfill would; the append-only path would find nothing to append
+        # to and skip the name every day until a Friday.
+        rebuild = True
     if mode == "update" and existing_history:
         last_row = existing_history[-1]
         last_ps = _safe_float(last_row[1]) if isinstance(last_row, list) and len(last_row) > 1 else None
@@ -716,6 +823,7 @@ def main():
     # Classify and process tickers
     backfilled = 0
     updated = 0
+    tombstoned = 0
     skipped = 0
     errors = 0
 
@@ -726,7 +834,7 @@ def main():
 
     def flush() -> None:
         """Write the buffered valuation rows, counting the outcome."""
-        nonlocal backfilled, updated, errors, pending, pending_modes
+        nonlocal backfilled, updated, tombstoned, errors, pending, pending_modes
         if not pending:
             return
         batch, modes = pending, pending_modes
@@ -738,7 +846,8 @@ def main():
             errors += len(batch)
             return
         backfilled += sum(1 for m in modes if m == "backfill")
-        updated += sum(1 for m in modes if m != "backfill")
+        tombstoned += sum(1 for m in modes if m == "tombstone")
+        updated += sum(1 for m in modes if m not in ("backfill", "tombstone"))
 
     for item in ticker_list:
         ticker = item["ticker"]
@@ -783,6 +892,7 @@ def main():
         # P/S maintainer for valuation (the legacy `companies`/`price_sales`
         # tables are retired). Map the computed P/S series onto valuation cols.
         result_mode = result.pop("mode")
+        result.pop("reason", None)
         val_row = {
             "ticker": ticker,
             "date": today_str,
@@ -811,6 +921,9 @@ def main():
         "skipped": skipped,
         "errors": errors,
         "duration_secs": duration,
+        # Names refused on a currency fault and written as ps-NULL rows — the
+        # count a freshness reader needs to tell "covered" from "priced".
+        "details": {"tombstoned": tombstoned},
     }
     try:
         db.log_run("price_sales_updater", stats)
@@ -819,8 +932,8 @@ def main():
 
     logger.info("=" * 60)
     logger.info(
-        "Done in %.1fs — backfilled=%d updated=%d skipped=%d errors=%d",
-        duration, backfilled, updated, skipped, errors,
+        "Done in %.1fs — backfilled=%d updated=%d tombstoned=%d skipped=%d errors=%d",
+        duration, backfilled, updated, tombstoned, skipped, errors,
     )
     logger.info("=" * 60)
 
